@@ -1,6 +1,6 @@
 ---
 name: release
-description: 准备 xone 的一次发版（vX.Y.Z）：钉版本号、整理 CHANGELOG、开 release PR。用户说「发版」「发 v1.1.0」「准备发布」「release」时用。只做到开 PR 为止，打 tag 由用户在 GitHub Actions 的 release 按钮上做。
+description: 准备 xone 的一次发版（vX.Y.Z）：钉版本号、整理 CHANGELOG、开 release PR，到此为止，打 tag 由用户在 GitHub Actions 的 release 按钮上做。用户说「准备发版」「开 release PR」，或者这一版要人工审阅 CHANGELOG、有不兼容变更时用。要全自动一路发到 tag 推出去、不用自己点按钮的，用 `ship` skill。
 ---
 
 # 准备发版
