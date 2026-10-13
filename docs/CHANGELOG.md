@@ -8,6 +8,8 @@
 
 ## [未发布]
 
+## [v1.0.0] - 2026-10-13
+
 ### 新增
 
 - 首个版本。核心：`xone.Run` 的配置加载与生命周期，含 xapp、xconfig、xerror、xflow、xhook、xlog、xtls、xutil、xonetest。
