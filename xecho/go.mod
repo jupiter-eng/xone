@@ -11,9 +11,9 @@ replace (
 )
 
 require (
-	github.com/jupiter-eng/xone v1.0.0
-	github.com/jupiter-eng/xone/xmetric v1.0.0
-	github.com/jupiter-eng/xone/xtrace v1.0.0
+	github.com/jupiter-eng/xone v1.0.1
+	github.com/jupiter-eng/xone/xmetric v1.0.1
+	github.com/jupiter-eng/xone/xtrace v1.0.1
 	github.com/labstack/echo/v4 v4.16.0
 	github.com/prometheus/client_golang v1.24.1
 	go.opentelemetry.io/otel v1.46.0
