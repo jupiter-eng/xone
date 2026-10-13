@@ -133,14 +133,18 @@ jobs:
         run: scripts/e2e.sh -skip 'TestTLS_(PostgreSQL|MySQL|Redis)$'
 
       # 和推送之后的 --verify 同一个外部工程、同一套检查，依赖指向本地这个打了 tag 的提交。
-      # v1.13.0 的 --verify 在 tag 推出去之后才红；这一步红了，tag 还只在这台机器上
+      # --verify 曾经在 tag 推出去之后才红；这一步红了，tag 还只在这台机器上
       - name: release.sh --smoke（推送之前：外部工程用本地代码起得来、关得对）
         run: scripts/release.sh "$VERSION" --smoke
 
+      # 用 PAT 而不是 github.token：org 禁掉了 GITHUB_TOKEN 的写权限
+      # （仓库级改不了，API 返回 409 Write permissions for workflows are disabled by the organization），
+      # 只读的 token 推不了 ref。RELEASE_TOKEN 是一个只对本仓库有 contents:write 的 fine-grained PAT
       - name: 推送 tag
         env:
-          TOKEN: ${{ github.token }}
+          TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
+          [ -n "$TOKEN" ] || { echo "✗ 仓库 secret RELEASE_TOKEN 没配：推 tag 需要一个对本仓库有 contents:write 的 fine-grained PAT"; exit 1; }
           refs=$(git tag --points-at "$VERSION" | sed 's|^|refs/tags/|')
           echo "$refs"
           git push --atomic "https://x-access-token:$TOKEN@${GITHUB_SERVER_URL#https://}/$GITHUB_REPOSITORY.git" $refs
