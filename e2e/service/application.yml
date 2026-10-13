@@ -1,0 +1,69 @@
+# e2e 服务的配置。每个进程各不相同的连接串、地址、端口、表名写成 ${VAR}，由 harness 注入：
+#   E2E_PORT               XGin.Port（必填）
+#   E2E_PG_DSN             XGorm.Clients.default.DSN（必填，PostgreSQL）
+#   E2E_MYSQL_DSN          XGorm.Clients.mysql.DSN（必填，MySQL）
+#   E2E_REDIS_ADDR         XRedis.Addr（必填）
+#   E2E_TABLE              Service.Table，订单表是它加 _orders
+#   E2E_KEY_PREFIX         Service.KeyPrefix
+#   E2E_DOWNSTREAM_URL     Service.Downstream，/proxy 调的下游
+#   E2E_SPAN_FILE          Service.SpanFile，留空不写 Span
+#   E2E_LOG_FILE           XLog.File.Enable，目录是 E2E_LOG_DIR
+#   E2E_CH_DSN             第三个实例 ch（ClickHouse），在 application-ch.yml 里，--profile=ch 才有
+#
+# 开关不走环境变量：用例用 harness.Options.Overlay 叠一份 profile 上来，写的就是使用者会写的 YAML。
+# 这里没写的项就是框架的默认值——用例测默认行为时拿到的是真的默认值，不是这份文件替它写死的。
+
+XApp:
+  Name: xone.e2e.service
+  Version: e2e
+
+XLog:
+  Format: json
+  File:
+    Enable: ${E2E_LOG_FILE:false}
+    Path: ${E2E_LOG_DIR:}      # 留空保持默认值；只在 Enable 时用到
+    Name: app.log
+
+XTrace:
+  ForwardHeaders:          # 只收 XGin.TrustedProxies 里的对端发来的值，默认只信私有网段
+    - X-Request-Id
+
+XMetric:
+  Namespace: e2e
+
+# 两个实例：default 是 PG（C() 取的就是它），mysql 是 MySQL（C("mysql")）；
+# 第三个 ch（ClickHouse）在 application-ch.yml 里，--profile=ch 时才叠上来。
+# 每个实例的配置各管各的，overlay 里写 XGorm.Clients.<名字>.<字段> 单独改一个
+XGorm:
+  Clients:
+    default:
+      Driver: postgres
+      DSN: "${E2E_PG_DSN}"
+    mysql:
+      Driver: mysql
+      DSN: "${E2E_MYSQL_DSN}"
+
+XRedis:
+  Addr: "${E2E_REDIS_ADDR}"
+
+XCache:
+  NumCounters: 100000
+  MaxCost: 10000
+  DefaultTTL: 30s
+
+XHttp:
+  Timeout: 5s
+
+XFlow:
+  RollbackTimeout: 5s
+
+XGin:
+  Host: 127.0.0.1
+  Port: ${E2E_PORT}
+
+Service:
+  Table: "${E2E_TABLE:e2e_users}"
+  KeyPrefix: "${E2E_KEY_PREFIX:e2e:}"
+  Downstream: "${E2E_DOWNSTREAM_URL:}"
+  SpanFile: "${E2E_SPAN_FILE:}"
+  UserTTL: 60s

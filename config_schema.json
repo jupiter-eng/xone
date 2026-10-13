@@ -1,0 +1,1877 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/jupiter-eng/xone",
+  "title": "XOne 配置",
+  "type": "object",
+  "properties": {
+    "XApp": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "应用身份",
+      "properties": {
+        "Import": {
+          "type": [
+            "string",
+            "array"
+          ],
+          "description": "引入别的配置文件，对应 Spring 的 spring.config.import。引进来的压过引它的那个文件；相对路径按引它的文件所在目录解析；optional: 前缀表示文件不存在就跳过",
+          "items": {
+            "type": "string"
+          }
+        },
+        "Name": {
+          "type": "string",
+          "description": "应用名，建议全局唯一，如 team.system.app"
+        },
+        "Profiles": {
+          "type": [
+            "string",
+            "array"
+          ],
+          "description": "激活哪些 profile，对应 Spring 的 spring.profiles.active：一个名字、逗号分隔的字符串或列表，靠后的压过靠前的。优先级低于 --profile 和 XONE_PROFILE；只能写在主配置文件里",
+          "items": {
+            "type": "string"
+          }
+        },
+        "Version": {
+          "type": "string",
+          "description": "应用版本，如 v1.2.0"
+        }
+      },
+      "additionalProperties": false
+    },
+    "XCache": {
+      "description": "本模块的配置。两种写法",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "BufferItems": {
+              "type": [
+                "integer",
+                "string"
+              ],
+              "description": "Get 的内部缓冲区大小。默认 64，官方建议值。",
+              "pattern": "\\$\\{"
+            },
+            "DefaultTTL": {
+              "type": "string",
+              "description": "包级 Set 写入时用的过期时间。默认 5m。 0 表示永不过期；负数启动失败——ristretto 会把 ttl\u003c0 的写入直接丢掉。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+            },
+            "MaxCost": {
+              "type": [
+                "integer",
+                "string"
+              ],
+              "description": "缓存总成本上限。默认 100000。 本包写入时 cost 固定为 1，所以它等价于「最多存多少条」。 自己调 C().Set 传别的 cost 时，它才是真正的成本上限。 这里统计的是使用者给出的 cost，不含 ristretto 每条 56 字节的内部开销。 按字节记 cost 时把这部分算进自己的预算里。",
+              "pattern": "\\$\\{"
+            },
+            "Metric": {
+              "type": [
+                "boolean",
+                "string"
+              ],
+              "description": "是否导出命中率等指标。默认开启，与 XGorm / XRedis 一致。 按实例生效：配了 Metric: false 的实例不出现在 /metrics 里，ristretto 也不计数。 计数是 ristretto 自己的：它的 Metrics 默认关着，不打开就什么都看不到。 打开的代价，实测（ristretto v2.4.2，4 核）： - 内存：每个实例常驻多约 84KB；另有一张记录写入时间的表（给它的存活时长 直方图用，最多 10 万条），写过 10 万个以上不同的键之后多约 8–12MB。 - CPU：本包的 Get / Set 基准前后差异不显著（p\u003e0.2）；ristretto 自己的 4 协程并发 Get 每次约多 20ns（110ns → 131ns，噪声 ±12%）。 实例多、条目多又在意内存的，按实例关掉。",
+              "pattern": "\\$\\{"
+            },
+            "NumCounters": {
+              "type": [
+                "integer",
+                "string"
+              ],
+              "description": "用于统计访问频率的计数器个数。默认 1000000。 建议取预期条目数的 10 倍：ristretto 靠它判断哪些键值得留下， 给少了准入判断会失准，缓存命中率上不去。",
+              "pattern": "\\$\\{"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "Clients": {
+              "type": "object",
+              "description": "按名字组织的多个实例，实例名就是 key",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "BufferItems": {
+                    "type": [
+                      "integer",
+                      "string"
+                    ],
+                    "description": "Get 的内部缓冲区大小。默认 64，官方建议值。",
+                    "pattern": "\\$\\{"
+                  },
+                  "DefaultTTL": {
+                    "type": "string",
+                    "description": "包级 Set 写入时用的过期时间。默认 5m。 0 表示永不过期；负数启动失败——ristretto 会把 ttl\u003c0 的写入直接丢掉。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                  },
+                  "MaxCost": {
+                    "type": [
+                      "integer",
+                      "string"
+                    ],
+                    "description": "缓存总成本上限。默认 100000。 本包写入时 cost 固定为 1，所以它等价于「最多存多少条」。 自己调 C().Set 传别的 cost 时，它才是真正的成本上限。 这里统计的是使用者给出的 cost，不含 ristretto 每条 56 字节的内部开销。 按字节记 cost 时把这部分算进自己的预算里。",
+                    "pattern": "\\$\\{"
+                  },
+                  "Metric": {
+                    "type": [
+                      "boolean",
+                      "string"
+                    ],
+                    "description": "是否导出命中率等指标。默认开启，与 XGorm / XRedis 一致。 按实例生效：配了 Metric: false 的实例不出现在 /metrics 里，ristretto 也不计数。 计数是 ristretto 自己的：它的 Metrics 默认关着，不打开就什么都看不到。 打开的代价，实测（ristretto v2.4.2，4 核）： - 内存：每个实例常驻多约 84KB；另有一张记录写入时间的表（给它的存活时长 直方图用，最多 10 万条），写过 10 万个以上不同的键之后多约 8–12MB。 - CPU：本包的 Get / Set 基准前后差异不显著（p\u003e0.2）；ristretto 自己的 4 协程并发 Get 每次约多 20ns（110ns → 131ns，噪声 ±12%）。 实例多、条目多又在意内存的，按实例关掉。",
+                    "pattern": "\\$\\{"
+                  },
+                  "NumCounters": {
+                    "type": [
+                      "integer",
+                      "string"
+                    ],
+                    "description": "用于统计访问频率的计数器个数。默认 1000000。 建议取预期条目数的 10 倍：ristretto 靠它判断哪些键值得留下， 给少了准入判断会失准，缓存命中率上不去。",
+                    "pattern": "\\$\\{"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "minProperties": 1
+            }
+          },
+          "required": [
+            "Clients"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "XEcho": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "服务端配置",
+      "properties": {
+        "Host": {
+          "type": "string",
+          "description": "监听地址。默认 0.0.0.0。"
+        },
+        "IdleTimeout": {
+          "type": "string",
+          "description": "keep-alive 连接的空闲超时。默认 60s，必须大于 0。 与 ReadHeaderTimeout 同理：0 退到 ReadTimeout（默认 0），等于空闲连接永不回收。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+        },
+        "Log": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否启用访问日志中间件。默认启用。",
+          "pattern": "\\$\\{"
+        },
+        "LogQuery": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否把查询串记进访问日志（字段 query）。默认不记。 查询串里常有凭证：GET /login?token=...、签名链接、OAuth 回调的 code。 打开后按字段脱敏，规则同表单 body；词表里没有的名字（比如 code）照样明文， 用 middleware.AddSensitiveFields 补上。",
+          "pattern": "\\$\\{"
+        },
+        "LogRequestBody": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否把请求体记进访问日志。默认不记。 记 body 要缓存请求体的前 256KB 并对每个字段做脱敏，代价和风险都不小。 打开前先确认敏感词配全了（middleware.AddSensitiveFields，规则见 xecho/README.md「访问日志」）。",
+          "pattern": "\\$\\{"
+        },
+        "LogRequestHeaders": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否把请求头记进访问日志（字段 request_headers）。默认不记。 打开后凭证类的值遮掉：Authorization、Cookie、X-Api-Key 等名单里的、名字带敏感词的； 值是 URL 的（Referer）去掉查询串。名单外的业务头用 middleware.AddSensitiveHeaders 补上。",
+          "pattern": "\\$\\{"
+        },
+        "LogResponseBody": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否把响应体记进访问日志。默认不记。",
+          "pattern": "\\$\\{"
+        },
+        "LogResponseHeaders": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否把响应头记进访问日志（字段 response_headers）。默认不记。 脱敏规则同请求头：Set-Cookie 等名单里的、名字带敏感词的，值都遮掉。",
+          "pattern": "\\$\\{"
+        },
+        "LogSkipPaths": {
+          "type": "array",
+          "description": "不记访问日志的路径。默认没有。 以 / 结尾的按前缀匹配，其余精确匹配。Metric 开着时 MetricPath 会自动加进来，不用自己写。",
+          "items": {
+            "type": "string"
+          }
+        },
+        "Metric": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否启用指标中间件。默认启用。 启用时会自动注册 MetricPath（默认 /metrics）路由，不需要自己挂。",
+          "pattern": "\\$\\{"
+        },
+        "MetricPath": {
+          "type": "string",
+          "description": "指标端点的路径。默认 /metrics，Metric 开着时必须以 / 开头。 echo 不会拒绝别的写法，而是改写（实测 v4.16.0）：写 metrics 注册的是 /metrics， 访问日志要跳过的却是 metrics，对不上；留空则注册在根路径 / 上，业务再注册首页时 后注册的那个悄悄盖掉前一个——不是首页没了，就是指标没了。所以这两种都在启动时拦住。"
+        },
+        "Port": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "description": "监听端口。默认 8080。",
+          "pattern": "\\$\\{"
+        },
+        "ReadHeaderTimeout": {
+          "type": "string",
+          "description": "读请求头的超时。默认 10s，必须大于 0。 这是慢连接攻击的主要防线：不限制的话，慢客户端可以一直占着连接不放， 连接数打满之后服务整体不可用。echo 自己的 e.Server 四个超时全是 0， 本模块不用它，用的是按这几项建的 http.Server。 0 不是「用个默认值」：net/http 会退到 ReadTimeout，而那个默认也是 0， 结果是不限时（实测发半个请求头的连接一直不被断开）。所以 0 和负数都拦住。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+        },
+        "ReadTimeout": {
+          "type": "string",
+          "description": "读完整个请求（含 body）的超时。默认不限制。 默认不限制是因为它会打断大文件上传。按业务上限配一个值更好， 但那个值只有业务自己知道。0 是不限制，负数启动失败。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+        },
+        "TLS": {
+          "type": "object",
+          "description": "服务端证书和双向认证。默认不开：CertFile 和 KeyFile 都配了就是 https。",
+          "properties": {
+            "CertFile": {
+              "type": "string",
+              "description": "TLS 证书路径。与 KeyFile 必须同时配或同时不配。"
+            },
+            "ClientCAFile": {
+              "type": "string",
+              "description": "校验客户端证书用的 CA（PEM，可以放好几张）。默认空，不要客户端证书。 配了就是双向认证（tls.RequireAndVerifyClientCert）：客户端必须出示这个 CA 签的证书， 不出示、或者不是它签的，握手就失败，请求到不了任何 handler——/metrics 这类 框架挂的路由也一样。只能和 CertFile / KeyFile 一起配。"
+            },
+            "KeyFile": {
+              "type": "string",
+              "description": "TLS 私钥路径。"
+            },
+            "MinVersion": {
+              "type": "string",
+              "description": "接受的最低 TLS 版本：\"1.2\" 或 \"1.3\"，留空同 \"1.2\"。默认 \"1.2\"。只在配了证书时生效，也只在那时校验。 更低的版本不收：TLS 1.0 / 1.1 早已被弃用（RFC 8996）。"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Trace": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否为入站请求开服务端 Span。默认启用。 只管 Span。关掉之后照样接上游传来的 traceparent、baggage 和透传 Header （可信规则同 TrustedProxies），日志里的 trace_id 是上游的那条， 经 xhttp 发出的请求也照样带给下游；响应里不再回带 X-Trace-Id。",
+          "pattern": "\\$\\{"
+        },
+        "TrustedProxies": {
+          "type": "array",
+          "description": "信任哪些直连的对端：它们发来的 X-Forwarded-For / X-Real-IP 才用来算 client_ip （c.RealIP()），它们发来的透传 Header（XTrace.ForwardHeaders / ForwardHeaderRules）和 baggage 才会被收下、带给下游。「谁是自己人」只在这一处说。 默认是 [private]：回环、私有网段、100.64.0.0/10 和 IPv6 的 ::1、fc00::/7。 负载均衡、K8s 的 Ingress 和 Pod、sidecar 都落在这些网段里，Pod IP 再随机也不用一个个写； 直接暴露在公网的服务，对端是公网地址，一个都不信，X-Forwarded-For 照样伪造不了 client_ip。 echo 自己的默认（e.IPExtractor 为 nil）是谁发来的都信：实测公网对端 203.0.113.9 发一个 X-Forwarded-For: 1.2.3.4，c.RealIP() 就是 1.2.3.4。 client_ip 的算法和 xgin 一样（从右往左找第一个不可信的地址），同一个服务换框架不会变。 在默认之外再加网段时把 private 一起写上（列表整体替换默认值）；要谁都不信就写 []： 内网里也有不可信的客户端（办公网、VPN 用户能直连服务）时，别用 private，写确切的那几段。 IPv4 写成 10.0.0.1、10.0.0.0/8；::ffff:10.0.0.1 这种 IPv4 映射成 IPv6 的写法启动失败。",
+          "items": {
+            "type": "string"
+          }
+        },
+        "UseH2C": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否在非 TLS 下启用 HTTP/2。默认关闭。 TLS 模式下 HTTP/2 本来就是自动的，不需要这一项。 只认「先验知识」：客户端一上来就发 HTTP/2 前言（gRPC、 curl --http2-prior-knowledge 都是）。HTTP/1.1 的 Upgrade: h2c 握手不支持， 发它的客户端拿到的是一个普通的 HTTP/1.1 响应。",
+          "pattern": "\\$\\{"
+        },
+        "WriteTimeout": {
+          "type": "string",
+          "description": "写响应的超时。默认不限制。 默认不限制是因为它会打断 SSE、长轮询和大文件下载。0 是不限制，负数启动失败。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+        }
+      },
+      "additionalProperties": false
+    },
+    "XFlow": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "流程编排配置",
+      "properties": {
+        "Monitor": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否开启监控回调。默认开启。 关掉之后 Execute 一次监控回调都不走，是真正的零开销。",
+          "pattern": "\\$\\{"
+        },
+        "RollbackTimeout": {
+          "type": "string",
+          "description": "回滚全部步骤的总预算。默认 30s。 回滚不沿用调用方的 context（否则请求一超时，补偿必然全部失败）， 改由这一项单独限时，免得补偿逻辑无限期挂住退出流程。 不看 ctx 的 Rollback 也挂不住：到点就不再等它，记进 RollbackErrors， 没轮到的步骤同样逐个记下；被放弃的那一步的协程仍在后台跑。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+        }
+      },
+      "additionalProperties": false
+    },
+    "XGin": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "服务端配置",
+      "properties": {
+        "Host": {
+          "type": "string",
+          "description": "监听地址。默认 0.0.0.0。"
+        },
+        "IdleTimeout": {
+          "type": "string",
+          "description": "keep-alive 连接的空闲超时。默认 60s，必须大于 0。 与 ReadHeaderTimeout 同理：0 退到 ReadTimeout（默认 0），等于空闲连接永不回收。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+        },
+        "Log": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否启用访问日志中间件。默认启用。",
+          "pattern": "\\$\\{"
+        },
+        "LogQuery": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否把查询串记进访问日志（字段 query）。默认不记。 查询串里常有凭证：GET /login?token=...、签名链接、OAuth 回调的 code。 打开后按字段脱敏，规则同表单 body；词表里没有的名字（比如 code）照样明文， 用 middleware.AddSensitiveFields 补上。",
+          "pattern": "\\$\\{"
+        },
+        "LogRequestBody": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否把请求体记进访问日志。默认不记。 记 body 要缓存请求体的前 256KB 并对每个字段做脱敏，代价和风险都不小。 打开前先确认敏感词配全了（middleware.AddSensitiveFields，规则见 xgin/README.md「访问日志」）。",
+          "pattern": "\\$\\{"
+        },
+        "LogRequestHeaders": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否把请求头记进访问日志（字段 request_headers）。默认不记。 打开后凭证类的值遮掉：Authorization、Cookie、X-Api-Key 等名单里的、名字带敏感词的； 值是 URL 的（Referer）去掉查询串。名单外的业务头用 middleware.AddSensitiveHeaders 补上。",
+          "pattern": "\\$\\{"
+        },
+        "LogResponseBody": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否把响应体记进访问日志。默认不记。",
+          "pattern": "\\$\\{"
+        },
+        "LogResponseHeaders": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否把响应头记进访问日志（字段 response_headers）。默认不记。 脱敏规则同请求头：Set-Cookie 等名单里的、名字带敏感词的，值都遮掉。",
+          "pattern": "\\$\\{"
+        },
+        "LogSkipPaths": {
+          "type": "array",
+          "description": "不记访问日志的路径。默认没有。 以 / 结尾的按前缀匹配，其余精确匹配。Metric 开着时 MetricPath 会自动加进来，不用自己写。",
+          "items": {
+            "type": "string"
+          }
+        },
+        "MaxMultipartMemory": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "description": "解析 multipart 表单时在内存里留多少，单位字节。默认 8MB。 它不是「请求体上限」，是「超过多少才落盘」：超出的部分写进临时文件， 不会被拒绝。实际代价是这个数的三倍左右——一次 60MB 的上传， 配 32MB 时解析这一步让堆多占 96MB，配 8MB 是 24MB，配 1MB 是 3MB。 gin 自己默认 32MB，二十个并发上传就是两个 G。 框架不替业务定请求体上限，那得按接口来。要限的话在中间件里",
+          "pattern": "\\$\\{"
+        },
+        "Metric": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否启用指标中间件。默认启用。 启用时会自动注册 MetricPath（默认 /metrics）路由，不需要自己挂。",
+          "pattern": "\\$\\{"
+        },
+        "MetricPath": {
+          "type": "string",
+          "description": "指标端点的路径。默认 /metrics，Metric 开着时必须以 / 开头。 gin 不会拒绝别的写法，而是把它拼到 / 后面（实测 v1.12.0）：写 metrics 注册的是 /metrics，访问日志要跳过的却是 metrics，对不上；留空则注册在 根路径 / 上，业务再注册首页时 gin 在业务自己的路由代码里 panic， 看不出是这一项配错了。所以这两种都在启动时拦住。"
+        },
+        "Mode": {
+          "type": "string",
+          "description": "Gin 的运行模式：release / debug / test。默认 release。 默认 release 而不是跟随 GIN_MODE：debug 模式会打印每一条路由、 每个请求多打一行日志，还会在响应里带上调试信息。 线上忘了设环境变量的代价比本地少一行提示大得多。"
+        },
+        "Port": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "description": "监听端口。默认 8080。",
+          "pattern": "\\$\\{"
+        },
+        "ReadHeaderTimeout": {
+          "type": "string",
+          "description": "读请求头的超时。默认 10s，必须大于 0。 这是慢连接攻击的主要防线：不限制的话，慢客户端可以一直占着连接不放， 连接数打满之后服务整体不可用。 0 不是「用个默认值」：net/http 会退到 ReadTimeout，而那个默认也是 0， 结果是不限时（实测发半个请求头的连接一直不被断开）。所以 0 和负数都拦住。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+        },
+        "ReadTimeout": {
+          "type": "string",
+          "description": "读完整个请求（含 body）的超时。默认不限制。 默认不限制是因为它会打断大文件上传。按业务上限配一个值更好， 但那个值只有业务自己知道。0 是不限制，负数启动失败。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+        },
+        "TLS": {
+          "type": "object",
+          "description": "服务端证书和双向认证。默认不开：CertFile 和 KeyFile 都配了就是 https。",
+          "properties": {
+            "CertFile": {
+              "type": "string",
+              "description": "TLS 证书路径。与 KeyFile 必须同时配或同时不配。"
+            },
+            "ClientCAFile": {
+              "type": "string",
+              "description": "校验客户端证书用的 CA（PEM，可以放好几张）。默认空，不要客户端证书。 配了就是双向认证（tls.RequireAndVerifyClientCert）：客户端必须出示这个 CA 签的证书， 不出示、或者不是它签的，握手就失败，请求到不了任何 handler——/metrics 这类 框架挂的路由也一样。只能和 CertFile / KeyFile 一起配。"
+            },
+            "KeyFile": {
+              "type": "string",
+              "description": "TLS 私钥路径。"
+            },
+            "MinVersion": {
+              "type": "string",
+              "description": "接受的最低 TLS 版本：\"1.2\" 或 \"1.3\"，留空同 \"1.2\"。默认 \"1.2\"。只在配了证书时生效，也只在那时校验。 更低的版本不收：TLS 1.0 / 1.1 早已被弃用（RFC 8996）。"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Trace": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否为入站请求开服务端 Span。默认启用。 只管 Span。关掉之后照样接上游传来的 traceparent、baggage 和透传 Header （可信规则同 TrustedProxies），日志里的 trace_id 是上游的那条， 经 xhttp 发出的请求也照样带给下游；响应里不再回带 X-Trace-Id。",
+          "pattern": "\\$\\{"
+        },
+        "TrustedProxies": {
+          "type": "array",
+          "description": "信任哪些直连的对端：它们发来的 X-Forwarded-For / X-Real-IP 才用来算 client_ip， 它们发来的透传 Header（XTrace.ForwardHeaders / ForwardHeaderRules）和 baggage 才会被收下、带给下游。 「谁是自己人」只在这一处说。 默认是 [private]：回环、私有网段、100.64.0.0/10 和 IPv6 的 ::1、fc00::/7（见 privateNetworks）。 负载均衡、K8s 的 Ingress 和 Pod、sidecar 都落在这些网段里，Pod IP 再随机也不用一个个写； 直接暴露在公网的服务，对端是公网地址，一个都不信，X-Forwarded-For 照样伪造不了 client_ip。 gin 自己的默认是「全都信」：任何人发一个 X-Forwarded-For: 1.2.3.4 就能决定 client_ip。 在默认之外再加网段时把 private 一起写上（列表整体替换默认值）；要谁都不信就写 []： 内网里也有不可信的客户端（办公网、VPN 用户能直连服务）时，别用 private，写确切的那几段。 IPv4 写成 10.0.0.1、10.0.0.0/8；::ffff:10.0.0.1 这种 IPv4 映射成 IPv6 的写法启动失败。",
+          "items": {
+            "type": "string"
+          }
+        },
+        "UseH2C": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否在非 TLS 下启用 HTTP/2。默认关闭。 TLS 模式下 HTTP/2 本来就是自动的，不需要这一项。 只认「先验知识」：客户端一上来就发 HTTP/2 前言（gRPC、 curl --http2-prior-knowledge 都是）。HTTP/1.1 的 Upgrade: h2c 握手不支持， 发它的客户端拿到的是一个普通的 HTTP/1.1 响应。理由见 protocols。",
+          "pattern": "\\$\\{"
+        },
+        "WriteTimeout": {
+          "type": "string",
+          "description": "写响应的超时。默认不限制。 默认不限制是因为它会打断 SSE、长轮询和大文件下载。0 是不限制，负数启动失败。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+        },
+        "ZHTranslations": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否把 validator 的报错翻成中文。默认不翻。",
+          "pattern": "\\$\\{"
+        }
+      },
+      "additionalProperties": false
+    },
+    "XGinSwagger": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "Swagger 文档的元信息 这些值写在配置里而不是代码注释里，是因为它们随环境变： 联调环境和生产环境的 Host 不一样，而文档注解是编译进去的。",
+      "properties": {
+        "BasePath": {
+          "type": "string",
+          "description": "所有接口的公共前缀，如 /api/v1。"
+        },
+        "Description": {
+          "type": "string",
+          "description": "文档描述。"
+        },
+        "Host": {
+          "type": "string",
+          "description": "文档里显示的服务地址，如 api.example.com。默认取自请求。"
+        },
+        "Schemes": {
+          "type": "array",
+          "description": "支持的协议，如 [\"https\"]。默认留空：沿用注解里的 @schemes，写了才覆盖。",
+          "items": {
+            "type": "string"
+          }
+        },
+        "Title": {
+          "type": "string",
+          "description": "文档标题。默认取 XApp.Name。"
+        },
+        "URLPrefix": {
+          "type": "string",
+          "description": "Swagger UI 挂载路径的前缀，如 /internal。 默认挂在 /swagger/*any。要么留空，要么以 / 开头、不以 / 结尾，否则启动失败。 gin 自己不挑（实测 v1.12.0：internal 和 /internal/ 都被规整成 /internal/swagger/*any，不 panic），但 URL() 是照原样拼的， 拼出来的 internal/swagger/index.html 就和实际挂的地址对不上。"
+        }
+      },
+      "additionalProperties": false
+    },
+    "XGorm": {
+      "description": "本模块的配置。两种写法",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "CreateBatchSize": {
+              "type": [
+                "integer",
+                "string"
+              ],
+              "description": "Create 一个切片时每条 INSERT 最多带几行。默认 0：整个切片一条 INSERT。 实测 10 行、配 3：PostgreSQL 和 MySQL 都发 4 条 INSERT（3+3+3+1），10 行都写进去。 切片很大时用它避开单条 SQL 的参数上限（PostgreSQL 65535 个）和包大小上限（MySQL max_allowed_packet）。",
+              "pattern": "\\$\\{"
+            },
+            "DSN": {
+              "type": "string",
+              "description": "连接串，必填。 建议写成 \"${DB_DSN}\"：凭证不该进版本库，漏配时启动就失败。 MySQL 的 DSN 里没写 parseTime 的，补成 parseTime=true：驱动默认 false， DATETIME 扫不进 time.Time（实测 go-sql-driver v1.10.1，带 CreatedAt 的模型 First 一次就报 unsupported Scan）。写了的以 DSN 为准。"
+            },
+            "DialTimeout": {
+              "type": "string",
+              "description": "建连超时。默认 500ms。 MySQL 注入 DSN 的 timeout，PostgreSQL 注入 connect_timeout（向上取整为秒）。 配 0 就不注入、用驱动自己的（两个驱动都是不限时）。不能为负，下面的时长都是。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+            },
+            "DisableForeignKeyConstraintWhenMigrating": {
+              "type": [
+                "boolean",
+                "string"
+              ],
+              "description": "AutoMigrate 建表时不建外键约束。默认 false，即 GORM 的默认：按模型里的关联建外键。 只影响迁移建表，查询和关联照常：实测 GORM v1.31.2 + PostgreSQL 16，Owner has many Order 的两张表， 默认建出 fk_owners_orders，插一条 owner_id 不存在的 order 被拒；开着时不建外键，这条照样插进去， Preload(\"Orders\") 照常查得出来。引用完整性从此由你的代码保证。已经建好的外键不会被删。",
+              "pattern": "\\$\\{"
+            },
+            "Driver": {
+              "type": "string",
+              "description": "驱动：mysql / postgres。默认 postgres。 其余驱动住在自己的 module 里，匿名 import 即可注册"
+            },
+            "IgnoreNotFound": {
+              "type": [
+                "boolean",
+                "string"
+              ],
+              "description": "是否不把「没查到记录」当错误记日志。默认 false。",
+              "pattern": "\\$\\{"
+            },
+            "Log": {
+              "type": [
+                "boolean",
+                "string"
+              ],
+              "description": "是否把 GORM 的 SQL 日志接到 slog 上。默认关闭。 SQL 执行失败时 error 字段只记服务端的错误码（另有 error_code 字段）， 不记原文：实测 MySQL 8.0 的 1062 原文是 Duplicate entry 'a@b.com' for key …， 参数值就在里面。返回给调用方的错误不变。",
+              "pattern": "\\$\\{"
+            },
+            "MaxIdleConns": {
+              "type": [
+                "integer",
+                "string"
+              ],
+              "description": "最大空闲连接数。默认 50。 配 0 是「一条空闲连接都不留」，每次查询都要重新建连，通常不是你想要的。 比 MaxOpenConns 大也没关系，database/sql 会自己压到 MaxOpenConns。",
+              "pattern": "\\$\\{"
+            },
+            "MaxIdleTime": {
+              "type": "string",
+              "description": "空闲连接最长存活时间。默认 5m，配 0 不限。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+            },
+            "MaxLifetime": {
+              "type": "string",
+              "description": "连接最长存活时间。默认 5m，配 0 不限。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+            },
+            "MaxOpenConns": {
+              "type": [
+                "integer",
+                "string"
+              ],
+              "description": "最大连接数。默认 50。",
+              "pattern": "\\$\\{"
+            },
+            "Metric": {
+              "type": [
+                "boolean",
+                "string"
+              ],
+              "description": "是否导出连接池指标 db_pool_*（连接数、等待次数、等待时长等），标签 name 是实例名。默认开启。 指标在被抓取时才读 sql.DB.Stats()，不额外占协程。 按实例生效：配了 Metric: false 的实例不出现在 /metrics 里。",
+              "pattern": "\\$\\{"
+            },
+            "MySQL": {
+              "type": "object",
+              "description": "仅在 Driver 为 mysql 时生效",
+              "properties": {
+                "ReadTimeout": {
+                  "type": "string",
+                  "description": "读超时，对应 DSN 的 readTimeout。默认 3s，配 0 不注入（驱动不限时）。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                },
+                "WriteTimeout": {
+                  "type": "string",
+                  "description": "写超时，对应 DSN 的 writeTimeout。默认 5s，配 0 不注入（驱动不限时）。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                }
+              },
+              "additionalProperties": false
+            },
+            "Postgres": {
+              "type": "object",
+              "description": "仅在 Driver 为 postgres 时生效",
+              "properties": {
+                "IdleInTxTimeout": {
+                  "type": "string",
+                  "description": "事务中空闲多久就断连。默认不限制。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                },
+                "LockTimeout": {
+                  "type": "string",
+                  "description": "等锁的最长时间。默认不限制。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                },
+                "Params": {
+                  "type": "object",
+                  "description": "其它任意 PG 运行时参数，原样拼进 DSN。 pgx 自己的连接参数也写在这里，比如经 PgBouncer 的事务池连库时要写 default_query_exec_mode: exec——pgx 默认的 cache_statement 用具名预备语句， 实测 PgBouncer 1.22 事务池（max_prepared_statements 为 0，1.24 之前的默认值） 20 个协程并发 1000 条查询，701 条报 prepared statement \"stmtcache_…\" already exists （42P05）。细节和各模式的代价见 xgorm/README.md「PostgreSQL」。",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "StatementTimeout": {
+                  "type": "string",
+                  "description": "单条 SQL 最长执行时间。默认不限制。 它是服务端的计时，管的是服务端收到语句之后执行了多久。PG 客户端这一侧 没有 MySQL 那样的读超时：连接池里的连接遇上不回话的对端（卡死的进程、 半路断掉的网络），调用方的 ctx 没有截止时间的话，查询一直等到调用方放弃。 实测把这里配成 1s 照样等：30s 后仍没返回——语句根本没到服务端，它无从计时。 管住这一段的只有调用方的截止时间：用 CWithCtx 传一个带 deadline 的 ctx， 实测给 200ms 就在 200ms 返回。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                }
+              },
+              "additionalProperties": false
+            },
+            "PrepareStmt": {
+              "type": [
+                "boolean",
+                "string"
+              ],
+              "description": "把执行过的 SQL 缓存成预编译语句，后面同样的 SQL 直接复用。默认 false。 实测本机回环、2000 次同一条带参数的查询：MySQL 8.0 每次约 180µs → 94µs（不开时驱动每条都要 prepare / execute / close 三个来回），PostgreSQL 16 约 100µs → 85µs（pgx 本来就缓存语句，差别不大）。 缓存上限和过期用 GORM 的默认值（不限条数、1h）。经 PgBouncer 这类连接池中间件时（尤其 transaction 模式），先在那套环境里量过再开。",
+              "pattern": "\\$\\{"
+            },
+            "SkipDefaultTransaction": {
+              "type": [
+                "boolean",
+                "string"
+              ],
+              "description": "单条的 Create / Update / Delete 不再自动包一层事务。默认 false（GORM 的默认：包）。 省掉的是 BEGIN / COMMIT 两个来回：实测本机回环、500 次单条 Create，PostgreSQL 16 每次约 500µs → 230µs， MySQL 8.0 约 1.0ms → 0.9ms。代价是 BeforeCreate 这类钩子里的写和主语句不再同进退；显式的 Transaction 不受影响。",
+              "pattern": "\\$\\{"
+            },
+            "SlowThreshold": {
+              "type": "string",
+              "description": "超过这个耗时的 SQL 记一条 warn 日志。默认 3s，需 Log 开启，配 0 不记。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+            },
+            "TLS": {
+              "type": "object",
+              "description": "连库时走不走 TLS。默认不走（DSN 里自己写的 TLS 参数照旧生效）。 字段和规则各模块共用，见 xtls.Config。 开着时 TLS 全由这一块决定：证书一律校验，**不会退回明文**。DSN 里再写 TLS 参数 （PostgreSQL 的 sslmode、sslrootcert 等 ssl 开头的那几个，MySQL 的 tls） 是配置错误——两处说法不一，哪处作数都会让另一处白写。 驱动怎么接、量出来的行为见 xtls/README.md「行为与实测」。",
+              "properties": {
+                "CAFile": {
+                  "type": "string",
+                  "description": "校验服务端证书用的 CA 证书（PEM，可以放好几张）。默认空，用系统的根证书。 填了就**只**认这个文件里的 CA，系统根证书不再参与校验。自签的证书填这里。"
+                },
+                "CertFile": {
+                  "type": "string",
+                  "description": "客户端证书（PEM），服务端要求双向认证时和 KeyFile 成对填。默认空。"
+                },
+                "Enable": {
+                  "type": [
+                    "boolean",
+                    "string"
+                  ],
+                  "description": "是否走 TLS。默认 false。下面几项只在开着时生效，没开却写了它们，启动失败—— 那多半是忘了开，照明文连过去比报错更糟。",
+                  "pattern": "\\$\\{"
+                },
+                "KeyFile": {
+                  "type": "string",
+                  "description": "客户端私钥（PEM），和 CertFile 成对填。默认空。"
+                },
+                "ServerName": {
+                  "type": "string",
+                  "description": "校验服务端证书时比对的名字。默认空，取连接地址的主机部分； 按 IP 连、而证书上写的是域名时填它。"
+                }
+              },
+              "additionalProperties": false
+            },
+            "Trace": {
+              "type": [
+                "boolean",
+                "string"
+              ],
+              "description": "是否挂 OpenTelemetry 插件。默认开启。 没装链路时它产出的是 noop Span，代价可以忽略，所以默认就开着。 属性按 OTel 数据库语义约定 v1.43.0 写（db.system.name、db.namespace、 db.query.text、db.operation.name、server.address / server.port）， db.query.text 带占位符、不带参数值；服务端报错时只记错误码（db.response.status_code）。",
+              "pattern": "\\$\\{"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "Clients": {
+              "type": "object",
+              "description": "按名字组织的多个实例，实例名就是 key",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "CreateBatchSize": {
+                    "type": [
+                      "integer",
+                      "string"
+                    ],
+                    "description": "Create 一个切片时每条 INSERT 最多带几行。默认 0：整个切片一条 INSERT。 实测 10 行、配 3：PostgreSQL 和 MySQL 都发 4 条 INSERT（3+3+3+1），10 行都写进去。 切片很大时用它避开单条 SQL 的参数上限（PostgreSQL 65535 个）和包大小上限（MySQL max_allowed_packet）。",
+                    "pattern": "\\$\\{"
+                  },
+                  "DSN": {
+                    "type": "string",
+                    "description": "连接串，必填。 建议写成 \"${DB_DSN}\"：凭证不该进版本库，漏配时启动就失败。 MySQL 的 DSN 里没写 parseTime 的，补成 parseTime=true：驱动默认 false， DATETIME 扫不进 time.Time（实测 go-sql-driver v1.10.1，带 CreatedAt 的模型 First 一次就报 unsupported Scan）。写了的以 DSN 为准。"
+                  },
+                  "DialTimeout": {
+                    "type": "string",
+                    "description": "建连超时。默认 500ms。 MySQL 注入 DSN 的 timeout，PostgreSQL 注入 connect_timeout（向上取整为秒）。 配 0 就不注入、用驱动自己的（两个驱动都是不限时）。不能为负，下面的时长都是。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                  },
+                  "DisableForeignKeyConstraintWhenMigrating": {
+                    "type": [
+                      "boolean",
+                      "string"
+                    ],
+                    "description": "AutoMigrate 建表时不建外键约束。默认 false，即 GORM 的默认：按模型里的关联建外键。 只影响迁移建表，查询和关联照常：实测 GORM v1.31.2 + PostgreSQL 16，Owner has many Order 的两张表， 默认建出 fk_owners_orders，插一条 owner_id 不存在的 order 被拒；开着时不建外键，这条照样插进去， Preload(\"Orders\") 照常查得出来。引用完整性从此由你的代码保证。已经建好的外键不会被删。",
+                    "pattern": "\\$\\{"
+                  },
+                  "Driver": {
+                    "type": "string",
+                    "description": "驱动：mysql / postgres。默认 postgres。 其余驱动住在自己的 module 里，匿名 import 即可注册"
+                  },
+                  "IgnoreNotFound": {
+                    "type": [
+                      "boolean",
+                      "string"
+                    ],
+                    "description": "是否不把「没查到记录」当错误记日志。默认 false。",
+                    "pattern": "\\$\\{"
+                  },
+                  "Log": {
+                    "type": [
+                      "boolean",
+                      "string"
+                    ],
+                    "description": "是否把 GORM 的 SQL 日志接到 slog 上。默认关闭。 SQL 执行失败时 error 字段只记服务端的错误码（另有 error_code 字段）， 不记原文：实测 MySQL 8.0 的 1062 原文是 Duplicate entry 'a@b.com' for key …， 参数值就在里面。返回给调用方的错误不变。",
+                    "pattern": "\\$\\{"
+                  },
+                  "MaxIdleConns": {
+                    "type": [
+                      "integer",
+                      "string"
+                    ],
+                    "description": "最大空闲连接数。默认 50。 配 0 是「一条空闲连接都不留」，每次查询都要重新建连，通常不是你想要的。 比 MaxOpenConns 大也没关系，database/sql 会自己压到 MaxOpenConns。",
+                    "pattern": "\\$\\{"
+                  },
+                  "MaxIdleTime": {
+                    "type": "string",
+                    "description": "空闲连接最长存活时间。默认 5m，配 0 不限。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                  },
+                  "MaxLifetime": {
+                    "type": "string",
+                    "description": "连接最长存活时间。默认 5m，配 0 不限。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                  },
+                  "MaxOpenConns": {
+                    "type": [
+                      "integer",
+                      "string"
+                    ],
+                    "description": "最大连接数。默认 50。",
+                    "pattern": "\\$\\{"
+                  },
+                  "Metric": {
+                    "type": [
+                      "boolean",
+                      "string"
+                    ],
+                    "description": "是否导出连接池指标 db_pool_*（连接数、等待次数、等待时长等），标签 name 是实例名。默认开启。 指标在被抓取时才读 sql.DB.Stats()，不额外占协程。 按实例生效：配了 Metric: false 的实例不出现在 /metrics 里。",
+                    "pattern": "\\$\\{"
+                  },
+                  "MySQL": {
+                    "type": "object",
+                    "description": "仅在 Driver 为 mysql 时生效",
+                    "properties": {
+                      "ReadTimeout": {
+                        "type": "string",
+                        "description": "读超时，对应 DSN 的 readTimeout。默认 3s，配 0 不注入（驱动不限时）。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                      },
+                      "WriteTimeout": {
+                        "type": "string",
+                        "description": "写超时，对应 DSN 的 writeTimeout。默认 5s，配 0 不注入（驱动不限时）。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "Postgres": {
+                    "type": "object",
+                    "description": "仅在 Driver 为 postgres 时生效",
+                    "properties": {
+                      "IdleInTxTimeout": {
+                        "type": "string",
+                        "description": "事务中空闲多久就断连。默认不限制。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                      },
+                      "LockTimeout": {
+                        "type": "string",
+                        "description": "等锁的最长时间。默认不限制。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                      },
+                      "Params": {
+                        "type": "object",
+                        "description": "其它任意 PG 运行时参数，原样拼进 DSN。 pgx 自己的连接参数也写在这里，比如经 PgBouncer 的事务池连库时要写 default_query_exec_mode: exec——pgx 默认的 cache_statement 用具名预备语句， 实测 PgBouncer 1.22 事务池（max_prepared_statements 为 0，1.24 之前的默认值） 20 个协程并发 1000 条查询，701 条报 prepared statement \"stmtcache_…\" already exists （42P05）。细节和各模式的代价见 xgorm/README.md「PostgreSQL」。",
+                        "additionalProperties": {
+                          "type": "string"
+                        }
+                      },
+                      "StatementTimeout": {
+                        "type": "string",
+                        "description": "单条 SQL 最长执行时间。默认不限制。 它是服务端的计时，管的是服务端收到语句之后执行了多久。PG 客户端这一侧 没有 MySQL 那样的读超时：连接池里的连接遇上不回话的对端（卡死的进程、 半路断掉的网络），调用方的 ctx 没有截止时间的话，查询一直等到调用方放弃。 实测把这里配成 1s 照样等：30s 后仍没返回——语句根本没到服务端，它无从计时。 管住这一段的只有调用方的截止时间：用 CWithCtx 传一个带 deadline 的 ctx， 实测给 200ms 就在 200ms 返回。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "PrepareStmt": {
+                    "type": [
+                      "boolean",
+                      "string"
+                    ],
+                    "description": "把执行过的 SQL 缓存成预编译语句，后面同样的 SQL 直接复用。默认 false。 实测本机回环、2000 次同一条带参数的查询：MySQL 8.0 每次约 180µs → 94µs（不开时驱动每条都要 prepare / execute / close 三个来回），PostgreSQL 16 约 100µs → 85µs（pgx 本来就缓存语句，差别不大）。 缓存上限和过期用 GORM 的默认值（不限条数、1h）。经 PgBouncer 这类连接池中间件时（尤其 transaction 模式），先在那套环境里量过再开。",
+                    "pattern": "\\$\\{"
+                  },
+                  "SkipDefaultTransaction": {
+                    "type": [
+                      "boolean",
+                      "string"
+                    ],
+                    "description": "单条的 Create / Update / Delete 不再自动包一层事务。默认 false（GORM 的默认：包）。 省掉的是 BEGIN / COMMIT 两个来回：实测本机回环、500 次单条 Create，PostgreSQL 16 每次约 500µs → 230µs， MySQL 8.0 约 1.0ms → 0.9ms。代价是 BeforeCreate 这类钩子里的写和主语句不再同进退；显式的 Transaction 不受影响。",
+                    "pattern": "\\$\\{"
+                  },
+                  "SlowThreshold": {
+                    "type": "string",
+                    "description": "超过这个耗时的 SQL 记一条 warn 日志。默认 3s，需 Log 开启，配 0 不记。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                  },
+                  "TLS": {
+                    "type": "object",
+                    "description": "连库时走不走 TLS。默认不走（DSN 里自己写的 TLS 参数照旧生效）。 字段和规则各模块共用，见 xtls.Config。 开着时 TLS 全由这一块决定：证书一律校验，**不会退回明文**。DSN 里再写 TLS 参数 （PostgreSQL 的 sslmode、sslrootcert 等 ssl 开头的那几个，MySQL 的 tls） 是配置错误——两处说法不一，哪处作数都会让另一处白写。 驱动怎么接、量出来的行为见 xtls/README.md「行为与实测」。",
+                    "properties": {
+                      "CAFile": {
+                        "type": "string",
+                        "description": "校验服务端证书用的 CA 证书（PEM，可以放好几张）。默认空，用系统的根证书。 填了就**只**认这个文件里的 CA，系统根证书不再参与校验。自签的证书填这里。"
+                      },
+                      "CertFile": {
+                        "type": "string",
+                        "description": "客户端证书（PEM），服务端要求双向认证时和 KeyFile 成对填。默认空。"
+                      },
+                      "Enable": {
+                        "type": [
+                          "boolean",
+                          "string"
+                        ],
+                        "description": "是否走 TLS。默认 false。下面几项只在开着时生效，没开却写了它们，启动失败—— 那多半是忘了开，照明文连过去比报错更糟。",
+                        "pattern": "\\$\\{"
+                      },
+                      "KeyFile": {
+                        "type": "string",
+                        "description": "客户端私钥（PEM），和 CertFile 成对填。默认空。"
+                      },
+                      "ServerName": {
+                        "type": "string",
+                        "description": "校验服务端证书时比对的名字。默认空，取连接地址的主机部分； 按 IP 连、而证书上写的是域名时填它。"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "Trace": {
+                    "type": [
+                      "boolean",
+                      "string"
+                    ],
+                    "description": "是否挂 OpenTelemetry 插件。默认开启。 没装链路时它产出的是 noop Span，代价可以忽略，所以默认就开着。 属性按 OTel 数据库语义约定 v1.43.0 写（db.system.name、db.namespace、 db.query.text、db.operation.name、server.address / server.port）， db.query.text 带占位符、不带参数值；服务端报错时只记错误码（db.response.status_code）。",
+                    "pattern": "\\$\\{"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "minProperties": 1
+            }
+          },
+          "required": [
+            "Clients"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "XHttp": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "出站 HTTP 客户端配置 与 xgorm / xredis 不同，这里没有多实例：HTTP 客户端不连任何外部资源， 不配也能用，配一份公共的连接池和超时就够了。需要第二套参数的场景 直接用 New 自己建一个。",
+      "properties": {
+        "DialKeepAlive": {
+          "type": "string",
+          "description": "TCP keep-alive 探测间隔。默认 30s。 这是唯一一个负值有意义的时长：标准库的 net.Dialer 用负值表示 「不发探测」，所以它不在 Validate 的非负检查里。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+        },
+        "DialTimeout": {
+          "type": "string",
+          "description": "建立 TCP 连接的超时。默认 30s。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+        },
+        "IdleConnTimeout": {
+          "type": "string",
+          "description": "空闲连接多久后关闭。默认 90s，与标准库一致。 下游（或中间的负载均衡）先于它关掉空闲连接时，恰好在那一刻复用这条连接的请求 会失败：实测服务端空闲超时 200ms、请求间隔在 200ms 上下时，300 个 POST 失败 27 个 （connection reset by peer / use of closed network connection）；GET 由标准库自动 在新连接上重发，200 个一个都没失败。所以它要小于下游的 keep-alive 超时。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+        },
+        "Log": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否每个逻辑请求记一条日志（所有重试结束之后记一次）。默认关闭。 记方法、host、路径、状态码、耗时、尝试次数，失败时加上错误；查询串、片段、userinfo、 Header、body 一律不记，错误原文里 URL 的查询串也去掉。resty 返回了错误（传输层错误、 SetResult 解不开、重定向被拒）和 5xx 记 warn。 开着时 resty 自己在重试路径上的那几行（每次尝试一行 WARN、用完一行 ERROR）不再打， 一个请求只有这一行；自己 SetLogger 的不受影响。SetDebug(true) 的请求转储不在此列， 查询串和 Header 原样进日志。字段和实测见 xhttp/README.md「可观测」「行为与实测」。",
+          "pattern": "\\$\\{"
+        },
+        "MaxConnsPerHost": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "description": "每个 host 的连接数上限（含正在用的）。默认 0，不限制，与标准库一致。 不限制的意思是并发多少就开多少：实测对一个每次 300ms 才回的下游并发 200 个请求， 它收到 200 条新连接；紧接着再来 200 个，只有 MaxIdleConnsPerHost 那 10 条复用得上， 另开 190 条。下游一慢，连接数跟着并发一起涨，可能先耗尽对端的连接数或本机的端口。 配成正数之后超出的请求排队等连接，等的时间算在 Timeout 和调用方的 ctx 里。",
+          "pattern": "\\$\\{"
+        },
+        "MaxIdleConns": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "description": "全局最大空闲连接数。默认 100。",
+          "pattern": "\\$\\{"
+        },
+        "MaxIdleConnsPerHost": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "description": "每个 host 的最大空闲连接数。默认 10。 标准库的默认值是 2，对只调几个下游的服务来说太小， 会让连接反复重建，尾延迟里全是握手。",
+          "pattern": "\\$\\{"
+        },
+        "Metric": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否导出出站请求的指标（按方法、目标、状态码分）。默认开启。",
+          "pattern": "\\$\\{"
+        },
+        "RetryCount": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "description": "重试次数。默认 0，即不重试。",
+          "pattern": "\\$\\{"
+        },
+        "RetryMaxWaitTime": {
+          "type": "string",
+          "description": "重试等待时间的上限。默认 2s。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+        },
+        "RetryOnlyIdempotent": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否只重试幂等方法。默认开启。 传输层超时分不出「请求没到服务端」和「服务端处理完了但响应丢了」， 重发一个 POST 就可能变成重复下单、重复扣款。 确认接口幂等（比如带幂等键）之后再关掉它。 自己在 client 上 AddRetryCondition 挂的条件也放不回没拿到响应的 POST（xhttp 另在 RetryAfter 上否决）； 放得回的只有拿到了响应之后按状态码重试的条件（比如 5xx）——那时否决只能把响应换成一个编出来的错误， 所以这种条件里的方法要自己判断。自己 SetRetryAfter 会换掉这道关。 不论开关，body 是 io.Reader 的请求都不重试：第一次尝试就把它读完了，重发的是空 body。",
+          "pattern": "\\$\\{"
+        },
+        "RetryWaitTime": {
+          "type": "string",
+          "description": "重试的起始等待时间。默认 100ms。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+        },
+        "SlowThreshold": {
+          "type": "string",
+          "description": "整次逻辑请求（含重试和退避）超过这个耗时就记一条 warn 日志。默认 1s，需 Log 开启，配 0 不记。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+        },
+        "TLS": {
+          "type": "object",
+          "description": "出站 https 请求的 TLS 设置：自签的 CA、双向认证的客户端证书、比对的名字。 默认不配，用标准库的默认（系统根证书、不带客户端证书）。字段和规则各模块共用，见 xtls.Config。 只管 https:// 的请求，不会把 http:// 升级成 TLS。它对这个客户端发出的**每一个** https 请求都生效：配了 CAFile 就只认这个 CA，公网上的 https 下游从此校验不过； ServerName 更是拿同一个名字去比对每一个下游。所以这里配的是「只调一类内部下游」 的那个客户端，要同时调公网的，另用 New 建一个。",
+          "properties": {
+            "CAFile": {
+              "type": "string",
+              "description": "校验服务端证书用的 CA 证书（PEM，可以放好几张）。默认空，用系统的根证书。 填了就**只**认这个文件里的 CA，系统根证书不再参与校验。自签的证书填这里。"
+            },
+            "CertFile": {
+              "type": "string",
+              "description": "客户端证书（PEM），服务端要求双向认证时和 KeyFile 成对填。默认空。"
+            },
+            "Enable": {
+              "type": [
+                "boolean",
+                "string"
+              ],
+              "description": "是否走 TLS。默认 false。下面几项只在开着时生效，没开却写了它们，启动失败—— 那多半是忘了开，照明文连过去比报错更糟。",
+              "pattern": "\\$\\{"
+            },
+            "KeyFile": {
+              "type": "string",
+              "description": "客户端私钥（PEM），和 CertFile 成对填。默认空。"
+            },
+            "ServerName": {
+              "type": "string",
+              "description": "校验服务端证书时比对的名字。默认空，取连接地址的主机部分； 按 IP 连、而证书上写的是域名时填它。"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Timeout": {
+          "type": "string",
+          "description": "单次尝试的超时。默认 60s。 配 0 是「永不超时」，不是「用个默认值」：对端不响应时请求会一直挂着。 注意它管的是一次尝试，不是一次逻辑请求：开了 RetryCount 之后， 最坏情况是 (RetryCount+1) × Timeout 再加上几次退避等待 （实测 Timeout=300ms、RetryCount=3 时整整 1.24s）。 要给整个逻辑请求封顶，用调用方的 ctx——重试的退避和每次尝试都听它的（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+        },
+        "Trace": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否为出站请求开 Span。默认开启。 只管 Span。关掉之后 traceparent、baggage 和 XTrace.ForwardHeaders 里的 透传 Header 照样带给下游（链路标识来自上游，或者本进程别处开的 Span）： 这一跳不记 Span，不该让整条链路和透传在这里断掉。",
+          "pattern": "\\$\\{"
+        }
+      },
+      "additionalProperties": false
+    },
+    "XKafka": {
+      "description": "本模块的配置。两种写法",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "Brokers": {
+              "type": "array",
+              "description": "种子 broker 的地址，host:port。必填，没有默认值。 只是种子：连上任意一个之后，franz-go 从元数据里拿到整个集群的 broker。",
+              "items": {
+                "type": "string"
+              }
+            },
+            "ClientID": {
+              "type": "string",
+              "description": "发给 broker 的 client.id，broker 端的日志、配额、监控按它区分客户端。 默认空：经框架建的用 XApp.Name，XApp.Name 也没配就是 franz-go 的默认值 kgo （v1.21.7 实测）；直接调 New 的不读 XApp，空就是 kgo。"
+            },
+            "Consumer": {
+              "type": "object",
+              "description": "消费这一侧的设置，对这个集群上的每个 Consume 生效。",
+              "properties": {
+                "ResetOffset": {
+                  "type": "string",
+                  "description": "一个消费组第一次消费某个分区（还没提交过 offset）、或者提交过的 offset 已经被清理掉时， 从哪里开始：latest（只消费之后新来的）、earliest（从最早还留着的那条开始）。默认 latest。 franz-go 的默认是 earliest（v1.21.7 实测）：新上线的消费组会把 topic 里留着的全部历史消息 处理一遍。本模块默认 latest，代价是新组上线、或者 topic 刚建好的那一刻之前写进去的消息， 这个组不会处理——要它们就配 earliest。"
+                }
+              },
+              "additionalProperties": false
+            },
+            "DialTimeout": {
+              "type": "string",
+              "description": "建一条连接（TCP，加上 TLS 握手）的超时。默认 1s；franz-go 自己的默认是 10s。 启动时的连通性探测每次尝试的预算是 2 × DialTimeout：建连加一个往返，见 README「行为与实测」。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+            },
+            "Log": {
+              "type": [
+                "boolean",
+                "string"
+              ],
+              "description": "是否记逐条消息的日志：生产失败（WARN）、每次处理失败（WARN）、处理成功（DEBUG）。默认开启。 关掉之后，消息进了死信、被跳过、处理函数 panic、死信写不进去这几种照样记—— 它们意味着一条消息没按正常的路走完，不记就没有任何痕迹。 只记消息的 key（可打印的 UTF-8，超过 256 字节截断），从不记 value，见 README「可观测」。",
+              "pattern": "\\$\\{"
+            },
+            "Metric": {
+              "type": [
+                "boolean",
+                "string"
+              ],
+              "description": "是否导出消费耗时指标（kafka_consume_duration_seconds）。默认开启。",
+              "pattern": "\\$\\{"
+            },
+            "Producer": {
+              "type": "object",
+              "description": "生产这一侧的几项设置。",
+              "properties": {
+                "Acks": {
+                  "type": "string",
+                  "description": "写成功要几个副本确认：all、leader、none。默认 all（franz-go 的默认值）。 all 时开着幂等写（franz-go 的默认）：重试不会写出重复的消息，同一分区里不乱序。 leader、none 时 franz-go 要求关掉幂等写，本模块替你关：此时重试可能写出重复的消息。"
+                },
+                "Compression": {
+                  "type": "string",
+                  "description": "批次的压缩算法：none、gzip、snappy、lz4、zstd。默认 snappy（franz-go 的默认值）。"
+                },
+                "Linger": {
+                  "type": "string",
+                  "description": "一个批次最多等多久再发，攒批用。默认 10ms（franz-go 的默认值）；配 0 是不等，有就发。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                }
+              },
+              "additionalProperties": false
+            },
+            "SASL": {
+              "type": "object",
+              "description": "认证。默认不认证。",
+              "properties": {
+                "Mechanism": {
+                  "type": "string",
+                  "description": "认证机制：PLAIN、SCRAM-SHA-256、SCRAM-SHA-512。默认空，不认证。 PLAIN 把密码原样发给 broker，不配 TLS 时它在网络上是明文。"
+                },
+                "Password": {
+                  "type": "string",
+                  "description": "密码。Mechanism 非空时必填。 建议写成 \"${KAFKA_PASSWORD}\"：凭证不该进版本库，漏配时启动就失败。 本模块不会把它写进任何日志和错误。"
+                },
+                "Username": {
+                  "type": "string",
+                  "description": "用户名。Mechanism 非空时必填。"
+                }
+              },
+              "additionalProperties": false
+            },
+            "TLS": {
+              "type": "object",
+              "description": "连 broker 时走不走 TLS。默认不走。字段和规则各模块共用，见 xtls.Config。",
+              "properties": {
+                "CAFile": {
+                  "type": "string",
+                  "description": "校验服务端证书用的 CA 证书（PEM，可以放好几张）。默认空，用系统的根证书。 填了就**只**认这个文件里的 CA，系统根证书不再参与校验。自签的证书填这里。"
+                },
+                "CertFile": {
+                  "type": "string",
+                  "description": "客户端证书（PEM），服务端要求双向认证时和 KeyFile 成对填。默认空。"
+                },
+                "Enable": {
+                  "type": [
+                    "boolean",
+                    "string"
+                  ],
+                  "description": "是否走 TLS。默认 false。下面几项只在开着时生效，没开却写了它们，启动失败—— 那多半是忘了开，照明文连过去比报错更糟。",
+                  "pattern": "\\$\\{"
+                },
+                "KeyFile": {
+                  "type": "string",
+                  "description": "客户端私钥（PEM），和 CertFile 成对填。默认空。"
+                },
+                "ServerName": {
+                  "type": "string",
+                  "description": "校验服务端证书时比对的名字。默认空，取连接地址的主机部分； 按 IP 连、而证书上写的是域名时填它。"
+                }
+              },
+              "additionalProperties": false
+            },
+            "Trace": {
+              "type": [
+                "boolean",
+                "string"
+              ],
+              "description": "是否给生产、消费各开一个 Span。默认开启。 关掉的只是 Span：链路上下文（traceparent 等）照样写进消息头、照样从消息头里接上， 下游开着链路的服务看到的仍是同一条链路。",
+              "pattern": "\\$\\{"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "Clients": {
+              "type": "object",
+              "description": "按名字组织的多个实例，实例名就是 key",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "Brokers": {
+                    "type": "array",
+                    "description": "种子 broker 的地址，host:port。必填，没有默认值。 只是种子：连上任意一个之后，franz-go 从元数据里拿到整个集群的 broker。",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "ClientID": {
+                    "type": "string",
+                    "description": "发给 broker 的 client.id，broker 端的日志、配额、监控按它区分客户端。 默认空：经框架建的用 XApp.Name，XApp.Name 也没配就是 franz-go 的默认值 kgo （v1.21.7 实测）；直接调 New 的不读 XApp，空就是 kgo。"
+                  },
+                  "Consumer": {
+                    "type": "object",
+                    "description": "消费这一侧的设置，对这个集群上的每个 Consume 生效。",
+                    "properties": {
+                      "ResetOffset": {
+                        "type": "string",
+                        "description": "一个消费组第一次消费某个分区（还没提交过 offset）、或者提交过的 offset 已经被清理掉时， 从哪里开始：latest（只消费之后新来的）、earliest（从最早还留着的那条开始）。默认 latest。 franz-go 的默认是 earliest（v1.21.7 实测）：新上线的消费组会把 topic 里留着的全部历史消息 处理一遍。本模块默认 latest，代价是新组上线、或者 topic 刚建好的那一刻之前写进去的消息， 这个组不会处理——要它们就配 earliest。"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "DialTimeout": {
+                    "type": "string",
+                    "description": "建一条连接（TCP，加上 TLS 握手）的超时。默认 1s；franz-go 自己的默认是 10s。 启动时的连通性探测每次尝试的预算是 2 × DialTimeout：建连加一个往返，见 README「行为与实测」。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                  },
+                  "Log": {
+                    "type": [
+                      "boolean",
+                      "string"
+                    ],
+                    "description": "是否记逐条消息的日志：生产失败（WARN）、每次处理失败（WARN）、处理成功（DEBUG）。默认开启。 关掉之后，消息进了死信、被跳过、处理函数 panic、死信写不进去这几种照样记—— 它们意味着一条消息没按正常的路走完，不记就没有任何痕迹。 只记消息的 key（可打印的 UTF-8，超过 256 字节截断），从不记 value，见 README「可观测」。",
+                    "pattern": "\\$\\{"
+                  },
+                  "Metric": {
+                    "type": [
+                      "boolean",
+                      "string"
+                    ],
+                    "description": "是否导出消费耗时指标（kafka_consume_duration_seconds）。默认开启。",
+                    "pattern": "\\$\\{"
+                  },
+                  "Producer": {
+                    "type": "object",
+                    "description": "生产这一侧的几项设置。",
+                    "properties": {
+                      "Acks": {
+                        "type": "string",
+                        "description": "写成功要几个副本确认：all、leader、none。默认 all（franz-go 的默认值）。 all 时开着幂等写（franz-go 的默认）：重试不会写出重复的消息，同一分区里不乱序。 leader、none 时 franz-go 要求关掉幂等写，本模块替你关：此时重试可能写出重复的消息。"
+                      },
+                      "Compression": {
+                        "type": "string",
+                        "description": "批次的压缩算法：none、gzip、snappy、lz4、zstd。默认 snappy（franz-go 的默认值）。"
+                      },
+                      "Linger": {
+                        "type": "string",
+                        "description": "一个批次最多等多久再发，攒批用。默认 10ms（franz-go 的默认值）；配 0 是不等，有就发。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "SASL": {
+                    "type": "object",
+                    "description": "认证。默认不认证。",
+                    "properties": {
+                      "Mechanism": {
+                        "type": "string",
+                        "description": "认证机制：PLAIN、SCRAM-SHA-256、SCRAM-SHA-512。默认空，不认证。 PLAIN 把密码原样发给 broker，不配 TLS 时它在网络上是明文。"
+                      },
+                      "Password": {
+                        "type": "string",
+                        "description": "密码。Mechanism 非空时必填。 建议写成 \"${KAFKA_PASSWORD}\"：凭证不该进版本库，漏配时启动就失败。 本模块不会把它写进任何日志和错误。"
+                      },
+                      "Username": {
+                        "type": "string",
+                        "description": "用户名。Mechanism 非空时必填。"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "TLS": {
+                    "type": "object",
+                    "description": "连 broker 时走不走 TLS。默认不走。字段和规则各模块共用，见 xtls.Config。",
+                    "properties": {
+                      "CAFile": {
+                        "type": "string",
+                        "description": "校验服务端证书用的 CA 证书（PEM，可以放好几张）。默认空，用系统的根证书。 填了就**只**认这个文件里的 CA，系统根证书不再参与校验。自签的证书填这里。"
+                      },
+                      "CertFile": {
+                        "type": "string",
+                        "description": "客户端证书（PEM），服务端要求双向认证时和 KeyFile 成对填。默认空。"
+                      },
+                      "Enable": {
+                        "type": [
+                          "boolean",
+                          "string"
+                        ],
+                        "description": "是否走 TLS。默认 false。下面几项只在开着时生效，没开却写了它们，启动失败—— 那多半是忘了开，照明文连过去比报错更糟。",
+                        "pattern": "\\$\\{"
+                      },
+                      "KeyFile": {
+                        "type": "string",
+                        "description": "客户端私钥（PEM），和 CertFile 成对填。默认空。"
+                      },
+                      "ServerName": {
+                        "type": "string",
+                        "description": "校验服务端证书时比对的名字。默认空，取连接地址的主机部分； 按 IP 连、而证书上写的是域名时填它。"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "Trace": {
+                    "type": [
+                      "boolean",
+                      "string"
+                    ],
+                    "description": "是否给生产、消费各开一个 Span。默认开启。 关掉的只是 Span：链路上下文（traceparent 等）照样写进消息头、照样从消息头里接上， 下游开着链路的服务看到的仍是同一条链路。",
+                    "pattern": "\\$\\{"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "minProperties": 1
+            }
+          },
+          "required": [
+            "Clients"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "XLog": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "日志配置",
+      "properties": {
+        "AddSource": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否记录打日志的代码位置。有开销，默认关闭。",
+          "pattern": "\\$\\{"
+        },
+        "Console": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否打到标准输出，由部署环境的日志采集组件收集。默认开启。",
+          "pattern": "\\$\\{"
+        },
+        "Fields": {
+          "type": "object",
+          "description": "每条日志都带的静态字段。值可以用 ${VAR} 从环境变量取，比如 K8s 用 Downward API 注入的 POD_NAME、NODE_NAME；${VAR:} 没设时是空串，空串的字段不写。 框架默认已带 service（XApp.Name）、version（XApp.Version）、hostname（主机名， K8s 里就是 Pod 名）、pid。同名的以这里为准，写成空串就是不要这个默认字段。 这些值启动时算一次、序列化一次：实测默认的 4 个（Pod 名那么长的 hostname）每行多 88 字节， 时间和分配都量不出差别（BenchmarkHandle_WithIdentityFields 对照 BenchmarkHandle_Bare）。",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "File": {
+          "type": "object",
+          "description": "文件输出",
+          "properties": {
+            "Enable": {
+              "type": [
+                "boolean",
+                "string"
+              ],
+              "description": "是否写文件。默认关闭。",
+              "pattern": "\\$\\{"
+            },
+            "MaxAge": {
+              "type": "string",
+              "description": "历史文件保留时长，0 表示不清理。默认 7 天。不能为负。 启动时清一次，之后每次轮转清一次。只清 {Name}.{时间后缀} 这种 我们自己命名的文件，同目录下的 app.log.bak、app.log.1.gz 一律不碰。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+            },
+            "Name": {
+              "type": "string",
+              "description": "日志文件名。实际文件是 {Name}.{时间后缀}， 另有一个指向当前文件的同名符号链接，便于 tail 跟随。"
+            },
+            "Path": {
+              "type": "string",
+              "description": "日志目录"
+            },
+            "Perm": {
+              "type": "string",
+              "description": "日志文件权限，按八进制解析的字符串。默认 \"0644\"，也认 \"644\" 和 \"0o644\"。 用字符串而不是数字：实测 yaml.v3 把数字 0644 按八进制解析成 420（正是 0o644）， 可漏掉前导 0 写成 644 就是十进制 644 = 0o1204（--w----r-T），不报错也不提示。 字符串一律按八进制解析，写不写前导 0 结果都一样；不加引号也行， 进字符串字段的 0644 还是 \"0644\"。"
+            },
+            "RotateTime": {
+              "type": "string",
+              "description": "轮转周期。默认一天，按本地时区对齐。至少 1 分钟。 文件名的时间后缀最细到分钟：写成 0s 时每分钟一个文件，写成 30s 时 两个周期落在同一个文件名上、实际还是每分钟轮转——都是配了 A 跑的是 B， 所以短于 1 分钟直接启动失败。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+            }
+          },
+          "additionalProperties": false
+        },
+        "Format": {
+          "type": "string",
+          "description": "输出格式：json / text"
+        },
+        "Level": {
+          "type": "string",
+          "description": "日志级别：debug / info / warn / error"
+        },
+        "Timezone": {
+          "type": "string",
+          "description": "日志时间戳按哪个时区渲染，IANA 时区名，如 Europe/Berlin。 留空表示跟随进程的本地时区（容器里通常就是 UTC）。 配了却加载不到会直接启动失败，不会悄悄退回本地时区—— 那意味着你以为在看柏林时间，实际是 UTC，差一两个小时而毫无提示。 scratch / distroless 这类镜像里没有 /usr/share/zoneinfo， 需要在自己的 main 包里加一行把时区库编进二进制（约 400KB）： 框架不替你编进去：没用到这项的人不该背这 400KB。"
+        }
+      },
+      "additionalProperties": false
+    },
+    "XMetric": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "指标配置",
+      "properties": {
+        "ConstLabels": {
+          "type": "object",
+          "description": "附加到所有指标上的常量标签，包括 Go 运行时与进程指标。默认无。 典型用途是区分环境和集群：env: \"${ENV:dev}\"、cluster: \"${CLUSTER:local}\"。 标签名的规则同 Namespace，另外不能以 __ 开头（Prometheus 保留）， 也不能是 le、quantile、version（go_info 自带）或框架自带指标的变量标签名 （level、caller、method、status、route、host、name），否则启动失败： 常量标签附加在所有指标上，撞了名的那个指标就建不起来。",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "GoMetrics": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否采集 Go 运行时指标（goroutine 数、GC 等）。默认开启。",
+          "pattern": "\\$\\{"
+        },
+        "HTTPDurationBuckets": {
+          "type": "array",
+          "description": "HTTP 出入站耗时 Histogram 的桶边界（秒）。 默认 [0.001 0.005 0.01 0.025 0.05 0.1 0.25 0.5 1 2.5 5 10]。 必须严格递增、都是有限数。写了空列表 [] 启动失败：列表字段是整体替换的， [] 不是「用默认」，而是被 Prometheus 悄悄换成它自己的 DefBuckets （少了 1ms 那一档）。要默认值就别写这个字段。",
+          "items": {
+            "type": [
+              "number",
+              "string"
+            ],
+            "pattern": "\\$\\{"
+          }
+        },
+        "HistogramBuckets": {
+          "type": "array",
+          "description": "快捷方法建出来的业务 Histogram 的桶边界（秒）。 默认 prometheus.DefBuckets。规则同 HTTPDurationBuckets。 不在这里拦的话，[1, 0.5, 2] 能通过启动，然后在第一次 HistogramObserve 时 panic（histogram buckets must be in increasing order）——那是在业务 请求里，不是在启动时。",
+          "items": {
+            "type": [
+              "number",
+              "string"
+            ],
+            "pattern": "\\$\\{"
+          }
+        },
+        "LogErrorMetric": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否把 Error 及以上级别的日志计入 log_errors_total。默认开启。 它让「错误率」这条最常用的告警不必等业务先埋点。 统计的是走 xlog 的日志：不用 xlog 的应用这项不会报错，只是数不到。",
+          "pattern": "\\$\\{"
+        },
+        "Namespace": {
+          "type": "string",
+          "description": "指标名前缀。默认无。 只能是字母、数字、下划线，且不以数字开头，否则启动失败。client_golang v1.24 按 UTF-8 规则校验名字，不合规的前缀不会报错，而是在导出时被悄悄 转义：实测 my-app 导出成 my_app_，1app 成了 _app_，中文成了一串下划线， 看板和告警按配置里写的名字查，什么都查不到。"
+        },
+        "ProcessMetrics": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否采集进程指标（CPU、内存、文件描述符等）。默认开启。",
+          "pattern": "\\$\\{"
+        }
+      },
+      "additionalProperties": false
+    },
+    "XRedis": {
+      "description": "本模块的配置。两种写法",
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "Addr": {
+              "type": "string",
+              "description": "服务器地址。默认 127.0.0.1:6379。"
+            },
+            "ConnMaxIdleTime": {
+              "type": "string",
+              "description": "空闲连接最长存活时间。默认 5m；配 0 交给 go-redis（30m）。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+            },
+            "ConnMaxLifetime": {
+              "type": "string",
+              "description": "连接最长存活时间。默认 5m；配 0 是不按存活时间换连接（go-redis 的默认）。 定期换连接，服务端扩缩容后流量才会重新摊开。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+            },
+            "DB": {
+              "type": [
+                "integer",
+                "string"
+              ],
+              "description": "数据库编号。默认 0。",
+              "pattern": "\\$\\{"
+            },
+            "DialTimeout": {
+              "type": "string",
+              "description": "建连超时。默认 500ms；配 0 交给 go-redis（5s）。 下面几个时长配 0 都不是「不限时」，是 go-redis v9.22.0 的默认值（options.go init，实测一致）。 启动时建连验证的单次预算按换算之后的 DialTimeout + ReadTimeout 算。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+            },
+            "Log": {
+              "type": [
+                "boolean",
+                "string"
+              ],
+              "description": "是否每条命令记一条日志（pipeline 整个记一条）。默认关闭。 只记命令名和第一个 key，不记值、不记其余参数；AUTH、HELLO 这类参数里可能有凭证的 命令只记命令名。key 是整条记的（超过 256 字节才截断）：开着 Log 时别把令牌、手机号、 邮箱拼进 key。key 不存在（redis.Nil）、WATCH 冲突（redis.TxFailedErr）不算失败，照常记 INFO。 服务端报的错只记错误码（另有 error_code 字段），不记原文：实测 Redis 7.0.15 的 ERR unknown command 'foo', with args beginning with: … 把参数原样带出来； 超时、连不上、ctx 取消、redis: client is closed 这类客户端一侧的错误照原文记。 返回给调用方的错误不变。字段和实测见 xredis/README.md「可观测」「行为与实测」。",
+              "pattern": "\\$\\{"
+            },
+            "MaxActiveConns": {
+              "type": [
+                "integer",
+                "string"
+              ],
+              "description": "最大活跃连接数。默认 0，即不限制。",
+              "pattern": "\\$\\{"
+            },
+            "MaxIdleConns": {
+              "type": [
+                "integer",
+                "string"
+              ],
+              "description": "最大空闲连接数。默认 0，即不限制。",
+              "pattern": "\\$\\{"
+            },
+            "MaxRetries": {
+              "type": [
+                "integer",
+                "string"
+              ],
+              "description": "最大重试次数。默认 0，交给 go-redis（3 次）；配 -1 关闭重试。",
+              "pattern": "\\$\\{"
+            },
+            "MaxRetryBackoff": {
+              "type": "string",
+              "description": "最大重试退避。默认 0，交给 go-redis（1s，实测 v9.22.0）； 配 -1ns 关闭退避，同上。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+            },
+            "Metric": {
+              "type": [
+                "boolean",
+                "string"
+              ],
+              "description": "是否导出连接池指标。默认开启。 指标在被抓取时才读 PoolStats()，不额外占协程。 按实例生效：配了 Metric: false 的实例不出现在 /metrics 里。",
+              "pattern": "\\$\\{"
+            },
+            "MinIdleConns": {
+              "type": [
+                "integer",
+                "string"
+              ],
+              "description": "最小空闲连接数，预热连接避免冷启动抖动。默认 5。",
+              "pattern": "\\$\\{"
+            },
+            "MinRetryBackoff": {
+              "type": "string",
+              "description": "最小重试退避。默认 0，交给 go-redis（10ms，实测 v9.22.0）； 配 -1ns 关闭退避（得带单位，裸写 -1 解不成时长，启动报错）。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+            },
+            "Password": {
+              "type": "string",
+              "description": "认证密码。默认无。 建议写成 \"${REDIS_PASSWORD}\"：凭证不该进版本库，漏配时启动就失败。 本模块不会把它写进任何日志。"
+            },
+            "PoolSize": {
+              "type": [
+                "integer",
+                "string"
+              ],
+              "description": "连接池大小。默认 0，交给 go-redis（10 × GOMAXPROCS）。",
+              "pattern": "\\$\\{"
+            },
+            "PoolTimeout": {
+              "type": "string",
+              "description": "池子没有空闲连接时的等待上限。默认 1s；配 0 是换算之后的 ReadTimeout + 1s。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+            },
+            "ReadTimeout": {
+              "type": "string",
+              "description": "读超时。默认 500ms；配 0 交给 go-redis（5s）。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+            },
+            "SlowThreshold": {
+              "type": "string",
+              "description": "超过这个耗时的命令（或 pipeline）记一条 warn 日志。默认 100ms，需 Log 开启，配 0 不记。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+            },
+            "TLS": {
+              "type": "object",
+              "description": "连 Redis 时走不走 TLS。默认不走。字段和规则各模块共用，见 xtls.Config。 握手受 DialTimeout 管：go-redis v9.22.0 用 tls.DialWithDialer，拨号和握手共用那一个超时。",
+              "properties": {
+                "CAFile": {
+                  "type": "string",
+                  "description": "校验服务端证书用的 CA 证书（PEM，可以放好几张）。默认空，用系统的根证书。 填了就**只**认这个文件里的 CA，系统根证书不再参与校验。自签的证书填这里。"
+                },
+                "CertFile": {
+                  "type": "string",
+                  "description": "客户端证书（PEM），服务端要求双向认证时和 KeyFile 成对填。默认空。"
+                },
+                "Enable": {
+                  "type": [
+                    "boolean",
+                    "string"
+                  ],
+                  "description": "是否走 TLS。默认 false。下面几项只在开着时生效，没开却写了它们，启动失败—— 那多半是忘了开，照明文连过去比报错更糟。",
+                  "pattern": "\\$\\{"
+                },
+                "KeyFile": {
+                  "type": "string",
+                  "description": "客户端私钥（PEM），和 CertFile 成对填。默认空。"
+                },
+                "ServerName": {
+                  "type": "string",
+                  "description": "校验服务端证书时比对的名字。默认空，取连接地址的主机部分； 按 IP 连、而证书上写的是域名时填它。"
+                }
+              },
+              "additionalProperties": false
+            },
+            "Trace": {
+              "type": [
+                "boolean",
+                "string"
+              ],
+              "description": "是否挂 OpenTelemetry 钩子。默认开启。 没装链路时它产出的是 noop Span，但钩子本身不是零成本：实测 （redisotel v9.22.0，本机回环，noop provider）每条命令多约 3µs、8 次分配、 约 1.2KB。真实网络的往返动辄几百微秒，占比小得多，所以默认开着； 对单条命令延迟极敏感的服务可以关掉。",
+              "pattern": "\\$\\{"
+            },
+            "Username": {
+              "type": "string",
+              "description": "ACL 用户名（Redis 6.0+）。默认无。"
+            },
+            "WriteTimeout": {
+              "type": "string",
+              "description": "写超时。默认 500ms；配 0 跟着换算之后的 ReadTimeout。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+            }
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "Clients": {
+              "type": "object",
+              "description": "按名字组织的多个实例，实例名就是 key",
+              "additionalProperties": {
+                "type": "object",
+                "properties": {
+                  "Addr": {
+                    "type": "string",
+                    "description": "服务器地址。默认 127.0.0.1:6379。"
+                  },
+                  "ConnMaxIdleTime": {
+                    "type": "string",
+                    "description": "空闲连接最长存活时间。默认 5m；配 0 交给 go-redis（30m）。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                  },
+                  "ConnMaxLifetime": {
+                    "type": "string",
+                    "description": "连接最长存活时间。默认 5m；配 0 是不按存活时间换连接（go-redis 的默认）。 定期换连接，服务端扩缩容后流量才会重新摊开。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                  },
+                  "DB": {
+                    "type": [
+                      "integer",
+                      "string"
+                    ],
+                    "description": "数据库编号。默认 0。",
+                    "pattern": "\\$\\{"
+                  },
+                  "DialTimeout": {
+                    "type": "string",
+                    "description": "建连超时。默认 500ms；配 0 交给 go-redis（5s）。 下面几个时长配 0 都不是「不限时」，是 go-redis v9.22.0 的默认值（options.go init，实测一致）。 启动时建连验证的单次预算按换算之后的 DialTimeout + ReadTimeout 算。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                  },
+                  "Log": {
+                    "type": [
+                      "boolean",
+                      "string"
+                    ],
+                    "description": "是否每条命令记一条日志（pipeline 整个记一条）。默认关闭。 只记命令名和第一个 key，不记值、不记其余参数；AUTH、HELLO 这类参数里可能有凭证的 命令只记命令名。key 是整条记的（超过 256 字节才截断）：开着 Log 时别把令牌、手机号、 邮箱拼进 key。key 不存在（redis.Nil）、WATCH 冲突（redis.TxFailedErr）不算失败，照常记 INFO。 服务端报的错只记错误码（另有 error_code 字段），不记原文：实测 Redis 7.0.15 的 ERR unknown command 'foo', with args beginning with: … 把参数原样带出来； 超时、连不上、ctx 取消、redis: client is closed 这类客户端一侧的错误照原文记。 返回给调用方的错误不变。字段和实测见 xredis/README.md「可观测」「行为与实测」。",
+                    "pattern": "\\$\\{"
+                  },
+                  "MaxActiveConns": {
+                    "type": [
+                      "integer",
+                      "string"
+                    ],
+                    "description": "最大活跃连接数。默认 0，即不限制。",
+                    "pattern": "\\$\\{"
+                  },
+                  "MaxIdleConns": {
+                    "type": [
+                      "integer",
+                      "string"
+                    ],
+                    "description": "最大空闲连接数。默认 0，即不限制。",
+                    "pattern": "\\$\\{"
+                  },
+                  "MaxRetries": {
+                    "type": [
+                      "integer",
+                      "string"
+                    ],
+                    "description": "最大重试次数。默认 0，交给 go-redis（3 次）；配 -1 关闭重试。",
+                    "pattern": "\\$\\{"
+                  },
+                  "MaxRetryBackoff": {
+                    "type": "string",
+                    "description": "最大重试退避。默认 0，交给 go-redis（1s，实测 v9.22.0）； 配 -1ns 关闭退避，同上。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                  },
+                  "Metric": {
+                    "type": [
+                      "boolean",
+                      "string"
+                    ],
+                    "description": "是否导出连接池指标。默认开启。 指标在被抓取时才读 PoolStats()，不额外占协程。 按实例生效：配了 Metric: false 的实例不出现在 /metrics 里。",
+                    "pattern": "\\$\\{"
+                  },
+                  "MinIdleConns": {
+                    "type": [
+                      "integer",
+                      "string"
+                    ],
+                    "description": "最小空闲连接数，预热连接避免冷启动抖动。默认 5。",
+                    "pattern": "\\$\\{"
+                  },
+                  "MinRetryBackoff": {
+                    "type": "string",
+                    "description": "最小重试退避。默认 0，交给 go-redis（10ms，实测 v9.22.0）； 配 -1ns 关闭退避（得带单位，裸写 -1 解不成时长，启动报错）。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                  },
+                  "Password": {
+                    "type": "string",
+                    "description": "认证密码。默认无。 建议写成 \"${REDIS_PASSWORD}\"：凭证不该进版本库，漏配时启动就失败。 本模块不会把它写进任何日志。"
+                  },
+                  "PoolSize": {
+                    "type": [
+                      "integer",
+                      "string"
+                    ],
+                    "description": "连接池大小。默认 0，交给 go-redis（10 × GOMAXPROCS）。",
+                    "pattern": "\\$\\{"
+                  },
+                  "PoolTimeout": {
+                    "type": "string",
+                    "description": "池子没有空闲连接时的等待上限。默认 1s；配 0 是换算之后的 ReadTimeout + 1s。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                  },
+                  "ReadTimeout": {
+                    "type": "string",
+                    "description": "读超时。默认 500ms；配 0 交给 go-redis（5s）。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                  },
+                  "SlowThreshold": {
+                    "type": "string",
+                    "description": "超过这个耗时的命令（或 pipeline）记一条 warn 日志。默认 100ms，需 Log 开启，配 0 不记。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                  },
+                  "TLS": {
+                    "type": "object",
+                    "description": "连 Redis 时走不走 TLS。默认不走。字段和规则各模块共用，见 xtls.Config。 握手受 DialTimeout 管：go-redis v9.22.0 用 tls.DialWithDialer，拨号和握手共用那一个超时。",
+                    "properties": {
+                      "CAFile": {
+                        "type": "string",
+                        "description": "校验服务端证书用的 CA 证书（PEM，可以放好几张）。默认空，用系统的根证书。 填了就**只**认这个文件里的 CA，系统根证书不再参与校验。自签的证书填这里。"
+                      },
+                      "CertFile": {
+                        "type": "string",
+                        "description": "客户端证书（PEM），服务端要求双向认证时和 KeyFile 成对填。默认空。"
+                      },
+                      "Enable": {
+                        "type": [
+                          "boolean",
+                          "string"
+                        ],
+                        "description": "是否走 TLS。默认 false。下面几项只在开着时生效，没开却写了它们，启动失败—— 那多半是忘了开，照明文连过去比报错更糟。",
+                        "pattern": "\\$\\{"
+                      },
+                      "KeyFile": {
+                        "type": "string",
+                        "description": "客户端私钥（PEM），和 CertFile 成对填。默认空。"
+                      },
+                      "ServerName": {
+                        "type": "string",
+                        "description": "校验服务端证书时比对的名字。默认空，取连接地址的主机部分； 按 IP 连、而证书上写的是域名时填它。"
+                      }
+                    },
+                    "additionalProperties": false
+                  },
+                  "Trace": {
+                    "type": [
+                      "boolean",
+                      "string"
+                    ],
+                    "description": "是否挂 OpenTelemetry 钩子。默认开启。 没装链路时它产出的是 noop Span，但钩子本身不是零成本：实测 （redisotel v9.22.0，本机回环，noop provider）每条命令多约 3µs、8 次分配、 约 1.2KB。真实网络的往返动辄几百微秒，占比小得多，所以默认开着； 对单条命令延迟极敏感的服务可以关掉。",
+                    "pattern": "\\$\\{"
+                  },
+                  "Username": {
+                    "type": "string",
+                    "description": "ACL 用户名（Redis 6.0+）。默认无。"
+                  },
+                  "WriteTimeout": {
+                    "type": "string",
+                    "description": "写超时。默认 500ms；配 0 跟着换算之后的 ReadTimeout。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                  }
+                },
+                "additionalProperties": false
+              },
+              "minProperties": 1
+            }
+          },
+          "required": [
+            "Clients"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "XTrace": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "链路配置",
+      "properties": {
+        "Console": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否把 Span 打到标准输出，仅用于本地调试。默认关闭。",
+          "pattern": "\\$\\{"
+        },
+        "Enable": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "是否开启链路。默认开启。 关掉之后 Span 仍然能创建（是个 noop），TraceID 不再生成， 但 Header 透传照常生效——那是两件事。",
+          "pattern": "\\$\\{"
+        },
+        "ForwardHeaderRules": {
+          "type": "array",
+          "description": "按域名透传的 Header 规则。默认无。 用于不该外泄的内部标识：只发给自己人，不发给第三方。 与 ForwardHeaders 一样，只收可信对端发来的值。",
+          "items": {
+            "type": "object",
+            "description": "按域名透传的 Header 规则。 仅当目标域名匹配 Domains 中任一模式时，才透传对应的 Headers。",
+            "properties": {
+              "Domains": {
+                "type": "array",
+                "description": "域名模式，支持精确匹配和通配前缀（*.example.com）",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "Headers": {
+                "type": "array",
+                "description": "该规则下要透传的 Header",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "ForwardHeaders": {
+          "type": "array",
+          "description": "向所有域名透传的 Header。默认无。 只收可信对端发来的值：用 xgin 时就是 XGin.TrustedProxies 里的那些（xecho 是 XEcho.TrustedProxies）， 默认只信私有网段（负载均衡、K8s 的 Ingress 和 Pod），公网直连的不收。理由见 HeaderPropagator.Extract。",
+          "items": {
+            "type": "string"
+          }
+        },
+        "SampleRatio": {
+          "type": [
+            "number",
+            "string"
+          ],
+          "description": "根 Span 的采样率，取值 [0, 1]。默认 1。越界或 NaN 启动失败。 只管「没有上游」的那些链路：上游传来了采样决定（traceparent 的 sampled 位） 就照它的来，采样率是 1 也不例外——否则上游刻意丢掉的链路会在这里被捡回来。 写 0 是「新链路一条都不采」，但 Span 照常创建、TraceID 照常生成和透传—— 想让下游拿得到 TraceID、本地又不落 Span 时就这么配。 要连 Span 都不产生（noop provider）请用 Enable: false，那是另一件事。",
+          "pattern": "\\$\\{"
+        },
+        "ShutdownTimeout": {
+          "type": "string",
+          "description": "关闭时等待 Span 导出完成的上限。默认 5s，必须大于 0。 必须有上限：导出端不可达时 Shutdown 会一直阻塞， 没有 deadline 就是退出时挂死。 同样地，0 不是「不限时」而是「一点都不等」：Shutdown 拿到的是一个 已经过期的 context，缓冲区里还没发出去的 Span 会被直接丢掉。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

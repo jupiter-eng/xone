@@ -1,0 +1,23 @@
+go 1.25.0
+
+// 仓库内的模块一起开发：从根目录 go build ./... / go test ./... 会跨模块生效。
+// 注意 go list -m all 在工作区里会把所有模块的依赖并在一起，
+// 检查核心依赖足迹时必须 GOWORK=off。
+use (
+	.
+	./e2e
+	./example
+	./internal/schemagen
+	./xcache
+	./xcron
+	./xkafka
+	./xecho
+	./xgin
+	./xginswagger
+	./xgorm
+	./xgorm/clickhouse
+	./xhttp
+	./xmetric
+	./xredis
+	./xtrace
+)

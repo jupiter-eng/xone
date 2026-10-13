@@ -1,0 +1,186 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 964" width="1180" height="964" font-family="-apple-system, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif">
+  <title>xone 模块架构</title>
+  <style>
+    .bg{fill:#ffffff} .title{fill:#1e293b} .sub{fill:#64748b} .axis{stroke:#cbd5e1} .axis-t{fill:#94a3b8} .ok{fill:#16a34a}
+    .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    .app-band{fill:#f8fafc;stroke:#e2e8f0} .app-card{fill:#ffffff;stroke:#94a3b8} .app-t{fill:#1e293b} .app-m{fill:#475569} .app-lb{fill:#475569}
+    .srv-band{fill:#faf8ff;stroke:#e2e8f0} .srv-card{fill:#ede9fe;stroke:#a78bfa} .srv-t{fill:#5b21b6} .srv-m{fill:#6d28d9} .srv-lb{fill:#7c3aed}
+    .cli-band{fill:#f4fdfb;stroke:#e2e8f0} .cli-card{fill:#ccfbf1;stroke:#5eead4} .cli-t{fill:#115e59} .cli-m{fill:#0f766e} .cli-lb{fill:#0f766e}
+    .tel-band{fill:#f5fbff;stroke:#e2e8f0} .tel-card{fill:#e0f2fe;stroke:#7dd3fc} .tel-t{fill:#075985} .tel-m{fill:#0369a1} .tel-lb{fill:#0369a1}
+    .core-band{fill:#f8fafc;stroke:#e2e8f0} .core-card{fill:#e2e8f0;stroke:#cbd5e1} .core-t{fill:#334155} .core-m{fill:#475569} .core-lb{fill:#475569}
+    .lc-panel{fill:#fffcf2;stroke:#fde68a} .lc-t{fill:#92400e} .lc-m{fill:#b45309} .lc-arrow{stroke:#d97706;stroke-width:1.5}
+    .lc-pre{fill:#f1f5f9;stroke:#cbd5e1} .lc-pre-t{fill:#334155} .lc-pre-m{fill:#64748b}
+    .lc-st{fill:#fef3c7;stroke:#fbbf24} .lc-st-t{fill:#92400e} .lc-st-m{fill:#b45309}
+    .lc-run{fill:#dcfce7;stroke:#86efac} .lc-run-t{fill:#166534} .lc-run-m{fill:#15803d}
+    .lc-mirror{fill:#fef3c7;stroke:#fbbf24} .lc-mirror-t{fill:#92400e} .lc-mirror-m{fill:#78716c}
+    .lc-note{fill:#ffffff;stroke:#e2e8f0} .lc-note-t{fill:#475569} .lc-note-m{fill:#64748b}
+    .note{fill:#f8fafc;stroke:#e2e8f0} .note-t{fill:#334155} .note-m{fill:#475569} .dot{fill:#94a3b8}
+    .green{fill:#f0fdf4;stroke:#bbf7d0} .green-t{fill:#15803d} .green-m{fill:#166534}
+    .arrowhead{fill:#94a3b8} .arrowhead-amber{fill:#d97706}
+    @media (prefers-color-scheme: dark) {
+      .bg{fill:#0d1117} .title{fill:#e6edf3} .sub{fill:#9198a1} .axis{stroke:#3d444d} .axis-t{fill:#6e7681} .ok{fill:#3fb950}
+      .app-band{fill:#151b23;stroke:#30363d} .app-card{fill:#0d1117;stroke:#6e7681} .app-t{fill:#e6edf3} .app-m{fill:#9198a1} .app-lb{fill:#9198a1}
+      .srv-band{fill:#17132a;stroke:#30363d} .srv-card{fill:#2a1d4a;stroke:#7c3aed} .srv-t{fill:#ddd6fe} .srv-m{fill:#c4b5fd} .srv-lb{fill:#a78bfa}
+      .cli-band{fill:#0e1d1c;stroke:#30363d} .cli-card{fill:#0b2e2b;stroke:#14b8a6} .cli-t{fill:#99f6e4} .cli-m{fill:#5eead4} .cli-lb{fill:#2dd4bf}
+      .tel-band{fill:#0e1826;stroke:#30363d} .tel-card{fill:#0b2440;stroke:#0ea5e9} .tel-t{fill:#bae6fd} .tel-m{fill:#7dd3fc} .tel-lb{fill:#38bdf8}
+      .core-band{fill:#151b23;stroke:#30363d} .core-card{fill:#1e293b;stroke:#475569} .core-t{fill:#e2e8f0} .core-m{fill:#94a3b8} .core-lb{fill:#94a3b8}
+      .lc-panel{fill:#1a1508;stroke:#6b4e0f} .lc-t{fill:#fcd34d} .lc-m{fill:#d4a72c} .lc-arrow{stroke:#d29922}
+      .lc-pre{fill:#1e293b;stroke:#475569} .lc-pre-t{fill:#e2e8f0} .lc-pre-m{fill:#94a3b8}
+      .lc-st{fill:#2d220a;stroke:#9a6700} .lc-st-t{fill:#fcd34d} .lc-st-m{fill:#e3b341}
+      .lc-run{fill:#0f2e1b;stroke:#238636} .lc-run-t{fill:#7ee2a8} .lc-run-m{fill:#56d364}
+      .lc-mirror{fill:#2d220a;stroke:#9a6700} .lc-mirror-t{fill:#fcd34d} .lc-mirror-m{fill:#c9b68a}
+      .lc-note{fill:#0d1117;stroke:#3d444d} .lc-note-t{fill:#e6edf3} .lc-note-m{fill:#9198a1}
+      .note{fill:#151b23;stroke:#30363d} .note-t{fill:#e6edf3} .note-m{fill:#b1bac4} .dot{fill:#6e7681}
+      .green{fill:#0f2419;stroke:#1f6f3a} .green-t{fill:#56d364} .green-m{fill:#a6e3b8}
+      .arrowhead{fill:#6e7681} .arrowhead-amber{fill:#d29922}
+    }
+  </style>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" class="arrowhead"/></marker>
+    <marker id="arrowAmber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" class="arrowhead-amber"/></marker>
+  </defs>
+  <rect width="1180" height="964" class="bg"/>
+  <text x="32" y="44" font-size="25" font-weight="700" class="title">xone 模块架构</text>
+  <text x="32" y="68" font-size="13" class="sub">Go 三方库集成框架 —— 分层依赖与启动 / 退出顺序</text>
+  <line x1="20" y1="100" x2="20" y2="736" class="axis" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="14" y="422" font-size="11" text-anchor="middle" transform="rotate(-90 14 422)" class="axis-t">依赖方向：上层 → 下层</text>
+  <rect x="32" y="92" width="756" height="92" rx="8" class="app-band"/>
+  <text x="46" y="116" font-size="11" font-weight="700" letter-spacing=".5" class="app-lb">APPLICATION</text>
+  <text x="46" y="134" font-size="13" font-weight="600" class="app-t">你的代码</text>
+  <rect x="152.0" y="107" width="624.0" height="62" rx="6" class="app-card" stroke-dasharray="4 3"/>
+  <text x="464.0" y="132" font-size="14" font-weight="700" text-anchor="middle" class="app-t mono">xone.MustRun(xgin.New().WithRoutes(routes))</text>
+  <text x="464.0" y="153" font-size="11" text-anchor="middle" class="app-m mono">xconfig.Unmarshal · xhook.BeforeStart · xgorm.CWithCtx(ctx) · slog.InfoContext(ctx, …)</text>
+  <rect x="32" y="196" width="756" height="92" rx="8" class="srv-band"/>
+  <text x="46" y="220" font-size="11" font-weight="700" letter-spacing=".5" class="srv-lb">SERVER</text>
+  <text x="46" y="238" font-size="13" font-weight="600" class="srv-t">服务</text>
+  <text x="46" y="256" font-size="10.5" class="srv-m">StageServer</text>
+  <rect x="152.0" y="211" width="200.0" height="62" rx="6" class="srv-card"/>
+  <text x="252.0" y="237" font-size="14" font-weight="700" text-anchor="middle" class="srv-t">xgin</text>
+  <text x="252.0" y="256" font-size="10.5" text-anchor="middle" class="srv-m">*gin.Engine · 日志 · 链路 · 指标</text>
+  <rect x="364.0" y="211" width="200.0" height="62" rx="6" class="srv-card"/>
+  <text x="464.0" y="237" font-size="14" font-weight="700" text-anchor="middle" class="srv-t">xecho</text>
+  <text x="464.0" y="256" font-size="10.5" text-anchor="middle" class="srv-m">*echo.Echo · 与 xgin 同一套行为</text>
+  <rect x="576.0" y="211" width="200.0" height="62" rx="6" class="srv-card"/>
+  <text x="676.0" y="237" font-size="14" font-weight="700" text-anchor="middle" class="srv-t">xginswagger</text>
+  <text x="676.0" y="256" font-size="10.5" text-anchor="middle" class="srv-m">Swagger UI（xgin）</text>
+  <rect x="32" y="300" width="756" height="164" rx="8" class="cli-band"/>
+  <text x="46" y="324" font-size="11" font-weight="700" letter-spacing=".5" class="cli-lb">CLIENT</text>
+  <text x="46" y="342" font-size="13" font-weight="600" class="cli-t">客户端</text>
+  <text x="46" y="360" font-size="10.5" class="cli-m">StageClient</text>
+  <rect x="152.0" y="315" width="200.0" height="62" rx="6" class="cli-card"/>
+  <text x="252.0" y="341" font-size="14" font-weight="700" text-anchor="middle" class="cli-t">xgorm</text>
+  <text x="252.0" y="360" font-size="10.5" text-anchor="middle" class="cli-m">*gorm.DB · MySQL / PostgreSQL</text>
+  <rect x="364.0" y="315" width="200.0" height="62" rx="6" class="cli-card"/>
+  <text x="464.0" y="341" font-size="13" font-weight="700" text-anchor="middle" class="cli-t">xgorm/clickhouse</text>
+  <text x="464.0" y="360" font-size="10.5" text-anchor="middle" class="cli-m">ClickHouse 驱动</text>
+  <rect x="576.0" y="315" width="200.0" height="62" rx="6" class="cli-card"/>
+  <text x="676.0" y="341" font-size="14" font-weight="700" text-anchor="middle" class="cli-t">xredis</text>
+  <text x="676.0" y="360" font-size="10.5" text-anchor="middle" class="cli-m">*redis.Client · 多实例</text>
+  <rect x="152.0" y="387" width="200.0" height="62" rx="6" class="cli-card"/>
+  <text x="252.0" y="413" font-size="14" font-weight="700" text-anchor="middle" class="cli-t">xcache</text>
+  <text x="252.0" y="432" font-size="10.5" text-anchor="middle" class="cli-m">ristretto · 本地缓存</text>
+  <rect x="364.0" y="387" width="200.0" height="62" rx="6" class="cli-card"/>
+  <text x="464.0" y="413" font-size="14" font-weight="700" text-anchor="middle" class="cli-t">xhttp</text>
+  <text x="464.0" y="432" font-size="10.5" text-anchor="middle" class="cli-m">*resty.Client · 重试 · 出站指标</text>
+  <rect x="576.0" y="387" width="200.0" height="62" rx="6" class="cli-card" stroke-dasharray="4 3"/>
+  <text x="676.0" y="413" font-size="14" font-weight="700" text-anchor="middle" class="cli-t">你的集成</text>
+  <text x="676.0" y="432" font-size="10.5" text-anchor="middle" class="cli-m">xhook + xconfig 就能接进来</text>
+  <rect x="32" y="476" width="756" height="92" rx="8" class="tel-band"/>
+  <text x="46" y="500" font-size="11" font-weight="700" letter-spacing=".5" class="tel-lb">TELEMETRY</text>
+  <text x="46" y="518" font-size="13" font-weight="600" class="tel-t">遥测</text>
+  <text x="46" y="536" font-size="10.5" class="tel-m">StageTelemetry</text>
+  <rect x="152.0" y="491" width="306.0" height="62" rx="6" class="tel-card"/>
+  <text x="305.0" y="517" font-size="14" font-weight="700" text-anchor="middle" class="tel-t">xtrace</text>
+  <text x="305.0" y="536" font-size="10.5" text-anchor="middle" class="tel-m">OpenTelemetry · 全局 TracerProvider</text>
+  <rect x="470.0" y="491" width="306.0" height="62" rx="6" class="tel-card"/>
+  <text x="623.0" y="517" font-size="14" font-weight="700" text-anchor="middle" class="tel-t">xmetric</text>
+  <text x="623.0" y="536" font-size="10.5" text-anchor="middle" class="tel-m">Prometheus · /metrics</text>
+  <rect x="32" y="580" width="756" height="164" rx="8" class="core-band"/>
+  <text x="46" y="604" font-size="11" font-weight="700" letter-spacing=".5" class="core-lb">CORE</text>
+  <text x="46" y="622" font-size="13" font-weight="600" class="core-t">核心 module</text>
+  <text x="46" y="640" font-size="10.5" class="ok">只依赖 yaml</text>
+  <rect x="152.0" y="595" width="147.0" height="62" rx="6" class="core-card"/>
+  <text x="225.5" y="621" font-size="14" font-weight="700" text-anchor="middle" class="core-t">xone.Run</text>
+  <text x="225.5" y="640" font-size="10.5" text-anchor="middle" class="core-m">按档位启动 · 逆序关闭</text>
+  <rect x="311.0" y="595" width="147.0" height="62" rx="6" class="core-card"/>
+  <text x="384.5" y="621" font-size="14" font-weight="700" text-anchor="middle" class="core-t">xconfig</text>
+  <text x="384.5" y="640" font-size="10.5" text-anchor="middle" class="core-m">懒加载 · 严格解码</text>
+  <rect x="470.0" y="595" width="147.0" height="62" rx="6" class="core-card"/>
+  <text x="543.5" y="621" font-size="14" font-weight="700" text-anchor="middle" class="core-t">xhook</text>
+  <text x="543.5" y="640" font-size="10.5" text-anchor="middle" class="core-m">BeforeStart / BeforeStop</text>
+  <rect x="629.0" y="595" width="147.0" height="62" rx="6" class="core-card"/>
+  <text x="702.5" y="621" font-size="14" font-weight="700" text-anchor="middle" class="core-t">xlog</text>
+  <text x="702.5" y="640" font-size="10.5" text-anchor="middle" class="core-m">slog · 随 xgin / xecho 来</text>
+  <rect x="152.0" y="667" width="147.0" height="62" rx="6" class="core-card"/>
+  <text x="225.5" y="693" font-size="14" font-weight="700" text-anchor="middle" class="core-t">xflow</text>
+  <text x="225.5" y="712" font-size="10.5" text-anchor="middle" class="core-m">流程编排 · 失败回滚</text>
+  <rect x="311.0" y="667" width="147.0" height="62" rx="6" class="core-card"/>
+  <text x="384.5" y="693" font-size="14" font-weight="700" text-anchor="middle" class="core-t">xerror</text>
+  <text x="384.5" y="712" font-size="10.5" text-anchor="middle" class="core-m">模块名 · 操作名</text>
+  <rect x="470.0" y="667" width="147.0" height="62" rx="6" class="core-card"/>
+  <text x="543.5" y="693" font-size="14" font-weight="700" text-anchor="middle" class="core-t">xapp · xtls</text>
+  <text x="543.5" y="712" font-size="10.5" text-anchor="middle" class="core-m">应用信息 · 客户端 TLS</text>
+  <rect x="629.0" y="667" width="147.0" height="62" rx="6" class="core-card"/>
+  <text x="702.5" y="693" font-size="14" font-weight="700" text-anchor="middle" class="core-t">xonetest</text>
+  <text x="702.5" y="712" font-size="10.5" text-anchor="middle" class="core-m">测试里换配置</text>
+  <rect x="812" y="92" width="336" height="652" rx="8" class="lc-panel"/>
+  <text x="832" y="118" font-size="13" font-weight="700" class="lc-t">启动与退出</text>
+  <text x="832" y="137" font-size="10.5" class="lc-m">init() 只登记，xone.Run 按档位依次执行</text>
+  <text x="832" y="152" font-size="10.5" class="lc-m">同一档内的先后不能依赖</text>
+  <rect x="832" y="168" width="296" height="30" rx="5" class="lc-pre"/>
+  <text x="844" y="187.5" font-size="12" font-weight="700" class="lc-pre-t">接管信号</text>
+  <text x="1116" y="187.5" font-size="10.5" text-anchor="end" class="lc-pre-m">SIGINT · SIGTERM，读配置之前</text>
+  <line x1="980" y1="198" x2="980" y2="208" class="lc-arrow" marker-end="url(#arrowAmber)"/>
+  <rect x="832" y="208" width="296" height="30" rx="5" class="lc-pre"/>
+  <text x="844" y="227.5" font-size="12" font-weight="700" class="lc-pre-t">加载配置</text>
+  <text x="1116" y="227.5" font-size="10.5" text-anchor="end" class="lc-pre-m">字段拼错、${VAR} 没设都报错</text>
+  <line x1="980" y1="238" x2="980" y2="248" class="lc-arrow" marker-end="url(#arrowAmber)"/>
+  <rect x="832" y="248" width="296" height="30" rx="5" class="lc-st"/>
+  <text x="844" y="267.5" font-size="12" font-weight="700" class="lc-st-t">Log</text>
+  <text x="1116" y="267.5" font-size="10.5" text-anchor="end" class="lc-st-m">xlog · xapp · xflow</text>
+  <line x1="980" y1="278" x2="980" y2="288" class="lc-arrow" marker-end="url(#arrowAmber)"/>
+  <rect x="832" y="288" width="296" height="30" rx="5" class="lc-st"/>
+  <text x="844" y="307.5" font-size="12" font-weight="700" class="lc-st-t">Telemetry</text>
+  <text x="1116" y="307.5" font-size="10.5" text-anchor="end" class="lc-st-m">xtrace · xmetric</text>
+  <line x1="980" y1="318" x2="980" y2="328" class="lc-arrow" marker-end="url(#arrowAmber)"/>
+  <rect x="832" y="328" width="296" height="30" rx="5" class="lc-st"/>
+  <text x="844" y="347.5" font-size="12" font-weight="700" class="lc-st-t">Client</text>
+  <text x="1116" y="347.5" font-size="10.5" text-anchor="end" class="lc-st-m">xgorm · xredis · xcache · xhttp</text>
+  <line x1="980" y1="358" x2="980" y2="368" class="lc-arrow" marker-end="url(#arrowAmber)"/>
+  <rect x="832" y="368" width="296" height="30" rx="5" class="lc-st"/>
+  <text x="844" y="387.5" font-size="12" font-weight="700" class="lc-st-t">Business</text>
+  <text x="1116" y="387.5" font-size="10.5" text-anchor="end" class="lc-st-m">你的钩子（不写档位就在这）</text>
+  <line x1="980" y1="398" x2="980" y2="408" class="lc-arrow" marker-end="url(#arrowAmber)"/>
+  <rect x="832" y="408" width="296" height="30" rx="5" class="lc-st"/>
+  <text x="844" y="427.5" font-size="12" font-weight="700" class="lc-st-t">Server</text>
+  <text x="1116" y="427.5" font-size="10.5" text-anchor="end" class="lc-st-m">xgin · xecho · xginswagger</text>
+  <line x1="980" y1="438" x2="980" y2="448" class="lc-arrow" marker-end="url(#arrowAmber)"/>
+  <rect x="832" y="448" width="296" height="30" rx="5" class="lc-run"/>
+  <text x="844" y="467.5" font-size="12" font-weight="700" class="lc-run-t">Runnable.Start</text>
+  <text x="1116" y="467.5" font-size="10.5" text-anchor="end" class="lc-run-m">开始接请求</text>
+  <rect x="832" y="492" width="296" height="81" rx="5" class="lc-mirror"/>
+  <text x="844" y="512" font-size="12" font-weight="700" class="lc-mirror-t">退出 = 启动的镜像</text>
+  <text x="844" y="531" font-size="10.5" class="lc-mirror-m">收到信号 → 取消 Start 的 ctx → Runnable 收尾</text>
+  <text x="844" y="548" font-size="10.5" class="lc-mirror-m">停止钩子逆序：Server → … → Log，xlog 最后关</text>
+  <text x="844" y="565" font-size="10.5" class="lc-mirror-m">第二个信号直接终止卡住的进程</text>
+  <rect x="832" y="583" width="296" height="64" rx="5" class="lc-note"/>
+  <text x="844" y="603" font-size="12" font-weight="700" class="lc-note-t">启动失败自动回滚</text>
+  <text x="844" y="622" font-size="10.5" class="lc-note-m">任何一个启动钩子失败，已经起来的逆序关掉</text>
+  <text x="844" y="639" font-size="10.5" class="lc-note-m">停止钩子只在配对的启动钩子成功之后才执行</text>
+  <rect x="832" y="657" width="296" height="64" rx="5" class="lc-note"/>
+  <text x="844" y="677" font-size="12" font-weight="700" class="lc-note-t">一份停止预算</text>
+  <text x="844" y="696" font-size="10.5" class="lc-note-m">xone.WithStopTimeout，默认 15s</text>
+  <text x="844" y="713" font-size="10.5" class="lc-note-m">整个退出流程共用；服务那一段最多占 2/3</text>
+  <rect x="32" y="760" width="1116" height="100" rx="8" class="note"/>
+  <text x="48" y="784" font-size="13" font-weight="700" class="note-t">模块之间</text>
+  <circle cx="54" cy="802" r="3" class="dot"/>
+  <text x="66" y="806" font-size="11.5" class="note-m">每个带三方依赖的集成是<tspan font-weight="700">独立的 Go module</tspan>：import 了才进你的模块图，不用的一个依赖都不带。</text>
+  <circle cx="54" cy="824" r="3" class="dot"/>
+  <text x="66" y="828" font-size="11.5" class="note-m"><tspan font-weight="700">指标、链路跟着集成来</tspan>：xgin / xecho / xgorm / xredis / xhttp 带着 xtrace 和 xmetric，xcache 带着 xmetric；<tspan font-weight="700">xlog 只跟着 xgin / xecho 来</tspan>。</text>
+  <circle cx="54" cy="846" r="3" class="dot"/>
+  <text x="66" y="850" font-size="11.5" class="note-m">集成只经 <tspan font-weight="700">xhook</tspan> 登记、经 <tspan font-weight="700">xconfig</tspan> 读配置，不 import 根包；每个集成都导出不碰全局的纯构造器 <tspan font-weight="700">New</tspan>，离开框架也能用。</text>
+  <rect x="32" y="872" width="1116" height="72" rx="8" class="green"/>
+  <text x="48" y="895" font-size="12.5" font-weight="700" class="green-t">拿到的是原生 client</text>
+  <text x="48" y="915" font-size="11.5" class="green-m">*gorm.DB、*redis.Client、*gin.Engine、*echo.Echo、*resty.Client、标准库 slog、OpenTelemetry、Prometheus —— 不学新 API，底层库的文档照样能用。</text>
+  <text x="48" y="933" font-size="11.5" class="green-m">框架只管读配置、按档位建好、退出时逆序关掉；每个库的默认值都量过，不安全的改掉了（见 docs/behavior.md）。</text>
+</svg>

@@ -1,0 +1,15 @@
+# ClickHouse 实例 ch：application.yml 的 profile 变体，--profile=ch 时叠上去。
+# harness 在 Options.ClickHouse 时激活它（和测试自己的 overlay 一起就是 --profile=ch,e2e，
+# overlay 在后、压过这里）。其余用例的进程没有这个实例，/ch/... 一律 503——
+# 这样没有 ClickHouse 的机器上，别的 e2e 照样跑得起来。
+#
+#   E2E_CH_DSN       XGorm.Clients.ch.DSN（激活时必填），clickhouse://user:pass@host:9000/db
+#
+# 其余配置项一律取 xgorm 的默认值：DialTimeout 500ms 注进 DSN 的 dial_timeout，
+# read_timeout 不注入（驱动默认 300s），连接池 50 / 50 / 5m / 5m。
+
+XGorm:
+  Clients:
+    ch:
+      Driver: clickhouse
+      DSN: "${E2E_CH_DSN}"

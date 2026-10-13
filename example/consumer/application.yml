@@ -1,0 +1,20 @@
+XApp:
+  Name: xone.demo.consumer
+  Version: v0.1.0
+
+XLog:
+  Level: info
+  Format: json
+
+XMetric:
+  Namespace: demo
+
+XCache:
+  MaxCost: 10000
+
+# 业务自己的配置块。读它的是 main 里那次 conf.Load()——
+# 没人读的顶层 key 会让进程直接起不来，而不是被静默忽略
+MyApp:
+  Topic: orders
+  Workers: 4
+  MessageTimeout: 5s

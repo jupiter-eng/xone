@@ -1,0 +1,31 @@
+# go.work 入库：这是个多模块的仓库，模块之间靠 replace 互指。
+# 不提交的话，每个人都要自己拼一份，IDE 打开根目录只认得根模块，
+# docs/development.md 里的 go run ./example 也是假的。
+# 注意 scripts/check.sh / scripts/test.sh 一律用 GOWORK=off 逐模块跑——
+# 工作区会遮住某个模块自己 go.mod 的问题，那必须由 CI 抓出来。
+
+# 构建产物
+/bin/
+*.out
+
+# go build 默认把二进制产在包目录里，名字就是目录名。
+# 误提交过一次 example/example（36.9 MB），所以这里按「无扩展名的可执行文件」挡
+/example/example
+/example/consumer/consumer
+# go build ./internal/schemagen 在根目录产出的就是它，同样误提交过一次（3.4 MB）
+/schemagen
+
+# .claude/ 里只签入 CLAUDE.md 和 skills/；工作树副本和本机设置不进仓库
+/.claude/worktrees/
+/.claude/settings.local.json
+
+# CI 里 e2e 的输出（tee e2e.log）。不挡的话它让工作区变脏，release.sh 就拒绝打 tag
+/e2e.log
+
+# Python 的字节码缓存（scripts/mutate.py 导入 scripts/mutations/ 时产出）
+__pycache__/
+
+# IDE
+.idea/
+.vscode/
+.DS_Store

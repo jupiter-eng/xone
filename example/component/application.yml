@@ -1,0 +1,13 @@
+# 业务自己的配置块，由 conf 包认领
+MyApp:
+  Greeting: "hello from config"
+  Rounds: 3
+
+# 自己写的集成，由 xkv 包认领
+XKV:
+  Path: "/tmp/xkv-example.json"
+  FlushInterval: 1s
+
+XLog:
+  Level: info
+  Console: true

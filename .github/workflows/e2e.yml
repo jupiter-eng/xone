@@ -1,0 +1,152 @@
+name: e2e
+
+# 真实 Web 服务测试（scripts/e2e.sh，不含压测）。比 CI 慢得多，不是每个 PR 都跑：
+#   - 改了任何 go.mod / go.sum 的 PR：升级依赖正是「默认值变了没人知道」的时候；
+#   - 每晚一次，外加全量变异测试；
+#   - 手动触发（同样带变异测试）。
+on:
+  pull_request:
+    paths: ['**/go.mod', '**/go.sum']
+  schedule:
+    - cron: '0 18 * * *' # UTC 18:00，北京时间 02:00
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# 只读代码：这里没有一步要写仓库，token 给多了，被测代码或依赖里有什么就能拿它写
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # 账号、密码、库名和 e2e/compose.yml、e2e/harness 的默认值一致。
+    # 镜像走 mirror.gcr.io（Docker Hub 的公开镜像缓存）；ClickHouse 的 TLS 用例还会用同一个镜像再起一个容器。
+    # Kafka 的参数和 e2e/compose.yml 一致（KRaft 单节点）
+    services:
+      postgres:
+        image: mirror.gcr.io/library/postgres:16
+        env:
+          POSTGRES_USER: xone
+          POSTGRES_PASSWORD: e2e-secret-pw
+          POSTGRES_DB: xone_e2e
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U xone -d xone_e2e"
+          --health-interval 2s --health-retries 30
+      mysql:
+        image: mirror.gcr.io/library/mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: e2e-root-pw
+          MYSQL_USER: xone
+          MYSQL_PASSWORD: e2e-secret-pw
+          MYSQL_DATABASE: xone_e2e
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uxone -pe2e-secret-pw"
+          --health-interval 2s --health-retries 60
+      redis:
+        image: mirror.gcr.io/library/redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s --health-retries 30
+      clickhouse:
+        image: mirror.gcr.io/clickhouse/clickhouse-server:24.8
+        env:
+          CLICKHOUSE_USER: xone
+          CLICKHOUSE_PASSWORD: e2e-secret-pw
+          CLICKHOUSE_DB: xone_e2e
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: '1'
+        ports: ['9000:9000', '8123:8123']
+        options: >-
+          --health-cmd "wget -qO- http://127.0.0.1:8123/ping"
+          --health-interval 2s --health-retries 60
+      kafka:
+        image: mirror.gcr.io/apache/kafka:3.9.1
+        env:
+          KAFKA_NODE_ID: '1'
+          KAFKA_PROCESS_ROLES: broker,controller
+          KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://127.0.0.1:9092
+          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: '1'
+          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: '1'
+          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: '1'
+          KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: '0'
+        ports: ['9092:9092']
+        options: >-
+          --health-cmd "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server 127.0.0.1:9092"
+          --health-interval 3s --health-retries 40
+    env:
+      # 服务由上面的容器管着：e2e.sh 只等它们就绪，不去 pg_ctlcluster / service mysql start
+      XONE_E2E_EXTERNAL: '1'
+      XONE_E2E_PG_ADDR: 127.0.0.1:5432
+      XONE_E2E_MYSQL_ADDR: 127.0.0.1:3306
+      XONE_E2E_REDIS_ADDR: 127.0.0.1:6379
+      XONE_E2E_CH_ADDR: 127.0.0.1:9000
+      XONE_E2E_CH_HTTP_ADDR: 127.0.0.1:8123
+      XONE_E2E_KAFKA_ADDR: 127.0.0.1:9092
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: true
+          cache-dependency-path: '**/go.sum'
+
+      # PG / MySQL / Redis 的 TLS 用例跳过：它们用本机的 initdb / mysqld / redis-server
+      # 在临时目录里自己起一个只收 TLS 的实例，文件要 chown 给 postgres / mysql 系统账号，
+      # 得是 root；runner 不是 root，mysqld 还被 AppArmor 限在 /var/lib/mysql。
+      # 这三条在本机跑 scripts/e2e.sh 时照跑；xgin / xhttp / ClickHouse 的 TLS 用例在这里照跑
+      # shell: bash 写明了才带 pipefail：默认的 bash -e 只看 tee 的退出码，测试红了这一步照样绿
+      - name: scripts/e2e.sh
+        shell: bash
+        run: scripts/e2e.sh -skip 'TestTLS_(PostgreSQL|MySQL|Redis)$' 2>&1 | tee e2e.log
+
+      # KNOWN BUG：测试揭示出来、还没修的框架 bug，打印原因并跳过（见 e2e/doc.go）。
+      # 跳过不会让任务变红，所以数目放进任务摘要，一眼看得见
+      - name: summary
+        if: always()
+        run: |
+          [ -f e2e.log ] || exit 0
+          bugs=$(grep -c 'KNOWN BUG: ' e2e.log || true)
+          {
+            echo "### e2e"
+            echo
+            echo "| pass | fail | skip | KNOWN BUG |"
+            echo "|---:|---:|---:|---:|"
+            echo "| $(grep -cE '^ *--- PASS' e2e.log) | $(grep -cE '^ *--- FAIL' e2e.log) | $(grep -cE '^ *--- SKIP' e2e.log) | **$bugs** |"
+            if [ "$bugs" -gt 0 ]; then
+              echo
+              grep -oE 'KNOWN BUG: .*' e2e.log | sed 's/^/- /'
+            fi
+            if grep -q 'ClickHouse is unavailable' e2e.log; then
+              echo
+              echo "⚠ ClickHouse 不可用，CH 的用例都跳过了"
+            fi
+            if grep -q 'Kafka is unavailable' e2e.log; then
+              echo
+              echo "⚠ Kafka 不可用，Kafka 的用例都跳过了"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # 全量变异测试：把每条承诺改坏，看有没有测试会失败（scripts/mutate.py）。
+  # 不需要数据库，只跑单元测试；每晚和手动触发时跑，PR 上不跑
+  mutate:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: true
+          cache-dependency-path: '**/go.sum'
+      - run: scripts/mutate.py

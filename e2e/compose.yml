@@ -1,0 +1,90 @@
+# e2e 要的五个服务，账号、密码、库名和 scripts/e2e.sh / e2e/harness 的默认值一致。
+#
+#   docker compose -f e2e/compose.yml up -d --wait   # 起来并等到健康
+#   scripts/e2e.sh
+#   docker compose -f e2e/compose.yml down           # 数据不落盘，down 了就没了
+#
+# 本机默认端口被占了（比如装了系统自带的 PostgreSQL）就换一个，再用同一组变量告诉 e2e.sh：
+#
+#   XONE_E2E_PG_PORT=15432 docker compose -f e2e/compose.yml up -d --wait
+#   XONE_E2E_PG_ADDR=127.0.0.1:15432 scripts/e2e.sh
+#
+# 镜像走 mirror.gcr.io（Docker Hub 的公开镜像缓存，内容相同），免得撞上 Docker Hub 的拉取限额；
+# CI 的 e2e 工作流用的是同一组镜像。
+name: xone-e2e
+
+services:
+  postgres:
+    image: mirror.gcr.io/library/postgres:16
+    environment:
+      POSTGRES_USER: xone
+      POSTGRES_PASSWORD: e2e-secret-pw
+      POSTGRES_DB: xone_e2e
+    ports: ["127.0.0.1:${XONE_E2E_PG_PORT:-5432}:5432"]
+    tmpfs: [/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "xone", "-d", "xone_e2e"]
+      interval: 2s
+      retries: 30
+
+  mysql:
+    image: mirror.gcr.io/library/mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: e2e-root-pw
+      MYSQL_USER: xone
+      MYSQL_PASSWORD: e2e-secret-pw
+      MYSQL_DATABASE: xone_e2e
+    ports: ["127.0.0.1:${XONE_E2E_MYSQL_PORT:-3306}:3306"]
+    tmpfs: [/var/lib/mysql]
+    healthcheck:
+      # 初始化期间的临时实例不开 TCP：连得上 127.0.0.1 才是正式起来了
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uxone", "-pe2e-secret-pw"]
+      interval: 2s
+      retries: 60
+
+  redis:
+    image: mirror.gcr.io/library/redis:7
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports: ["127.0.0.1:${XONE_E2E_REDIS_PORT:-6379}:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      retries: 30
+
+  clickhouse:
+    image: mirror.gcr.io/clickhouse/clickhouse-server:24.8
+    environment:
+      CLICKHOUSE_USER: xone
+      CLICKHOUSE_PASSWORD: e2e-secret-pw
+      CLICKHOUSE_DB: xone_e2e
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+    ports:
+      - "127.0.0.1:${XONE_E2E_CH_PORT:-9000}:9000"
+      - "127.0.0.1:${XONE_E2E_CH_HTTP_PORT:-8123}:8123"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8123/ping"]
+      interval: 2s
+      retries: 60
+
+  # KRaft 单节点。apache/kafka 的镜像只要给了任何一个 KAFKA_ 环境变量就不再用自带的默认配置，所以整组都要写全。
+  # GROUP_INITIAL_REBALANCE_DELAY_MS 默认 3000：每个新消费组的首次分配多等 3s，e2e 里每个用例都要入组，关掉
+  kafka:
+    image: mirror.gcr.io/apache/kafka:3.9.1
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://127.0.0.1:${XONE_E2E_KAFKA_PORT:-9092}
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+    ports: ["127.0.0.1:${XONE_E2E_KAFKA_PORT:-9092}:9092"]
+    tmpfs: [/tmp/kraft-combined-logs]
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "127.0.0.1:9092"]
+      interval: 3s
+      retries: 40

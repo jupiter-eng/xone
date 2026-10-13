@@ -1,0 +1,20 @@
+XApp:
+  Name: xone.demo.app
+  Version: v0.1.0
+
+XLog:
+  Level: info
+  Format: json
+
+XTrace:
+  SampleRatio: 1
+  ForwardHeaders:           # 只收 XGin.TrustedProxies 里的对端发来的值，默认只信私有网段
+    - X-Request-Id
+
+XMetric:
+  Namespace: demo
+  ConstLabels:
+    env: "${ENV:dev}"
+
+XGin:
+  Port: 8080

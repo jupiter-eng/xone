@@ -1,0 +1,207 @@
+name: release
+
+# 发布按钮：Actions → release → Run workflow，填版本号（如 v0.1.0）。
+#
+# 发布分两步，这个按钮是第二步：
+#   1. scripts/release.sh vX.Y.Z --bump 改好 go.mod、CHANGELOG 和 README 的安装版本号，走普通的 PR 合进 main；
+#   2. 点这个按钮：在 main 的最新提交上给每个模块打 tag（v0.1.0、xgin/v0.1.0……）并推送。
+# tag 就打在 main 上，main 的分支保护照常生效：这里只推 tag，不推任何分支。
+#
+# 按钮做的事：
+#   - release.sh --tag：确认 go.mod 已经钉到这个版本、CHANGELOG 有这一节、tag 还没用过，
+#     跑检查和单测，在本地打 tag；
+#   - e2e（真实的 PG / MySQL / Redis / ClickHouse，同 e2e.yml）；
+#   - release.sh --smoke：和 --verify 同一个外部工程、同一套检查，依赖指向本地代码；
+#   - 只推这一组 tag（--atomic：要么全上去，要么一个都不上去）；
+#   - release.sh --verify（单独的 verify job）：在一个全新的外部工程里 go get，验证装得上、跑得起来。
+# 前面任何一步红了都不推送。tag 推出去就被 Go 的 module proxy 永久缓存，删不掉。
+#
+# verify 单独成一个 job，是为了红了能重跑：推送之后的失败（最常见的是 proxy 还没拉到新 tag）
+# 点「Re-run failed jobs」只重跑 verify。和打 tag 放在同一个 job 里的话，重跑会从头来一遍，
+# 重新拉下来的 tag 让 release.sh --tag 在第一步就停下，而那时版本早已发出去了。
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号，vX.Y.Z（只收 v0 / v1）'
+        required: true
+        type: string
+
+# 同一时间只跑一个发布
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+# 默认只读；只有 release job 要写（推 tag）
+permissions:
+  contents: read
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: write # 推 tag
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # 和 e2e.yml 同一套服务容器，账号密码与 e2e/compose.yml、e2e/harness 的默认值一致
+    services:
+      postgres:
+        image: mirror.gcr.io/library/postgres:16
+        env:
+          POSTGRES_USER: xone
+          POSTGRES_PASSWORD: e2e-secret-pw
+          POSTGRES_DB: xone_e2e
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U xone -d xone_e2e"
+          --health-interval 2s --health-retries 30
+      mysql:
+        image: mirror.gcr.io/library/mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: e2e-root-pw
+          MYSQL_USER: xone
+          MYSQL_PASSWORD: e2e-secret-pw
+          MYSQL_DATABASE: xone_e2e
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uxone -pe2e-secret-pw"
+          --health-interval 2s --health-retries 60
+      redis:
+        image: mirror.gcr.io/library/redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s --health-retries 30
+      clickhouse:
+        image: mirror.gcr.io/clickhouse/clickhouse-server:24.8
+        env:
+          CLICKHOUSE_USER: xone
+          CLICKHOUSE_PASSWORD: e2e-secret-pw
+          CLICKHOUSE_DB: xone_e2e
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: '1'
+        ports: ['9000:9000', '8123:8123']
+        options: >-
+          --health-cmd "wget -qO- http://127.0.0.1:8123/ping"
+          --health-interval 2s --health-retries 60
+      kafka:
+        image: mirror.gcr.io/apache/kafka:3.9.1
+        env:
+          KAFKA_NODE_ID: '1'
+          KAFKA_PROCESS_ROLES: broker,controller
+          KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://127.0.0.1:9092
+          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: '1'
+          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: '1'
+          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: '1'
+          KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: '0'
+        ports: ['9092:9092']
+        options: >-
+          --health-cmd "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server 127.0.0.1:9092"
+          --health-interval 3s --health-retries 40
+    env:
+      # 版本号经环境变量进脚本，不直接拼进 run：输入框里的内容不该有机会变成命令
+      VERSION: ${{ inputs.version }}
+      XONE_E2E_EXTERNAL: '1'
+      XONE_E2E_PG_ADDR: 127.0.0.1:5432
+      XONE_E2E_MYSQL_ADDR: 127.0.0.1:3306
+      XONE_E2E_REDIS_ADDR: 127.0.0.1:6379
+      XONE_E2E_CH_ADDR: 127.0.0.1:9000
+      XONE_E2E_CH_HTTP_ADDR: 127.0.0.1:8123
+      XONE_E2E_KAFKA_ADDR: 127.0.0.1:9092
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # release.sh 要看这个版本的 tag 是不是已经有了
+          # 不把能写仓库的 token 留在 .git/config 里：后面的检查、单测、e2e 跑的是仓库和依赖的代码，
+          # 用不着它。token 只交给推送和 summary 两步，经环境变量，不落盘
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: true
+          cache-dependency-path: '**/go.sum'
+
+      - name: release.sh --tag（确认可以发、检查、单测、在本地打 tag）
+        run: scripts/release.sh "$VERSION" --tag --e2e-passed
+
+      # 跳过的三条同 e2e.yml：PG / MySQL / Redis 的 TLS 用例要 root 起本机实例，runner 不是 root。
+      # 上一步用了 --e2e-passed，由这一步兑现：这里红了，tag 只在这台机器上，不会推出去
+      - name: e2e
+        run: scripts/e2e.sh -skip 'TestTLS_(PostgreSQL|MySQL|Redis)$'
+
+      # 和推送之后的 --verify 同一个外部工程、同一套检查，依赖指向本地这个打了 tag 的提交。
+      # v1.13.0 的 --verify 在 tag 推出去之后才红；这一步红了，tag 还只在这台机器上
+      - name: release.sh --smoke（推送之前：外部工程用本地代码起得来、关得对）
+        run: scripts/release.sh "$VERSION" --smoke
+
+      - name: 推送 tag
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          refs=$(git tag --points-at "$VERSION" | sed 's|^|refs/tags/|')
+          echo "$refs"
+          git push --atomic "https://x-access-token:$TOKEN@${GITHUB_SERVER_URL#https://}/$GITHUB_REPOSITORY.git" $refs
+
+      # 推没推出去以远端为准，不看本地：本地有 tag 只说明打了，前面哪一步红了的话它从没离开过这台 runner。
+      # 推送那一步自己的退出码也不够：连接在服务端收下之后断掉，推送红了，tag 却已经上去了
+      - name: summary
+        if: always()
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          local_tags=$(git tag --list "$VERSION" "*/$VERSION" | tr '\n' ' ')
+          {
+            echo "### release $VERSION"
+            echo
+            if ! remote=$(git ls-remote --tags --refs "https://x-access-token:$TOKEN@${GITHUB_SERVER_URL#https://}/$GITHUB_REPOSITORY.git" "$VERSION"); then
+              echo "⚠ 查不到远端的 tag（git ls-remote 失败），推没推出去看「推送 tag」那一步。本地打了的：${local_tags:-无}"
+            elif [ -n "$remote" ]; then
+              echo "远端已有（已推送）：$(echo "$remote" | sed 's|.*refs/tags/||' | tr '\n' ' ')"
+            elif [ -n "$local_tags" ]; then
+              echo "只在本地打了 tag，没有推送（tagged locally, not pushed）：$local_tags"
+              echo
+              echo "这些 tag 随这台 runner 一起丢掉，修好之后重新点发布按钮即可。"
+            else
+              echo "没有打 tag，也没有推送。"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # 推送之后的验证单独一个 job：红了点「Re-run failed jobs」只重跑这里（见文件开头）。
+  # 它只读 main 上的脚本、从 module proxy 拉已经发布的版本，不需要写权限，也不需要 tag
+  verify:
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+          cache: true
+          cache-dependency-path: '**/go.sum'
+
+      - name: release.sh --verify（外部工程装得上、跑得起来）
+        run: scripts/release.sh "$VERSION" --verify
+
+      - name: summary
+        if: always()
+        env:
+          STATUS: ${{ job.status }}
+        run: |
+          {
+            echo "### verify $VERSION"
+            echo
+            if [ "$STATUS" = success ]; then
+              echo "✓ 外部工程 go get 得到、跑得起来。"
+            else
+              echo "✗ --verify 没过。tag 已经推出去了：proxy 还没拉到新版本的话，过几分钟点「Re-run failed jobs」只重跑这个 job；"
+              echo "真有回归的话，这一版撤不回，修好之后发下一版。"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
