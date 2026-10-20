@@ -11,8 +11,14 @@
 # The second direction is the one that keeps the list honest. Without it the list outlives the
 # migration, nobody notices it is half fiction, and "the allowlist says so" stops meaning anything.
 #
-# Detection covers Han characters plus CJK punctuation and fullwidth forms: a line reading
-# "see above（the table）" has no Han character and is still Chinese typography.
+# Detection covers Han characters plus CJK punctuation and fullwidth forms: a line can carry a
+# fullwidth comma or fullwidth parentheses without a single Han character and still be Chinese
+# typography. The ranges are spelled as code points and never as literal characters, because a
+# checker that trips over its own source is a checker someone will delete.
+#
+# Only tracked (and staged) files are scanned, so a brand-new file has to be `git add`-ed before
+# this check can see it. That is exactly how this script shipped broken once: it was run before
+# the file was added, passed, and went red in CI.
 import pathlib
 import re
 import subprocess
@@ -20,7 +26,14 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 ALLOWLIST = ROOT / "scripts" / "zh_allowlist.txt"
-CJK = re.compile(r"[　-〿㐀-䶿一-鿿豈-﫿！-｠]")
+CJK_RANGES = (
+    (0x3000, 0x303F),  # CJK punctuation
+    (0x3400, 0x4DBF),  # CJK extension A
+    (0x4E00, 0x9FFF),  # CJK unified ideographs
+    (0xF900, 0xFAFF),  # compatibility ideographs
+    (0xFF01, 0xFF60),  # fullwidth forms
+)
+CJK = re.compile("[" + "".join(f"{chr(lo)}-{chr(hi)}" for lo, hi in CJK_RANGES) + "]")
 
 
 def tracked_files():
