@@ -90,7 +90,7 @@ func main() {
 - **任务要停得下来就得看 ctx**：Go 没有从外面停下一个协程的办法，取消 ctx 是能做的全部。
   xcron 是第一个停止钩子，能等的时间是「退出预算（`WithStopTimeout`，默认 15s）减去服务停下来用掉的，
   再给排在后面的每个停止钩子各留最多 1s」：只跑定时任务的进程里服务不占时间，接了 xgorm、xredis、xlog 等 6 个组件时约 9s；
-  Web 服务用满它那 2/3 时只剩几百毫秒。规则见 [`docs/architecture.md`「停止预算是一份」](../docs/architecture.md#停止预算是一份不是每个组件一份)。
+  Web 服务用满它那 2/3 时只剩几百毫秒。规则见 [`docs/architecture.md`「停止预算是一份」](../docs/architecture.md#the-stop-budget-is-one-budget-not-one-per-component)。
 
 ## 多副本
 
@@ -130,7 +130,7 @@ xcron.Add("0 3 * * *", func(ctx context.Context) error {
   卡住不返回的任务看不到结束那一行，退出时的报错会点名它。
 - 用了 xcron 就有 xlog（同 xgin）：只跑定时任务的进程也是 JSON 日志、带 `trace_id`。
 
-日志的全局约定见 [`docs/observability.md`](../docs/observability.md#日志)。
+日志的全局约定见 [`docs/observability.md`](../docs/observability.md#logs)。
 
 ### 链路
 

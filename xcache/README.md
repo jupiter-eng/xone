@@ -97,7 +97,7 @@ XCache:
 | `xcache created` | INFO | `name`、`max_cost`、`default_ttl`、`metric` |
 | `xcache ready` | INFO | `instances` |
 
-日志的全局约定（`trace_id` 注入、`xlog.AddKV`、框架的启停日志）见 [`docs/observability.md`](../docs/observability.md#日志)。
+日志的全局约定（`trace_id` 注入、`xlog.AddKV`、框架的启停日志）见 [`docs/observability.md`](../docs/observability.md#logs)。
 
 ### 指标
 
@@ -109,7 +109,7 @@ XCache:
 - **`cache_keys_evicted_total`** 不只是容量满了被挤掉：显式 `Del` 和 TTL 到期被清理的也算在里面。
 - 命中率是 `hits / (hits + misses)`；调原生的 `C().Clear()` 会把计数清零，Prometheus 当成计数器重置。
 
-指标名的前缀、常量标签和几条通用规则见 [`docs/observability.md`「指标」](../docs/observability.md#指标)。
+指标名的前缀、常量标签和几条通用规则见 [`docs/observability.md`「指标」](../docs/observability.md#metrics)。
 
 ## 行为与实测
 

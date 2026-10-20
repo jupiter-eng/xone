@@ -80,7 +80,7 @@ XMetric:
   （`level`、`caller`、`method`、`status`、`route`、`host`、`name`）不能用，读配置时失败。
 - **桶写成空列表 `[]` 不是「用默认」**，直接失败；要默认值就别写这个字段。
 - **`Register` 同名但类型或标签不同时返回错误**：传进去的那个不在 registry 里，通过它记的值导不出去。
-- 框架自带的指标见 [observability.md「指标」](../docs/observability.md#指标)。
+- 框架自带的指标见 [observability.md「指标」](../docs/observability.md#metrics)。
 
 ## 可观测
 
@@ -91,7 +91,7 @@ XMetric:
 | `log_errors_total` | counter | `level`、`caller` | xmetric，`XMetric.LogErrorMetric`，需要 xlog |
 | `go_*` / `process_*` | —— | —— | `XMetric.GoMetrics` / `ProcessMetrics` |
 
-指标名的前缀、常量标签和几条通用规则见 [`docs/observability.md`「指标」](../docs/observability.md#指标)。
+指标名的前缀、常量标签和几条通用规则见 [`docs/observability.md`「指标」](../docs/observability.md#metrics)。
 
 ## 行为与实测
 

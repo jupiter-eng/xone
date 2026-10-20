@@ -51,7 +51,7 @@ if err := xconfig.Unmarshal("Order", &cfg); err != nil {
 | `DecodeStrict(node *yaml.Node, v any) error` | 在集合元素自己的 `UnmarshalYAML` 里用，保留「字段拼错就失败」的严格检查 |
 | `DefaultClientName` | 单实例写法规整成的实例名，即 `"default"` |
 
-测试里换一份配置用 `xonetest.UseConfigYAML(t, yml)`，见 [guide.md「测试」](../docs/guide.md#测试)。
+测试里换一份配置用 `xonetest.UseConfigYAML(t, yml)`，见 [guide.md「测试」](../docs/guide.md#testing)。
 
 ## 注意事项
 
@@ -89,11 +89,11 @@ func C() Config { return conf }
 
 | 想要 | 写法 | 详见 |
 |---|---|---|
-| 从环境变量取值 | `${VAR}` 必填，未设置启动失败；`${VAR:default}` 可选 | [占位符](../docs/config.md#占位符) |
-| 按环境分文件 | `application-prod.yml` 放差异，`--profile=prod` 或 `XONE_PROFILE=prod` 选 | [Profiles](../docs/config.md#profiles--按环境分文件)、[完整例子](../docs/config.md#多环境配置一个完整的例子) |
-| 把配置拆成几个文件 | `Import: [shared.yml, optional:local.yml]` | [Import](../docs/config.md#import--引入别的配置文件) |
-| 指定配置文件 | `--config=<path>` 或 `XONE_CONFIG`；不指定就找 `conf/application.yml` 等约定路径 | [文件位置](../docs/config.md#文件位置与优先级) |
-| 知道几个文件怎么叠 | map 递归合并，列表整体替换，标量覆盖 | [合并规则](../docs/config.md#合并规则) |
+| 从环境变量取值 | `${VAR}` 必填，未设置启动失败；`${VAR:default}` 可选 | [占位符](../docs/config.md#placeholders) |
+| 按环境分文件 | `application-prod.yml` 放差异，`--profile=prod` 或 `XONE_PROFILE=prod` 选 | [Profiles](../docs/config.md#profiles--one-file-per-environment)、[完整例子](../docs/config.md#multi-environment-configuration-a-complete-example) |
+| 把配置拆成几个文件 | `Import: [shared.yml, optional:local.yml]` | [Import](../docs/config.md#import--pulling-in-other-config-files) |
+| 指定配置文件 | `--config=<path>` 或 `XONE_CONFIG`；不指定就找 `conf/application.yml` 等约定路径 | [文件位置](../docs/config.md#file-locations-and-priority) |
+| 知道几个文件怎么叠 | map 递归合并，列表整体替换，标量覆盖 | [合并规则](../docs/config.md#merge-rules) |
 
 ## 进阶
 
@@ -109,4 +109,4 @@ func C() Config { return conf }
   ```
 
 - **单实例 / 多实例两种写法**（像 XGorm 那样）：`UnmarshalClients` 看有没有 `Clients` 决定按哪种解，两种混着写是错误。见
-  [guide.md「写一个自己的集成」](../docs/guide.md#写一个自己的集成)。
+  [guide.md「写一个自己的集成」](../docs/guide.md#writing-an-integration-of-your-own)。

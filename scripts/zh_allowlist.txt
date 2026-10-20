@@ -12,6 +12,9 @@
 # xecho/README.md and xgin/README.md are translated; what is left are anchors into files that
 # are still Chinese (../docs/...#..., ../xtls/README.md#...). Changing them would break the
 # links, so these lines go when those files are translated.
+# xecho/README.md and xgin/README.md are translated; what is left are anchors into files that
+# are still Chinese (../docs/...#..., ../xtls/README.md#...). Changing them would break the
+# links, so these lines go when those files are translated.
 .claude/skills/release/SKILL.md
 .claude/skills/ship/SKILL.md
 .github/workflows/ci.yml
@@ -22,12 +25,12 @@ README.md
 banner.go
 banner_test.go
 config_schema.json
-docs/CHANGELOG.md
-docs/architecture.md
 docs/behavior.md
 docs/config.md
-docs/development.md
 docs/guide.md
+# The two diagrams hold their text as SVG nodes at fixed coordinates. English is wider than
+# Chinese at the same font size, so translating them without rendering the result risks text
+# overflowing its boxes; they need a pass where the rendering can be checked.
 docs/images/architecture.svg
 docs/images/lifecycle.svg
 docs/observability.md
@@ -229,10 +232,6 @@ xcron/schedule_test.go
 xcron/scheduler.go
 xcron/xcron.go
 xcron/xcron_test.go
-# xecho/README.md and xgin/README.md are translated; what is left are anchors into files that
-# are still Chinese (../docs/...#..., ../xtls/README.md#...). Changing them would break the
-# links, so these lines go when those files are translated.
-xecho/README.md
 xerror/xerror.go
 xerror/xerror_test.go
 xflow/README.md
@@ -243,6 +242,8 @@ xflow/monitor_test.go
 xflow/optional_test.go
 xflow/xflow.go
 xflow/xflow_test.go
+# xgin/README.md is translated; what is left is one anchor into xtls/README.md, which is still
+# Chinese. This line goes when xtls is translated.
 xgin/README.md
 xginswagger/README.md
 xginswagger/go.mod

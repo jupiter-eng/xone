@@ -121,4 +121,4 @@ func init() { xflow.SetMonitor(nil) } // 不要每一步的监控日志；换成
 |---|---|---|
 | xflow | —— | xflow 不开 Span，步骤里自己用 `otel.Tracer(...)` |
 
-链路的全貌、传播与信任边界见 [`docs/observability.md`「链路」](../docs/observability.md#链路)。
+链路的全貌、传播与信任边界见 [`docs/observability.md`「链路」](../docs/observability.md#tracing)。

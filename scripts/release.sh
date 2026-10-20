@@ -4,7 +4,7 @@
 # 分两步，中间是一个普通的 PR（main 的分支保护照常生效）：
 #
 #   scripts/release.sh v0.1.0 --bump     # 1. 把各模块 go.mod 里仓库内的 require 改成 v0.1.0、
-#                                        #    CHANGELOG 的「未发布」改成这一版、README 安装命令的版本号换掉；
+#                                        #    turn the CHANGELOG's Unreleased section into this version, update the version in the README install command;
 #                                        #    只改文件，不提交
 #   （提交、开 PR、CI 绿了合进 main）
 #   scripts/release.sh v0.1.0 --tag      # 2. 在 main 的最新提交上给每个模块打 tag（不推送）
@@ -237,11 +237,13 @@ has_entries() {
 }
 
 if [ "$MODE" = "--bump" ]; then
-  # 空的「未发布」改成版本号，发出去的就是一个没写变化的版本：使用者看不出这版改了什么，
-  # 要么是忘了写 CHANGELOG，要么是根本没有要发的东西。改任何文件之前先查，拒绝了就什么都没动。
-  # 已经有这一节的（--bump 重跑）第 2 步不动 CHANGELOG，这里也不查「未发布」
-  if ! grep -q "^## \[$VERSION\]" docs/CHANGELOG.md && ! has_entries "## [未发布]"; then
-    echo "✗ docs/CHANGELOG.md 的「## [未发布]」一节是空的（没有 - 开头的条目）：先把这一版使用者看得见的变化写进去，没有的话就不用发版"
+  # Turning an empty Unreleased section into a version number ships a version with no changes
+  # written down: the caller cannot tell what changed, which means either the CHANGELOG was
+  # forgotten or there was nothing to release. Checked before any file is touched, so a refusal
+  # leaves everything as it was. When the section already exists (a --bump rerun) step 2 leaves the
+  # CHANGELOG alone, and Unreleased is not checked here either.
+  if ! grep -q "^## \[$VERSION\]" docs/CHANGELOG.md && ! has_entries "## [Unreleased]"; then
+    echo "✗ the ## [Unreleased] section of docs/CHANGELOG.md is empty (no lines starting with -): write this version's caller-visible changes there first, or do not release"
     exit 1
   fi
 
@@ -258,7 +260,7 @@ if [ "$MODE" = "--bump" ]; then
   [ -z "$left" ] || { echo "✗ 还有没钉好的仓库内依赖："; echo "$left"; exit 1; }
   echo "  ✓ $(echo $PINNED | wc -w) 个子模块的 go.mod 都钉到了 $VERSION"
 
-  echo "== 2. CHANGELOG：「未发布」改成 ${VERSION}，上面再开一个空的「未发布」 =="
+  echo "== 2. CHANGELOG: Unreleased becomes ${VERSION}, with a new empty Unreleased above it =="
   if grep -q "^## \[$VERSION\]" docs/CHANGELOG.md; then
     echo "  CHANGELOG 里已经有 $VERSION 这一节，不动"
   else
@@ -267,9 +269,9 @@ import sys
 v, day = sys.argv[1], sys.argv[2]
 p = "docs/CHANGELOG.md"
 s = open(p).read()
-head = "## [未发布]\n"
-assert s.count(head) == 1, "CHANGELOG 里找不到唯一的「## [未发布]」"
-open(p, "w").write(s.replace(head, "## [未发布]\n\n## [%s] - %s\n" % (v, day), 1))
+head = "## [Unreleased]\n"
+assert s.count(head) == 1, "no unique '## [Unreleased]' found in the CHANGELOG"
+open(p, "w").write(s.replace(head, "## [Unreleased]\n\n## [%s] - %s\n" % (v, day), 1))
 PY
     echo "  ✓ 已改，这一版的条目写在 ## [$VERSION] 下面"
   fi
@@ -323,7 +325,7 @@ fi
 left=$(unpinned)
 [ -z "$left" ] || { echo "✗ 这个提交的 go.mod 还没钉到 ${VERSION}，先合并 scripts/release.sh $VERSION --bump 的那个 PR："; echo "$left"; exit 1; }
 grep -q "^## \[$VERSION\]" docs/CHANGELOG.md || { echo "✗ docs/CHANGELOG.md 里没有 ## [$VERSION] 这一节"; exit 1; }
-# --bump 把「未发布」改成了这一节；它是空的，就是 --bump 之前「未发布」里什么都没写
+# --bump turned Unreleased into this section; an empty one means Unreleased held nothing before --bump
 has_entries "## [$VERSION]" || { echo "✗ docs/CHANGELOG.md 的 ## [$VERSION] 一节是空的（没有 - 开头的条目）：先把这一版使用者看得见的变化写进去"; exit 1; }
 echo "  ✓ $(git log -1 --format='%h %s')"
 

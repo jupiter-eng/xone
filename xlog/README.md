@@ -136,7 +136,7 @@ func main() {
 
 - **用 `slog.InfoContext(ctx, …)`**：不带 ctx 的 `slog.Info` 拿不到 `trace_id`，也带不上 `AddKV` / `CtxWithKV` 的字段。
 - **`AddKV` 要有作用域**：xgin / xecho 在每个请求开头开好（`Log: false` 时不开）；自己的非 Web 入口用 `xlog.CtxWithScope(ctx)` 开，否则字段被丢掉（计进 `DroppedKVCount`）。
-  见 [observability.md「日志」](../docs/observability.md#日志)。
+  见 [observability.md「日志」](../docs/observability.md#logs)。
 - **`AddKV` 和 `CtxWithKV` 的分工在影响范围**：`AddKV` 原地写，整个请求都带上；`CtxWithKV` 只影响它返回的 ctx，
   批量处理的每一条、起的每个 goroutine 各派生一个，互相不串，也不回流到访问日志。派生之后父 ctx 再 `AddKV` 的字段它看不到。
 - **`Timezone` 配了却加载不到直接启动失败**，不会悄悄退回本地时区；scratch / distroless 镜像要 `import _ "time/tzdata"`，见[「行为与实测」](#行为与实测)。

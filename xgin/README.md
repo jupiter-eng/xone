@@ -249,7 +249,7 @@ empty and the span is not marked as an error, leaving that panic log line as the
 | `xgin invalid config, assembling the engine with defaults; Start will return the error` | WARN | `error`; with an invalid config `Engine()` assembles from the defaults and `Start` returns that error |
 
 The global logging conventions (`trace_id` injection, `xlog.AddKV`, the framework's start and stop
-lines) are in [`docs/observability.md`](../docs/observability.md#日志).
+lines) are in [`docs/observability.md`](../docs/observability.md#logs).
 
 ### Metrics
 
@@ -262,7 +262,7 @@ lines) are in [`docs/observability.md`](../docs/observability.md#日志).
   path.
 
 The metric name prefix, the constant labels and a few general rules are in
-[`docs/observability.md` "指标"](../docs/observability.md#指标).
+[`docs/observability.md` "Metrics"](../docs/observability.md#metrics).
 
 ### Tracing
 
@@ -275,7 +275,7 @@ A 5xx and an abort are marked as errors; a 4xx is not. While `Metric` is on, a s
 same reason the access log skips it.
 
 The whole picture of tracing, propagation and the trust boundary is in
-[`docs/observability.md` "链路"](../docs/observability.md#链路).
+[`docs/observability.md` "Tracing"](../docs/observability.md#tracing).
 
 ### The X-Trace-Id response header
 
@@ -400,5 +400,5 @@ written explicitly: defaults change with Go versions.
 | `TrustedProxies entry "::ffff:10.0.0.1" is an IPv4-mapped IPv6 address; write it as 10.0.0.1` (XGin) | An IPv4-mapped IPv6 address or range in `TrustedProxies` | Write it as the message says: `::ffff:10.0.0.1` → `10.0.0.1`, `::ffff:10.0.0.0/104` → `10.0.0.0/8` |
 
 The `N handler(s) still running when the shutdown deadline passed` on shutdown is covered in
-[`docs/troubleshooting.md` "Runnable 与退出"](../docs/troubleshooting.md#runnable-与退出); client-side
-TLS errors are in [xtls "排错"](../xtls/README.md#排错).
+[`docs/troubleshooting.md` "Runnable and shutdown"](../docs/troubleshooting.md#runnable-and-shutdown); client-side
+TLS errors are in [xtls "Troubleshooting"](../xtls/README.md#排错).

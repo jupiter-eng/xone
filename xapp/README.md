@@ -35,9 +35,9 @@ XApp:
 
 - `Name`、`Version`：环境文件里可以覆盖，比如 `application-prod.yml` 换一个 `Name`。
 - `Profiles`：`--profile` / `XONE_PROFILE` 给了就不看这一项（替换，不是追加）。规则见
-  [docs/config.md「Profiles」](../docs/config.md#profiles--按环境分文件)。
+  [docs/config.md「Profiles」](../docs/config.md#profiles--one-file-per-environment)。
 - `Import`：相对路径按写着它的那个文件所在的目录解析，引进来的压过引它的；被引进来的文件里可以再写 `Import`，
-  但不能写 `Profiles`。规则见 [docs/config.md「Import」](../docs/config.md#import--引入别的配置文件)。
+  但不能写 `Profiles`。规则见 [docs/config.md「Import」](../docs/config.md#import--pulling-in-other-config-files)。
 
 ## API
 

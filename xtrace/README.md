@@ -77,7 +77,7 @@ XTrace:
 - **框架不内置任何 exporter**：不 `AddSpanProcessor` 的话 Span 照样生成、`trace_id` 照样进日志，只是不上报。本地调试开 `Console: true`。
 - **透传 Header 和 `baggage` 只收可信对端的**：直连对端在 `XGin.TrustedProxies` / `XEcho.TrustedProxies` 里才收，默认只信私有网段
   （负载均衡、K8s 的 Ingress 和 Pod）。`traceparent` / `b3` 谁发来的都接。见
-  [observability.md「传播与信任边界」](../docs/observability.md#传播与信任边界)。
+  [observability.md「传播与信任边界」](../docs/observability.md#propagation-and-the-trust-boundary)。
 - **有上游时一律听上游的 sampled 位**，`SampleRatio: 1` 也不例外（`ParentBased`，见[「行为与实测」](#行为与实测)）。
   `SampleRatio: 0` 是不采样但照常生成、透传 TraceID；连 Span 都不要用 `Enable: false`。
 - **`service.name`** 取 `XApp.Name`，环境变量 `OTEL_RESOURCE_ATTRIBUTES` / `OTEL_SERVICE_NAME` 压过它。见[「行为与实测」](#行为与实测)。
@@ -93,7 +93,7 @@ XTrace:
 | `xtrace is disabled, the registered SpanProcessors will receive no spans` | WARN | `count`、`switch`；`Enable: false` 却登记了处理器时 |
 | `xtrace some resource attributes could not be detected, continuing without them` | WARN | `error`；照常启动 |
 
-日志的全局约定（`trace_id` 注入、`xlog.AddKV`、框架的启停日志）见 [`docs/observability.md`](../docs/observability.md#日志)。
+日志的全局约定（`trace_id` 注入、`xlog.AddKV`、框架的启停日志）见 [`docs/observability.md`](../docs/observability.md#logs)。
 
 ## 行为与实测
 
@@ -113,7 +113,7 @@ OTel SDK v1.46.0、otelhttp v0.71.0。
 
 **透传只收可信对端的值。** OTel 自带的 `propagation.Baggage` 谁发来的都收：公网客户端发一个 `X-Tenant-Id`，
 或者改写成 `baggage: tenant=…`，就被当成自己人给的、带进内网的每一次调用。规则见
-[`observability.md`](../docs/observability.md#传播与信任边界)。
+[`observability.md`](../docs/observability.md#propagation-and-the-trust-boundary)。
 
 **`*trusted.com` 这类通配**：照字面后缀匹配的话会匹配 `eviltrusted.com`，一个谁都能注册的域名就拿到了内部令牌。
 所以 `Domains` 只认 `api.internal.com` 和 `*.trusted.com` 两种写法。
