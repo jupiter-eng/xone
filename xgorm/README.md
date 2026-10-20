@@ -122,7 +122,7 @@ XGorm:
 - **经 PgBouncer（事务池）** 要改 `default_query_exec_mode`，否则并发下成批报 `prepared statement … already exists`。
   见[「PostgreSQL」](#postgresql)。
 - **启动探测**：每个实例探一次，最多试 3 次；密码错不重试，报 `authentication to <addr> failed`。见
-  [behavior.md「启动期建连探测」](../docs/behavior.md#启动期建连探测)。
+  [behavior.md「启动期建连探测」](../docs/behavior.md#the-startup-connection-probe)。
 
 ## 可观测
 
@@ -135,7 +135,7 @@ XGorm:
 | `SQL` / `slow SQL` / `SQL failed` | INFO / WARN / ERROR | `sql`（带占位符）、`elapsed_ms`、`rows_affected`（行数未知时不带）；失败时 `error`、`error_code`；慢查询时 `threshold_ms`（需 `XGorm.Log: true`） |
 | `xgorm go-sql-driver log` | WARN | `detail`：go-sql-driver 自己的日志原文，不带 trace_id（见[「MySQL」](#mysql)） |
 
-日志的全局约定（`trace_id` 注入、`xlog.AddKV`、框架的启停日志）见 [`docs/observability.md`](../docs/observability.md#日志)。
+日志的全局约定（`trace_id` 注入、`xlog.AddKV`、框架的启停日志）见 [`docs/observability.md`](../docs/observability.md#logs)。
 
 ### 指标
 
@@ -144,7 +144,7 @@ XGorm:
 | `db_pool_open` / `db_pool_in_use` / `db_pool_idle` / `db_pool_max_open` | gauge | `name`（实例名） | xgorm，`XGorm.Metric`，按实例 |
 | `db_pool_wait_total` / `db_pool_wait_duration_seconds_total` / `db_pool_closed_max_idle_total` / `db_pool_closed_max_lifetime_total` | counter | `name` | xgorm |
 
-指标名的前缀、常量标签和几条通用规则见 [`docs/observability.md`「指标」](../docs/observability.md#指标)。
+指标名的前缀、常量标签和几条通用规则见 [`docs/observability.md`「指标」](../docs/observability.md#metrics)。
 
 ### 链路
 
@@ -164,7 +164,7 @@ XGorm:
 | `db.rows_affected` | 影响行数（ClickHouse 上永远是 0） |
 | `db.response.status_code` / `error.type` | 服务端报错时的错误码（MySQL 错误号 / PG 的 SQLSTATE）；其余错误 `error.type` 是 `_OTHER` |
 
-`gorm.ErrRecordNotFound` 不把 Span 标成错误。链路的全貌、传播与信任边界见 [`docs/observability.md`「链路」](../docs/observability.md#链路)。
+`gorm.ErrRecordNotFound` 不把 Span 标成错误。链路的全貌、传播与信任边界见 [`docs/observability.md`「链路」](../docs/observability.md#tracing)。
 
 ## 行为与实测
 
@@ -354,4 +354,4 @@ PgBouncer 的事务池会把下一条语句派到另一个服务端连接上，�
 开了 `TLS:` 块，MySQL 的 DSN 里又写了 `allowFallbackToPlaintext=`。TLS 块从不退回明文，把这个参数从 DSN 里删掉；
 真要「服务端不支持就明文」的，别开 TLS 块、在 DSN 里写 `tls=preferred`，并且清楚它挡不住中间人。
 
-TLS 相关的报错见 [xtls「排错」](../xtls/README.md#排错)；建连失败见 [`docs/troubleshooting.md`「建连」](../docs/troubleshooting.md#建连)。
+TLS 相关的报错见 [xtls「排错」](../xtls/README.md#排错)；建连失败见 [`docs/troubleshooting.md`「建连」](../docs/troubleshooting.md#connecting)。

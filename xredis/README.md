@@ -99,7 +99,7 @@ XRedis:
 - **负数一律不收**，只有 `MaxRetries: -1`、`MinRetryBackoff: -1ns`、`MaxRetryBackoff: -1ns` 表示「关掉」。
 - **内存**：每条连接约 66KiB 堆，池子涨满时是 `PoolSize × 66KiB`。
 - **启动探测**：每个实例探一次，最多试 3 次；`WRONGPASS` / `NOAUTH` 不重试。见
-  [behavior.md「启动期建连探测」](../docs/behavior.md#启动期建连探测)。
+  [behavior.md「启动期建连探测」](../docs/behavior.md#the-startup-connection-probe)。
 
 ## 可观测
 
@@ -133,7 +133,7 @@ XRedis:
   其余写 `redis client error (message omitted, it may contain reply data)`。理由见[「行为与实测」](#行为与实测)。返回给调用方的错误不变。
 - 又慢又失败的记 `… failed`，不另记慢。
 
-日志的全局约定（`trace_id` 注入、`xlog.AddKV`、框架的启停日志）见 [`docs/observability.md`](../docs/observability.md#日志)。
+日志的全局约定（`trace_id` 注入、`xlog.AddKV`、框架的启停日志）见 [`docs/observability.md`](../docs/observability.md#logs)。
 
 ### 指标
 
@@ -142,7 +142,7 @@ XRedis:
 | `redis_pool_connections` / `redis_pool_connections_idle` | gauge | `name` | xredis，`XRedis.Metric`，按实例 |
 | `redis_pool_connections_stale_total` / `redis_pool_hits_total` / `redis_pool_misses_total` / `redis_pool_timeouts_total` | counter | `name` | xredis |
 
-指标名的前缀、常量标签和几条通用规则见 [`docs/observability.md`「指标」](../docs/observability.md#指标)。
+指标名的前缀、常量标签和几条通用规则见 [`docs/observability.md`「指标」](../docs/observability.md#metrics)。
 
 ### 链路
 
@@ -150,7 +150,7 @@ XRedis:
 |---|---|---|
 | xredis | 命令名（`get`、`cluster info`），pipeline 是 `redis.pipeline get set`，建连是 `redis.dial`；不像命令名的记成 `<invalid>`，规则同命令日志的 `cmd` | 只有命令名，没有 `db.statement` 里的参数；出错时的状态描述和命令日志的 `error` 同一套规则 |
 
-链路的全貌、传播与信任边界见 [`docs/observability.md`「链路」](../docs/observability.md#链路)。
+链路的全貌、传播与信任边界见 [`docs/observability.md`「链路」](../docs/observability.md#tracing)。
 
 ## 行为与实测
 

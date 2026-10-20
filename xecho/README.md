@@ -272,7 +272,7 @@ stack, the same rules as xgin).
 | `xecho invalid config, assembling the engine with defaults; Start will return the error` | WARN | `error`; with an invalid config `Engine()` assembles from the defaults and `Start` returns that error |
 
 The global logging conventions are in
-[`docs/observability.md`](../docs/observability.md#日志).
+[`docs/observability.md`](../docs/observability.md#logs).
 
 ### Metrics
 
@@ -298,7 +298,7 @@ A 5xx and an abort are marked as errors; a 4xx is not. While `XEcho.Trace` is on
 (including an error response echo rendered) carries `X-Trace-Id`. While `Metric` is on, a scrape
 of `MetricPath` opens no span and echoes no `X-Trace-Id`, as in xgin. The whole picture of
 tracing, propagation and the trust boundary is in
-[`docs/observability.md` "链路"](../docs/observability.md#链路).
+[`docs/observability.md` "Tracing"](../docs/observability.md#tracing).
 
 ### 499: aborted requests
 
@@ -501,4 +501,4 @@ query parameter makes `c.JSON` indent its output (`{"a":"b"}` becomes 15 bytes).
 | `field Mode not found in type xecho.Config` (same for `MaxMultipartMemory`, `ZHTranslations`) | An XGin block was copied over | Remove those fields, the reasoning is under [Configuration](#configuration) |
 
 The `N handler(s) still running when the shutdown deadline passed` on shutdown is covered in
-[`docs/troubleshooting.md` "Runnable 与退出"](../docs/troubleshooting.md#runnable-与退出).
+[`docs/troubleshooting.md` "Runnable and shutdown"](../docs/troubleshooting.md#runnable-and-shutdown).

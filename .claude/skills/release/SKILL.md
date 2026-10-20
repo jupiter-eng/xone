@@ -7,7 +7,7 @@ description: 准备 xone 的一次发版（vX.Y.Z）：钉版本号、整理 CHA
 
 xone 的发版分两步：
 
-1. **release PR**（这个 skill 做）：把各模块 go.mod 里仓库内的 require 钉成新版本、CHANGELOG 的「未发布」改成这一版、README 安装命令的版本号换掉，开 PR。
+1. **release PR**（这个 skill 做）：把各模块 go.mod 里仓库内的 require 钉成新版本、CHANGELOG 的Unreleased 一节改成这一版、README 安装命令的版本号换掉，开 PR。
 2. **打 tag**（用户做）：PR 合进 main 之后，用户在 GitHub 上点 Actions → release → Run workflow，填版本号。
    按钮在 main 的最新提交上给每个模块打 tag、跑 e2e、只推 tag、再验证装得上。
 
@@ -20,7 +20,7 @@ tag 推出去就被 Go 的 module proxy 永久缓存，删不掉。这些都留�
 
 ### 1. 定版本号
 
-- 用户给了版本号就用它；没给就看 CHANGELOG 的「未发布」一节和上一个 tag 以来的提交，给一个建议、让用户确认：
+- 用户给了版本号就用它；没给就看 CHANGELOG 的Unreleased 一节一节和上一个 tag 以来的提交，给一个建议、让用户确认：
   有新功能 → 升次版本号（v1.0.0 → v1.1.0）；只有修复 → 升修订号（v1.0.0 → v1.0.1）。
   **不兼容变更不能在 v1 里发**：要改模块路径为 `/v2`。遇到就停下来和用户商量，不要自己决定。
 - 只收 `v0.*.*` / `v1.*.*`（模块路径没有 `/v2` 后缀）。
@@ -36,12 +36,12 @@ git status --porcelain          # 必须为空；不为空就停下来问用户
 git switch -c release/vX.Y.Z
 ```
 
-### 3. 检查 CHANGELOG 的「未发布」
+### 3. 检查 CHANGELOG 的Unreleased 一节
 
-`docs/CHANGELOG.md` 的 `## [未发布]` 下面应该已经写着这一版使用者看得见的变化（CLAUDE.md 要求改动时同一个提交里写）。
+`docs/CHANGELOG.md` 的 `## [Unreleased]` 下面应该已经写着这一版使用者看得见的变化（CLAUDE.md 要求改动时同一个提交里写）。
 
 - **有内容**：通读一遍，确认按「不兼容变更 / 新增 / 修复 / 性能」归类、每条一句话、不兼容变更写了怎么迁移。
-- **是空的**：用 `git log <上一个 tag>..HEAD --oneline` 找使用者看得见的变化，起草条目写进「未发布」，
+- **是空的**：用 `git log <上一个 tag>..HEAD --oneline` 找使用者看得见的变化，起草条目写进Unreleased 一节，
   **先给用户看、确认之后再继续**。仓库内部的重构、测试、工具改动不写。不确定的不要编。
 
 ### 4. 钉版本号
@@ -51,7 +51,7 @@ scripts/release.sh vX.Y.Z --bump
 ```
 
 它把所有模块（包括不发布的 example / e2e / internal/schemagen）go.mod 里仓库内的 require 改成 vX.Y.Z，
-replace 留着；把「未发布」改成 `## [vX.Y.Z] - 今天`、上面再开一个空的「未发布」；README 里 `go get …@vX.Y.Z` 的版本号换掉；最后跑 `scripts/check.sh`。只改文件，不提交。
+replace 留着；把Unreleased 一节改成 `## [vX.Y.Z] - 今天`、上面再开一个空的Unreleased 一节；README 里 `go get …@vX.Y.Z` 的版本号换掉；最后跑 `scripts/check.sh`。只改文件，不提交。
 
 它报错就停下来，把输出给用户看，不要绕过。
 

@@ -134,7 +134,7 @@ TLS 块适合「只调一类内部下游」的客户端；要同时调公网的�
   经 `xhttp resty log`（DEBUG）写出去；请求行里的路径不带 `http://` 也不在引号里，xhttp 认不出来，实测 `GET  /ok?token=…`、
   `Authorization: Bearer …` 原样出现。只在本机排查时开，不要在线上开。
 
-日志的全局约定（`trace_id` 注入、`xlog.AddKV`、框架的启停日志）见 [`docs/observability.md`](../docs/observability.md#日志)。
+日志的全局约定（`trace_id` 注入、`xlog.AddKV`、框架的启停日志）见 [`docs/observability.md`](../docs/observability.md#logs)。
 
 ### 指标
 
@@ -147,7 +147,7 @@ TLS 块适合「只调一类内部下游」的客户端；要同时调公网的�
   每个组合 15 条时间序列（默认 12 个桶加 `+Inf`、`_sum`、`_count`）。目标来自用户输入或直连一批 IP 的调用另建一个
   `Metric: false` 的客户端。
 
-指标名的前缀、常量标签和几条通用规则见 [`docs/observability.md`「指标」](../docs/observability.md#指标)。
+指标名的前缀、常量标签和几条通用规则见 [`docs/observability.md`「指标」](../docs/observability.md#metrics)。
 
 ### 链路
 
@@ -155,7 +155,7 @@ TLS 块适合「只调一类内部下游」的客户端；要同时调公网的�
 |---|---|---|
 | xhttp（出站） | 只用方法，如 `GET` | otelhttp 的标准属性；`url.full` **去掉了查询串、片段和 userinfo** |
 
-链路的全貌、传播与信任边界见 [`docs/observability.md`「链路」](../docs/observability.md#链路)。
+链路的全貌、传播与信任边界见 [`docs/observability.md`「链路」](../docs/observability.md#tracing)。
 
 ## 行为与实测
 

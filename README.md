@@ -97,7 +97,7 @@ curl localhost:8080/hello     # {"msg":"hello"}；访问日志、链路、/metri
 |---|---|---|
 | `xapp`（`XApp` 块） | `xone` 本身 | —— |
 | `xlog` | xgin、xecho、xcron | 框架不接管日志，`slog.Default()` 还是你自己的；要用就匿名 import `github.com/jupiter-eng/xone/xlog` |
-| `xtrace`、`xmetric` | xgin、xecho、xgorm、xredis、xhttp、xkafka；xcache 只带 xmetric，xcron 只带 xtrace | 想要时匿名 import，见 [可观测「链路」](docs/observability.md#链路) |
+| `xtrace`、`xmetric` | xgin、xecho、xgorm、xredis、xhttp、xkafka；xcache 只带 xmetric，xcron 只带 xtrace | 想要时匿名 import，见 [可观测「链路」](docs/observability.md#tracing) |
 
 ## 常用写法
 
@@ -166,7 +166,7 @@ func init() {
 ```
 
 `init()` 只登记，框架按 Log → Telemetry → Client → Business → Server 的档位执行，退出时倒过来；
-业务钩子不用写档位。详见 [钩子与档位](docs/guide.md#钩子与档位)。
+业务钩子不用写档位。详见 [钩子与档位](docs/guide.md#hooks-and-stages)。
 
 ## 配置文件
 

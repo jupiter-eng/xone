@@ -3,7 +3,7 @@
 给 [xgorm](../README.md) 加 ClickHouse 驱动：匿名 import 一行、配置里写 `Driver: clickhouse`，拿到的仍是原生 `*gorm.DB`。
 
 - 配置项、多实例、日志、指标、Span 都和 xgorm 一样
-- 独立 module：ClickHouse 驱动多带进 60 多个模块，不用它的应用不必背（见 [architecture.md](../../docs/architecture.md#二每个集成是独立的-go-module)）
+- 独立 module：ClickHouse 驱动多带进 60 多个模块，不用它的应用不必背（见 [architecture.md](../../docs/architecture.md#2-every-integration-is-its-own-go-module)）
 - DSN 认 `clickhouse://` / `tcp://`（native 协议）和 `http://` / `https://`
 - TLS 块对 native 和 `https://` 都生效
 - 解析错误一律不回显 DSN（原始错误里带着明文密码）

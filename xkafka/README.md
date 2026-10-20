@@ -66,7 +66,7 @@ func main() {
 
 消费者在 StageServer 那一档起来——客户端（xgorm、xredis……）和你的业务钩子都已就绪，处理函数里直接 `xgorm.C()`；
 停的时候它最先停，在途的消息处理完、提交之后才轮到关客户端。不用自己写 `Start`、`WaitGroup`、`WithoutCancel`，
-[docs/guide.md「非 Web 服务」](../docs/guide.md#非-web-服务consumer--job)那三条规矩它都替你做了。
+[docs/guide.md「非 Web 服务」](../docs/guide.md#non-web-services-consumer--job)那三条规矩它都替你做了。
 
 **生产用 `C()`，消费用 `Consume`。** 两者读同一份 `XKafka` 配置：`C()` 是这个集群上不带消费组的那个共享客户端；
 消费组只能在建客户端时定，所以每个 `Consume` 用同一份配置另建一个自己的（`WithClient` 选集群，不写是 `default`）。
@@ -247,7 +247,7 @@ topic 常常由生产方或者运维晚一步建，消费方先上线是正常�
 ## 多实例
 
 每个集群一个生产客户端，`xkafka.C("name")` 取；每个 `Consume` 一个自己的客户端。启动时按名字排序挨个建，有一个连不上就把已建好的全关掉，
-错误里点名是哪一个。规则同 [docs/guide.md「多实例」](../docs/guide.md#多实例)。
+错误里点名是哪一个。规则同 [docs/guide.md「多实例」](../docs/guide.md#several-instances)。
 
 ## 可观测
 
@@ -283,7 +283,7 @@ topic 常常由生产方或者运维晚一步建，消费方先上线是正常�
 只消费的进程要 JSON 日志和这几个字段，匿名 import `github.com/jupiter-eng/xone/xlog`。`Log: false` 只关上面标了「需 `Log: true`」的几条：
 进死信、被跳过、panic、死信写不进去这几种意味着一条消息没走完正常的路，照样记。
 
-日志的全局约定见 [`docs/observability.md`](../docs/observability.md#日志)。
+日志的全局约定见 [`docs/observability.md`](../docs/observability.md#logs)。
 
 ### 指标
 
@@ -310,7 +310,7 @@ topic 常常由生产方或者运维晚一步建，消费方先上线是正常�
   对外开放写入、第三方直接往里写的 topic，别在它的消费者上依赖透传 Header 和 baggage。`traceparent` 不受这一条管。
 - `Trace: false` 只是不开 Span：链路上下文照样写进、读出消息头。
 
-链路的全貌、传播与信任边界见 [`docs/observability.md`「链路」](../docs/observability.md#链路)。
+链路的全貌、传播与信任边界见 [`docs/observability.md`「链路」](../docs/observability.md#tracing)。
 
 ## 行为与实测
 

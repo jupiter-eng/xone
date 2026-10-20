@@ -35,9 +35,9 @@ git fetch -q origin --tags
 #    改动都会让 zip hash 和 sumdb 的记录对不上，只能换版本号。
 git ls-remote --tags origin | grep -E "refs/tags/($V|[a-z/]+/$V)$" && echo "✗ 这组 tag 已经存在，换版本号"
 
-# 4. CHANGELOG 的「未发布」有条目（release.sh --bump 会拒绝空的）
-awk '/^## \[未发布\]/{s=1;next} s&&/^## /{exit} s&&/^- /{f=1} END{exit !f}' docs/CHANGELOG.md \
-  || echo "✗ CHANGELOG 的「未发布」是空的，先写这一版使用者看得见的变化"
+# 4. CHANGELOG 的 Unreleased 一节有条目（release.sh --bump 会拒绝空的）
+awk '/^## \[Unreleased\]/{s=1;next} s&&/^## /{exit} s&&/^- /{f=1} END{exit !f}' docs/CHANGELOG.md \
+  || echo "✗ CHANGELOG 的 Unreleased 是空的，先写这一版使用者看得见的变化"
 
 # 5. 推 tag 的凭证在：org 禁用了 GITHUB_TOKEN 的写权限，release.yml 读的是这个 secret
 gh secret list | grep -q RELEASE_TOKEN || echo "✗ 仓库 secret RELEASE_TOKEN 没配，workflow 推不了 tag"

@@ -1,121 +1,165 @@
-# 可观测性：日志、指标、链路
+# Observability: logs, metrics and tracing
 
-框架产出的日志、指标和 Span 的全局约定在这里；每个模块自己的日志字段、指标和 Span 在它 README 的「可观测」一节，
-照着建看板、写告警、配日志检索。所有字段名和消息都是英文，名字就是代码里写的那个。开关在各模块 README 的「配置」一节里
-（索引见 [`config.md`](config.md#配置块--模块文档)）。
+The global conventions for the logs, metrics and spans the framework produces are here; each
+module's own log fields, metrics and spans are under "Observability" in its README, which is what
+dashboards, alerts and log searches are built from. Every field name and message is English, and
+the name is the one written in the code. The switches live under "Configuration" in each module's
+README (the index is in [`config.md`](config.md#config-blocks--module-documentation)).
 
-| 想要 | 去哪 |
+| What you want | Where it is |
 |---|---|
-| 业务日志带上 `trace_id`、请求级字段 | [日志](#日志)：用 `slog.InfoContext(ctx, …)`、`xlog.AddKV(ctx, k, v)` |
-| 访问日志的字段、脱敏规则 | [xgin「访问日志」](../xgin/README.md#access-log)（xecho 的字段和规则相同，见 [xecho「访问日志」](../xecho/README.md#access-log)） |
-| 建看板：框架自带哪些指标 | [指标](#指标) |
-| 链路怎么传、谁的 Header 会被收下 | [传播与信任边界](#传播与信任边界) |
-| 把 Span 上报出去 | [xtrace「快速上手」](../xtrace/README.md#快速上手)：`xtrace.AddSpanProcessor(...)` |
+| Business logs carrying `trace_id` and per-request fields | [Logs](#logs): use `slog.InfoContext(ctx, …)` and `xlog.AddKV(ctx, k, v)` |
+| The access log fields and the masking rules | [xgin "Access log"](../xgin/README.md#access-log) (xecho's fields and rules are identical, see [xecho "Access log"](../xecho/README.md#access-log)) |
+| Building a dashboard: which metrics the framework ships | [Metrics](#metrics) |
+| How tracing propagates and whose headers are accepted | [Propagation and the trust boundary](#propagation-and-the-trust-boundary) |
+| Exporting spans | [xtrace "快速上手"](../xtrace/README.md#快速上手): `xtrace.AddSpanProcessor(...)` |
 
-- [日志](#日志)
-  - [框架自己的日志](#框架自己的日志)
-- [指标](#指标)
-- [链路](#链路)
-  - [Span 的名字和属性](#span-的名字和属性)
-  - [传播与信任边界](#传播与信任边界)
+- [Logs](#logs)
+  - [The framework's own logs](#the-frameworks-own-logs)
+- [Metrics](#metrics)
+- [Tracing](#tracing)
+  - [Span names and attributes](#span-names-and-attributes)
+  - [Propagation and the trust boundary](#propagation-and-the-trust-boundary)
 
-## 日志
+## Logs
 
-xlog 把 `slog.Default()` 换成按 `XLog` 配好的 handler，业务和框架都写它。它跟着 xgin / xecho / xcron 来；
-没有 Web 框架的程序（消费者、一次性任务、只用 xgorm / xredis / xkafka 的）要用它就匿名 import `github.com/jupiter-eng/xone/xlog`，
-否则 `slog.Default()` 保持原样，下面这些都没有。要写到自己的日志后端（zap、公司的日志 SDK），
-在 `xone.Run` 之前 `xlog.UseHandler(h)`，下面这些照样生效，见 [xlog「用自己的日志后端」](../xlog/README.md#用自己的日志后端)。
+xlog replaces `slog.Default()` with a handler configured from `XLog`, which both the business and
+the framework write to. It comes along with xgin / xecho / xcron; a program without a web framework
+(a consumer, a one-off job, anything using only xgorm / xredis / xkafka) that wants it imports
+`github.com/jupiter-eng/xone/xlog` anonymously, since otherwise `slog.Default()` stays as it was
+and none of the below exists. To write to your own logging backend (zap, a company logging SDK),
+call `xlog.UseHandler(h)` before `xone.Run`; everything below still applies, see
+[xlog "用自己的日志后端"](../xlog/README.md#用自己的日志后端).
 
-- **`trace_id` / `span_id`**：有链路时（见[链路](#链路)），用带 ctx 的方法（`slog.InfoContext(ctx, …)`）写的每一条都自动带上
-  （由 xtrace 接上，xlog 本身不依赖 OpenTelemetry）。
-- **请求级字段**：`xlog.AddKV(ctx, "user_id", id)` 在任意调用层级补一个字段，之后同一请求里的每条日志
-  （包括访问日志）都带着它。作用域由 xgin / xecho 的 `LogScope` 中间件在每个请求开头开好；自己的非 Web 入口用
-  `xlog.CtxWithScope(ctx)` 开。
-- **一段调用的字段**：`xlog.CtxWithKV(ctx, map[string]any{"order_id": id})` 派生一个新 ctx，只有用它写的日志带着；
-  父 ctx 已有的字段照样带上。批量处理的每一条、起的每个 goroutine 各派生一个，互相不串。
+- **`trace_id` / `span_id`**: with tracing on (see [Tracing](#tracing)), every line written through
+  a ctx-aware method (`slog.InfoContext(ctx, …)`) carries them automatically (xtrace wires it up;
+  xlog itself does not depend on OpenTelemetry).
+- **Per-request fields**: `xlog.AddKV(ctx, "user_id", id)` adds a field at any depth of the call
+  stack, and every later log line in the same request (the access log included) carries it. The
+  scope is opened at the start of each request by xgin's / xecho's `LogScope` middleware; a
+  non-web entry point of your own opens it with `xlog.CtxWithScope(ctx)`.
+- **Fields for one stretch of calls**: `xlog.CtxWithKV(ctx, map[string]any{"order_id": id})`
+  derives a new ctx, and only lines written through it carry those fields; fields already on the
+  parent ctx still come along. Derive one per item in a batch and one per goroutine started, and
+  they never bleed into each other.
 
-### 框架自己的日志
+### The framework's own logs
 
-启停与建连各一条，都不含凭证。常用来检索的几条：
+One line each for starting, stopping and connecting, none of them carrying credentials. The ones
+most often searched for:
 
-| 消息 | 级别 | 字段 |
+| Message | Level | Fields |
 |---|---|---|
 | `loading config` | INFO | `file` |
 | `no config file found, using defaults for everything` | WARN | `searched` |
-| `starting` / `stopping` | INFO | `hook`（钩子函数名，如 `xgorm.initXGorm`） |
+| `starting` / `stopping` | INFO | `hook` (the hook function's name, `xgorm.initXGorm` for instance) |
 | `shutdown signal received, closing gracefully; send it again to terminate now` | INFO | `signal` |
 | `xgorm ready` / `xredis ready` / `xcache ready` / `xkafka ready` | INFO | `instances` |
-| `xgorm go-sql-driver log` / `xredis go-redis log` / `xhttp resty log` | WARN（resty 照搬它的级别） | `detail`：三方库原本写到 stderr 的那一行 |
+| `xgorm go-sql-driver log` / `xredis go-redis log` / `xhttp resty log` | WARN (resty keeps its own level) | `detail`: the line the third-party library would have written to stderr |
 
-各模块自己的日志在它 README 的「可观测」一节：[xgin](../xgin/README.md#observability)（访问日志、`xgin listening`、`xgin http server error`）· [xecho](../xecho/README.md#observability)（访问日志、`xecho listening`、`echo internal log`、`xecho http server error`）· [xgorm](../xgorm/README.md#日志)（`xgorm connected`、SQL 日志）· [xredis](../xredis/README.md#日志)（`xredis connected`、`redis command`、`redis pipeline`）· [xhttp](../xhttp/README.md#日志)（`xhttp ready`、`http request`）· [xcache](../xcache/README.md#日志) · [xkafka](../xkafka/README.md#日志)（`kafka produce failed`、`kafka message failed` / `kafka message dead-lettered` / `kafka message skipped, …` / `kafka handler panicked`，处理函数的日志带 `topic` / `partition` / `offset` / `group`）· [xcron](../xcron/README.md#日志)（`cron job finished` / `cron job failed` / `cron job panicked`、`cron job skipped, previous run still running`）· [xflow](../xflow/README.md#日志)（`xflow flow done` / `xflow flow failed`；逐步的 `xflow step … done` 记 INFO、`… failed` 记 WARN）· [xtrace](../xtrace/README.md#日志)。
+Each module's own logs are under "Observability" in its README:
+[xgin](../xgin/README.md#observability) (the access log, `xgin listening`,
+`xgin http server error`) · [xecho](../xecho/README.md#observability) (the access log,
+`xecho listening`, `echo internal log`, `xecho http server error`) ·
+[xgorm](../xgorm/README.md#日志) (`xgorm connected`, SQL logs) ·
+[xredis](../xredis/README.md#日志) (`xredis connected`, `redis command`, `redis pipeline`) ·
+[xhttp](../xhttp/README.md#日志) (`xhttp ready`, `http request`) ·
+[xcache](../xcache/README.md#日志) · [xkafka](../xkafka/README.md#日志)
+(`kafka produce failed`, `kafka message failed` / `kafka message dead-lettered` /
+`kafka message skipped, …` / `kafka handler panicked`, with the handler's logs carrying `topic` /
+`partition` / `offset` / `group`) · [xcron](../xcron/README.md#日志) (`cron job finished` /
+`cron job failed` / `cron job panicked`, `cron job skipped, previous run still running`) ·
+[xflow](../xflow/README.md#日志) (`xflow flow done` / `xflow flow failed`; the per-step
+`xflow step … done` is INFO and `… failed` is WARN) · [xtrace](../xtrace/README.md#日志).
 
-## 指标
+## Metrics
 
-框架自带的指标都带 `XMetric.ConstLabels`；除了 client_golang 现成的 `go_*` / `process_*`，名字前面还加 `XMetric.Namespace`（有的话）：
+Every metric the framework ships carries `XMetric.ConstLabels`; apart from client_golang's own
+`go_*` / `process_*`, the names are also prefixed with `XMetric.Namespace` when one is set:
 
-| 模块 | 指标 |
+| Module | Metrics |
 |---|---|
-| [xgin](../xgin/README.md#metrics) · [xecho](../xecho/README.md#metrics) | `http_requests_total`、`http_request_duration_seconds`（两者同名同标签，看板通用） |
+| [xgin](../xgin/README.md#metrics) · [xecho](../xecho/README.md#metrics) | `http_requests_total`, `http_request_duration_seconds` (identical names and labels on both sides, so one dashboard serves both) |
 | [xhttp](../xhttp/README.md#指标) | `http_client_request_duration_seconds` |
 | [xgorm](../xgorm/README.md#指标) | `db_pool_*` |
 | [xredis](../xredis/README.md#指标) | `redis_pool_*` |
 | [xkafka](../xkafka/README.md#指标) | `kafka_consume_duration_seconds` |
 | [xcache](../xcache/README.md#指标) | `cache_*` |
-| [xmetric](../xmetric/README.md#指标) | `log_errors_total`、`go_*` / `process_*`，以及业务打点 |
+| [xmetric](../xmetric/README.md#指标) | `log_errors_total`, `go_*` / `process_*`, and the business's own instrumentation |
 
-几条要知道的：
+A few things worth knowing:
 
-- **`method`** 收敛到固定集合：`GET` `HEAD` `POST` `PUT` `PATCH` `DELETE` `CONNECT` `OPTIONS` `TRACE`，其余（包括小写的 `get`）
-  一律 `OTHER`——方法是自由 token，照抄的话谁都能把时间序列撑爆。
-- 连接池、缓存的指标在被抓取时才读；`Metric: false` 的实例不出现在 `/metrics` 里。
-- 各集成的指标注册失败（比如同名指标已被注册成别的类型）**不让启动失败**，只打一条错误日志，那组指标导不出去。
+- **`method`** folds into a fixed set: `GET` `HEAD` `POST` `PUT` `PATCH` `DELETE` `CONNECT`
+  `OPTIONS` `TRACE`, and everything else (lowercase `get` included) becomes `OTHER` — a method is
+  a free-form token, and copying it verbatim lets anyone blow up the time series.
+- Connection pool and cache metrics are read when they are scraped; an instance with
+  `Metric: false` does not appear in `/metrics` at all.
+- A failed metric registration in an integration (a metric of that name already registered as a
+  different type, say) **does not fail startup**: one error line is logged and that set of metrics
+  is not exported.
 
-## 链路
+## Tracing
 
-xtrace 装好全局的 TracerProvider 和 Propagator。会产生 Span 的集成（xgin、xecho、xgorm、xredis、xhttp、xcron、xkafka）都依赖它，
-用了其中任何一个就有链路，不用另外 import；不要链路配 `XTrace.Enable: false`，只关某个组件的配它自己的 `Trace: false`。
-一个都没用（比如只用 xcache 的消费者进程）又想要链路时，匿名 import `github.com/jupiter-eng/xone/xtrace`。
-没有 xtrace 时全局的是 OpenTelemetry 的 noop 实现：各处照样调 Span 的接口，但什么都不记。
+xtrace installs the global TracerProvider and Propagator. Every integration that produces spans
+(xgin, xecho, xgorm, xredis, xhttp, xcron, xkafka) depends on it, so using any one of them gives
+tracing with nothing extra to import; to go without tracing set `XTrace.Enable: false`, and to turn
+it off for one component only set that component's own `Trace: false`. For a program using none of
+them (a consumer process with only xcache, say) that still wants tracing, import
+`github.com/jupiter-eng/xone/xtrace` anonymously. Without xtrace the globals are OpenTelemetry's
+noop implementations: the span APIs are still called everywhere and record nothing.
 
-### Span 的名字和属性
+### Span names and attributes
 
-各模块的 Span 名和关键属性在它 README 的「可观测 · 链路」：
+Each module's span names and key attributes are under "Observability · Tracing" in its README:
 
-| 模块 | Span |
+| Module | Spans |
 |---|---|
-| [xgin](../xgin/README.md#tracing) | 入站，每个请求一个；另见 [X-Trace-Id 响应头](../xgin/README.md#the-x-trace-id-response-header)、[499](../xgin/README.md#499-aborted-requests) |
-| [xecho](../xecho/README.md#tracing) | 入站，Span 名和属性同 xgin，错误属性叫 `echo.errors` |
-| [xhttp](../xhttp/README.md#链路) | 出站 |
-| [xgorm](../xgorm/README.md#链路) | 每条 SQL 一个，属性按 OTel 数据库语义约定 |
-| [xredis](../xredis/README.md#链路) | 每条命令一个 |
-| [xcron](../xcron/README.md#链路) | 每次执行一个根 Span `cron <name>` |
-| [xkafka](../xkafka/README.md#链路) | 生产 `<topic> publish`、消费 `<topic> process`，消费接着消息头里的链路 |
-| [xflow](../xflow/README.md#链路) | 不开 Span |
+| [xgin](../xgin/README.md#tracing) | Inbound, one per request; see also [the X-Trace-Id response header](../xgin/README.md#the-x-trace-id-response-header) and [499](../xgin/README.md#499-aborted-requests) |
+| [xecho](../xecho/README.md#tracing) | Inbound, with span names and attributes identical to xgin's and the error attribute called `echo.errors` |
+| [xhttp](../xhttp/README.md#链路) | Outbound |
+| [xgorm](../xgorm/README.md#链路) | One per SQL statement, with attributes following OTel's database semantic conventions |
+| [xredis](../xredis/README.md#链路) | One per command |
+| [xcron](../xcron/README.md#链路) | One root span `cron <name>` per execution |
+| [xkafka](../xkafka/README.md#链路) | `<topic> publish` when producing and `<topic> process` when consuming, with consumption joining the trace from the message headers |
+| [xflow](../xflow/README.md#链路) | Opens no spans |
 
-状态只在服务端的 5xx（xgin、xecho）、SQL 出错（xgorm）或定时任务失败（xcron）时标成错误；4xx 不算。服务端报错时状态描述只有错误码，
-不调 `RecordError`（它会把带参数值的原文写进 `exception.message`）。
+The status is marked as an error only for a server-side 5xx (xgin, xecho), a failing SQL statement
+(xgorm) or a failed scheduled job (xcron); a 4xx is not. For a server-side error the status
+description holds the error code alone and `RecordError` is not called (it would write the original
+text, parameter values included, into `exception.message`).
 
-### 传播与信任边界
+### Propagation and the trust boundary
 
-入站接、出站带的有三样东西，信任规则不同：
+Three things are accepted inbound and sent outbound, under different trust rules:
 
-| | 格式 | 入站收谁的 | 出站 |
+| | Format | Accepted inbound from | Outbound |
 |---|---|---|---|
-| 链路标识 | W3C `traceparent`、`b3` | 谁发来的都接（只是一个 id） | 注入 `traceparent` 和 `b3` |
-| `baggage` | W3C `baggage` | **只收可信对端的** | 带上本进程 ctx 里的 baggage |
-| 透传 Header | `XTrace.ForwardHeaders` / `ForwardHeaderRules` 里列的 | **只收可信对端的** | `ForwardHeaders` 发给所有下游，`ForwardHeaderRules` 只发给匹配域名的 |
+| Trace identifiers | W3C `traceparent`, `b3` | anyone (they are just an id) | `traceparent` and `b3` are injected |
+| `baggage` | W3C `baggage` | **trusted peers only** | the baggage on this process's ctx is sent |
+| Forwarded headers | whatever `XTrace.ForwardHeaders` / `ForwardHeaderRules` list | **trusted peers only** | `ForwardHeaders` goes to every downstream, `ForwardHeaderRules` only to matching hosts |
 
-- **链路标识谁的都接，采样决定也跟着接**：采样器是 `ParentBased`（见 [xtrace「行为与实测」](../xtrace/README.md#行为与实测)），
-  上游带着 `sampled=01` 来的请求一律采样、导出，`SampleRatio` 管不到它们。公网客户端在每个请求上带一个 `traceparent: 00-…-01`，
-  就能让这一跳和它往下的每一跳都记满 Span——代价落在链路后端的存储和导出带宽上。要限就在入口（网关、负载均衡）剥掉或重写外来的 `traceparent`。
-- **可信对端 = 直连的那一跳在 `XGin.TrustedProxies`（用 xecho 时是 `XEcho.TrustedProxies`）里**（TCP 那一跳，不是从 `X-Forwarded-For` 推出来的 client IP）。
-  `TrustedProxies` 默认只信私有网段（负载均衡、K8s 的 Ingress 和 Pod、sidecar），公网直连的对端发来的一个都不收。
-  「谁是自己人」只在这一处说。
-- 不可信的对端带着这些头来时各打一条告警，整个进程只打一次。
-- 负载均衡一般原样转发客户端发来的头：把它写进 `TrustedProxies` 之前，先在它那里剥掉这些头，否则等于又信了所有客户端。
-- `XGin.Trace: false`、`XEcho.Trace: false`、`XHttp.Trace: false` 只关这一跳的 Span，上面三样照常接、照常带。`XTrace.Enable: false` 时
-  链路标识和 baggage 不再传播，透传 Header 照常。
-- 不经过 xgin / xecho、自己调 `Extract` 的（比如从消息队列的消息头里取），carrier 要实现 `TrustedPeer() bool` 并返回 `true`
-  才会被当作可信，否则一律不收 baggage 和透传 Header。xkafka 消费时把 Kafka 消息头当成可信的（能往 topic 里写的是持有集群凭证的生产者），
-  理由和例外见 [xkafka「链路」](../xkafka/README.md#链路)。
-- 业务代码里读透传的值：`xtrace.ForwardHeaderFromContext(ctx, "X-Request-Id")`。
+- **Trace identifiers are accepted from anyone, and so is the sampling decision**: the sampler is
+  `ParentBased` (see [xtrace "行为与实测"](../xtrace/README.md#行为与实测)), so a request arriving
+  with `sampled=01` is always sampled and exported, beyond the reach of `SampleRatio`. A public
+  client sending `traceparent: 00-…-01` on every request fills this hop and every hop below it with
+  spans — the cost lands on the tracing backend's storage and export bandwidth. To limit it, strip
+  or rewrite inbound `traceparent` at the entrance (the gateway or the load balancer).
+- **A trusted peer is one whose directly connected hop is in `XGin.TrustedProxies`** (or
+  `XEcho.TrustedProxies` with xecho) — the TCP hop, not the client IP derived from
+  `X-Forwarded-For`. `TrustedProxies` trusts private ranges only by default (load balancers,
+  Kubernetes ingresses and pods, sidecars), and accepts nothing from a public peer connecting
+  directly. "Who counts as one of us" is stated here and nowhere else.
+- An untrusted peer arriving with any of these headers produces one warning each, once per process.
+- A load balancer usually forwards the client's headers untouched: before writing it into
+  `TrustedProxies`, strip those headers there, or the effect is trusting every client again.
+- `XGin.Trace: false`, `XEcho.Trace: false` and `XHttp.Trace: false` only turn off the span for that
+  hop; all three of the above are still accepted and still sent. With `XTrace.Enable: false` the
+  trace identifiers and baggage are no longer propagated, while forwarded headers still are.
+- Code calling `Extract` itself, outside xgin / xecho (reading from message queue headers, for
+  instance), has to provide a carrier implementing `TrustedPeer() bool` returning `true` to be
+  treated as trusted; otherwise baggage and forwarded headers are not accepted at all. xkafka
+  treats Kafka message headers as trusted when consuming (whoever can write to a topic holds the
+  cluster's credentials); the reasoning and the exceptions are in
+  [xkafka "链路"](../xkafka/README.md#链路).
+- To read a forwarded value in business code:
+  `xtrace.ForwardHeaderFromContext(ctx, "X-Request-Id")`.
