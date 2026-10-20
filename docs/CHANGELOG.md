@@ -8,6 +8,11 @@
 
 ## [未发布]
 
+### 新增
+
+- xecho 新增配置项 `XEcho.Debug`（默认 `false`，同 echo 自己的默认）：打开后 echo 默认的错误处理会把错误原文放进响应，`c.JSON` / `c.JSONP` / `c.XML` 一律缩进输出，echo 自己的日志级别放宽到 DEBUG。线上别开，详见 [xecho/README.md「行为与实测」](../xecho/README.md#行为与实测)。
+- xecho 新增 `(*XEcho).WithValidator(echo.Validator)`：装上之后 handler 里可以 `c.Validate(&req)`。echo 不内置校验器，不装时 `c.Validate` 返回的是 `echo.ErrValidatorNotRegistered`（handler 直接返回它是 500）。选哪个校验库仍由业务自己定，xecho 不增加这方面的依赖。
+
 ## [v1.0.2] - 2026-10-13
 
 ### 其他

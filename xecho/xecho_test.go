@@ -155,6 +155,10 @@ func TestConfig_Defaults(t *testing.T) {
 	if c.LogRequestBody || c.LogResponseBody || c.LogQuery || c.LogRequestHeaders || c.LogResponseHeaders || c.UseH2C {
 		t.Errorf("记 body、查询串、请求头、响应头和 h2c 默认都该关着，got=%+v", c)
 	}
+	// 开着的话 echo 默认的错误处理会把错误原文写进响应
+	if c.Debug {
+		t.Errorf("Debug 默认该关着，got=%+v", c)
+	}
 	if c.MetricPath != "/metrics" || c.TLS.MinVersion != "1.2" {
 		t.Errorf("指标路径默认应为 /metrics、MinVersion 1.2，got=%+v", c)
 	}
@@ -610,6 +614,66 @@ func TestWithRecoverFunc_ReplacesPanicResponse(t *testing.T) {
 	}
 }
 
+// validatorFunc 一个最小的 echo.Validator：真实的实现用 go-playground/validator 之类，
+// 选哪个是业务的事，框架只负责把它装到 e.Validator 上
+type validatorFunc func(any) error
+
+func (f validatorFunc) Validate(i any) error { return f(i) }
+
+func TestEcho_NoValidatorByDefault(t *testing.T) {
+	// 钉住 echo 的默认（v4.16.0）：没装校验器时 c.Validate 返回的是 ErrValidatorNotRegistered，
+	// 不是「校验通过」——一个忘了装校验器的服务不会有任何迹象，直到有人发一份不合法的请求体进来。
+	// 它是普通 error，handler 直接 return 它的话客户端收到的是 500 {"message":"Internal Server Error"}
+	var got error
+	e := New().WithConfig(configWith(quiet)).WithRoutes(func(e *echo.Echo) {
+		e.GET("/users", func(c echo.Context) error {
+			got = c.Validate(&struct{ Name string }{})
+			return c.NoContent(204)
+		})
+	}).Engine()
+	doRequest(t, e, "GET", "/users")
+
+	if !errors.Is(got, echo.ErrValidatorNotRegistered) {
+		t.Errorf("没装校验器时 c.Validate 应返回 ErrValidatorNotRegistered，got=%v", got)
+	}
+}
+
+func TestWithValidator_HandlerCanValidate(t *testing.T) {
+	var seen any
+	x := New().WithConfig(configWith(quiet)).
+		WithValidator(validatorFunc(func(i any) error { seen = i; return errors.New("name is required") })).
+		WithRoutes(func(e *echo.Echo) {
+			e.GET("/users", func(c echo.Context) error {
+				if err := c.Validate(&struct{ Name string }{}); err != nil {
+					return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+				}
+				return c.NoContent(204)
+			})
+		})
+
+	w := doRequest(t, x.Engine(), "GET", "/users")
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "name is required") {
+		t.Errorf("校验器没装上，got=%d %q", w.Code, w.Body.String())
+	}
+	if _, ok := seen.(*struct{ Name string }); !ok {
+		t.Errorf("c.Validate 应把 handler 传进去的那个值原样交给校验器，got=%T", seen)
+	}
+}
+
+func TestWithValidator_CallbackOverrides(t *testing.T) {
+	// 和 e.IPExtractor、e.HTTPErrorHandler 一样：回调里设的盖得过前面装上的
+	x := New().WithConfig(configWith(quiet)).
+		WithValidator(validatorFunc(func(any) error { return errors.New("from WithValidator") })).
+		WithRoutes(func(e *echo.Echo) {
+			e.Validator = validatorFunc(func(any) error { return errors.New("from callback") })
+			e.GET("/users", func(c echo.Context) error { return c.String(200, c.Validate(&struct{}{}).Error()) })
+		})
+
+	if got := doRequest(t, x.Engine(), "GET", "/users").Body.String(); got != "from callback" {
+		t.Errorf("回调里设的 e.Validator 该盖过 WithValidator，got=%q", got)
+	}
+}
+
 // ---- 配置落到 echo 上 ----
 
 func TestEcho_DefaultIPExtractorTrustsEveryone(t *testing.T) {
@@ -745,6 +809,77 @@ func TestEcho_TrailingParamMatchesSlashes(t *testing.T) {
 	e.GET("/users/:id", func(c echo.Context) error { return c.String(200, c.Param("id")) })
 	if w := doRequest(t, e, "GET", "/users/1/z"); w.Code != 200 || w.Body.String() != "1/z" {
 		t.Errorf("got=%d %q", w.Code, w.Body.String())
+	}
+}
+
+func TestDebug_OffByDefaultKeepsErrorDetailOutOfResponse(t *testing.T) {
+	// 错误原文里常有 DSN、SQL、内网地址：它们进访问日志时是遮过的，进响应不遮。
+	// 默认（e.Debug 为 false，同 echo.New）只回 echo 的那句通用文案
+	e := New().WithConfig(configWith(quiet)).WithRoutes(func(e *echo.Echo) {
+		e.GET("/fail", func(echo.Context) error { return errors.New("dial 10.0.0.9:5432: password=hunter2") })
+	}).Engine()
+
+	w := doRequest(t, e, "GET", "/fail")
+	if w.Code != 500 || strings.TrimSpace(w.Body.String()) != `{"message":"Internal Server Error"}` {
+		t.Errorf("默认不该把错误原文写进响应，got=%d %q", w.Code, w.Body.String())
+	}
+}
+
+func TestDebug_PutsErrorDetailInResponse(t *testing.T) {
+	// Debug: true 落到 e.Debug 上，echo 默认的错误处理就把错误原文放进响应（v4.16.0）
+	e := New().WithConfig(configWith(quiet, func(c *Config) { c.Debug = true })).WithRoutes(func(e *echo.Echo) {
+		e.GET("/fail", func(echo.Context) error { return errors.New("boom") })
+	}).Engine()
+
+	w := doRequest(t, e, "GET", "/fail")
+	if w.Code != 500 || w.Body.String() != "{\n  \"error\": \"boom\",\n  \"message\": \"Internal Server Error\"\n}\n" {
+		t.Errorf("Debug 开着时错误原文该进响应（而且是缩进过的），got=%d %q", w.Code, w.Body.String())
+	}
+}
+
+func TestDebug_PrettyPrintsJSON(t *testing.T) {
+	// e.Debug 的另一件事：c.JSON / c.JSONP / c.XML 一律缩进两个空格（context.go 的
+	// c.echo.Debug || pretty），等于每个请求都带了 ?pretty。响应体变大，bytes_out 跟着变
+	route := func(e *echo.Echo) {
+		e.GET("/j", func(c echo.Context) error { return c.JSON(200, map[string]string{"a": "b"}) })
+	}
+	plain := New().WithConfig(configWith(quiet)).WithRoutes(route).Engine()
+	debug := New().WithConfig(configWith(quiet, func(c *Config) { c.Debug = true })).WithRoutes(route).Engine()
+
+	if got := doRequest(t, plain, "GET", "/j").Body.String(); got != "{\"a\":\"b\"}\n" {
+		t.Errorf("Debug 关着时 c.JSON 不缩进（10 字节），got=%q", got)
+	}
+	if got := doRequest(t, debug, "GET", "/j").Body.String(); got != "{\n  \"a\": \"b\"\n}\n" {
+		t.Errorf("Debug 开着时 c.JSON 缩进两个空格（15 字节），got=%q", got)
+	}
+
+	// 访问日志记的是变大之后的字节数：bytes_out 数的是经 c.Response() 写出去的正文
+	buf := captureLog(t)
+	logged := New().WithConfig(configWith(func(c *Config) { c.Metric, c.Trace, c.Debug = false, false, true })).
+		WithRoutes(route).Engine()
+	doRequest(t, logged, "GET", "/j")
+	if !strings.Contains(buf.String(), `"bytes_out":15`) {
+		t.Errorf("Debug 开着时访问日志该记 15 字节，got=%s", buf.String())
+	}
+}
+
+func TestDebug_RaisesEchoLoggerLevel(t *testing.T) {
+	// echo 只在 e.Start 里按 e.Debug 调 gommon 的级别，xecho 不用 e.Start，自己设（见 applyConfig）。
+	// echo 唯一一条低于 ERROR 的自有日志：往已经提交的响应上再写一次（response.go，WARN）
+	twice := func(e *echo.Echo) {
+		e.GET("/twice", func(c echo.Context) error {
+			_ = c.String(200, "a")
+			return c.String(200, "b")
+		})
+	}
+	for _, debug := range []bool{false, true} {
+		buf := captureLog(t)
+		e := New().WithConfig(configWith(quiet, func(c *Config) { c.Debug = debug })).WithRoutes(twice).Engine()
+		doRequest(t, e, "GET", "/twice")
+
+		if got := strings.Contains(buf.String(), "response already committed"); got != debug {
+			t.Errorf("Debug=%v 时 echo 的 WARN 该 present=%v，got=%v\n%s", debug, debug, got, buf.String())
+		}
 	}
 }
 

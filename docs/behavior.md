@@ -26,7 +26,7 @@
 | [`XEcho` 错误响应](../xecho/README.md#行为与实测) | 整条中间件链返回之后才由 `HTTPErrorHandler` 渲染 | 内置中间件在自己这一层渲染 | 否则 404 / 405 / 500 在访问日志、指标、链路里都是 `bytes_out` 为 0 的 200 |
 | [`XEcho` panic](../xecho/README.md#行为与实测) | 不兜：连接断掉，栈由 net/http 写 stderr | 兜住，记 ERROR 日志、回 500 | 栈进不了日志平台，客户端只看到 EOF |
 | [`XEcho` 服务器超时](../xecho/README.md#行为与实测) | `e.Server` 四个超时全是 0 | 不用 `e.Start`，同 `XGin` 的四个超时 | 同 `XGin.ReadHeaderTimeout` |
-| [echo 自己的日志](../xecho/README.md#行为与实测) | gommon 写 `os.Stdout`，自己的 JSON 格式 | 接到 slog，级别不变 | 绕开 slog 的输出进不了日志平台 |
+| [echo 自己的日志](../xecho/README.md#行为与实测) | gommon 写 `os.Stdout`，自己的 JSON 格式 | 接到 slog，级别沿用 echo 的（`XEcho.Debug` 开着时放宽到 DEBUG，echo 只在 `e.Start` 里做这一步） | 绕开 slog 的输出进不了日志平台 |
 | [`XEcho` 分组的兜底路由](../xecho/README.md#行为与实测) | 带中间件的分组悄悄注册 `RouteNotFound`，`c.Path()` 是 `/api/v1/*` | 落到兜底上的记 `unmatched` | 否则 404 在看板上是 `/api/v1/*`，和 xgin 对不上 |
 | [`XEcho` 的 `e.Pre`](../xecho/README.md#行为与实测) | 挂在 `e.Use` 上的中间件看不到 Pre 里结束的请求，也兜不住 Pre 里的 panic | 内置中间件挂在 `e.Pre` 上，Pre 里不动请求、ctx 存在 `echo.Context` 上，路由之后才换到请求上 | Pre 里的鉴权、限流、301 不进日志和指标；Pre 里换请求的话 `MethodOverride` 失效 |
 | [`http.Server.ErrorLog`](../xgin/README.md#日志) | nil：写标准库的 log（经 slog 是 INFO、消息每行不同） | 接到 slog，WARN，消息 `<模块> http server error` | TLS 握手失败这类错误没法按消息检索和告警 |
