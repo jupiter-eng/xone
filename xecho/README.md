@@ -7,7 +7,7 @@ client_ip 信谁、退出时等不等 handler，两边一字不差（写在两�
 - 访问日志（凭证逐字段脱敏）、链路、指标（自动挂 `/metrics`）、panic 恢复已经装好
 - handler 返回的错误在中间件里就渲染成响应：404、405、500 在访问日志、指标、链路里记的是客户端真正收到的状态码和字节数
 - 内置中间件挂在 `e.Pre` 上：你在 `e.Pre` 里拒掉、重定向的请求照样进访问日志、指标、链路，Pre 里的 panic 也兜得住
-- 默认只信私有网段的代理（echo 自己默认全信）：负载均衡、Ingress、Pod 转发来的 `X-Forwarded-For` 照收，公网直连的伪造不了
+- `c.RealIP()` 按 `X-Forwarded-For` / `X-Real-IP` 取客户端真实 IP，但只认可信代理发来的：默认只信私有网段（echo 自己默认全信），负载均衡、Ingress、Pod 转发来的照收，公网直连的伪造不了
 - 慢连接有防线：`ReadHeaderTimeout` 10s、`IdleTimeout` 60s，写 0 启动失败（echo 自己的 `e.Server` 全是 0）
 - HTTPS、双向认证、h2c 都在配置里开
 - 停止时等在途请求做完，到点断连并报出还没返回的 handler 数
@@ -69,6 +69,7 @@ XEcho:
   WriteTimeout: 0s         # 默认不限：限制它会打断 SSE、长轮询、大文件下载
   IdleTimeout: 60s         # 必须 > 0
   TrustedProxies: [private]  # 信任哪些直连对端的 X-Forwarded-For / X-Real-IP 和透传 Header；private = 回环 + 私有网段，[] = 谁都不信
+  Debug: false             # echo 的调试开关（实例级）：错误响应带错误原文、c.JSON / c.XML 一律缩进，线上别开
   Log: true                # 访问日志
   LogSkipPaths: []         # 不记访问日志的路径：以 / 结尾的按前缀，其余精确匹配
   LogQuery: false          # 查询串进访问日志（逐字段脱敏），默认关
@@ -81,8 +82,9 @@ XEcho:
   MetricPath: /metrics     # 必须以 / 开头；Metric 开着时自动加进 LogSkipPaths
 ```
 
-和 XGin 块相比少了 `Mode`、`MaxMultipartMemory`、`ZHTranslations` 三项：echo 没有进程级的运行模式，
-multipart 的落盘阈值是写死的（见[「行为与实测」](#行为与实测)），validator 也不是它内置的。写了这三项启动失败。
+和 XGin 块相比少了 `Mode`、`MaxMultipartMemory`、`ZHTranslations` 三项（写了启动失败）：echo 没有进程级的运行模式，
+`Debug` 是实例级的，同一进程里两个服务可以一个开一个关；multipart 的落盘阈值是写死的（见[「行为与实测」](#行为与实测)）；
+validator 不是 echo 内置的，用 [`WithValidator`](#api) 装一个，翻译报错也由那个校验库自己管。
 
 **同一进程里的第二个服务**（比如内部管理端口）不读配置文件，用 `WithConfig` 给一份完整配置，从 `CurrentConfig()` 改起：
 
@@ -106,6 +108,7 @@ admin := xecho.New().WithConfig(c).WithRoutes(adminRoutes)
 | `(*XEcho).WithRoutes(f ...func(*echo.Echo))` | 注册路由，回调拿到原生 echo；可以调多次，按顺序生效 |
 | `(*XEcho).WithMiddleware(m ...echo.MiddlewareFunc)` | 追加自定义中间件（`e.Use`，router 之后），排在所有内置中间件之后，对每个请求都生效（含 `/metrics` 和 404） |
 | `(*XEcho).WithRecoverFunc(f func(echo.Context, any) error)` | 自定义 panic 之后的响应；返回的错误交给 `e.HTTPErrorHandler`，默认回 500 |
+| `(*XEcho).WithValidator(v echo.Validator)` | 装一个校验器，之后 handler 里可以 `c.Validate(&req)`；不装的话 `c.Validate` 返回 `echo.ErrValidatorNotRegistered` |
 | `(*XEcho).WithConfig(c Config)` | 用这份完整配置起服务，不读配置文件里的 XEcho 块 |
 | `(*XEcho).Engine() *echo.Echo` | 触发装配并返回原生 echo；之后再 `With...` 不生效 |
 | `(*XEcho).Start(ctx)` / `(*XEcho).Stop(ctx)` | 监听 / 优雅停止，通常交给 `xone.Run`，不用自己调 |
@@ -140,7 +143,24 @@ admin := xecho.New().WithConfig(c).WithRoutes(adminRoutes)
 - **超时用 `echomw.ContextTimeout`，别用 `echomw.Timeout`**：后者（echo 已标弃用）在另一个协程里跑 handler、自己往原始的 writer 写 503，
   实测客户端收到 503，访问日志、指标、链路记的却是 200、`bytes_out` 0，`-race` 下还和访问日志中间件读写同一个响应。
   `ContextTimeout` 只给请求套截止时间，handler 看 `c.Request().Context()` 返回，由它换成 503，记的就是 503。
-- `e.Debug = true` 时 echo 的错误响应会带上错误原文（`{"message":...,"error":"..."}`），线上别开。
+- **校验器要自己装**：echo 不像 gin 那样内置 validator。不装的话 `c.Validate(&req)` 返回的是 `echo.ErrValidatorNotRegistered`
+  （普通 error，不是 `*echo.HTTPError`：直接 `return` 它，客户端收到的是 500 `{"message":"Internal Server Error"}`），
+  而不是校验结果——忘了装的服务看起来一切正常。选哪个校验库是业务的事，框架只负责把它装到 `e.Validator` 上：
+
+  ```go
+  // github.com/go-playground/validator/v10
+  type structValidator struct{ v *validator.Validate }
+
+  func (s structValidator) Validate(i any) error { return s.v.Struct(i) }
+
+  xecho.New().WithValidator(structValidator{v: validator.New()}).WithRoutes(register)
+  ```
+
+  `Validate` 返回的错误 `c.Validate` 原样交给 handler，由 handler 自己处置（`return echo.NewHTTPError(http.StatusBadRequest, err.Error())`
+  才是 400，什么都不做是 500）。`WithRoutes` 回调里设 `e.Validator` 盖得过它。
+- **`Debug` 线上别开**：`XEcho.Debug: true` 落到 `e.Debug` 上，错误响应带上错误原文（`{"message":...,"error":"..."}`），
+  `c.JSON` / `c.JSONP` / `c.XML` 还一律缩进输出（等于每个请求都带了 `?pretty`，`bytes_out` 跟着变大）。
+  默认关，实测的字节数见[「行为与实测」](#行为与实测)。
 
 ## 在负载均衡 / Cloudflare 后面
 
@@ -241,6 +261,29 @@ IPv4 映射成 IPv6 的写法（`::ffff:10.0.0.1`、`::ffff:10.0.0.0/104`）启�
 `HTTPErrorHandler` 只跑这一次；照样返回错误的话 echo 会再调一遍，不查 `Committed` 的自定义错误处理会把错误响应写两遍。
 handler 先写了 200 再返回错误时，echo 默认的错误处理见 `Committed` 就什么都不做，客户端收到的是那个 200，日志也记 200。
 
+**`e.Debug`**（`XEcho.Debug`，默认 false）在 echo v4.16.0 的源码里一共被读到三处，两处影响使用者看得到的东西：
+
+- 默认的错误处理（`echo.go` 的 `DefaultHTTPErrorHandler`，只对 `Message` 是字符串的那种）把错误原文放进响应。
+  一个普通 `error`，关着是 `{"message":"Internal Server Error"}` 36 字节，开着是 60 字节的
+
+  ```json
+  {
+    "error": "boom",
+    "message": "Internal Server Error"
+  }
+  ```
+
+- `c.JSON` / `c.JSONP` / `c.XML`（`context.go` 里的 `c.echo.Debug || pretty`）一律按两个空格缩进，
+  等于每个请求都带了 `?pretty`：`{"a":"b"}` 从 10 字节变成 15 字节，访问日志的 `bytes_out` 记的就是变大之后的数。
+
+第三处在 `e.Start` / `e.StartTLS` 里：把 gommon 的级别调到 DEBUG。这里不用 `e.Start`，所以这一件由 `applyConfig` 自己做，
+否则 `Debug: true` 也只看得到 ERROR，echo 唯一一条低于 ERROR 的自有日志
+（`response.go` 的 `response already committed`，WARN）照样写不出来。
+
+**校验器**：`e.Validator` 默认是 `nil`，此时 `c.Validate(&req)` 一眼都不看 `req`，直接返回 `echo.ErrValidatorNotRegistered`
+（`errors.New("validator not registered")`，普通 error）：handler 把它返回出去是 500 `{"message":"Internal Server Error"}` 36 字节，
+原文只进访问日志的 `errors`。`WithValidator` 装的那个在配置之后、`WithRoutes` 之前落到 `e.Validator` 上，回调里再设盖得过它。
+
 **路由模板**：没匹配上任何路由时 `c.Path()` 是空串；路径对、方法不对时 `c.Path()` 是那条路由的模板、handler 是
 `MethodNotAllowedHandler`（405），方法是 OPTIONS 时 echo 自己回 204 和 `Allow`。后两种和 404 一样记 `unmatched`，
 和 xgin（gin 在这两种情况下都没有模板）对得上。
@@ -321,6 +364,7 @@ handler 不改交进来的 `Request`，handler 把请求交给活得比它久的
 | `read TLS.ClientCAFile: ...` / `TLS.ClientCAFile ... contains no PEM certificate`（XEcho） | CA 文件读不出来，或者里面没有 PEM 证书 | 检查路径和文件内容；服务不监听 |
 | `field CertFile not found in type xecho.Config (did you mean TLS.CertFile? move it under TLS:)`（`KeyFile`、`ClientCAFile`、`MinVersion` 同理） | 写在了 `XEcho` 顶层，这几项属于 `TLS:` 块 | 这几行缩进进 `TLS:` 块，见[「配置」](#配置) |
 | `TrustedProxies entry "::ffff:10.0.0.1" is an IPv4-mapped IPv6 address; write it as 10.0.0.1`（XEcho） | `TrustedProxies` 里写了 IPv4 映射成 IPv6 的地址或网段 | 照报错给的写：`::ffff:10.0.0.1` → `10.0.0.1`，`::ffff:10.0.0.0/104` → `10.0.0.0/8` |
+| 响应是 500 `{"message":"Internal Server Error"}`，访问日志的 `errors` 是 `validator not registered` | handler 调了 `c.Validate`，但没装校验器 | `xecho.New().WithValidator(...)`，见[「注意事项」](#注意事项) |
 | `field Mode not found in type xecho.Config`（`MaxMultipartMemory`、`ZHTranslations` 同理） | 照抄了 XGin 块 | 删掉这几项，理由见[「配置」](#配置) |
 
 停止时的 `N handler(s) still running when the shutdown deadline passed` 见 [`docs/troubleshooting.md`「Runnable 与退出」](../docs/troubleshooting.md#runnable-与退出)。

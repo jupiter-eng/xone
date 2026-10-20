@@ -314,6 +314,20 @@ mutate("截响应的 writer 的 Flush 落到连接上", "xecho/middleware/log.go
 mutate("截响应的 writer 的 Hijack 拿到原始连接", "xecho/middleware/log.go", "./xecho", "TestLog_ResponseCaptureHijack",
        swap('\treturn http.NewResponseController(w.ResponseWriter).Hijack()\n', '\treturn nil, nil, http.ErrNotSupported\n'))
 
+section("调试开关与校验器")
+# 配置里的 Debug 得真的落到 e.Debug 上：不落的话线上照样是安全的那一侧，但测试环境里
+# 开了也白开——「我开了 Debug 怎么还是看不到错误原文」会被当成 echo 的问题查很久
+mutate("XEcho Debug 落到 e.Debug 上", "xecho/xecho.go", "./xecho", "TestDebug_PutsErrorDetailInResponse|TestDebug_PrettyPrintsJSON",
+       swap('\te.Debug = c.Debug\n', ''))
+# echo 只在 e.Start 里按 e.Debug 调 gommon 的级别，xecho 不用 e.Start，这一步得自己做。
+# 换成 ERROR（echo.New 的默认）而不是删掉整行：删了 gommonlog 这个 import 就没人用，编译不过
+mutate("Debug 开着时 echo 自己的日志放宽到 DEBUG", "xecho/xecho.go", "./xecho", "TestDebug_RaisesEchoLoggerLevel",
+       swap('e.Logger.SetLevel(gommonlog.DEBUG)', 'e.Logger.SetLevel(gommonlog.ERROR)'))
+# 调用点：WithValidator 收下的校验器要装到 e.Validator 上。不装的话 c.Validate 返回的是
+# ErrValidatorNotRegistered——一个「装了校验器」的服务其实从没校验过任何请求体
+mutate("WithValidator 的校验器装到 e.Validator 上", "xecho/xecho.go", "./xecho", "TestWithValidator_HandlerCanValidate",
+       swap('\t\t\te.Validator = x.validator\n', ''))
+
 section("标准库 log")
 # e.StdLogger 在 echo.New 里就绑定了 os.Stdout，换 e.Logger 的输出改不到它
 mutate("e.StdLogger 接到 slog", "xecho/xecho.go", "./xecho", "TestEchoStdLogger_RoutedToSlog",

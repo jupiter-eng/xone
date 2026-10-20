@@ -92,6 +92,24 @@ type Config struct {
 	// IPv4 写成 10.0.0.1、10.0.0.0/8；::ffff:10.0.0.1 这种 IPv4 映射成 IPv6 的写法启动失败。
 	TrustedProxies []string `yaml:"TrustedProxies"`
 
+	// Debug 是否打开 echo 的调试开关（e.Debug）。默认关，和 echo.New() 一样。线上别开。
+	//
+	// echo v4.16.0 里它管两件使用者看得见的事（源码里读 e.Debug 的就这几处）：
+	//
+	//   - 错误响应带上错误原文：500 从 {"message":"Internal Server Error"} 变成
+	//     {"message":"Internal Server Error","error":"<err.Error()>"}（echo.go 的
+	//     DefaultHTTPErrorHandler，只对 Message 是字符串的那种）。错误原文里常有 DSN、SQL、
+	//     内网地址，它们进访问日志时是遮过的（见 README「访问日志」），进响应不遮；
+	//   - c.JSON / c.JSONP / c.XML 一律缩进两个空格（context.go 里的 c.echo.Debug || pretty），
+	//     等于每个请求都带上了 ?pretty：响应体变大，访问日志的 bytes_out 跟着变。
+	//
+	// 还有一件 echo 只在 e.Start / e.StartTLS 里做：把自己的日志级别调到 DEBUG。
+	// xecho 不用 e.Start，这一件由 applyConfig 自己做。
+	//
+	// 和 XGin.Mode 不是一回事：gin 的 Mode 是进程级的（gin.SetMode），这一项是实例级的，
+	// 同一进程里用 WithConfig 起的两个服务可以一个开一个关。
+	Debug bool `yaml:"Debug"`
+
 	// Log 是否启用访问日志中间件。默认启用。
 	Log bool `yaml:"Log"`
 

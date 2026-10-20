@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/labstack/echo/v4"
+	gommonlog "github.com/labstack/gommon/log"
 
 	"github.com/jupiter-eng/xone/internal/web"
 	"github.com/jupiter-eng/xone/xconfig"
@@ -39,9 +40,10 @@ import (
 type XEcho struct {
 	override *Config // 见 WithConfig
 
-	routes  []func(*echo.Echo)
-	extra   []echo.MiddlewareFunc
-	recover func(echo.Context, any) error
+	routes    []func(*echo.Echo)
+	extra     []echo.MiddlewareFunc
+	recover   func(echo.Context, any) error
+	validator echo.Validator
 
 	// 下面这几项由 build 一次写定，之后只读。读它们的要么先调 build，要么是
 	// engine 上的 handler——而 engine 只能经 build 拿到。Once 保证写在读之前，不需要锁
@@ -94,7 +96,7 @@ func CurrentConfig() Config {
 // WithRoutes 注册路由。可以调用多次，按调用顺序生效。
 //
 // 回调拿到的是原生的 *echo.Echo，想怎么设都行。它在配置落到 echo 上之后才跑，
-// 所以回调里的设置盖得过配置：换 e.IPExtractor、e.HTTPErrorHandler 都以回调为准。
+// 所以回调里的设置盖得过配置：换 e.IPExtractor、e.HTTPErrorHandler、e.Validator 都以回调为准。
 //
 // 只有一处跟不过去：透传 Header（XTrace.ForwardHeaders）认的可信对端只看配置里的
 // TrustedProxies，回调里换的 IPExtractor 只管得到 c.RealIP()。两边要一起改就改配置。
@@ -123,12 +125,38 @@ func (x *XEcho) WithRecoverFunc(f func(c echo.Context, recovered any) error) *XE
 	return x
 }
 
+// WithValidator 装一个校验器，装上之后 handler 里就能 c.Validate(&req)。
+//
+// echo 不像 gin 那样内置校验：不装的话 c.Validate 返回的是 echo.ErrValidatorNotRegistered，
+// 而不是校验结果——一个忘了装校验器的服务看起来一切正常，直到有人发一份不合法的请求体进来。
+// 它是普通 error（echo.go 的 errors.New），不是 *echo.HTTPError：handler 直接 return 它的话
+// 客户端收到的是 500 {"message":"Internal Server Error"}，原文只进访问日志（实测 v4.16.0）。
+//
+// 校验库选哪个、报错长什么样是业务的事，框架不替你选，只负责把它装到 e.Validator 上：
+//
+//	// github.com/go-playground/validator/v10
+//	type structValidator struct{ v *validator.Validate }
+//
+//	func (s structValidator) Validate(i any) error { return s.v.Struct(i) }
+//
+//	xecho.New().WithValidator(structValidator{v: validator.New()}).WithRoutes(register)
+//
+// Validate 返回的错误 c.Validate 原样交给 handler，由 handler 自己处置——想让它变成 400 就
+// return echo.NewHTTPError(http.StatusBadRequest, err.Error())，什么都不做的话普通 error 是 500。
+// 错误原文会进访问日志的 errors 字段（遮过敏感词），但进不了响应，除非开了 Debug。
+//
+// 传 nil 等于不装。在 WithRoutes 的回调里设 e.Validator 同样有效，而且盖得过这里。
+func (x *XEcho) WithValidator(v echo.Validator) *XEcho {
+	x.validator = v
+	return x
+}
+
 // Engine 返回原生的 *echo.Echo，需要做本包没覆盖的事情时用它。
 //
 // 调用它会触发装配，用的是 WithConfig 给的那份配置，或者配置文件里的 XEcho 块——
 // 配置文件第一次读的时候才加载，所以在 xone.Run 之前调也拿得到最终值。
-// 装配只有一次：之后再 WithConfig / WithRoutes / WithMiddleware / WithRecoverFunc
-// 就不生效了，Start 也沿用这一次的配置。
+// 装配只有一次：之后再 WithConfig / WithRoutes / WithMiddleware / WithRecoverFunc /
+// WithValidator 就不生效了，Start 也沿用这一次的配置。
 //
 // 不要调它的 e.Start / e.StartTLS：服务由 Start 起，超时、TLS、优雅退出都在那一边。
 //
@@ -159,6 +187,11 @@ func (x *XEcho) build() {
 
 		e := echo.New()
 		applyConfig(e, c)
+		// 校验器和配置一起落在前面：WithRoutes 的回调里设的 e.Validator 盖得过它，和别的设置一样。
+		// 不装就保持 echo 的默认（nil，c.Validate 返回 ErrValidatorNotRegistered）
+		if x.validator != nil {
+			e.Validator = x.validator
+		}
 		x.trusted = web.ParseProxies(c.TrustedProxies)
 
 		// 洋葱模型，自外向内：
@@ -247,8 +280,13 @@ func skipMetrics(c Config, m echo.MiddlewareFunc) echo.MiddlewareFunc {
 	}
 }
 
-// applyConfig 把配置里管 echo 的两件事落到 e 上：client_ip 信谁、echo 自己的日志往哪写
+// applyConfig 把配置里管 echo 的三件事落到 e 上：client_ip 信谁、echo 自己的日志往哪写、调试开关开不开
 func applyConfig(e *echo.Echo, c Config) {
+	// e.Debug 管两件使用者看得见的事：错误响应带不带错误原文（echo.go 的 DefaultHTTPErrorHandler）、
+	// c.JSON / c.JSONP / c.XML 缩不缩进（context.go，等于每个请求都带了 ?pretty）。
+	// 实测 echo v4.16.0，默认关，理由见 Config.Debug
+	e.Debug = c.Debug
+
 	// 默认只信私有网段。echo 的默认（IPExtractor 为 nil）是谁发来的 X-Forwarded-For 都信：
 	// 公网对端发一个 X-Forwarded-For: 1.2.3.4，c.RealIP() 就是 1.2.3.4（实测 v4.16.0）。
 	// 算法和 xgin 用的 gin ClientIP 一样，见 web.Proxies.ClientIP。
@@ -258,9 +296,16 @@ func applyConfig(e *echo.Echo, c Config) {
 	// echo 自己的日志（gommon）默认写 os.Stdout，是它自己的 JSON 格式，不经过 slog：
 	// 实测 e.HTTPErrorHandler 写错误响应失败时（客户端已经断开）会在 stdout 留一行
 	// {"time":…,"level":"ERROR","prefix":"echo",…,"message":"write: broken pipe"}。
-	// 接到 slog，级别沿用 echo 的默认（ERROR 以上才写）
+	// 接到 slog，级别沿用 echo 的默认（ERROR 以上才写），Debug 开着时放宽到 DEBUG
 	e.Logger.SetHeader("${level}")
 	e.Logger.SetOutput(echoLog{})
+	// echo 自己只在 e.Start / e.StartTLS 里按 e.Debug 把 gommon 的级别调到 DEBUG（v4.16.0
+	// echo.go 的 configureServer / configureTLSServer）。这里不用 e.Start，所以自己设一遍，
+	// 否则 Debug 开着也只看得到 ERROR：echo 唯一一条低于 ERROR 的自有日志
+	// （response.go 里的 "response already committed"，WARN）照样写不出来
+	if c.Debug {
+		e.Logger.SetLevel(gommonlog.DEBUG)
+	}
 	// e.StdLogger 是 echo 给 http.Server.ErrorLog 准备的（e.Start 里就这么用），在 echo.New 里就绑定了
 	// e.Logger 当时的输出，也就是 os.Stdout（实测 v4.16.0），上面换 Logger 的输出改不到它。
 	// 和服务真正用的 ErrorLog 接到同一处

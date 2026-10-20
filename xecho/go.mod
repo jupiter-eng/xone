@@ -15,6 +15,7 @@ require (
 	github.com/jupiter-eng/xone/xmetric v1.0.2
 	github.com/jupiter-eng/xone/xtrace v1.0.2
 	github.com/labstack/echo/v4 v4.16.0
+	github.com/labstack/gommon v0.5.0
 	github.com/prometheus/client_golang v1.24.1
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/sdk v1.46.0
@@ -27,7 +28,6 @@ require (
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/labstack/gommon v0.5.0 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
