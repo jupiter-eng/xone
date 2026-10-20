@@ -6,6 +6,12 @@
 # instead of quietly staying forever. Nothing is ever added except during this migration.
 #
 # Generated once from the state of the repository at the time the rule landed.
+# xecho/README.md is translated; what is left are anchors into files that are still
+# Chinese (../xgin/README.md#..., ../docs/...#...). Changing them would break the links,
+# so this line goes when those files are translated.
+# xecho/README.md and xgin/README.md are translated; what is left are anchors into files that
+# are still Chinese (../docs/...#..., ../xtls/README.md#...). Changing them would break the
+# links, so these lines go when those files are translated.
 .claude/skills/release/SKILL.md
 .claude/skills/ship/SKILL.md
 .github/workflows/ci.yml
@@ -192,7 +198,6 @@ scripts/mutations/example.py
 scripts/mutations/schemagen.py
 scripts/mutations/xcache.py
 scripts/mutations/xcron.py
-scripts/mutations/xgin.py
 scripts/mutations/xginswagger.py
 scripts/mutations/xgorm.py
 scripts/mutations/xhttp.py
@@ -224,9 +229,9 @@ xcron/schedule_test.go
 xcron/scheduler.go
 xcron/xcron.go
 xcron/xcron_test.go
-# xecho/README.md is translated; what is left are anchors into files that are still
-# Chinese (../xgin/README.md#..., ../docs/...#...). Changing them would break the links,
-# so this line goes when those files are translated.
+# xecho/README.md and xgin/README.md are translated; what is left are anchors into files that
+# are still Chinese (../docs/...#..., ../xtls/README.md#...). Changing them would break the
+# links, so these lines go when those files are translated.
 xecho/README.md
 xerror/xerror.go
 xerror/xerror_test.go
@@ -239,24 +244,6 @@ xflow/optional_test.go
 xflow/xflow.go
 xflow/xflow_test.go
 xgin/README.md
-xgin/config.go
-xgin/go.mod
-xgin/internal/peer/peer.go
-xgin/middleware/bench_test.go
-xgin/middleware/log.go
-xgin/middleware/metric.go
-xgin/middleware/middleware.go
-xgin/middleware/middleware_test.go
-xgin/middleware/redact.go
-xgin/middleware/redact_test.go
-xgin/middleware/trace.go
-xgin/middleware/trace_metric_test.go
-xgin/tls_test.go
-xgin/tracing_test.go
-xgin/trans/trans.go
-xgin/trans/trans_test.go
-xgin/xgin.go
-xgin/xgin_test.go
 xginswagger/README.md
 xginswagger/go.mod
 xginswagger/swagger.go

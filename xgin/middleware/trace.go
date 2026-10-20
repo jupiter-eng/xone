@@ -17,25 +17,29 @@ import (
 const (
 	tracerName = "github.com/jupiter-eng/xone/xgin"
 
-	// TraceIDHeader 响应里回带的链路标识头，方便从一次调用直接跳到链路
+	// TraceIDHeader is the trace identifier echoed back in the response, so that one call leads
+	// straight to its trace.
 	TraceIDHeader = "X-Trace-Id"
 )
 
-// Trace 为每个请求开一个服务端 Span，并接上上游传来的链路。
+// Trace opens a server span for every request and joins the trace coming from upstream.
 //
-// 透传 Header（XTrace.ForwardHeaders）和 baggage 只收可信对端发来的值，可信与否由 xgin
-// 按 XGin.TrustedProxies 判断直连的对端。单独用本中间件、没经过 xgin 装配时
-// 没人做这个判断，一律当作不可信。链路标识（traceparent 等）不受影响。
+// Forwarded headers (XTrace.ForwardHeaders) and baggage are accepted only from a trusted peer,
+// and xgin decides that from the directly connected peer against XGin.TrustedProxies. Used on its
+// own, without xgin's assembly, nobody makes that decision and every peer counts as untrusted.
+// Trace identifiers (traceparent and friends) are unaffected.
 func Trace() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		route := routeOf(c)
 
-		// 每次都取当前的全局 Propagator：构造中间件时链路可能还没初始化
+		// Take the current global Propagator every time: tracing may not be initialized yet when the
+		// middleware is constructed.
 		ctx := otel.GetTextMapPropagator().Extract(c.Request.Context(), inbound(c))
 
-		// 方法和指标一样收敛到固定集合：它是个自由 token，照抄进 Span 名的话
-		// 谁都能发 CUSTOM1、CUSTOM2 把链路后端的 Span 名撑爆。
-		// 原始值放进 method_original（OTel 语义约定里的写法），排查时看得到
+		// The method is folded into a fixed set, as it is for metrics: it is a free-form token, and
+		// copying it into the span name lets anyone blow up the span names in the tracing backend with
+		// CUSTOM1, CUSTOM2. The original goes into method_original (the spelling from OTel's semantic
+		// conventions) and stays visible while debugging.
 		method := web.NormalizeMethod(c.Request.Method)
 		attrs := []attribute.KeyValue{
 			attribute.String("http.request.method", method),
@@ -50,13 +54,14 @@ func Trace() gin.HandlerFunc {
 			trace.WithSpanKind(trace.SpanKindServer),
 			trace.WithAttributes(attrs...),
 		)
-		// 状态码在 defer 里记：以 http.ErrAbortHandler 中止的请求是带着 panic
-		// 穿过这一层的，写在 c.Next() 后面的代码根本走不到
+		// The status code is recorded in a defer: a request aborted with http.ErrAbortHandler passes
+		// through this layer carrying a panic, and code written after c.Next() would never be reached.
 		defer func() {
 			st := status(c, ctx)
 			span.SetAttributes(attribute.Int("http.response.status_code", st))
-			// 只有 5xx 和中止算服务端的错。4xx 是客户端传错了，标成错误会让
-			// 链路里满屏是「错误」，真正的故障反而看不出来；客户端走了的 499 同理
+			// Only 5xx and aborts count as server errors. A 4xx means the client sent something wrong,
+			// and marking it as an error floods the trace with "errors" until real failures no longer
+			// stand out; the 499 of a client that left is the same story.
 			switch {
 			case aborted(c):
 				span.SetStatus(codes.Error, "handler aborted")
@@ -71,7 +76,8 @@ func Trace() gin.HandlerFunc {
 
 		c.Request = c.Request.WithContext(ctx)
 
-		// 必须在 c.Next() 之前写：响应一旦开始发送，header 就改不动了
+		// This has to be written before c.Next(): once the response starts going out, headers can no
+		// longer be changed.
 		if sc := span.SpanContext(); sc.IsValid() {
 			c.Header(TraceIDHeader, sc.TraceID().String())
 		}
@@ -80,11 +86,12 @@ func Trace() gin.HandlerFunc {
 	}
 }
 
-// Propagate 只接上上游传来的链路标识、baggage 和透传 Header，不开 Span。
+// Propagate only joins the trace identifiers, baggage and forwarded headers coming from upstream,
+// without opening a span.
 //
-// XGin.Trace 关掉时 xgin 装的是它而不是 Trace：Trace 只管 Span，
-// 上游的 traceparent、X-Request-Id 这些照样要能带给下游、进日志，
-// 不该因为这一跳不记 Span 就断掉。可信对端的规则与 Trace 相同。
+// With XGin.Trace off, xgin installs this instead of Trace: Trace governs the span only, and an
+// upstream traceparent or X-Request-Id still has to reach downstream and the logs — it should not
+// break just because this hop records no span. The trusted-peer rules match Trace's.
 func Propagate() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Request = c.Request.WithContext(otel.GetTextMapPropagator().Extract(c.Request.Context(), inbound(c)))
@@ -92,11 +99,13 @@ func Propagate() gin.HandlerFunc {
 	}
 }
 
-// inbound 取入站请求头作 carrier，对端可信时带上 TrustedPeer 这个记号。
+// inbound takes the inbound request headers as the carrier, marked with TrustedPeer when the peer
+// is trusted.
 //
-// xtrace 靠 carrier 上的 TrustedPeer() 知道「发来透传 Header 的对端是不是自己人」——
-// 它不认识 xgin，接请求的这一层才知道对端是谁。约定写在
-// xtrace.HeaderPropagator.Extract 上，两边各有测试钉着，example 里还有一条端到端的。
+// xtrace relies on TrustedPeer() on the carrier to know whether the peer sending forwarded headers
+// is one of us — it does not know xgin, and only the layer accepting the request knows who the
+// peer is. The contract is documented on xtrace.HeaderPropagator.Extract, with tests pinning it on
+// both sides and one end-to-end case in example.
 func inbound(c *gin.Context) propagation.TextMapCarrier {
 	h := propagation.HeaderCarrier(c.Request.Header)
 	if c.GetBool(peer.TrustedKey) {
@@ -105,10 +114,11 @@ func inbound(c *gin.Context) propagation.TextMapCarrier {
 	return h
 }
 
-// trustedCarrier 可信对端发来的请求头。
+// trustedCarrier is the request headers of a trusted peer.
 //
-// 只有一个 map 字段，装进接口时不分配——链路中间件每个请求都走这里
+// It holds a single map field, so boxing it into an interface allocates nothing — the tracing
+// middleware goes through here on every request.
 type trustedCarrier struct{ propagation.HeaderCarrier }
 
-// TrustedPeer 见 inbound
+// TrustedPeer, see inbound.
 func (trustedCarrier) TrustedPeer() bool { return true }

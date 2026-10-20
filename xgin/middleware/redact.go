@@ -1,7 +1,8 @@
 package middleware
 
-// 请求/响应里的敏感信息脱敏。实现和敏感词表在 internal/web，这里只是转过去：
-// 词表进程里只有一张，别的 Web 集成读的也是它。
+// Masking of sensitive values in requests and responses. The implementation and the word list
+// live in internal/web; this file only forwards to them. There is one word list per process, and
+// the other web integrations read the same one.
 
 import (
 	"log/slog"
@@ -10,47 +11,52 @@ import (
 	"github.com/jupiter-eng/xone/internal/web"
 )
 
-// Redacted 被遮掉的值统一写成这个
+// Redacted is what every masked value is written as.
 const Redacted = "***REDACTED***"
 
-// AddSensitiveFields 追加敏感词，大小写与分隔符不敏感。
+// AddSensitiveFields appends sensitive words, insensitive to case and separators.
 //
-// 与默认词表同一条规则：字段名里含这个词就遮，body 和请求头都算。
-// 比如加了 id_card，idCard、user_id_card、X-Id-Card 都会被遮掉。
+// The rule is the one the default list follows: a field whose name contains the word is masked,
+// in bodies and in request headers alike. Adding id_card, for instance, masks idCard,
+// user_id_card and X-Id-Card.
 func AddSensitiveFields(fields ...string) { web.AddSensitiveFields(fields...) }
 
-// AddSensitiveHeaders 追加按名字精确遮掉的请求头，大小写不敏感。
+// AddSensitiveHeaders appends request headers masked by exact name, insensitive to case.
 //
-// 用于名字里没有敏感词、内容却是凭证的头，比如 X-Tenant-Id。
-// 名字里带敏感词的头不需要加，默认就遮。
+// It is for headers whose name contains no sensitive word while their content is a credential,
+// X-Tenant-Id for example. A header whose name does contain a sensitive word needs no entry: it
+// is masked by default.
 func AddSensitiveHeaders(headers ...string) { web.AddSensitiveHeaders(headers...) }
 
-// RedactBody 按 Content-Type 脱敏请求体
+// RedactBody masks a request body according to its Content-Type.
 //
-// Content-Type 先转小写：这个头按 RFC 9110 是大小写不敏感的，
-// 照字面比的话 "Application/JSON" 就走不进 JSON 那一支。
+// Content-Type is lowercased first: RFC 9110 makes that header case-insensitive, and comparing it
+// literally would keep "Application/JSON" out of the JSON branch.
 //
-// JSON 的判断是「含 json」而不是精确匹配 application/json：
-// application/vnd.api+json、application/problem+json、text/json
-// 都是 JSON，精确匹配会把它们整个漏过去。认错了也不会更糟——
-// 解不出 JSON 的那一支本来就是整个遮掉。
+// JSON is detected as "contains json" rather than matching application/json exactly:
+// application/vnd.api+json, application/problem+json and text/json are all JSON, and an exact
+// match would let them through untouched. Detecting it wrongly costs nothing — the branch that
+// fails to parse JSON masks the whole thing anyway.
 func RedactBody(body []byte, contentType string) string { return web.RedactBody(body, contentType) }
 
-// RedactHeaders 脱敏请求头，返回一个可以直接交给 slog 的值。
+// RedactHeaders masks request headers and returns a value ready to hand to slog.
 //
-// 返回 slog.Value 而不是序列化好的字符串：交出字符串的话，slog 还要把它
-// 当成一个普通字符串字段再转义一遍，日志里就成了
+// It returns a slog.Value rather than a serialized string: handing over a string would have slog
+// escape it once more as an ordinary string field, and the log would read
 //
-//	"请求头":"{\"Authorization\":[\"***REDACTED***\"]}"
+//	"request_headers":"{\"Authorization\":[\"***REDACTED***\"]}"
 //
-// 检索时得先解一层字符串才能解 JSON。交出 slog.Value，序列化只发生一次，
-// 这个字段在日志里就是一个正常的嵌套对象，顺带省掉了那次 json.Marshal
-// （实测整条日志从 2777ns/19 allocs 降到 1630ns/9 allocs）。
+// which has to be unwrapped from a string before the JSON can be parsed at all. With a
+// slog.Value, serialization happens exactly once, the field is an ordinary nested object in the
+// log, and the json.Marshal is saved along the way (measured: the whole log line goes from
+// 2777ns/19 allocs to 1630ns/9 allocs).
 //
-// 多值的头拼成逗号分隔的一个字符串，而不是数组：同一个字段名在不同日志行里
-// 忽而是字符串忽而是数组，日志系统建索引时会直接拒收。
+// A multi-valued header is joined into one comma-separated string rather than an array: a field
+// name that is a string on one log line and an array on the next is rejected outright when the
+// logging system builds its index.
 //
-// 两条规则，满足一条就遮：名字在名单里（默认名单 + AddSensitiveHeaders），
-// 或者名字里带敏感词（与 body 字段同一张词表）。名单永远列不全——
-// Proxy-Authorization 就曾经漏在外面——所以词表是兜底的那一层。
+// Two rules, either one masks: the name is on the list (the default list plus
+// AddSensitiveHeaders), or the name contains a sensitive word (the same word list the body fields
+// use). A list is never complete — Proxy-Authorization was missing from it once — so the word
+// list is the backstop.
 func RedactHeaders(h http.Header) slog.Value { return web.RedactHeaders(h) }

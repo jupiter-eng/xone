@@ -212,7 +212,7 @@ admin := xecho.New().WithConfig(c).WithRoutes(adminRoutes)
 ## Behind a load balancer or Cloudflare
 
 Exactly as in xgin, see
-[xgin "在负载均衡 / Cloudflare 后面"](../xgin/README.md#在负载均衡--cloudflare-后面). The
+[xgin "Behind a load balancer or Cloudflare"](../xgin/README.md#behind-a-load-balancer-or-cloudflare). The
 client_ip algorithm is the same too: with the direct peer trusted, look at `X-Forwarded-For` first
 and `X-Real-IP` second, walking right to left for the first address not in `TrustedProxies`.
 Echo's own `ExtractIPFromXFFHeader` trusts loopback, link-local and private ranges by its own
@@ -226,7 +226,7 @@ exactly what you want.
 One line when each request ends, message `request completed`, level INFO (while `XEcho.Log` is on;
 paths in `LogSkipPaths` and the metrics endpoint are not recorded). The field names, their order,
 their values and the masking rules are identical to xgin's (the same implementation), and the full
-description is in [xgin "访问日志"](../xgin/README.md#访问日志):
+description is in [xgin "Access log"](../xgin/README.md#access-log):
 
 | Field | Content |
 |---|---|
@@ -303,7 +303,7 @@ tracing, propagation and the trust boundary is in
 ### 499: aborted requests
 
 Two kinds of request are recorded as 499 in the access log, the metrics and the trace, by the same
-rules as [xgin "499：中止的请求"](../xgin/README.md#499中止的请求):
+rules as [xgin "499: aborted requests"](../xgin/README.md#499-aborted-requests):
 
 - A handler that aborted with `panic(http.ErrAbortHandler)` (the span is marked as an error).
   **Returning** an error wrapping it (`fmt.Errorf("proxy: %w", http.ErrAbortHandler)`) does not
@@ -327,7 +327,7 @@ peer `203.0.113.9` sending `X-Forwarded-For: 1.2.3.4` makes `c.RealIP()` return 
 `TrustedProxies` (private ranges only by default), with the algorithm copied from gin v1.12.0's
 `ClientIP`; xgin's tests compare the two side by side. An IPv4-mapped IPv6 spelling
 (`::ffff:10.0.0.1`, `::ffff:10.0.0.0/104`) fails startup for the reason given in
-[xgin](../xgin/README.md#行为与实测): write `10.0.0.1` and `10.0.0.0/8`.
+[xgin](../xgin/README.md#behavior-measured): write `10.0.0.1` and `10.0.0.0/8`.
 
 **An error returned by a handler** is only written into a response by `e.HTTPErrorHandler` after
 the whole middleware chain has returned (the last step of `Echo.ServeHTTP`). At the moment an
@@ -461,7 +461,7 @@ deadlines all reach the real connection; when the writer below does not support 
 `e.Server` are all 0, and the banner is printed only by `e.Start`. `e.Start` is not used here; the
 server is built from the config by `web.Server`, shared with xgin, and the measurements for
 timeouts, TLS, h2c and graceful shutdown are in
-[xgin "行为与实测"](../xgin/README.md#行为与实测): a handler that hijacked the connection (a
+[xgin "Behavior (measured)"](../xgin/README.md#behavior-measured): a handler that hijacked the connection (a
 WebSocket) also sees the request ctx cancelled on shutdown, and `Start` works again after a failed
 listen.
 

@@ -1,11 +1,15 @@
-// Package peer 是 xgin 和它的内置中间件之间传「直连的对端可不可信」用的约定。
+// Package peer is the contract between xgin and its built-in middleware for passing along
+// whether the directly connected peer is trusted.
 //
-// 放在 internal 里：这是框架内部两个包之间的事，使用者不需要、也不该碰它。
-// 对端可不可信只有一个出处——XGin.TrustedProxies，不另设开关。
+// It lives under internal because it is strictly between two packages of the framework: callers
+// neither need it nor should reach for it. Whether a peer is trusted has exactly one source,
+// XGin.TrustedProxies, and no switch of its own.
 package peer
 
-// TrustedKey gin.Context 里的 key，值为 true 表示直连的对端在 XGin.TrustedProxies 里。
+// TrustedKey is the key in gin.Context whose value is true when the directly connected peer is in
+// XGin.TrustedProxies.
 //
-// 只在可信时才写：对端不可信的请求不必付一次写 gin.Context.Keys 的分配。
-// 读的一侧没写过就是 false，正好是安全的那一边——漏写只会少信，不会多信。
+// It is only ever written when the peer is trusted: a request from an untrusted peer need not pay
+// for one allocation in gin.Context.Keys. The reading side sees false when nothing was written,
+// which is the safe side — forgetting to write it trusts less, never more.
 const TrustedKey = "xone/xgin.trusted_peer"

@@ -145,16 +145,20 @@ func TestCheckDocs_ReportsUnknownFieldsInExamples(t *testing.T) {
 	r := &root{Properties: map[string]*node{
 		"XGin": {Type: "object", AdditionalProperties: false, Properties: map[string]*node{"UseH2C": orPlaceholder("boolean")}},
 	}}
-	// 每种写坏的示例都要报出它自己的那一条，不能靠别的问题（比如缺了某份文档）凑数
+	// Each broken example has to be reported on its own merits, not padded out by some other
+	// problem (a missing document, say).
+	//
+	// xgin's section is "Configuration" because xgin/README.md is translated; modules still
+	// waiting for the migration keep "配置" in configDocs.
 	for name, c := range map[string]struct{ md, want string }{
-		"不存在的字段":  {"## 配置\n\nUseH2C\n\n```yaml\nXGin:\n  UseH2C: true\n  Bogus: 1\n```\n", "YAML 示例"},
-		"类型不对":    {"## 配置\n\nUseH2C\n\n```yaml\nXGin:\n  UseH2C: 1\n```\n", "YAML 示例"},
-		"没有这一节":   {"## 行为与实测\n\nUseH2C\n", "没有 xgin/README.md「## 配置」"},
-		"顶层key不对": {"## 配置\n\nUseH2C\n\n```yaml\nXGni:\n  UseH2C: true\n```\n", "XGni"},
+		"unknown field":   {"## Configuration\n\nUseH2C\n\n```yaml\nXGin:\n  UseH2C: true\n  Bogus: 1\n```\n", "YAML 示例"},
+		"wrong type":      {"## Configuration\n\nUseH2C\n\n```yaml\nXGin:\n  UseH2C: 1\n```\n", "YAML 示例"},
+		"section missing": {"## Behavior (measured)\n\nUseH2C\n", "没有 xgin/README.md「## Configuration」"},
+		"wrong top key":   {"## Configuration\n\nUseH2C\n\n```yaml\nXGni:\n  UseH2C: true\n```\n", "XGni"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := strings.Join(checkDocs(r, map[string]string{"xgin/README.md": c.md}), "\n"); !strings.Contains(got, c.want) {
-				t.Errorf("该报出含 %q 的问题，got=%q", c.want, got)
+				t.Errorf("a problem containing %q is expected, got=%q", c.want, got)
 			}
 		})
 	}

@@ -40,7 +40,7 @@ XRedis:
 
 - 填了 `CAFile` 就**只认**这个文件里的 CA，系统根证书不再参与。自签证书把 CA 填进这里。
 - 要更细的控制（加密套件、自定义校验）就绕开配置、自己造原生 client。
-- 服务端（XGin、XEcho）的 `TLS:` 块是另一组字段：`CertFile`、`KeyFile`、`ClientCAFile`、`MinVersion`，没有 `Enable`（证书配了就开），见 [XGin](../xgin/README.md#配置)。
+- 服务端（XGin、XEcho）的 `TLS:` 块是另一组字段：`CertFile`、`KeyFile`、`ClientCAFile`、`MinVersion`，没有 `Enable`（证书配了就开），见 [XGin](../xgin/README.md#configuration)。
 
 ## API
 
