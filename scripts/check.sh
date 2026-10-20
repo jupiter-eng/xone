@@ -158,6 +158,13 @@ zh=$(GOFILES=$(files '*.go') python3 scripts/check_zh.py)
 $zh"
 echo "✓ 运行期字符串都是英文"
 
+# ---- 8.1 仓库里不得出现中文 ----
+# 规则见 .claude/CLAUDE.md 的 Language 一节。规则落地之前写的文件列在
+# scripts/zh_allowlist.txt 里，那份清单只会变短：翻完一个就删一行，
+# 删漏了（文件已经没有中文、清单里还留着）同样报错，清单因此不会变成一纸空文
+python3 scripts/check_no_zh.py || fail "仓库里出现了新的中文，或者豁免清单有过期条目（见上面的清单）"
+echo "✓ 仓库无新增中文（豁免清单 $(grep -cvE '^\s*(#|$)' scripts/zh_allowlist.txt) 个文件待翻译）"
+
 # ---- 9. config_schema.json 与结构体一致 ----
 # schema 给 IDE 用：YAML 里字段补全、拼错标红、悬停看说明。
 # 它是生成的，不是手写的——上百个字段手工同步迟早对不上，
