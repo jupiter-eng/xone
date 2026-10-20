@@ -360,6 +360,6 @@ XGorm（PostgreSQL / MySQL / ClickHouse）、XRedis、XHttp 连出去时的 TLS 
 | `XHttp` | 出站 HTTP | [xhttp/README.md](../xhttp/README.md#配置) |
 | `XGin` | Web 服务 | [xgin/README.md](../xgin/README.md#配置) |
 | `XGinSwagger` | 接口文档 | [xginswagger/README.md](../xginswagger/README.md#配置) |
-| `XEcho` | Web 服务（Echo） | [xecho/README.md](../xecho/README.md#配置) |
+| `XEcho` | Web 服务（Echo） | [xecho/README.md](../xecho/README.md#configuration) |
 | `XFlow` | 流程编排 | [xflow/README.md](../xflow/README.md#配置) |
 | `TLS`（XGorm / XRedis / XHttp / XKafka 块里的） | 客户端 TLS | [xtls/README.md](../xtls/README.md#配置) |

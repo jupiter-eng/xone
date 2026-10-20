@@ -25,8 +25,9 @@ var configDocs = map[string]docSection{
 	"XHttp":       {"xhttp/README.md", "配置"},
 	"XGin":        {"xgin/README.md", "配置"},
 	"XGinSwagger": {"xginswagger/README.md", "配置"},
-	"XEcho":       {"xecho/README.md", "配置"},
-	"XFlow":       {"xflow/README.md", "配置"},
+	// xecho 的 README 已经英文化，小节名是 Configuration；其余模块随各自的批次改
+	"XEcho": {"xecho/README.md", "Configuration"},
+	"XFlow": {"xflow/README.md", "配置"},
 }
 
 // exampleDocs 自己没有配置块、却写了 YAML 示例的节：只校验示例。

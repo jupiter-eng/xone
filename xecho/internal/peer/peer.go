@@ -1,10 +1,14 @@
-// Package peer 是 xecho 和它的内置中间件之间传「直连的对端可不可信」用的约定。
+// Package peer is the contract between xecho and its built-in middleware for passing along
+// whether the directly connected peer is trusted.
 //
-// 放在 internal 里：这是框架内部两个包之间的事，使用者不需要、也不该碰它。
-// 对端可不可信只有一个出处——XEcho.TrustedProxies，不另设开关。
+// It lives under internal because it is strictly between two packages of the framework: callers
+// neither need it nor should reach for it. Whether a peer is trusted has exactly one source,
+// XEcho.TrustedProxies, and no switch of its own.
 package peer
 
-// TrustedKey echo.Context 里的 key，值为 true 表示直连的对端在 XEcho.TrustedProxies 里。
+// TrustedKey is the key in echo.Context whose value is true when the directly connected peer is
+// in XEcho.TrustedProxies.
 //
-// 只在可信时才写：读的一侧没写过就是 false，正好是安全的那一边——漏写只会少信，不会多信。
+// It is only ever written when the peer is trusted: the reading side sees false when nothing was
+// written, which is the safe side — forgetting to write it trusts less, never more.
 const TrustedKey = "xone/xecho.trusted_peer"

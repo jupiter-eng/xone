@@ -153,7 +153,7 @@ func BenchmarkRedact_WholeLogEntry(b *testing.B) {
 
 // benchJSON 一份常见的下单请求体，约 230 字节，里面没有敏感字段：
 // 预检之后走快路径，这是打开 WithBody 之后绝大多数请求走的那一支
-var benchJSON = []byte(`{"order_id":"20260923-000123","user_id":10086,"items":[{"sku":"A-1001","qty":2,"price":"19.90"},{"sku":"B-2002","qty":1,"price":"5.00"}],"address":"上海市浦东新区张江路 88 号","remark":"工作日送货"}`)
+var benchJSON = []byte(`{"order_id":"20260923-000123","user_id":10086,"items":[{"sku":"A-1001","qty":2,"price":"19.90"},{"sku":"B-2002","qty":1,"price":"5.00"}],"address":"Friedrichstrasse 88, 10117 Berlin","remark":"weekday delivery"}`)
 
 func BenchmarkRedactBody_JSONWithoutSensitiveFields(b *testing.B) {
 	b.ReportAllocs()

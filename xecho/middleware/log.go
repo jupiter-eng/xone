@@ -13,53 +13,58 @@ import (
 	"github.com/jupiter-eng/xone/internal/web"
 )
 
-// maxResponseBody 响应体记录上限，见 web.MaxResponseBody
+// maxResponseBody is the cap on how much response body is recorded, see web.MaxResponseBody.
 const maxResponseBody = web.MaxResponseBody
 
-// LogOption 日志中间件的配置项
+// LogOption configures the log middleware.
 type LogOption func(*logOptions)
 
-// logOptions 记什么、跳过什么。字段的取舍和日志的拼法与框架无关，在 internal/web
+// logOptions is what to record and what to skip. Which fields exist and how the log line is
+// assembled has nothing to do with the framework and lives in internal/web.
 type logOptions = web.AccessLog
 
-// WithSkipPaths 指定不记访问日志的路径。
+// WithSkipPaths names the paths that are not access-logged.
 //
-// 以 / 结尾的按前缀匹配（/health/ 命中 /health/live），其余精确匹配。
+// A path ending in / matches by prefix (/health/ matches /health/live), anything else matches
+// exactly.
 func WithSkipPaths(paths ...string) LogOption {
 	return func(o *logOptions) { o.SkipPaths(paths...) }
 }
 
-// WithBody 是否记录请求体和响应体。默认都不记。
+// WithBody records the request body and the response body. Both off by default.
 //
-// 默认关掉是因为记 body 的代价和风险都不小：要把请求体缓存一份、
-// 要包一层 ResponseWriter 截响应，还要对每个字段做脱敏。
-// 需要排查时再打开，并确认脱敏字段配全了。
+// Off by default because recording a body costs and risks enough to be a decision: the request
+// body has to be buffered, the ResponseWriter has to be wrapped to capture the response, and
+// every field has to be masked. Turn it on while debugging, and make sure the masked fields are
+// complete.
 func WithBody(request, response bool) LogOption {
 	return func(o *logOptions) { o.ReqBody, o.RespBody = request, response }
 }
 
-// WithQuery 是否记录查询串。默认不记：查询串里常有凭证（?token=、签名、OAuth 的 code）。
-// 打开后按字段脱敏，规则同表单 body。
+// WithQuery records the query string. Off by default: query strings often carry credentials
+// (?token=, signatures, an OAuth code). With it on, fields are masked by the same rules as a form
+// body.
 func WithQuery(on bool) LogOption {
 	return func(o *logOptions) { o.Query = on }
 }
 
-// WithHeaders 是否记录请求头和响应头。默认都不记。
+// WithHeaders records the request headers and the response headers. Both off by default.
 //
-// 打开后凭证类的值遮掉：Authorization、Cookie、Set-Cookie 等名单里的，
-// 名字带敏感词的（X-Csrf-Token），值是 URL 的去掉查询串（Referer）。
+// With them on, credential-bearing values are masked: the listed ones such as Authorization,
+// Cookie and Set-Cookie, any name containing a sensitive word (X-Csrf-Token), and values that are
+// URLs lose their query string (Referer).
 func WithHeaders(request, response bool) LogOption {
 	return func(o *logOptions) { o.ReqHeader, o.RespHeader = request, response }
 }
 
-// writerPool 复用截响应用的 writer
+// writerPool reuses the writers used to capture responses.
 var writerPool = sync.Pool{New: func() any { return &captureWriter{buf: &bytes.Buffer{}} }}
 
-// captureWriter 在写响应的同时截一份副本。
+// captureWriter keeps a copy of the response while it is being written.
 //
-// 换掉的是 echo.Response 里面那个 Writer，不是 echo.Response 本身：c.String、c.JSON、
-// c.Stream 都经 Response.Write 写到它上面，Size、Committed 照旧由 echo 记。
-// echo.Response 没有 WriteString，所以只截 Write 就不会漏。
+// What it replaces is the Writer inside echo.Response, not echo.Response itself: c.String,
+// c.JSON and c.Stream all write through Response.Write onto it, and Size and Committed are still
+// recorded by echo. echo.Response has no WriteString, so capturing Write alone misses nothing.
 type captureWriter struct {
 	http.ResponseWriter
 	buf *bytes.Buffer
@@ -72,22 +77,26 @@ func (w *captureWriter) Write(b []byte) (int, error) {
 	return w.ResponseWriter.Write(b)
 }
 
-// Unwrap 交出原来的 writer。http.ResponseController 靠它一层层找下去：读写超时
-// （SetReadDeadline / SetWriteDeadline）、EnableFullDuplex，少了它一律 http.ErrNotSupported
+// Unwrap hands back the original writer. http.ResponseController uses it to walk down layer by
+// layer: read and write deadlines (SetReadDeadline / SetWriteDeadline) and EnableFullDuplex all
+// return http.ErrNotSupported without it.
 func (w *captureWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
-// Flush 和 Hijack 给直接做类型断言的代码（c.Response().Writer.(http.Flusher)，老的 SSE、WebSocket 库）：
-// 只有 Unwrap 的话它们断言失败。两个都经 http.ResponseController 转给下面的 writer，
-// 它一层层 Unwrap 下去；下面不支持时 Flush 什么都不做，Hijack 返回 http.ErrNotSupported，和 net/http 一样
+// Flush and Hijack exist for code that type-asserts directly (c.Response().Writer.(http.Flusher),
+// older SSE and WebSocket libraries): with Unwrap alone those assertions fail. Both go through
+// http.ResponseController to the writer below, which unwraps down layer by layer; when the writer
+// below supports neither, Flush does nothing and Hijack returns http.ErrNotSupported, as net/http
+// does.
 func (w *captureWriter) Flush() { _ = http.NewResponseController(w.ResponseWriter).Flush() }
 
 func (w *captureWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	return http.NewResponseController(w.ResponseWriter).Hijack()
 }
 
-// Log 记访问日志。
+// Log writes the access log.
 //
-// handler 返回的错误在这一层渲染成响应（见 finish），记下的状态码、字节数是真正发出去的那些。
+// An error returned by the handler is rendered into a response in this layer (see finish), so the
+// status code and byte count recorded are the ones actually sent.
 func Log(opts ...LogOption) echo.MiddlewareFunc {
 	o := &logOptions{}
 	for _, opt := range opts {
@@ -97,7 +106,7 @@ func Log(opts ...LogOption) echo.MiddlewareFunc {
 
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
-			// 跳过的路径、级别关着时直接放行，见 web.AccessLog.Skip
+			// Skipped paths, and a disabled level, pass straight through; see web.AccessLog.Skip.
 			if o.Skip(c.Request()) {
 				return next(c)
 			}
@@ -118,19 +127,22 @@ func Log(opts ...LogOption) echo.MiddlewareFunc {
 				resp.Writer = cw
 			}
 
-			// 用 defer 收尾：即使 panic 穿过本层，访问日志仍然写得出去，
-			// Writer 也一定会还原、writer 一定会还回池子
+			// Finish in a defer: the access log is still written when a panic passes through this
+			// layer, the Writer is always restored, and the writer always goes back to the pool.
 			defer func() {
-				// 字段怎么拼、怎么脱敏在 web.AccessLog.Log；这里只取 echo 里才取得到的那几个值。
-				// 请求和 ctx 都要重新取：里面几层（Trace、LogScope 之外的用户中间件）可能换过它们。
-				// ctx 取 contextOf：在 e.Pre 里就结束了的请求，日志作用域和 Span 还没换到请求上
+				// How the fields are assembled and masked is in web.AccessLog.Log; only the
+				// values that can be obtained from echo are read here. Both the request and the
+				// ctx are re-read: the layers inside (user middleware beyond Trace and LogScope)
+				// may have replaced them. The ctx comes from contextOf: for a request that ended
+				// inside e.Pre, the log scope and the span have not been swapped onto the request
+				// yet.
 				a := web.Access{
 					Request:    c.Request(),
 					Ctx:        contextOf(c),
 					Elapsed:    time.Since(start),
-					Route:      rs.of(c), // 没匹配上时记 unmatched，真实路径在 path 里
+					Route:      rs.of(c), // unmatched when nothing matched; the real path is in path
 					Status:     status(c),
-					ClientIP:   c.RealIP(), // 按 e.IPExtractor 算，xecho 按 TrustedProxies 装好了它
+					ClientIP:   c.RealIP(), // computed by e.IPExtractor, which xecho set from TrustedProxies
 					BytesOut:   int(resp.Size),
 					RespHeader: resp.Header(),
 					ReqBody:    reqBody,
@@ -144,7 +156,8 @@ func Log(opts ...LogOption) echo.MiddlewareFunc {
 				o.Log(&a)
 
 				if cw != nil {
-					// 先还原 writer，再还回池子：外层中间件可能还要用它
+					// Restore the writer before returning it to the pool: an outer middleware may
+					// still need it.
 					resp.Writer = orig
 					cw.ResponseWriter = nil
 					writerPool.Put(cw)

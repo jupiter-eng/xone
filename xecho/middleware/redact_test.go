@@ -10,12 +10,14 @@ import (
 	"github.com/jupiter-eng/xone/internal/web"
 )
 
-// 脱敏本身的用例在 internal/web/redact_test.go；这里只验公开的这几个名字确实转到了那边
+// The masking itself is covered in internal/web/redact_test.go; this file only checks that
+// these exported names really forward there.
 
 const secret = "hunter2"
 
 func TestRedacted_SameMarkerAsShared(t *testing.T) {
-	// 这里的常量是字面量（go doc 里给使用者看的是值），和 web 的那个必须一字不差
+	// The constant here is a literal (go doc shows the caller its value), so it has to match
+	// web's word for word.
 	if Redacted != web.Redacted {
 		t.Fatalf("Redacted=%q, internal/web writes %q", Redacted, web.Redacted)
 	}
@@ -30,13 +32,14 @@ func TestRedactForwards_ReachSharedImplementation(t *testing.T) {
 	}
 }
 
-// probes 每跑一次换一个探针名：词表只能加不能减，-count=2 的第二轮还用同一个名字的话前提就不成立了。
-// 词按「含」匹配，所以数字后面还得收个尾：不然 field_1 会认出 field_10
+// probes gives every run a fresh probe name: the word list only grows, so reusing a name on the
+// second round of -count=2 would break the precondition. Words match by containment, so the
+// number needs a terminator after it, or field_1 would also match field_10.
 var probes atomic.Int64
 
 func TestAddSensitive_WritesTheSharedRegistry(t *testing.T) {
-	// 词表进程里只有一张：从这里加的词，xgin（它也读 internal/web）也得认。
-	// 用专门的名字，免得影响别的用例
+	// There is one word list per process: a word added here has to be honored by xgin as well
+	// (it reads internal/web too). Dedicated names keep this out of other tests' way.
 	n := probes.Add(1)
 	field, header := fmt.Sprintf("fwd_probe_field_%d_end", n), fmt.Sprintf("X-Fwd-Probe-%d", n)
 	body := []byte(`{"` + field + `":"` + secret + `"}`)
