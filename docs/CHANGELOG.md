@@ -8,6 +8,8 @@
 
 ## [未发布]
 
+## [v1.0.3] - 2026-10-20
+
 ### 新增
 
 - xecho 新增配置项 `XEcho.Debug`（默认 `false`，同 echo 自己的默认）：打开后 echo 默认的错误处理会把错误原文放进响应，`c.JSON` / `c.JSONP` / `c.XML` 一律缩进输出，echo 自己的日志级别放宽到 DEBUG。线上别开，详见 [xecho/README.md「行为与实测」](../xecho/README.md#行为与实测)。

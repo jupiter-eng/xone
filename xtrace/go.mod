@@ -3,7 +3,7 @@ module github.com/jupiter-eng/xone/xtrace
 go 1.25.0
 
 require (
-	github.com/jupiter-eng/xone v1.0.2
+	github.com/jupiter-eng/xone v1.0.3
 	go.opentelemetry.io/contrib/propagators/b3 v1.46.0
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/exporters/stdout/stdouttrace v1.46.0

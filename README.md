@@ -20,7 +20,7 @@
 **1. 安装**（核心 Go 1.23+，集成 Go 1.25+；所有模块共用一个版本号，写同一个）
 
 ```bash
-go get github.com/jupiter-eng/xone@v1.0.2 github.com/jupiter-eng/xone/xgin@v1.0.2
+go get github.com/jupiter-eng/xone@v1.0.3 github.com/jupiter-eng/xone/xgin@v1.0.3
 ```
 
 升级时同样把用到的每个 xone 模块列全、写同一个版本号。只升核心，Go 的 MVS 让 xgin 留在旧版本；
