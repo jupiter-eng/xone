@@ -1,14 +1,15 @@
-// Package xgin 按配置装好 Gin，使用者拿到的是原生的 *gin.Engine。
+// Package xgin assembles a Gin server from configuration; the caller gets the native *gin.Engine.
 //
 //	func main() {
 //		gx := xgin.New().WithRoutes(registerRoutes)
 //		xone.MustRun(gx)
 //	}
 //
-// 内置访问日志、链路、指标、panic 恢复四个中间件，顺序由框架管（访问日志开着时
-// 最外层另有一个 LogScope，给 xlog.AddKV 开请求级的字段作用域；链路关着时换成
-// 只透传、不开 Span 的 Propagate）；
-// 开关、监听地址、超时、TLS 都在配置文件的 XGin 块里，业务代码里没有初始化。
+// Access logging, tracing, metrics and panic recovery are installed as four middlewares whose
+// order the framework owns (with access logging on, one more layer sits outermost: LogScope,
+// which opens a per-request field scope for xlog.AddKV; with tracing off, the tracing layer
+// becomes Propagate, which only forwards and opens no span). Switches, listen address, timeouts
+// and TLS all live in the XGin block of the config file; business code initializes nothing.
 package xgin
 
 import (
@@ -19,174 +20,203 @@ import (
 	"github.com/jupiter-eng/xone/internal/web"
 )
 
-// ConfigKey 本模块在配置文件里的顶层 key
+// ConfigKey is this module's top-level key in the config file.
 const ConfigKey = "XGin"
 
-// Config 服务端配置
+// Config is the server configuration.
 type Config struct {
-	// Host 监听地址。默认 0.0.0.0。
+	// Host is the listen address. Defaults to 0.0.0.0.
 	Host string `yaml:"Host"`
 
-	// Port 监听端口。默认 8080。
+	// Port is the listen port. Defaults to 8080.
 	Port int `yaml:"Port"`
 
-	// UseH2C 是否在非 TLS 下启用 HTTP/2。默认关闭。
+	// UseH2C enables HTTP/2 without TLS. Off by default.
 	//
-	// TLS 模式下 HTTP/2 本来就是自动的，不需要这一项。
+	// Under TLS, HTTP/2 is automatic and this option is not needed.
 	//
-	// 只认「先验知识」：客户端一上来就发 HTTP/2 前言（gRPC、
-	// curl --http2-prior-knowledge 都是）。HTTP/1.1 的 Upgrade: h2c 握手不支持，
-	// 发它的客户端拿到的是一个普通的 HTTP/1.1 响应。理由见 protocols。
+	// Prior knowledge only: the client opens with the HTTP/2 preface (gRPC and
+	// curl --http2-prior-knowledge both do). The HTTP/1.1 Upgrade: h2c handshake is not supported,
+	// and a client sending it gets an ordinary HTTP/1.1 response. The reasoning is under protocols.
 	UseH2C bool `yaml:"UseH2C"`
 
-	// TLS 服务端证书和双向认证。默认不开：CertFile 和 KeyFile 都配了就是 https。
+	// TLS holds the server certificate and mutual authentication. Off by default: setting both
+	// CertFile and KeyFile makes it https.
 	TLS TLSConfig `yaml:"TLS"`
 
-	// ReadHeaderTimeout 读请求头的超时。默认 10s，必须大于 0。
+	// ReadHeaderTimeout bounds reading the request headers. Defaults to 10s, must be > 0.
 	//
-	// 这是慢连接攻击的主要防线：不限制的话，慢客户端可以一直占着连接不放，
-	// 连接数打满之后服务整体不可用。
+	// This is the main defense against slow-connection attacks: without a limit, a slow client
+	// holds a connection indefinitely, and once the connection count is exhausted the whole service
+	// is unavailable.
 	//
-	// 0 不是「用个默认值」：net/http 会退到 ReadTimeout，而那个默认也是 0，
-	// 结果是不限时（实测发半个请求头的连接一直不被断开）。所以 0 和负数都拦住。
+	// 0 does not mean "use some default": net/http falls back to ReadTimeout, whose default is also
+	// 0, so there is no limit at all (measured: a connection sending half a request header is never
+	// closed). Both 0 and negative values are therefore rejected.
 	ReadHeaderTimeout time.Duration `yaml:"ReadHeaderTimeout"`
 
-	// ReadTimeout 读完整个请求（含 body）的超时。默认不限制。
+	// ReadTimeout bounds reading the whole request, body included. Unlimited by default.
 	//
-	// 默认不限制是因为它会打断大文件上传。按业务上限配一个值更好，
-	// 但那个值只有业务自己知道。0 是不限制，负数启动失败。
+	// Unlimited by default because a limit cuts off large uploads. A value matching the business
+	// ceiling is better, but only the business knows that value. 0 means unlimited; a negative value
+	// fails startup.
 	ReadTimeout time.Duration `yaml:"ReadTimeout"`
 
-	// WriteTimeout 写响应的超时。默认不限制。
+	// WriteTimeout bounds writing the response. Unlimited by default.
 	//
-	// 默认不限制是因为它会打断 SSE、长轮询和大文件下载。0 是不限制，负数启动失败。
+	// Unlimited by default because a limit cuts off SSE, long polling and large downloads. 0 means
+	// unlimited; a negative value fails startup.
 	WriteTimeout time.Duration `yaml:"WriteTimeout"`
 
-	// IdleTimeout keep-alive 连接的空闲超时。默认 60s，必须大于 0。
+	// IdleTimeout bounds how long a keep-alive connection may sit idle. Defaults to 60s, must be > 0.
 	//
-	// 与 ReadHeaderTimeout 同理：0 退到 ReadTimeout（默认 0），等于空闲连接永不回收。
+	// Same reasoning as ReadHeaderTimeout: 0 falls back to ReadTimeout (itself 0 by default), which
+	// means idle connections are never reclaimed.
 	IdleTimeout time.Duration `yaml:"IdleTimeout"`
 
-	// MaxMultipartMemory 解析 multipart 表单时在内存里留多少，单位字节。默认 8MB。
+	// MaxMultipartMemory is how much of a multipart form is kept in memory, in bytes. Defaults to 8MB.
 	//
-	// 它不是「请求体上限」，是「超过多少才落盘」：超出的部分写进临时文件，
-	// 不会被拒绝。实际代价是这个数的三倍左右——一次 60MB 的上传，
-	// 配 32MB 时解析这一步让堆多占 96MB，配 8MB 是 24MB，配 1MB 是 3MB。
-	// gin 自己默认 32MB，二十个并发上传就是两个 G。
+	// It is not a request body limit, it is the threshold above which data spills to disk: what
+	// exceeds it is written to a temporary file rather than rejected. The real cost is about three
+	// times this number — a 60MB upload makes the heap grow by 96MB in that parsing step at 32MB,
+	// by 24MB at 8MB and by 3MB at 1MB. Gin's own default is 32MB, which is two gigabytes across
+	// twenty concurrent uploads.
 	//
-	// 框架不替业务定请求体上限，那得按接口来。要限的话在中间件里：
+	// The framework does not set a request body limit for the business, which has to be decided per
+	// endpoint. To limit it, do so in middleware:
 	//
 	//	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 10<<20)
 	MaxMultipartMemory int64 `yaml:"MaxMultipartMemory"`
 
-	// TrustedProxies 信任哪些直连的对端：它们发来的 X-Forwarded-For / X-Real-IP 才用来算 client_ip，
-	// 它们发来的透传 Header（XTrace.ForwardHeaders / ForwardHeaderRules）和 baggage 才会被收下、带给下游。
-	// 「谁是自己人」只在这一处说。
+	// TrustedProxies lists which directly connected peers are trusted: only their X-Forwarded-For /
+	// X-Real-IP is used to compute client_ip, and only their forwarded headers
+	// (XTrace.ForwardHeaders / ForwardHeaderRules) and baggage are accepted and passed downstream.
+	// "Who counts as one of us" is stated here and nowhere else.
 	//
-	// 默认是 [private]：回环、私有网段、100.64.0.0/10 和 IPv6 的 ::1、fc00::/7（见 privateNetworks）。
-	// 负载均衡、K8s 的 Ingress 和 Pod、sidecar 都落在这些网段里，Pod IP 再随机也不用一个个写；
-	// 直接暴露在公网的服务，对端是公网地址，一个都不信，X-Forwarded-For 照样伪造不了 client_ip。
-	// gin 自己的默认是「全都信」：任何人发一个 X-Forwarded-For: 1.2.3.4 就能决定 client_ip。
+	// The default is [private]: loopback, the private ranges, 100.64.0.0/10, and IPv6 ::1 and
+	// fc00::/7 (see privateNetworks). Load balancers, Kubernetes ingresses and pods, and sidecars
+	// all fall inside those ranges, so however random pod IPs are, they need no listing. For a
+	// service exposed directly to the internet the peer is a public address, none of which is
+	// trusted, so X-Forwarded-For still cannot forge client_ip. Gin's own default is to trust
+	// everyone: anyone sending X-Forwarded-For: 1.2.3.4 decides client_ip.
 	//
-	// 在默认之外再加网段时把 private 一起写上（列表整体替换默认值）；要谁都不信就写 []：
+	// To add ranges on top of the default, write private alongside them (the list replaces the
+	// default wholesale); to trust nobody, write []:
 	//
 	//	TrustedProxies: [private, 203.0.113.0/24]
 	//	TrustedProxies: []
 	//
-	// 内网里也有不可信的客户端（办公网、VPN 用户能直连服务）时，别用 private，写确切的那几段。
-	// IPv4 写成 10.0.0.1、10.0.0.0/8；::ffff:10.0.0.1 这种 IPv4 映射成 IPv6 的写法启动失败。
+	// When the internal network also holds untrusted clients (an office network or VPN users can
+	// reach the service directly), do not use private: list the exact ranges. Write IPv4 as
+	// 10.0.0.1 or 10.0.0.0/8; an IPv4-mapped IPv6 form such as ::ffff:10.0.0.1 fails startup.
 	TrustedProxies []string `yaml:"TrustedProxies"`
 
-	// Mode Gin 的运行模式：release / debug / test。默认 release。
+	// Mode is gin's run mode: release / debug / test. Defaults to release.
 	//
-	// 默认 release 而不是跟随 GIN_MODE：debug 模式会打印每一条路由、
-	// 每个请求多打一行日志，还会在响应里带上调试信息。
-	// 线上忘了设环境变量的代价比本地少一行提示大得多。
+	// Release rather than following GIN_MODE: debug mode prints every route, adds a log line per
+	// request and puts debugging information into responses. Forgetting the environment variable in
+	// production costs far more than one missing hint locally.
 	Mode string `yaml:"Mode"`
 
-	// Log 是否启用访问日志中间件。默认启用。
+	// Log enables the access log middleware. On by default.
 	Log bool `yaml:"Log"`
 
-	// LogSkipPaths 不记访问日志的路径。默认没有。
+	// LogSkipPaths lists paths that are not access-logged. Empty by default.
 	//
-	// 以 / 结尾的按前缀匹配，其余精确匹配。Metric 开着时 MetricPath 会自动加进来，不用自己写。
+	// A path ending in / matches by prefix, anything else matches exactly. With Metric on,
+	// MetricPath is added automatically and needs no entry.
 	LogSkipPaths []string `yaml:"LogSkipPaths"`
 
-	// LogRequestBody 是否把请求体记进访问日志。默认不记。
+	// LogRequestBody records the request body in the access log. Off by default.
 	//
-	// 记 body 要缓存请求体的前 256KB 并对每个字段做脱敏，代价和风险都不小。
-	// 打开前先确认敏感词配全了（middleware.AddSensitiveFields，规则见 xgin/README.md「访问日志」）。
+	// Recording a body means buffering its first 256KB and masking every field, which costs enough
+	// and risks enough to be a decision. Before turning it on, make sure the sensitive words are
+	// complete (middleware.AddSensitiveFields; the rules are under "Access log" in xgin/README.md).
 	LogRequestBody bool `yaml:"LogRequestBody"`
 
-	// LogResponseBody 是否把响应体记进访问日志。默认不记。
+	// LogResponseBody records the response body in the access log. Off by default.
 	LogResponseBody bool `yaml:"LogResponseBody"`
 
-	// LogQuery 是否把查询串记进访问日志（字段 query）。默认不记。
+	// LogQuery records the query string in the access log, as the query field. Off by default.
 	//
-	// 查询串里常有凭证：GET /login?token=...、签名链接、OAuth 回调的 code。
-	// 打开后按字段脱敏，规则同表单 body；词表里没有的名字（比如 code）照样明文，
-	// 用 middleware.AddSensitiveFields 补上。
+	// Query strings often carry credentials: GET /login?token=..., signed links, an OAuth
+	// callback's code. With it on, fields are masked by the same rules as a form body; a name
+	// missing from the word list (code, for instance) still goes through in the clear, so add it
+	// with middleware.AddSensitiveFields.
 	LogQuery bool `yaml:"LogQuery"`
 
-	// LogRequestHeaders 是否把请求头记进访问日志（字段 request_headers）。默认不记。
+	// LogRequestHeaders records the request headers in the access log, as the request_headers
+	// field. Off by default.
 	//
-	// 打开后凭证类的值遮掉：Authorization、Cookie、X-Api-Key 等名单里的、名字带敏感词的；
-	// 值是 URL 的（Referer）去掉查询串。名单外的业务头用 middleware.AddSensitiveHeaders 补上。
+	// With it on, credential-bearing values are masked: the listed ones such as Authorization,
+	// Cookie and X-Api-Key, plus any name containing a sensitive word; values that are URLs
+	// (Referer) lose their query string. Add business headers outside the list with
+	// middleware.AddSensitiveHeaders.
 	LogRequestHeaders bool `yaml:"LogRequestHeaders"`
 
-	// LogResponseHeaders 是否把响应头记进访问日志（字段 response_headers）。默认不记。
+	// LogResponseHeaders records the response headers in the access log, as the response_headers
+	// field. Off by default.
 	//
-	// 脱敏规则同请求头：Set-Cookie 等名单里的、名字带敏感词的，值都遮掉。
+	// Masking works as it does for request headers: the listed ones such as Set-Cookie, plus any
+	// name containing a sensitive word, have their values masked.
 	LogResponseHeaders bool `yaml:"LogResponseHeaders"`
 
-	// Trace 是否为入站请求开服务端 Span。默认启用。
+	// Trace opens a server span for inbound requests. On by default.
 	//
-	// 只管 Span。关掉之后照样接上游传来的 traceparent、baggage 和透传 Header
-	// （可信规则同 TrustedProxies），日志里的 trace_id 是上游的那条，
-	// 经 xhttp 发出的请求也照样带给下游；响应里不再回带 X-Trace-Id。
+	// It governs the span only. With it off, an incoming traceparent, baggage and forwarded headers
+	// are still accepted (under the same trust rules as TrustedProxies), trace_id in the log is the
+	// upstream one, and requests sent through xhttp still carry it downstream; the response no
+	// longer carries X-Trace-Id back.
 	Trace bool `yaml:"Trace"`
 
-	// Metric 是否启用指标中间件。默认启用。
+	// Metric enables the metrics middleware. On by default.
 	//
-	// 启用时会自动注册 MetricPath（默认 /metrics）路由，不需要自己挂。
+	// When on, MetricPath (/metrics by default) is registered automatically and needs no route of
+	// your own.
 	Metric bool `yaml:"Metric"`
 
-	// MetricPath 指标端点的路径。默认 /metrics，Metric 开着时必须以 / 开头。
+	// MetricPath is the path of the metrics endpoint. Defaults to /metrics, and must start with /
+	// while Metric is on.
 	//
-	// gin 不会拒绝别的写法，而是把它拼到 / 后面（实测 v1.12.0）：写 metrics
-	// 注册的是 /metrics，访问日志要跳过的却是 metrics，对不上；留空则注册在
-	// 根路径 / 上，业务再注册首页时 gin 在业务自己的路由代码里 panic，
-	// 看不出是这一项配错了。所以这两种都在启动时拦住。
+	// Gin does not reject other spellings, it appends them to / (measured on v1.12.0): writing
+	// metrics registers /metrics while the access log skips metrics, so the two no longer match;
+	// leaving it empty registers on the root path /, and when the business later registers a home
+	// page gin panics inside the business's own routing code, where nothing points at this field.
+	// Both spellings are therefore rejected at startup.
 	MetricPath string `yaml:"MetricPath"`
 
-	// ZHTranslations 是否把 validator 的报错翻成中文。默认不翻。
+	// ZHTranslations translates validator's errors into Chinese. Off by default.
 	ZHTranslations bool `yaml:"ZHTranslations"`
 }
 
-// TLSConfig 服务端 TLS，配置文件里是 TLS 块。
+// TLSConfig is the server-side TLS configuration, the TLS block in the config file.
 //
-// 没有 Enable 开关：CertFile 和 KeyFile 都配了就开，都留空就是明文。
+// There is no Enable switch: setting both CertFile and KeyFile turns it on, leaving both empty
+// serves plaintext.
 type TLSConfig struct {
-	// CertFile TLS 证书路径。与 KeyFile 必须同时配或同时不配。
+	// CertFile is the path to the TLS certificate. It and KeyFile must both be set or both be empty.
 	CertFile string `yaml:"CertFile"`
 
-	// KeyFile TLS 私钥路径。
+	// KeyFile is the path to the TLS private key.
 	KeyFile string `yaml:"KeyFile"`
 
-	// ClientCAFile 校验客户端证书用的 CA（PEM，可以放好几张）。默认空，不要客户端证书。
+	// ClientCAFile is the CA used to verify client certificates (PEM, several are allowed).
+	// Empty by default, meaning no client certificate is requested.
 	//
-	// 配了就是双向认证（tls.RequireAndVerifyClientCert）：客户端必须出示这个 CA 签的证书，
-	// 不出示、或者不是它签的，握手就失败，请求到不了任何 handler——/metrics 这类
-	// 框架挂的路由也一样。只能和 CertFile / KeyFile 一起配。
+	// Setting it turns on mutual authentication (tls.RequireAndVerifyClientCert): the client must
+	// present a certificate signed by this CA, and without one — or with one signed by someone
+	// else — the handshake fails and the request reaches no handler, including framework routes
+	// such as /metrics. It can only be set together with CertFile and KeyFile.
 	ClientCAFile string `yaml:"ClientCAFile"`
 
-	// MinVersion 接受的最低 TLS 版本："1.2" 或 "1.3"，留空同 "1.2"。默认 "1.2"。只在配了证书时生效，也只在那时校验。
+	// MinVersion is the lowest TLS version accepted: "1.2" or "1.3", and empty means "1.2".
+	// Defaults to "1.2". It applies, and is validated, only when a certificate is configured.
 	//
-	// 更低的版本不收：TLS 1.0 / 1.1 早已被弃用（RFC 8996）。
+	// Lower versions are not accepted: TLS 1.0 and 1.1 have long been deprecated (RFC 8996).
 	MinVersion string `yaml:"MinVersion"`
 }
 
-// DefaultConfig 全部默认值集中在这里
+// DefaultConfig gathers every default value in one place.
 func DefaultConfig() Config {
 	return Config{
 		Host:               "0.0.0.0",
@@ -204,13 +234,15 @@ func DefaultConfig() Config {
 	}
 }
 
-// Validate 检查配置本身说不通的地方。
+// Validate reports the ways this configuration contradicts itself.
 //
-// xconfig.Unmarshal 解完配置文件里的 XGin 块会调它，于是配错的配置在启动阶段
-// 就失败，不必等到服务 Start；WithConfig 给的那份在装配时校验，见 XGin.cfg。
+// xconfig.Unmarshal calls it after decoding the XGin block of the config file, so a misconfigured
+// value fails during startup rather than when the server starts listening; the config handed to
+// WithConfig is validated during assembly, see XGin.cfg.
 func (c Config) Validate() error {
-	// 端口、TLS、超时和代理网段的规矩是各 Web 集成共用的，写在 internal/web，
-	// 本模块自己的几项夹在它们中间：配错了好几项时报的是按这个先后的第一个
+	// The rules for ports, TLS, timeouts and proxy ranges are shared by the web integrations and
+	// live in internal/web, with this module's own checks in between: when several fields are wrong
+	// at once, the one reported is the first in this order.
 	s := c.server()
 	if err := s.ValidateListen(); err != nil {
 		return err
@@ -229,15 +261,15 @@ func (c Config) Validate() error {
 	if err := web.ValidateProxies(c.TrustedProxies); err != nil {
 		return err
 	}
-	// 理由见 MetricPath：gin 不拒绝，而是悄悄改写成另一个路径。
-	// 关掉指标时这一项不用，写成什么都不影响
+	// The reason is under MetricPath: gin does not reject it, it quietly rewrites it into a
+	// different path. With metrics off the field is unused and may say anything.
 	if c.Metric && !strings.HasPrefix(c.MetricPath, "/") {
 		return fmt.Errorf("MetricPath must start with /, got=%q", c.MetricPath)
 	}
 	return nil
 }
 
-// server 监听和优雅关闭要的那几项，交给 web.Server
+// server extracts the fields that listening and graceful shutdown need, for web.Server.
 func (c Config) server() web.ServerConfig {
 	return web.ServerConfig{
 		Host:              c.Host,

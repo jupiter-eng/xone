@@ -21,7 +21,7 @@ import (
 	"github.com/jupiter-eng/xone/xmetric"
 )
 
-// recording 装一套独立的链路设施，返回取已结束 Span 的函数
+// recording installs a tracing setup of its own and returns a function yielding the ended spans.
 func recording(t *testing.T) func() tracetest.SpanStubs {
 	t.Helper()
 	exp := tracetest.NewInMemoryExporter()
@@ -47,47 +47,49 @@ func TestTrace_StartsSpanAndReturnsTraceID(t *testing.T) {
 	})
 
 	if w.Header().Get(TraceIDHeader) == "" {
-		t.Error("应在响应头里回带 TraceID，否则从一次调用没法跳到链路")
+		t.Error("the response header should carry the TraceID, or one call does not lead to its trace")
 	}
 	got := spans()
 	if len(got) != 1 {
-		t.Fatalf("应产出一个 Span，got=%d", len(got))
+		t.Fatalf("exactly one span should be produced, got=%d", len(got))
 	}
-	// 用路由模板而不是真实路径：按真实路径命名会让 Span 名随用户数增长
+	// The route template rather than the real path: naming by real path grows the span names with
+	// the number of users.
 	if got[0].Name != "GET /hello/:id" {
-		t.Errorf("Span 名应用路由模板，got=%q", got[0].Name)
+		t.Errorf("the span name should use the route template, got=%q", got[0].Name)
 	}
 	attrs := map[string]string{}
 	for _, kv := range got[0].Attributes {
 		attrs[string(kv.Key)] = kv.Value.Emit()
 	}
 	if attrs["http.route"] != "/hello/:id" || attrs["url.path"] != "/hello/42" {
-		t.Errorf("路由与路径属性不对，got=%v", attrs)
+		t.Errorf("the route and path attributes are wrong, got=%v", attrs)
 	}
 	if attrs["http.response.status_code"] != "200" {
-		t.Errorf("应记状态码，got=%v", attrs)
+		t.Errorf("the status code should be recorded, got=%v", attrs)
 	}
 }
 
 func TestTrace_ContinuesUpstreamTrace(t *testing.T) {
 	spans := recording(t)
 	req := get("/hello")
-	// 一条合法的 W3C traceparent
+	// A valid W3C traceparent.
 	req.Header.Set("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
 
 	serve(t, req, []gin.HandlerFunc{Trace()}, func(c *gin.Context) { c.Status(200) })
 
 	got := spans()
 	if len(got) != 1 {
-		t.Fatalf("应产出一个 Span，got=%d", len(got))
+		t.Fatalf("exactly one span should be produced, got=%d", len(got))
 	}
 	if id := got[0].SpanContext.TraceID().String(); id != "4bf92f3577b34da6a3ce929d0e0e4736" {
-		t.Errorf("应接上上游的 TraceID，got=%s", id)
+		t.Errorf("the upstream TraceID should be joined, got=%s", id)
 	}
 }
 
 func TestTrace_OnlyServerErrorsMarkedAsError(t *testing.T) {
-	// 4xx 是客户端传错了，标成错误会让链路里满屏是错，真故障反而看不出来
+	// A 4xx means the client sent something wrong; marking it as an error floods the trace until
+	// real failures no longer stand out.
 	for status, wantErr := range map[int]bool{200: false, 404: false, 400: false, 500: true, 503: true} {
 		spans := recording(t)
 		serve(t, get("/hello"), []gin.HandlerFunc{Trace()}, func(c *gin.Context) {
@@ -95,17 +97,18 @@ func TestTrace_OnlyServerErrorsMarkedAsError(t *testing.T) {
 		})
 		got := spans()
 		if len(got) != 1 {
-			t.Fatalf("status=%d 应产出一个 Span", status)
+			t.Fatalf("status=%d should produce exactly one span", status)
 		}
 		isErr := got[0].Status.Code == codes.Error
 		if isErr != wantErr {
-			t.Errorf("status=%d 应当标错=%v，实际=%v", status, wantErr, isErr)
+			t.Errorf("status=%d should be marked as an error=%v, got=%v", status, wantErr, isErr)
 		}
 	}
 }
 
 func TestTrace_UnmatchedRouteUsesFixedValue(t *testing.T) {
-	// 用真实路径的话，扫描器随便打几个 URL 就能把链路和指标的基数撑爆
+	// With real paths, a scanner hitting a few URLs blows up the cardinality of both traces and
+	// metrics.
 	spans := recording(t)
 	e := gin.New()
 	e.Use(Trace())
@@ -113,38 +116,40 @@ func TestTrace_UnmatchedRouteUsesFixedValue(t *testing.T) {
 
 	got := spans()
 	if len(got) != 1 {
-		t.Fatalf("应产出一个 Span，got=%d", len(got))
+		t.Fatalf("exactly one span should be produced, got=%d", len(got))
 	}
 	if strings.Contains(got[0].Name, "whatever") {
-		t.Errorf("未匹配路由不该把真实路径写进 Span 名，got=%q", got[0].Name)
+		t.Errorf("an unmatched route must not put the real path into the span name, got=%q", got[0].Name)
 	}
 }
 
 func TestTrace_CustomMethodNormalizedToOTHER(t *testing.T) {
-	// 与指标同一个道理：Span 名是链路后端建索引的那一维，方法是个自由 token，
-	// 谁都能发 CUSTOM1、CUSTOM2。照抄的话每来一个新值就多一个 Span 名。
-	// 原始方法留在 http.request.method_original 里，排查时看得到
+	// Same reasoning as the metrics: the span name is the dimension the tracing backend indexes,
+	// and the method is a free-form token anyone can set to CUSTOM1 or CUSTOM2. Copied verbatim,
+	// every new value adds another span name. The original method stays in
+	// http.request.method_original and remains visible while debugging.
 	spans := recording(t)
 	serve(t, httptest.NewRequest("CUSTOM1", "/hello", nil), []gin.HandlerFunc{Trace()},
 		func(c *gin.Context) { c.Status(200) })
 
 	got := spans()
 	if len(got) != 1 {
-		t.Fatalf("应产出一个 Span，got=%d", len(got))
+		t.Fatalf("exactly one span should be produced, got=%d", len(got))
 	}
 	if !strings.HasPrefix(got[0].Name, "OTHER ") {
-		t.Errorf("自定义方法该收敛成 OTHER，got=%q", got[0].Name)
+		t.Errorf("a custom method should fold into OTHER, got=%q", got[0].Name)
 	}
 	attrs := map[string]string{}
 	for _, kv := range got[0].Attributes {
 		attrs[string(kv.Key)] = kv.Value.Emit()
 	}
 	if attrs["http.request.method"] != "OTHER" || attrs["http.request.method_original"] != "CUSTOM1" {
-		t.Errorf("方法属性不对，got=%v", attrs)
+		t.Errorf("the method attributes are wrong, got=%v", attrs)
 	}
 }
 
-// trustProbe 只记录「交给 Extract 的 carrier 有没有声明对端可信」的 Propagator
+// trustProbe is a Propagator that only records whether the carrier handed to Extract declared the
+// peer trusted.
 type trustProbe struct{ got *bool }
 
 func (p trustProbe) Extract(ctx context.Context, c propagation.TextMapCarrier) context.Context {
@@ -156,8 +161,9 @@ func (trustProbe) Inject(context.Context, propagation.TextMapCarrier) {}
 func (trustProbe) Fields() []string                                   { return nil }
 
 func TestTrace_PeerTrustFollowsXginMarker(t *testing.T) {
-	// 透传 Header 只收可信对端发来的值。可不可信由 xgin 按 TrustedProxies 判，
-	// 这里只负责把判断结果交给 xtrace：没有记号（单独用本中间件）就是不可信
+	// Forwarded headers are accepted only from a trusted peer. xgin decides that from
+	// TrustedProxies; this layer only hands the verdict to xtrace, and no mark (the middleware used
+	// on its own) means untrusted.
 	old := otel.GetTextMapPropagator()
 	t.Cleanup(func() { otel.SetTextMapPropagator(old) })
 	var got bool
@@ -168,15 +174,15 @@ func TestTrace_PeerTrustFollowsXginMarker(t *testing.T) {
 		mws  []gin.HandlerFunc
 		want bool
 	}{
-		"单独用":                 {[]gin.HandlerFunc{Trace()}, false},
-		"xgin 标了可信":           {[]gin.HandlerFunc{markTrusted, Trace()}, true},
-		"Propagate 单独用":       {[]gin.HandlerFunc{Propagate()}, false},
-		"Propagate xgin 标了可信": {[]gin.HandlerFunc{markTrusted, Propagate()}, true},
+		"on its own":                        {[]gin.HandlerFunc{Trace()}, false},
+		"xgin marked it trusted":            {[]gin.HandlerFunc{markTrusted, Trace()}, true},
+		"Propagate on its own":              {[]gin.HandlerFunc{Propagate()}, false},
+		"Propagate, xgin marked it trusted": {[]gin.HandlerFunc{markTrusted, Propagate()}, true},
 	} {
 		got = !c.want
 		serve(t, get("/hello"), c.mws, func(c *gin.Context) { c.Status(200) })
 		if got != c.want {
-			t.Errorf("%s：carrier 声明的可信=%v，want %v", name, got, c.want)
+			t.Errorf("%s: the carrier declared trusted=%v, want %v", name, got, c.want)
 		}
 	}
 }
@@ -192,19 +198,19 @@ func TestPropagate_ContinuesUpstreamTraceWithoutSpan(t *testing.T) {
 		c.Status(200)
 	})
 	if seen != "4bf92f3577b34da6a3ce929d0e0e4736" {
-		t.Errorf("handler 的 ctx 里该是上游的链路标识，got=%q", seen)
+		t.Errorf("the handler ctx should hold the upstream trace identifiers, got=%q", seen)
 	}
 	if n := len(spans()); n != 0 {
-		t.Errorf("Propagate 不开 Span，got=%d 个", n)
+		t.Errorf("Propagate opens no span, got=%d", n)
 	}
 	if w.Header().Get(TraceIDHeader) != "" {
-		t.Error("没开 Span 就不回带 X-Trace-Id")
+		t.Error("with no span there is no X-Trace-Id to echo back")
 	}
 }
 
 // ---- Metric ----
 
-// withMetrics 装一套独立的指标设施
+// withMetrics installs a metrics setup of its own.
 func withMetrics(t *testing.T) *xmetric.Metrics {
 	t.Helper()
 	m, closer, err := xmetric.New(xmetric.Config{})
@@ -224,15 +230,16 @@ func TestMetric_RecordsCountAndDuration(t *testing.T) {
 
 	out := testkit.Scrape(m.Handler)
 	if !strings.Contains(out, `http_requests_total{method="GET",route="/hello/:id",status="201"} 1`) {
-		t.Errorf("应按方法、路由、状态码记请求数\n实际=\n%s", out)
+		t.Errorf("requests should be counted by method, route and status\ngot=\n%s", out)
 	}
 	if !strings.Contains(out, "http_request_duration_seconds_count") {
-		t.Errorf("应记耗时\n实际=\n%s", out)
+		t.Errorf("the duration should be recorded\ngot=\n%s", out)
 	}
 }
 
 func TestMetric_RouteUsesTemplate(t *testing.T) {
-	// 按真实路径打标签会让时间序列随 URL 里的 id 无限增长，Prometheus 会被撑垮
+	// Labelling by real path grows the time series without bound with every id in a URL, which
+	// buries Prometheus.
 	m := withMetrics(t)
 	for _, p := range []string{"/hello/1", "/hello/2", "/hello/3"} {
 		serve(t, get(p), []gin.HandlerFunc{Metric()}, func(c *gin.Context) { c.Status(200) })
@@ -240,10 +247,10 @@ func TestMetric_RouteUsesTemplate(t *testing.T) {
 
 	out := testkit.Scrape(m.Handler)
 	if !strings.Contains(out, `route="/hello/:id",status="200"} 3`) {
-		t.Errorf("三个请求应聚合成一条序列\n实际=\n%s", out)
+		t.Errorf("the three requests should fold into one series\ngot=\n%s", out)
 	}
 	if strings.Contains(out, `route="/hello/1"`) {
-		t.Errorf("不该把真实路径写进标签\n实际=\n%s", out)
+		t.Errorf("the real path must not reach the labels\ngot=\n%s", out)
 	}
 }
 
@@ -255,33 +262,35 @@ func TestMetric_UnmatchedRouteUsesFixedValue(t *testing.T) {
 
 	out := testkit.Scrape(m.Handler)
 	if !strings.Contains(out, `route="unmatched"`) {
-		t.Errorf("未匹配路由应记成固定值\n实际=\n%s", out)
+		t.Errorf("an unmatched route should be recorded as the fixed value\ngot=\n%s", out)
 	}
 }
 
 func TestMetric_PanicStillCounted(t *testing.T) {
-	// 不计入的话，出问题的请求会在错误率指标里凭空消失
+	// Without counting it, the requests that went wrong vanish from the error-rate metric.
 	m := withMetrics(t)
 	func() {
 		defer func() { recover() }()
-		serve(t, get("/hello"), []gin.HandlerFunc{Metric()}, func(c *gin.Context) { panic("炸了") })
+		serve(t, get("/hello"), []gin.HandlerFunc{Metric()}, func(c *gin.Context) { panic("boom") })
 	}()
 
 	if out := testkit.Scrape(m.Handler); !strings.Contains(out, "http_requests_total") {
-		t.Errorf("panic 的请求也该计入\n实际=\n%s", out)
+		t.Errorf("a panicking request should be counted too\ngot=\n%s", out)
 	}
 }
 
 var _ = http.StatusOK
 
 func TestMetric_CustomMethodNormalizedToOTHER(t *testing.T) {
-	// 路由已经用模板挡住了 URL 里的 id，方法这一维却是照抄请求的——
-	// 而 HTTP 方法是个自由 token，谁都能发 CUSTOM1、CUSTOM2，
-	// 每来一个新值就多一组时间序列，没有淘汰机制。
+	// The route dimension already hides the ids in URLs behind templates, while the method
+	// dimension is copied straight from the request - and an HTTP method is a free-form token
+	// anyone can set to CUSTOM1 or CUSTOM2, each new value adding a time series that is never
+	// evicted.
 	//
-	// 这一段走真实的中间件，而不是直接调 web.NormalizeMethod：
-	// 变异测试发现只测那个函数的话，把调用点绕开（`web.NormalizeMethod(m)` → `m`）
-	// 一样能过——函数本身是对的，只是没人用它，而那正是这个 bug 的形状
+	// This part goes through the real middleware rather than calling web.NormalizeMethod directly:
+	// mutation testing found that testing the function alone still passes with the call site
+	// bypassed (`web.NormalizeMethod(m)` -> `m`) — the function itself is right, nobody uses it, and
+	// that is exactly the shape of this bug.
 	m := withMetrics(t)
 	for _, method := range []string{"CUSTOM1", "FOOBAR", "PROPFIND"} {
 		serve(t, httptest.NewRequest(method, "/hello", nil), []gin.HandlerFunc{Metric()},
@@ -289,51 +298,52 @@ func TestMetric_CustomMethodNormalizedToOTHER(t *testing.T) {
 	}
 	out := testkit.Scrape(m.Handler)
 	if !strings.Contains(out, `method="OTHER"`) {
-		t.Errorf("自定义方法该收敛成 OTHER\n实际=\n%s", out)
+		t.Errorf("a custom method should fold into OTHER\ngot=\n%s", out)
 	}
 	for _, leaked := range []string{`method="CUSTOM1"`, `method="FOOBAR"`, `method="PROPFIND"`} {
 		if strings.Contains(out, leaked) {
-			t.Errorf("%s 进了标签，时间序列会被请求方撑爆\n实际=\n%s", leaked, out)
+			t.Errorf("%s reached the labels, so the caller can blow up the time series\ngot=\n%s", leaked, out)
 		}
 	}
 
-	// 映射表本身的用例在 internal/web（TestNormalizeMethod）
+	// The mapping table itself is covered in internal/web (TestNormalizeMethod).
 }
 
 func TestTrace_ErrAbortHandlerAbortRecordedAsError(t *testing.T) {
-	// 中止的请求带着 panic 穿过 Trace，写在 c.Next() 后面的收尾走不到；
-	// 读到的状态码又是已经发出去的 200——Span 上看是一次成功
+	// An aborted request passes through Trace carrying a panic, so cleanup written after c.Next()
+	// never runs; and the status code read back is the 200 already sent, so the span would look
+	// like a success.
 	spans := recording(t)
 	serveAborted(t, Trace())
 
 	got := spans()
 	if len(got) != 1 {
-		t.Fatalf("应产出一个 Span，got=%d", len(got))
+		t.Fatalf("exactly one span should be produced, got=%d", len(got))
 	}
 	if got[0].Status.Code != codes.Error {
-		t.Errorf("中止的请求该标成错误，got=%v", got[0].Status)
+		t.Errorf("an aborted request should be marked as an error, got=%v", got[0].Status)
 	}
 	found := false
 	for _, a := range got[0].Attributes {
 		if a.Key == "http.response.status_code" {
 			found = true
 			if a.Value.AsInt64() != statusAborted {
-				t.Errorf("状态码该记成 %d，got=%d", statusAborted, a.Value.AsInt64())
+				t.Errorf("the status code should be recorded as %d, got=%d", statusAborted, a.Value.AsInt64())
 			}
 		}
 	}
 	if !found {
-		t.Error("Span 上没有状态码")
+		t.Error("the span carries no status code")
 	}
 }
 
 func TestMetric_ErrAbortHandlerAbortRecordedAs499(t *testing.T) {
-	// 记成 200 的话，被截断的响应在错误率里凭空消失
+	// Recorded as 200, a truncated response vanishes from the error rate.
 	m := withMetrics(t)
 	serveAborted(t, Metric())
 
 	if out := testkit.Scrape(m.Handler); !strings.Contains(out, `status="499"`) {
-		t.Errorf("中止的请求该记成 499\n实际=\n%s", out)
+		t.Errorf("an aborted request should be recorded as 499\ngot=\n%s", out)
 	}
 }
 
@@ -343,14 +353,14 @@ func TestTrace_ErrorTextIsRedactedOnSpan(t *testing.T) {
 		_ = c.Error(errors.New("login failed password=hunter2"))
 		c.Status(500)
 	})
-	got := "（没写）"
+	got := "(not written)"
 	for _, a := range spans()[0].Attributes {
 		if a.Key == "gin.errors" {
 			got = a.Value.AsString()
 		}
 	}
 	if got != Redacted {
-		t.Errorf("Span 上的 gin.errors 该被遮掉，got=%q", got)
+		t.Errorf("gin.errors on the span should be masked, got=%q", got)
 	}
 }
 
@@ -361,7 +371,7 @@ func TestTrace_ErrorTextKeepsSeparationAndMasksDSNOnSpan(t *testing.T) {
 		_ = c.Error(errors.New("retry gave up"))
 		c.Status(500)
 	})
-	got := "（没写）"
+	got := "(not written)"
 	for _, a := range spans()[0].Attributes {
 		if a.Key == "gin.errors" {
 			got = a.Value.AsString()
@@ -372,9 +382,10 @@ func TestTrace_ErrorTextKeepsSeparationAndMasksDSNOnSpan(t *testing.T) {
 	}
 }
 
-// ---- 499 的规矩：只记真的没发出去的 ----
+// ---- The 499 rule: only for responses that really never went out ----
 
-// recordedAs 跑一次请求，返回访问日志、指标、Span 各自记下的状态码和 Span 是否标错
+// recordedAs runs one request and returns the status recorded by the access log, the metrics and
+// the span, and whether the span was marked as an error.
 func recordedAs(t *testing.T, req *http.Request, h gin.HandlerFunc) (logged any, metric string, span string, spanErr bool) {
 	t.Helper()
 	lines := capture(t)
@@ -397,7 +408,7 @@ func recordedAs(t *testing.T, req *http.Request, h gin.HandlerFunc) (logged any,
 	}
 	got := spans()
 	if len(got) != 1 {
-		t.Fatalf("应产出一个 Span，got=%d", len(got))
+		t.Fatalf("exactly one span should be produced, got=%d", len(got))
 	}
 	var code string
 	for _, kv := range got[0].Attributes {
@@ -408,7 +419,8 @@ func recordedAs(t *testing.T, req *http.Request, h gin.HandlerFunc) (logged any,
 	return logged, metric, code, got[0].Status.Code == codes.Error
 }
 
-// goneRequest 客户端已经走了的请求：net/http 在连接断开（HTTP/2 是流被重置）、强制断连时取消请求的 ctx
+// goneRequest is a request whose client is already gone: net/http cancels the request ctx when
+// the connection breaks (a reset stream on HTTP/2) or is force-closed.
 func goneRequest() *http.Request {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -416,32 +428,35 @@ func goneRequest() *http.Request {
 }
 
 func TestClientGoneBeforeAnythingSentRecordedAs499(t *testing.T) {
-	// 回归用例：客户端断开之后 handler 什么都没写就返回，原先记成 bytes_out 为 0 的 200——
-	// 客户端其实什么都没收到。和 xecho 一个规矩
+	// Regression: after the client disconnects, a handler returning without writing anything used
+	// to be recorded as a 200 with bytes_out 0 — while the client received nothing at all. Same
+	// rule as xecho.
 	logged, metric, span, spanErr := recordedAs(t, goneRequest(), func(c *gin.Context) {
-		_ = c.Error(c.Request.Context().Err()) //nolint:errcheck // 只是登记
+		_ = c.Error(c.Request.Context().Err()) //nolint:errcheck // only recording it
 	})
 	if logged != float64(499) || metric != "499" || span != "499" || spanErr {
-		t.Errorf("该记 499、Span 不标错（不是服务端的错），got log=%v metric=%s span=%s spanErr=%v", logged, metric, span, spanErr)
+		t.Errorf("should record 499 with the span unmarked (this is not a server error), got log=%v metric=%s span=%s spanErr=%v", logged, metric, span, spanErr)
 	}
 }
 
 func TestClientGoneAfterResponseWrittenKeepsSentStatus(t *testing.T) {
-	// 响应已经开始发了：客户端收到了（至少是一部分），记已经发出去的那个状态码
+	// The response has started going out: the client received at least part of it, so the status
+	// that was sent is what gets recorded.
 	logged, metric, span, _ := recordedAs(t, goneRequest(), func(c *gin.Context) { c.String(201, "partial") })
 	if logged != float64(201) || metric != "201" || span != "201" {
-		t.Errorf("该记已经发出去的 201，got log=%v metric=%s span=%s", logged, metric, span)
+		t.Errorf("the 201 that was sent should be recorded, got log=%v metric=%s span=%s", logged, metric, span)
 	}
 }
 
 func TestClientGoneIgnoresContextsSetByInnerMiddleware(t *testing.T) {
-	// 里面几层换上的 ctx 是业务自己的：套了超时、返回时 cancel 掉，出了那一层就是 Canceled，客户端却还在等
+	// A ctx installed by an inner layer belongs to the business: it wraps a timeout, cancels it on
+	// the way out, and outside that layer it reads as Canceled while the client is still waiting.
 	logged, metric, span, _ := recordedAs(t, get("/hello"), func(c *gin.Context) {
 		ctx, cancel := context.WithCancel(c.Request.Context())
 		cancel()
 		c.Request = c.Request.WithContext(ctx)
 	})
 	if logged != float64(200) || metric != "200" || span != "200" {
-		t.Errorf("客户端还在，该记 200，got log=%v metric=%s span=%s", logged, metric, span)
+		t.Errorf("the client is still there, so 200 should be recorded, got log=%v metric=%s span=%s", logged, metric, span)
 	}
 }

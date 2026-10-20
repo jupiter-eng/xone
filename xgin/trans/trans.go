@@ -1,11 +1,11 @@
-// Package trans 把 validator 的校验报错翻成中文。
+// Package trans translates validator's validation errors into Chinese.
 //
-// 默认不启用，要用就在配置里打开：
+// It is off by default; turn it on in the config:
 //
 //	XGin:
 //	  ZHTranslations: true
 //
-// 之后在 handler 里：
+// After that, inside a handler:
 //
 //	if err := c.ShouldBindJSON(&req); err != nil {
 //		c.JSON(400, gin.H{"error": trans.ToZH(err).Error()})
@@ -28,19 +28,21 @@ import (
 	"github.com/jupiter-eng/xone/xerror"
 )
 
-// mu 保护 translator 的读写
+// mu guards reads and writes of translator.
 //
-// 只锁写侧不够：ToZH 在请求期读它，RegisterZH 是公开 API、调用时机由使用者决定，
-// 两者并发时 -race 能直接测出数据竞争。
+// Locking the write side alone is not enough: ToZH reads it during a request while RegisterZH is
+// an exported API the caller may call whenever it likes, and -race reports the data race between
+// the two directly.
 var (
 	mu         sync.RWMutex
 	translator ut.Translator
 )
 
-// RegisterZH 注册中文翻译器。
+// RegisterZH registers the Chinese translator.
 //
-// 成功之后重复调用是空操作；失败了可以重试。
-// 错误都是 xerror，模块记作 xgin（本包是它的一部分），操作是 register。
+// Calling it again after it succeeded does nothing, and a failure can be retried.
+// Errors are xerror values recorded under the module xgin (this package is part of it) with the
+// operation register.
 func RegisterZH() error {
 	mu.Lock()
 	defer mu.Unlock()
@@ -67,10 +69,10 @@ func RegisterZH() error {
 	return nil
 }
 
-// ToZH 把校验错误翻成中文。
+// ToZH translates a validation error into Chinese.
 //
-// 不是校验错误、或者没注册过翻译器时，原样返回——
-// 调用方不必先判断有没有启用。
+// Anything that is not a validation error, and anything at all when no translator was registered,
+// comes back unchanged, so the caller need not check first whether this is enabled.
 func ToZH(err error) error {
 	if err == nil {
 		return nil
@@ -93,8 +95,9 @@ func ToZH(err error) error {
 		byField[e.Field()] = append(byField[e.Field()], e.Translate(t))
 	}
 
-	// 按字段名排序：同一组校验错误每次都要得到同样的消息，
-	// 否则接口的错误文案会随 map 遍历顺序变化，测试和告警都对不上
+	// Sorted by field name: the same set of validation errors has to produce the same message every
+	// time, or an endpoint's error text follows the map iteration order and neither tests nor alerts
+	// line up.
 	msgs := make([]string, 0, len(byField))
 	for _, field := range slices.Sorted(maps.Keys(byField)) {
 		msgs = append(msgs, strings.Join(byField[field], ", "))
@@ -102,7 +105,7 @@ func ToZH(err error) error {
 	return &Error{Msg: strings.Join(msgs, ", "), Cause: err}
 }
 
-// Msg 翻译后的错误文案，err 为 nil 时返回空串
+// Msg is the translated error text, and an empty string when err is nil.
 func Msg(err error) string {
 	if err = ToZH(err); err != nil {
 		return err.Error()
@@ -110,7 +113,7 @@ func Msg(err error) string {
 	return ""
 }
 
-// Error 翻译后的校验错误，保留原始错误供 errors.Is / errors.As 使用
+// Error is a translated validation error that keeps the original for errors.Is / errors.As.
 type Error struct {
 	Msg   string
 	Cause error

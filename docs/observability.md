@@ -7,7 +7,7 @@
 | 想要 | 去哪 |
 |---|---|
 | 业务日志带上 `trace_id`、请求级字段 | [日志](#日志)：用 `slog.InfoContext(ctx, …)`、`xlog.AddKV(ctx, k, v)` |
-| 访问日志的字段、脱敏规则 | [xgin「访问日志」](../xgin/README.md#访问日志)（xecho 的字段和规则相同，见 [xecho「访问日志」](../xecho/README.md#access-log)） |
+| 访问日志的字段、脱敏规则 | [xgin「访问日志」](../xgin/README.md#access-log)（xecho 的字段和规则相同，见 [xecho「访问日志」](../xecho/README.md#access-log)） |
 | 建看板：框架自带哪些指标 | [指标](#指标) |
 | 链路怎么传、谁的 Header 会被收下 | [传播与信任边界](#传播与信任边界) |
 | 把 Span 上报出去 | [xtrace「快速上手」](../xtrace/README.md#快速上手)：`xtrace.AddSpanProcessor(...)` |
@@ -47,7 +47,7 @@ xlog 把 `slog.Default()` 换成按 `XLog` 配好的 handler，业务和框架�
 | `xgorm ready` / `xredis ready` / `xcache ready` / `xkafka ready` | INFO | `instances` |
 | `xgorm go-sql-driver log` / `xredis go-redis log` / `xhttp resty log` | WARN（resty 照搬它的级别） | `detail`：三方库原本写到 stderr 的那一行 |
 
-各模块自己的日志在它 README 的「可观测」一节：[xgin](../xgin/README.md#可观测)（访问日志、`xgin listening`、`xgin http server error`）· [xecho](../xecho/README.md#observability)（访问日志、`xecho listening`、`echo internal log`、`xecho http server error`）· [xgorm](../xgorm/README.md#日志)（`xgorm connected`、SQL 日志）· [xredis](../xredis/README.md#日志)（`xredis connected`、`redis command`、`redis pipeline`）· [xhttp](../xhttp/README.md#日志)（`xhttp ready`、`http request`）· [xcache](../xcache/README.md#日志) · [xkafka](../xkafka/README.md#日志)（`kafka produce failed`、`kafka message failed` / `kafka message dead-lettered` / `kafka message skipped, …` / `kafka handler panicked`，处理函数的日志带 `topic` / `partition` / `offset` / `group`）· [xcron](../xcron/README.md#日志)（`cron job finished` / `cron job failed` / `cron job panicked`、`cron job skipped, previous run still running`）· [xflow](../xflow/README.md#日志)（`xflow flow done` / `xflow flow failed`；逐步的 `xflow step … done` 记 INFO、`… failed` 记 WARN）· [xtrace](../xtrace/README.md#日志)。
+各模块自己的日志在它 README 的「可观测」一节：[xgin](../xgin/README.md#observability)（访问日志、`xgin listening`、`xgin http server error`）· [xecho](../xecho/README.md#observability)（访问日志、`xecho listening`、`echo internal log`、`xecho http server error`）· [xgorm](../xgorm/README.md#日志)（`xgorm connected`、SQL 日志）· [xredis](../xredis/README.md#日志)（`xredis connected`、`redis command`、`redis pipeline`）· [xhttp](../xhttp/README.md#日志)（`xhttp ready`、`http request`）· [xcache](../xcache/README.md#日志) · [xkafka](../xkafka/README.md#日志)（`kafka produce failed`、`kafka message failed` / `kafka message dead-lettered` / `kafka message skipped, …` / `kafka handler panicked`，处理函数的日志带 `topic` / `partition` / `offset` / `group`）· [xcron](../xcron/README.md#日志)（`cron job finished` / `cron job failed` / `cron job panicked`、`cron job skipped, previous run still running`）· [xflow](../xflow/README.md#日志)（`xflow flow done` / `xflow flow failed`；逐步的 `xflow step … done` 记 INFO、`… failed` 记 WARN）· [xtrace](../xtrace/README.md#日志)。
 
 ## 指标
 
@@ -55,7 +55,7 @@ xlog 把 `slog.Default()` 换成按 `XLog` 配好的 handler，业务和框架�
 
 | 模块 | 指标 |
 |---|---|
-| [xgin](../xgin/README.md#指标) · [xecho](../xecho/README.md#metrics) | `http_requests_total`、`http_request_duration_seconds`（两者同名同标签，看板通用） |
+| [xgin](../xgin/README.md#metrics) · [xecho](../xecho/README.md#metrics) | `http_requests_total`、`http_request_duration_seconds`（两者同名同标签，看板通用） |
 | [xhttp](../xhttp/README.md#指标) | `http_client_request_duration_seconds` |
 | [xgorm](../xgorm/README.md#指标) | `db_pool_*` |
 | [xredis](../xredis/README.md#指标) | `redis_pool_*` |
@@ -83,7 +83,7 @@ xtrace 装好全局的 TracerProvider 和 Propagator。会产生 Span 的集成�
 
 | 模块 | Span |
 |---|---|
-| [xgin](../xgin/README.md#链路) | 入站，每个请求一个；另见 [X-Trace-Id 响应头](../xgin/README.md#x-trace-id-响应头)、[499](../xgin/README.md#499中止的请求) |
+| [xgin](../xgin/README.md#tracing) | 入站，每个请求一个；另见 [X-Trace-Id 响应头](../xgin/README.md#the-x-trace-id-response-header)、[499](../xgin/README.md#499-aborted-requests) |
 | [xecho](../xecho/README.md#tracing) | 入站，Span 名和属性同 xgin，错误属性叫 `echo.errors` |
 | [xhttp](../xhttp/README.md#链路) | 出站 |
 | [xgorm](../xgorm/README.md#链路) | 每条 SQL 一个，属性按 OTel 数据库语义约定 |

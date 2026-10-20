@@ -2,8 +2,8 @@ package trans
 
 import (
 	"errors"
-	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/gin-gonic/gin/binding"
 	"github.com/go-playground/validator/v10"
@@ -17,7 +17,7 @@ type form struct {
 	Age   int    `binding:"gte=18" json:"age"`
 }
 
-// validateForm 走 gin 的校验器，拿到真实的 ValidationErrors
+// validateForm runs gin's validator to obtain real ValidationErrors.
 func validateForm(t *testing.T, f form) error {
 	t.Helper()
 	return binding.Validator.ValidateStruct(&f)
@@ -25,26 +25,27 @@ func validateForm(t *testing.T, f form) error {
 
 func TestToZH_TranslatesValidationErrors(t *testing.T) {
 	if err := RegisterZH(); err != nil {
-		t.Fatalf("注册失败：%v", err)
+		t.Fatalf("registration failed: %v", err)
 	}
 
 	err := validateForm(t, form{Age: 10})
 	if err == nil {
-		t.Fatal("这份数据应当校验失败")
+		t.Fatal("this input should fail validation")
 	}
 	msg := Msg(err)
 	if msg == "" {
-		t.Fatal("应当有错误文案")
+		t.Fatal("there should be an error message")
 	}
-	// 翻译成功的标志是文案里有中文，而不是 validator 的英文原文
-	if !strings.ContainsAny(msg, "必填必须填写为") {
-		t.Errorf("应当翻成中文，got=%q", msg)
+	// A successful translation shows up as Han characters in the message rather than validator's
+	// English original. The check is by Unicode range, so this file needs no Chinese of its own.
+	if !containsHan(msg) {
+		t.Errorf("the message should be translated into Chinese, got=%q", msg)
 	}
 }
 
 func TestToZH_StableFieldOrder(t *testing.T) {
-	// 同一组校验错误每次都要得到同样的消息，否则接口的错误文案会随
-	// map 遍历顺序变化，测试和告警都对不上
+	// The same set of validation errors has to produce the same message every time, or an
+	// endpoint's error text follows the map iteration order and neither tests nor alerts line up.
 	if err := RegisterZH(); err != nil {
 		t.Fatal(err)
 	}
@@ -53,30 +54,30 @@ func TestToZH_StableFieldOrder(t *testing.T) {
 	first := Msg(err)
 	for i := 0; i < 20; i++ {
 		if got := Msg(err); got != first {
-			t.Fatalf("同一个错误两次得到不同文案：\n%q\n%q", first, got)
+			t.Fatalf("the same error produced two different messages:\n%q\n%q", first, got)
 		}
 	}
 }
 
 func TestToZH_NonValidationErrorReturnedAsIs(t *testing.T) {
-	// 调用方不必先判断这是不是校验错误
+	// The caller need not check first whether this is a validation error.
 	if err := RegisterZH(); err != nil {
 		t.Fatal(err)
 	}
-	orig := errors.New("数据库连不上")
+	orig := errors.New("database unreachable")
 	if got := ToZH(orig); got != orig {
-		t.Errorf("非校验错误应原样返回，got=%v", got)
+		t.Errorf("anything that is not a validation error comes back unchanged, got=%v", got)
 	}
 	if ToZH(nil) != nil {
-		t.Error("nil 应返回 nil")
+		t.Error("nil should return nil")
 	}
 	if Msg(nil) != "" {
-		t.Error("nil 的文案应是空串")
+		t.Error("the message for nil should be an empty string")
 	}
 }
 
 func TestToZH_ReturnedAsIsWhenNotRegistered(t *testing.T) {
-	// 没启用翻译的服务照样能调用，不会拿到空文案
+	// A service without translation enabled can still call it and never gets an empty message.
 	mu.Lock()
 	old := translator
 	translator = nil
@@ -88,23 +89,24 @@ func TestToZH_ReturnedAsIsWhenNotRegistered(t *testing.T) {
 	})
 
 	err := validateForm(t, form{Age: 10})
-	// 不能用 != 比：ValidationErrors 是切片类型，接口比较会 panic。
-	// 这里真正要断言的是「没有被包装成翻译结果」
+	// != cannot be used: ValidationErrors is a slice type and comparing the interfaces panics.
+	// What is actually asserted here is that it was not wrapped into a translation result.
 	var wrapped *Error
 	if errors.As(ToZH(err), &wrapped) {
-		t.Error("没注册翻译器时不该包装成翻译结果")
+		t.Error("without a registered translator it must not be wrapped into a translation result")
 	}
 }
 
-// otherValidator 一个不是 go-playground/validator 的校验器
+// otherValidator is a validator that is not go-playground/validator.
 type otherValidator struct{}
 
 func (otherValidator) ValidateStruct(any) error { return nil }
 func (otherValidator) Engine() any              { return "not a validator" }
 
 func TestRegisterZH_FailureReportsXginRegister(t *testing.T) {
-	// 调用方靠 xerror.Is / Module 判断「这是谁报的」，op 是固定词表里的 register：
-	// 注册翻译器跟注册指标、注册方言是同一类动作，原先写的 new 对不上
+	// The caller uses xerror.Is / Module to tell who reported it, and op comes from the fixed set
+	// as register: registering a translator is the same kind of action as registering a metric or a
+	// dialect, and the new it used to say did not match.
 	mu.Lock()
 	old := translator
 	translator = nil
@@ -121,7 +123,7 @@ func TestRegisterZH_FailureReportsXginRegister(t *testing.T) {
 	err := RegisterZH()
 	var xe *xerror.Error
 	if !errors.As(err, &xe) || xe.Module != "xgin" || xe.Op != "register" {
-		t.Fatalf("该是 xgin register 的 xerror，got=%#v", err)
+		t.Fatalf("this should be an xgin register xerror, got=%#v", err)
 	}
 }
 
@@ -131,14 +133,14 @@ func TestRegisterZH_RepeatedRegisterIsNoOp(t *testing.T) {
 	}
 	for i := 0; i < 3; i++ {
 		if err := RegisterZH(); err != nil {
-			t.Errorf("重复注册不该报错：%v", err)
+			t.Errorf("registering again must not fail: %v", err)
 		}
 	}
 }
 
 func TestError_KeepsOriginalError(t *testing.T) {
-	// 翻译之后仍然要能 errors.As 出原始的校验错误，
-	// 否则调用方没法按字段做更细的处理
+	// After translation, errors.As still has to yield the original validation error, or the caller
+	// cannot do anything finer per field.
 	if err := RegisterZH(); err != nil {
 		t.Fatal(err)
 	}
@@ -146,15 +148,16 @@ func TestError_KeepsOriginalError(t *testing.T) {
 
 	var ves validator.ValidationErrors
 	if !errors.As(translated, &ves) {
-		t.Fatal("翻译后应当还能取出原始的 ValidationErrors")
+		t.Fatal("the original ValidationErrors should still be reachable after translation")
 	}
 	if len(ves) == 0 {
-		t.Error("原始错误里应当有字段信息")
+		t.Error("the original error should carry the field information")
 	}
 }
 
 func TestToZH_ConcurrencySafe(t *testing.T) {
-	// ToZH 在请求期读 translator，RegisterZH 是公开 API、调用时机由使用者决定
+	// ToZH reads translator during a request while RegisterZH is an exported API the caller may
+	// call whenever it likes.
 	err := validateForm(t, form{Age: 10})
 	done := make(chan struct{})
 	for i := 0; i < 8; i++ {
@@ -172,4 +175,15 @@ func TestToZH_ConcurrencySafe(t *testing.T) {
 	for i := 0; i < 8; i++ {
 		<-done
 	}
+}
+
+// containsHan reports whether s holds at least one Han character, which is how this file checks a
+// message was translated without spelling any Chinese out.
+func containsHan(s string) bool {
+	for _, r := range s {
+		if unicode.Is(unicode.Han, r) {
+			return true
+		}
+	}
+	return false
 }

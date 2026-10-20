@@ -1,12 +1,13 @@
-// Package middleware 提供 xgin 内置的中间件。
+// Package middleware holds xgin's built-in middleware.
 //
-// 洋葱模型，自外向内的顺序是：
+// The onion, outermost first:
 //
-//	LogScope → Trace → Log → Metric → Recover → 用户中间件 → handler
+//	LogScope -> Trace -> Log -> Metric -> Recover -> the caller's middleware -> handler
 //
-// Recover 必须是框架中间件里最内层的一个：panic 一路向外抛，
-// 在哪一层被兜住，比它更内层的中间件里 c.Next() 之后的代码就都不执行。
-// 放在最内层，外面几层的收尾（记指标、写访问日志）才都还跑得到。
+// Recover has to be the innermost of the framework's middleware: a panic travels outwards, and
+// whichever layer catches it, the code after c.Next() in every layer inside it never runs.
+// Innermost, the outer layers still get to finish their work (record the metric, write the
+// access log).
 package middleware
 
 import (
@@ -22,13 +23,14 @@ import (
 	"github.com/jupiter-eng/xone/xlog"
 )
 
-// LogScope 为本次请求开一个日志 KV 作用域。
+// LogScope opens a log key-value scope for this request.
 //
-// 装上之后，业务代码在任意调用层级都可以 xlog.AddKV(ctx, ...) 补字段，
-// 不用把新 context 逐层回传——调用栈深处拿不到 *gin.Context，本来也没机会回传。
-// 写进去的字段对整条请求可见，所以 Log 在 c.Next() 之后打的访问日志也带得上。
+// With it installed, business code can call xlog.AddKV(ctx, ...) at any depth to add fields,
+// without passing a new context back up layer by layer — deep in the call stack there is no
+// *gin.Context anyway, so there was never a chance to pass it back. Fields written there are
+// visible for the whole request, so the access log Log writes after c.Next() carries them too.
 //
-// 必须排在所有中间件最前面：在它之后才有作用域可写。
+// It has to come before every other middleware: only after it is there a scope to write to.
 func LogScope() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Request = c.Request.WithContext(xlog.CtxWithScope(c.Request.Context()))
@@ -36,10 +38,11 @@ func LogScope() gin.HandlerFunc {
 	}
 }
 
-// routeOf 取这个请求的路由模板，访问日志、指标、Span 共用。
+// routeOf resolves this request's route template, shared by the access log, the metrics and the
+// span.
 //
-// 没匹配上任何路由（404）、方法不对（405）时 gin 给的都是空串，记成 web.RouteUnmatched，
-// 理由见那里
+// With no route matching (404) and with a wrong method (405), gin hands out an empty string, which
+// is recorded as web.RouteUnmatched; the reasoning is there.
 func routeOf(c *gin.Context) string {
 	if route := c.FullPath(); route != "" {
 		return route
@@ -47,9 +50,10 @@ func routeOf(c *gin.Context) string {
 	return web.RouteUnmatched
 }
 
-// Recover 兜住 panic，把它变成一条错误日志和一个 500。
+// Recover catches a panic and turns it into an error log line and a 500.
 //
-// handle 为 nil 时返回 500。http.ErrAbortHandler 不兜，原样抛给 net/http 去断开连接。
+// When handle is nil, a 500 is returned. http.ErrAbortHandler is not caught and is re-panicked for
+// net/http to break the connection.
 func Recover(handle gin.RecoveryFunc) gin.HandlerFunc {
 	if handle == nil {
 		handle = func(c *gin.Context, _ any) { c.AbortWithStatus(http.StatusInternalServerError) }
@@ -61,32 +65,37 @@ func Recover(handle gin.RecoveryFunc) gin.HandlerFunc {
 			if err == nil {
 				return
 			}
-			// http.ErrAbortHandler 是 handler 主动要求「断掉这个连接」的约定写法
-			// （httputil.ReverseProxy 在上游断开时也这么做）。net/http 接到它会
-			// 静默断连、不打栈；在这里兜住的话，本该中止的响应会被写成 500 发出去，
-			// 还多一份毫无意义的栈。所以原样抛回给它。
+			// http.ErrAbortHandler is the agreed way for a handler to ask for this connection to be
+			// dropped (httputil.ReverseProxy does it when the upstream goes away). net/http receives
+			// it, breaks the connection silently and prints no stack; catching it here would turn a
+			// response that was meant to be aborted into a 500 going out, plus a stack trace that
+			// means nothing. So it is re-panicked.
 			//
-			// 抛回之前记进 c.Errors：外面几层（访问日志、指标、链路）的收尾据此
-			// 把它记成中止，见 status——它们读到的 c.Writer.Status() 往往是
-			// 已经发出去的 200，一个被截断的响应就全都记成了成功
+			// It goes into c.Errors before being re-panicked: the outer layers (access log, metrics,
+			// tracing) use that to record it as an abort, see status — what they read from
+			// c.Writer.Status() is usually the 200 already sent, which would record a truncated
+			// response as a success.
 			if err == http.ErrAbortHandler {
-				_ = c.Error(http.ErrAbortHandler) //nolint:errcheck // 只是登记
+				_ = c.Error(http.ErrAbortHandler) //nolint:errcheck // only recording it
 				panic(err)
 			}
 
-			// 连接断了不算故障：不打栈，记 WARN 而不是 ERROR——客户端的网络抖动不该触发服务的告警
+			// A broken connection is not a failure: no stack, and WARN rather than ERROR — a client's
+			// flaky network should not fire the service's alerts.
 			broken := web.IsBrokenPipe(err)
 			ctx := c.Request.Context()
 			if broken {
 				slog.WarnContext(ctx, "connection broken", "error", err)
-				_ = c.Error(err.(error)) //nolint:errcheck // web.IsBrokenPipe 保证它是 *net.OpError
+				_ = c.Error(err.(error)) //nolint:errcheck // web.IsBrokenPipe guarantees it is an *net.OpError
 				c.Abort()
 				return
 			}
 
-			// panic 的值和 handler 返回的错误一样会夹带凭证（panic(err) 里的整串 DSN），
-			// 过一遍 RedactText 再记。栈不用过：runtime.Stack 只打函数名、文件行号和参数的十六进制原始字
-			// （指针、长度），字符串和结构体的内容不在里面
+			// A panic value carries credentials just as an error returned by a handler does (the whole
+			// DSN inside panic(err)), so it goes through RedactText before being recorded. The stack
+			// does not need it: runtime.Stack prints function names, file and line, and the raw
+			// hexadecimal words of the arguments (pointers, lengths) — the contents of strings and
+			// structs are not in there.
 			slog.ErrorContext(ctx, "panic while handling request",
 				"error", web.RedactText(fmt.Sprint(err)),
 				"stack", web.Stack(),
@@ -94,7 +103,8 @@ func Recover(handle gin.RecoveryFunc) gin.HandlerFunc {
 				"method", c.Request.Method)
 
 			if c.Writer.Written() {
-				// 响应已经开始往外写了，再改状态码只会得到一个半截的响应
+				// The response has started going out; changing the status code now only yields a
+				// truncated response.
 				c.Abort()
 				return
 			}
@@ -104,14 +114,17 @@ func Recover(handle gin.RecoveryFunc) gin.HandlerFunc {
 	}
 }
 
-// statusAborted 没有正常结束的请求记成的状态码（499），见 web.StatusAborted
+// statusAborted is the status code recorded for a request that did not end normally (499), see
+// web.StatusAborted.
 const statusAborted = web.StatusAborted
 
-// status 本次请求该记下的状态码。ctx 是这一层一进来时请求的 ctx，用来判客户端是不是已经走了
-// （见 web.ClientGone）。
+// status is the status code that should be recorded for this request. ctx is the request's ctx as
+// this layer saw it on the way in, used to tell whether the client is already gone (see
+// web.ClientGone).
 //
-// 不能直接读 c.Writer.Status()：中止的请求往往已经写出了 200 的响应头，客户端走了、
-// 什么都没写就返回的请求是一个谁也收不到的 200。这两种记 499，见 web.StatusAborted
+// c.Writer.Status() cannot be read directly: an aborted request has usually written a 200 header
+// already, and a request whose client left and that returned without writing anything is a 200
+// nobody will ever receive. Both are recorded as 499, see web.StatusAborted.
 func status(c *gin.Context, ctx context.Context) int {
 	if aborted(c) || (!c.Writer.Written() && web.ClientGone(ctx)) {
 		return statusAborted
@@ -119,7 +132,8 @@ func status(c *gin.Context, ctx context.Context) int {
 	return c.Writer.Status()
 }
 
-// aborted handler 是不是以 panic(http.ErrAbortHandler) 中止的，由 Recover 登记在 c.Errors 里
+// aborted reports whether the handler aborted with panic(http.ErrAbortHandler), which Recover
+// records in c.Errors.
 func aborted(c *gin.Context) bool {
 	for _, e := range c.Errors {
 		if errors.Is(e.Err, http.ErrAbortHandler) {

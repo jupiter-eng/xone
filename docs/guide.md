@@ -289,7 +289,7 @@ func TestInitXKV(t *testing.T) {
   凭证写成 `${VAR}` 从环境变量来。目录怎么放、每种启动方式读到什么，见
   [config.md「多环境配置：一个完整的例子」](config.md#多环境配置一个完整的例子)。
 - **在负载均衡后面**：`XGin.TrustedProxies`（`XEcho.TrustedProxies`）默认只信私有网段，负载均衡、K8s 的 Ingress 和 Pod 转发来的不用配；
-  见 [xgin「在负载均衡 / Cloudflare 后面」](../xgin/README.md#在负载均衡--cloudflare-后面)。
+  见 [xgin「在负载均衡 / Cloudflare 后面」](../xgin/README.md#behind-a-load-balancer-or-cloudflare)。
 - **健康检查**：框架不内置，自己挂一个路由；服务在全部启动钩子成功之后才开始监听。
 
 ## 写一个自己的集成

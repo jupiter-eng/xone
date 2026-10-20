@@ -358,7 +358,7 @@ XGorm（PostgreSQL / MySQL / ClickHouse）、XRedis、XHttp 连出去时的 TLS 
 | `XKafka` | Kafka | [xkafka/README.md](../xkafka/README.md#配置) |
 | `XCache` | 本地缓存 | [xcache/README.md](../xcache/README.md#配置) |
 | `XHttp` | 出站 HTTP | [xhttp/README.md](../xhttp/README.md#配置) |
-| `XGin` | Web 服务 | [xgin/README.md](../xgin/README.md#配置) |
+| `XGin` | Web 服务 | [xgin/README.md](../xgin/README.md#configuration) |
 | `XGinSwagger` | 接口文档 | [xginswagger/README.md](../xginswagger/README.md#配置) |
 | `XEcho` | Web 服务（Echo） | [xecho/README.md](../xecho/README.md#configuration) |
 | `XFlow` | 流程编排 | [xflow/README.md](../xflow/README.md#配置) |

@@ -13,15 +13,17 @@ import (
 	"github.com/jupiter-eng/xone/xmetric"
 )
 
-// Metric 记录请求数和耗时，按方法、路由、状态码分。
+// Metric records request counts and durations, split by method, route and status code.
 //
-// collector 在第一个请求到来时才建，不在装配时建：装配可能发生在 xmetric
-// 初始化之前（使用者调一下 Engine() 就会），那时抓到的是兜底 registry，
-// 于是指标记得好好的、却永远不会出现在 /metrics 里——没有任何迹象。
-// 第一个请求一定在服务起来之后，那时什么都就绪了。
+// The collectors are created when the first request arrives rather than at assembly time:
+// assembly can happen before xmetric is initialized (a single call to Engine() does it), and the
+// registry grabbed then is the fallback one, so the metrics would be recorded perfectly and never
+// appear in /metrics — with nothing to show for it. The first request necessarily comes after the
+// server is up, by which time everything is ready.
 //
-// once 是每个中间件实例一个而不是包级的：包级的会把 collector 绑死在
-// 第一次建中间件时的那个 registry 上，换 registry 之后记的值同样导不出去。
+// once is per middleware instance rather than package-level: a package-level one would pin the
+// collectors to whichever registry existed when the first middleware was built, and after a
+// registry change the recorded values would again never be exported.
 func Metric() gin.HandlerFunc {
 	var (
 		once    sync.Once
@@ -34,13 +36,13 @@ func Metric() gin.HandlerFunc {
 
 		start, ctx := time.Now(), c.Request.Context()
 
-		// 用 defer 记：即使 panic 穿过本层（比如用户自定义的 RecoveryFunc 自己炸了），
-		// 这个请求也仍然会被计入，不会在错误率里凭空消失
+		// Record in a defer: even when a panic passes through this layer (a custom RecoveryFunc
+		// blowing up, say), the request is still counted and does not vanish from the error rate.
 		defer func() {
 			route, method, code := routeOf(c), web.NormalizeMethod(c.Request.Method), strconv.Itoa(status(c, ctx))
 
 			total.WithLabelValues(method, route, code).Inc()
-			// 用秒而不是毫秒：毫秒取整会把 0.4ms 的请求记成 0
+			// Seconds rather than milliseconds: rounding to milliseconds records a 0.4ms request as 0.
 			latency.WithLabelValues(method, route, code).Observe(time.Since(start).Seconds())
 		}()
 
@@ -48,8 +50,8 @@ func Metric() gin.HandlerFunc {
 	}
 }
 
-// newCollectors 建并注册两个指标。重复注册由 xmetric.Register 处理——
-// 它返回已有的那个实例。
+// newCollectors creates and registers the two metrics. A duplicate registration is handled by
+// xmetric.Register, which returns the existing instance.
 func newCollectors() (*prometheus.CounterVec, *prometheus.HistogramVec) {
 	total := register(prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   xmetric.Namespace(),
@@ -69,8 +71,8 @@ func newCollectors() (*prometheus.CounterVec, *prometheus.HistogramVec) {
 	return total, latency
 }
 
-// register 注册一个指标，出错只记日志：指标导不出去是可观测性问题，
-// 不该让一个 HTTP 服务起不来
+// register registers one metric and only logs on failure: metrics that cannot be exported are an
+// observability problem, and should not keep an HTTP service from starting.
 func register[T prometheus.Collector](c T, what string) T {
 	registered, err := xmetric.RegisterAs(c)
 	if err != nil {

@@ -23,7 +23,7 @@ var configDocs = map[string]docSection{
 	"XKafka":      {"xkafka/README.md", "配置"},
 	"XCache":      {"xcache/README.md", "配置"},
 	"XHttp":       {"xhttp/README.md", "配置"},
-	"XGin":        {"xgin/README.md", "配置"},
+	"XGin":        {"xgin/README.md", "Configuration"},
 	"XGinSwagger": {"xginswagger/README.md", "配置"},
 	// xecho 的 README 已经英文化，小节名是 Configuration；其余模块随各自的批次改
 	"XEcho": {"xecho/README.md", "Configuration"},

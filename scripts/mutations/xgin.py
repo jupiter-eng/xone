@@ -1,318 +1,366 @@
-# xgin 的变异：module xgin 里的承诺。写法见 scripts/mutations/__init__.py
+# Mutations for xgin: the promises of the xgin module. The format is in scripts/mutations/__init__.py.
 from . import cut, mutate, section, swap
 
-section("HTTP 服务")
-# 等多久只看调用方的 ctx（xone.Run 给的是服务那一段停止预算）。换掉它的话
-# 挂住的请求让 Stop 一直不返回，「整个退出流程只有一份预算」就成了空话
-mutate("服务不超过调用方给的截止时间", "internal/web/server.go", "./xgin", "TestStop",
+section("HTTP server")
+# How long it waits comes from the caller's ctx alone (xone.Run passes the server's share of the
+# stop budget). Replacing it makes a stuck request keep Stop from returning, and "the whole
+# shutdown has one budget" becomes an empty phrase.
+mutate("the server does not outlive the caller's deadline", "internal/web/server.go", "./xgin", "TestStop",
        swap('shutCtx, cancel := shutdownCtx(ctx)', 'shutCtx, cancel := shutdownCtx(context.WithoutCancel(ctx))'))
-mutate("超时后强制断掉在途连接", "internal/web/server.go", "./xgin", "TestStop",
+mutate("in-flight connections are force-closed after the timeout", "internal/web/server.go", "./xgin", "TestStop",
        swap('\t\tif cerr := srv.Close(); cerr != nil {\n\t\t\tslog.Warn(module+" force close failed", "error", cerr)\n\t\t}\n',''))
-# Close 只关连接、取消请求的 ctx，handler 的协程照跑。Close 完就返回的话，
-# 正在收尾的 handler 还没返回，框架就去关数据库了
-mutate("断连之后等 handler 真正返回", "internal/web/server.go", "./xgin", "TestStop_WaitsForHandlersAfterForceClose|TestStop_HandlerIgnoringCtxReportsRemainingCount",
+# Close only drops connections and cancels the request ctx; the handler's goroutine keeps running.
+# Returning right after Close leaves a handler that is finishing up still running while the
+# framework goes on to close the database.
+mutate("handlers are waited for after the forced disconnect", "internal/web/server.go", "./xgin", "TestStop_WaitsForHandlersAfterForceClose|TestStop_HandlerIgnoringCtxReportsRemainingCount",
        swap('if n := s.waitHandlers(ctx); n > 0 {', 'if n := int64(0); n > 0 {'))
-mutate("每个请求都记进在途计数", "internal/web/server.go", "./xgin", "TestStop_WaitsForHandlersAfterForceClose",
+mutate("every request is counted as in flight", "internal/web/server.go", "./xgin", "TestStop_WaitsForHandlersAfterForceClose",
        swap('Handler:           s.track(h),', 'Handler:           h,'))
-# 调用点：XGin 的 Start / Stop 只是转给 web.Server。Stop 不转的话，退出信号到了服务照跑
-mutate("XGin.Stop 转给 web.Server", "xgin/xgin.go", "./xgin", "TestStop",
+# Call site: XGin's Start / Stop only forward to web.Server. Without the forward, the server keeps
+# running after the stop signal arrives.
+mutate("XGin.Stop forwards to web.Server", "xgin/xgin.go", "./xgin", "TestStop",
        swap('{ return g.server.Stop(ctx, "xgin") }', '{ return nil }'))
-# Shutdown 用满全部时间的话，Close 落下时预算已经花完，收尾的 handler 没人等
-mutate("Shutdown 给等 handler 留出一截", "internal/web/server.go", "./xgin", "TestStop_WaitsForHandlersAfterForceClose",
+# With Shutdown using the whole budget, there is nothing left when Close lands and nobody waits for
+# the handlers that are finishing up.
+mutate("Shutdown leaves part of the budget for waiting on handlers", "internal/web/server.go", "./xgin", "TestStop_WaitsForHandlersAfterForceClose",
        swap('shutCtx, cancel := shutdownCtx(ctx)', 'shutCtx, cancel := context.WithCancel(ctx)'))
-mutate("内置路由也走用户中间件", "xgin/xgin.go", "./xgin", "TestBuild",
+mutate("built-in routes go through the user middleware too", "xgin/xgin.go", "./xgin", "TestBuild",
        swap('\t\te.Use(middleware.Recover(g.recover))\n\t\te.Use(g.extra...)\n', '\t\te.Use(middleware.Recover(g.recover))\n'),
        swap('\t\tfor _, f := range g.routes {', '\t\te.Use(g.extra...)\n\t\tfor _, f := range g.routes {'))
-mutate("公网对端的 X-Forwarded-For 不认", "xgin/xgin.go", "./xgin", "TestBuild|TestLog",
+mutate("a public peer's X-Forwarded-For is not believed", "xgin/xgin.go", "./xgin", "TestBuild|TestLog",
        cut('\tif err := e.SetTrustedProxies(web.ExpandProxies(c.TrustedProxies)); err != nil {',
     '_ = e.SetTrustedProxies([]string{})\n\t}\n'))
-# h2c 原先靠 x/net 的 h2c.NewHandler：连接被劫持，Shutdown 约 100µs 就返回 nil、
-# 在途请求照跑，框架紧接着去关数据库。换回那个写法，这条承诺就没了
-mutate("h2c 的在途请求也等它做完", "internal/web/server.go", "./xgin", "TestStop_H2C",
+# h2c used to rely on x/net's h2c.NewHandler: the connection was hijacked, Shutdown returned nil in
+# about 100µs with in-flight requests still running, and the framework went on to close the
+# database. Going back to that spelling loses this promise.
+mutate("in-flight h2c requests are waited for as well", "internal/web/server.go", "./xgin", "TestStop_H2C",
        swap('\t"github.com/jupiter-eng/xone/xerror"\n', '\t"github.com/jupiter-eng/xone/xerror"\n\t"golang.org/x/net/http2"\n\t"golang.org/x/net/http2/h2c"\n'),
        swap('\t\tHandler:           s.track(h),\n\t\tProtocols:         protocols(c),\n',
      '\t\tHandler:           h2c.NewHandler(s.track(h), &http2.Server{}),\n'))
-# 调用点：UseH2C 要从 XGin 的配置抄给 web.Server，漏抄的话配了也是 HTTP/1.1
-mutate("UseH2C 交给了 web.Server", "xgin/config.go", "./xgin", "TestStop_H2C",
+# Call site: UseH2C has to be copied from XGin's config into web.Server, or configuring it still
+# yields HTTP/1.1.
+mutate("UseH2C reaches web.Server", "xgin/config.go", "./xgin", "TestStop_H2C",
        swap('\t\tUseH2C:            c.UseH2C,\n', ''))
-mutate("不开 UseH2C 时不接受明文 HTTP/2", "internal/web/server.go", "./xgin", "TestStart_CleartextHTTP2RejectedWithoutH2C",
+mutate("cleartext HTTP/2 is rejected without UseH2C", "internal/web/server.go", "./xgin", "TestStart_CleartextHTTP2RejectedWithoutH2C",
        swap('p.SetUnencryptedHTTP2(c.UseH2C && !c.tlsEnabled())', 'p.SetUnencryptedHTTP2(true)'))
-# net/http 把 ReadHeaderTimeout 的 0 当成「退到 ReadTimeout」，而后者默认也是 0：
-# 慢连接攻击的主要防线整个消失，配置文件看上去只是写了个 0
-mutate("读请求头超时写 0 要拦住", "internal/web/config.go", "./xgin", "TestValidate", swap('\t\tif d.val <= 0 {', '\t\tif d.val < 0 {'))
-mutate("负的读写超时要拦住", "internal/web/config.go", "./xgin", "TestValidate",
+# net/http treats a ReadHeaderTimeout of 0 as "fall back to ReadTimeout", whose default is also 0:
+# the main defense against slow-connection attacks disappears entirely while the config file merely
+# reads 0.
+mutate("a read-header timeout of 0 is rejected", "internal/web/config.go", "./xgin", "TestValidate", swap('\t\tif d.val <= 0 {', '\t\tif d.val < 0 {'))
+mutate("negative read and write timeouts are rejected", "internal/web/config.go", "./xgin", "TestValidate",
        swap('if c.ReadTimeout < 0 || c.WriteTimeout < 0 {', 'if false {'))
-# 调用点：规矩写在 internal/web，XGin 的 Validate 得真的调到它们（先后也不变）
-mutate("Validate 查了端口和 TLS", "xgin/config.go", "./xgin", "TestValidate",
+# Call site: the rules live in internal/web, and XGin's Validate has to actually reach them, in the
+# same order.
+mutate("Validate checks the port and TLS", "xgin/config.go", "./xgin", "TestValidate",
        swap('\tif err := s.ValidateListen(); err != nil {\n\t\treturn err\n\t}\n', ''))
-mutate("Validate 查了超时", "xgin/config.go", "./xgin", "TestValidate",
+mutate("Validate checks the timeouts", "xgin/config.go", "./xgin", "TestValidate",
        swap('\tif err := s.ValidateTimeouts(); err != nil {\n\t\treturn err\n\t}\n', ''))
-mutate("Validate 查了代理网段", "xgin/config.go", "./xgin", "TestValidate",
+mutate("Validate checks the proxy ranges", "xgin/config.go", "./xgin", "TestValidate",
        swap('\tif err := web.ValidateProxies(c.TrustedProxies); err != nil {\n\t\treturn err\n\t}\n', ''))
-# gin 不拒绝不以 / 开头的路径，而是悄悄改写：留空就把指标挂到了根路径 / 上
-mutate("指标路径不以 / 开头要启动失败", "xgin/config.go", "./xgin", "TestValidate|TestLoadConfig",
+# Gin does not reject a path without a leading slash, it rewrites it quietly: empty mounts the
+# metrics on the root path /.
+mutate("a metrics path without a leading slash fails startup", "xgin/config.go", "./xgin", "TestValidate|TestLoadConfig",
        swap('if c.Metric && !strings.HasPrefix(c.MetricPath, "/") {', 'if false && !strings.HasPrefix(c.MetricPath, "/") {'))
-# 配置文件里的 XGin 块由 StageServer 的钩子认领并校验（Unmarshal 调 Validate）。
-# 丢掉这个错误的话，配错的值要拖到服务 Start 才报出来，那时别的组件都已经连好了
-mutate("配错的 XGin 块在启动阶段就失败", "xgin/xgin.go", "./xgin", "TestLoadConfig",
+# The XGin block of the config file is claimed and validated by the StageServer hook (Unmarshal
+# calls Validate). Dropping that error makes a misconfigured value wait until the server starts, by
+# which time every other component is already connected.
+mutate("a misconfigured XGin block fails during startup", "xgin/xgin.go", "./xgin", "TestLoadConfig",
        swap('\t_, err := fileConfig()\n\treturn err\n', '\t_, _ = fileConfig()\n\treturn nil\n'))
-# CurrentConfig 和装配都靠它兜底：解到一半的非法配置里 TrustedProxies 可能正是 0.0.0.0/0
-mutate("XGin 块不合法时退回默认值", "xgin/xgin.go", "./xgin", "TestCurrentConfig|TestEngine_InvalidConfigFallsBackToSafeDefaults",
+# CurrentConfig and assembly both rely on this fallback: a half-decoded invalid config may well
+# have TrustedProxies as 0.0.0.0/0.
+mutate("an invalid XGin block falls back to the defaults", "xgin/xgin.go", "./xgin", "TestCurrentConfig|TestEngine_InvalidConfigFallsBackToSafeDefaults",
        swap('\tif err := xconfig.Unmarshal(ConfigKey, &c); err != nil {\n\t\treturn DefaultConfig(), err\n',
      '\tif err := xconfig.Unmarshal(ConfigKey, &c); err != nil {\n\t\treturn c, err\n'))
-mutate("WithConfig 给的那份也要校验", "xgin/xgin.go", "./xgin", "TestStart_DoesNotListenOnInvalidConfig",
+mutate("the config given to WithConfig is validated too", "xgin/xgin.go", "./xgin", "TestStart_DoesNotListenOnInvalidConfig",
        swap('\tif err := g.override.Validate(); err != nil {', '\tif err := g.override.Validate(); false && err != nil {'))
-# 监听地址、TLS 和 engine 上的中间件、信任的代理必须出自同一份配置。
-# Start 自己再读一遍的话，装配之后换过的配置只生效一半
-mutate("Start 用的是装配时的那份配置", "xgin/xgin.go", "./xgin", "TestStart_UsesConfigFromBuildTime",
+# The listen address, TLS and the middleware and trusted proxies on the engine must come from one
+# config. Start reading it again makes a config changed after assembly take effect only halfway.
+mutate("Start uses the config from assembly time", "xgin/xgin.go", "./xgin", "TestStart_UsesConfigFromBuildTime",
        swap('\tc := g.conf\n', '\tc, _ := g.cfg()\n'))
-# gin.New 在 debug 模式下会打一段「切到 release」的警告。先建后设的话，
-# 配成 release 的服务照样打出它（使用者的二进制里没设 GIN_MODE 时默认就是 debug）
-mutate("Mode 在建 engine 之前设", "xgin/xgin.go", "./xgin", "TestBuild_Mode",
+# gin.New prints a "switch to release" warning in debug mode. Creating first and setting after
+# makes a server configured as release print it anyway (without GIN_MODE set in the caller's binary,
+# the default is debug).
+mutate("the Mode is set before the engine is created", "xgin/xgin.go", "./xgin", "TestBuild_Mode",
        swap('\t\tgin.SetMode(c.Mode)\n\t\te := gin.New()\n', '\t\te := gin.New()\n\t\tgin.SetMode(c.Mode)\n'))
 
-section("中间件")
-mutate("代理网段写错要启动失败", "internal/web/proxy.go", "./xgin", "TestValidate", swap('if p != TrustPrivate && !isIPOrCIDR(p) {','if false {'))
-# xecho 没有 gin 可用，client_ip 按 internal/web 的 Proxies.ClientIP 算；它和 gin 的规则一致由这里逐条比对着。
-# 改坏规则里的任何一处（这里挑「全都可信时取最左边」），和 gin 的结果就对不上
-mutate("共用的 client_ip 规则和 gin 一致", "internal/web/proxy.go", "./xgin", "TestClientIP_SharedRuleMatchesGin",
+section("middleware")
+mutate("a malformed proxy range fails startup", "internal/web/proxy.go", "./xgin", "TestValidate", swap('if p != TrustPrivate && !isIPOrCIDR(p) {','if false {'))
+# xecho has no gin available and computes client_ip through internal/web's Proxies.ClientIP; that it
+# agrees with gin is compared entry by entry here. Break any part of the rule (this picks "take the
+# leftmost when all are trusted") and the result no longer matches gin.
+mutate("the shared client_ip rule matches gin", "internal/web/proxy.go", "./xgin", "TestClientIP_SharedRuleMatchesGin",
        swap('if i == 0 || !ps.contains(ip) {', 'if !ps.contains(ip) {'))
-# 词表进程里只有一张（internal/web）：公开的这两个名字不转过去的话，使用者补的词谁都不认
-mutate("AddSensitiveFields 写进共用的词表", "xgin/middleware/redact.go", "./xgin", "TestAddSensitive",
+# There is one word list per process (internal/web): without these two exported names forwarding to
+# it, words the caller adds are honored by nobody.
+mutate("AddSensitiveFields writes to the shared word list", "xgin/middleware/redact.go", "./xgin", "TestAddSensitive",
        swap('{ web.AddSensitiveFields(fields...) }', '{}'))
-mutate("AddSensitiveHeaders 写进共用的名单", "xgin/middleware/redact.go", "./xgin", "TestAddSensitive",
+mutate("AddSensitiveHeaders writes to the shared list", "xgin/middleware/redact.go", "./xgin", "TestAddSensitive",
        swap('{ web.AddSensitiveHeaders(headers...) }', '{}'))
-mutate("指标的 method 标签收敛", "xgin/middleware/metric.go", "./xgin", "TestMetric",
+mutate("the metrics method label is folded", "xgin/middleware/metric.go", "./xgin", "TestMetric",
        swap('web.NormalizeMethod(c.Request.Method)', 'c.Request.Method'),
        swap('\t\tlatency *prometheus.HistogramVec\n\t)\n', '\t\tlatency *prometheus.HistogramVec\n\t)\n\t_ = web.NormalizeMethod\n'))
-mutate("配置在装配时落到 engine 上", "xgin/xgin.go", "./xgin", "TestBuild", swap('\t\tapplyConfig(e, c)\n', ''))
-# 回调在配置落到 engine 上之后才跑，所以回调里明确设了的以回调为准。
-# 两种改坏的写法：配置挪到回调之后落，或者 Start 时再落一遍（原先就是这样）
-mutate("回调里的 engine 设置盖得过配置", "xgin/xgin.go", "./xgin", "TestBuild_CallbackEngineSettingsOverrideConfig",
+mutate("the config lands on the engine during assembly", "xgin/xgin.go", "./xgin", "TestBuild", swap('\t\tapplyConfig(e, c)\n', ''))
+# The callback runs after the config has landed on the engine, so what it sets explicitly wins.
+# Two ways to break it: land the config after the callback, or apply it again in Start (which is
+# what it used to do).
+mutate("engine settings in the callback win over the config", "xgin/xgin.go", "./xgin", "TestBuild_CallbackEngineSettingsOverrideConfig",
        swap('\t\tapplyConfig(e, c)\n', ''),
        swap('\t\tfor _, f := range g.routes {\n\t\t\tf(e)\n\t\t}\n', '\t\tfor _, f := range g.routes {\n\t\t\tf(e)\n\t\t}\n\t\tapplyConfig(e, c)\n'))
-mutate("Start 不再把配置落一遍", "xgin/xgin.go", "./xgin", "TestBuild_CallbackEngineSettingsOverrideConfig",
+mutate("Start does not apply the config a second time", "xgin/xgin.go", "./xgin", "TestBuild_CallbackEngineSettingsOverrideConfig",
        swap('\tc := g.conf\n', '\tc := g.conf\n\tapplyConfig(g.engine, c)\n'))
-# 开关写在配置里，读它们的是装配里的这几处。开关接不上是最难发现的一类 bug：
-# 程序照常跑，只是那一项从来没生效
-mutate("访问日志的开关读的是配置", "xgin/xgin.go", "./xgin", "TestLog_", swap('\t\tif c.Log {\n', '\t\tif true {\n', 2))
-mutate("链路的开关读的是配置", "xgin/xgin.go", "./xgin", "TestTrace_", swap('\t\tif c.Trace {\n', '\t\tif true {\n'))
-mutate("关掉指标就不挂指标中间件", "xgin/xgin.go", "./xgin", "TestMetric_",
+# The switches live in the config, and these places in assembly are what read them. A switch that
+# is not wired is the hardest kind of bug to notice: the program runs as usual, that one option just
+# never took effect.
+mutate("the access log switch reads the config", "xgin/xgin.go", "./xgin", "TestLog_", swap('\t\tif c.Log {\n', '\t\tif true {\n', 2))
+mutate("the tracing switch reads the config", "xgin/xgin.go", "./xgin", "TestTrace_", swap('\t\tif c.Trace {\n', '\t\tif true {\n'))
+mutate("no metrics middleware is mounted with metrics off", "xgin/xgin.go", "./xgin", "TestMetric_",
        swap('\t\tif c.Metric {\n\t\t\te.Use(middleware.Metric())', '\t\tif true {\n\t\t\te.Use(middleware.Metric())'))
-mutate("关掉指标就不注册端点", "xgin/xgin.go", "./xgin", "TestBuild_NoMetricsEndpointWhenDisabled",
+mutate("no endpoint is registered with metrics off", "xgin/xgin.go", "./xgin", "TestBuild_NoMetricsEndpointWhenDisabled",
        swap('\t\tif c.Metric {\n\t\t\te.GET(c.MetricPath, serveMetrics)', '\t\tif true {\n\t\t\te.GET(c.MetricPath, serveMetrics)'))
-mutate("指标端点挂在配置的路径上", "xgin/xgin.go", "./xgin", "TestBuild_MetricsPathConfigurable",
+mutate("the metrics endpoint uses the configured path", "xgin/xgin.go", "./xgin", "TestBuild_MetricsPathConfigurable",
        swap('e.GET(c.MetricPath, serveMetrics)', 'e.GET("/metrics", serveMetrics)'))
-mutate("跳过日志的路径读的是配置", "xgin/xgin.go", "./xgin", "TestLogSkipPaths",
+mutate("the skipped log paths read the config", "xgin/xgin.go", "./xgin", "TestLogSkipPaths",
        swap('skip := slices.Clone(c.LogSkipPaths)', 'skip := slices.Clone([]string{})'))
-# 接反了的话，只开了请求体的人，响应体（可能带着令牌）进了日志
-mutate("请求体和响应体的开关各管各的", "xgin/xgin.go", "./xgin", "TestLogBody",
+# Crossed, the response body (which may carry a token) reaches the log of someone who enabled the
+# request body only.
+mutate("the request and response body switches are independent", "xgin/xgin.go", "./xgin", "TestLogBody",
        swap('middleware.WithBody(c.LogRequestBody, c.LogResponseBody)', 'middleware.WithBody(c.LogResponseBody, c.LogRequestBody)'))
-# 开关各自接到对应的选项上：接成 true 就是默认把查询串、Authorization、Set-Cookie 写进日志
-mutate("查询串的开关读的是配置", "xgin/xgin.go", "./xgin", "TestLogQueryAndHeaders",
+# Each switch reaches its own option: wired to true, the query string, Authorization and Set-Cookie
+# go into the log by default.
+mutate("the query string switch reads the config", "xgin/xgin.go", "./xgin", "TestLogQueryAndHeaders",
        swap('middleware.WithQuery(c.LogQuery)', 'middleware.WithQuery(true)'))
-mutate("请求头和响应头的开关各管各的", "xgin/xgin.go", "./xgin", "TestLogQueryAndHeaders",
+mutate("the request and response header switches are independent", "xgin/xgin.go", "./xgin", "TestLogQueryAndHeaders",
        swap('middleware.WithHeaders(c.LogRequestHeaders, c.LogResponseHeaders)', 'middleware.WithHeaders(c.LogResponseHeaders, c.LogRequestHeaders)'))
-mutate("中文翻译的开关读的是配置", "xgin/xgin.go", "./xgin", "TestZHTranslations",
+mutate("the Chinese translation switch reads the config", "xgin/xgin.go", "./xgin", "TestZHTranslations",
        swap('\t\tif c.ZHTranslations {', '\t\tif false {'))
-mutate("查询串不进访问日志", "internal/web/accesslog.go", "./xgin", "TestLog",
+mutate("the query string stays out of the access log", "internal/web/accesslog.go", "./xgin", "TestLog",
        swap('slog.String("path", r.URL.Path),', 'slog.String("path", r.URL.RequestURI()),'))
-mutate("记下的查询串脱过敏", "internal/web/accesslog.go", "./xgin", "TestLog_Query",
+mutate("a recorded query string is masked", "internal/web/accesslog.go", "./xgin", "TestLog_Query",
        swap('slog.String("query", redactForm(r.URL.RawQuery))', 'slog.String("query", r.URL.RawQuery)'))
-mutate("记下的请求头脱过敏", "internal/web/accesslog.go", "./xgin", "TestLog_RedactsRequestHeaders",
+mutate("recorded request headers are masked", "internal/web/accesslog.go", "./xgin", "TestLog_RedactsRequestHeaders",
        swap('Value: RedactHeaders(r.Header)}', 'Value: slog.AnyValue(r.Header)}'))
-mutate("记下的响应头脱过敏", "internal/web/accesslog.go", "./xgin", "TestLog_ResponseHeaders",
+mutate("recorded response headers are masked", "internal/web/accesslog.go", "./xgin", "TestLog_ResponseHeaders",
        swap('Value: RedactHeaders(a.RespHeader)}', 'Value: slog.AnyValue(a.RespHeader)}'))
-# 调用点：响应头要从 gin 的 writer 取来交过去，不交的话记下的永远是空的
-mutate("访问日志拿到的是真实的响应头", "xgin/middleware/log.go", "./xgin", "TestLog_ResponseHeaders",
+# Call site: the response headers have to be taken from gin's writer and handed over, or what is
+# recorded is always empty.
+mutate("the access log gets the real response headers", "xgin/middleware/log.go", "./xgin", "TestLog_ResponseHeaders",
        swap('RespHeader: c.Writer.Header(),', 'RespHeader: map[string][]string{},'))
-# 级别关着时整套捕获都不做：等 slog 自己判级别时，缓存请求体、截响应的代价已经付完了
-mutate("日志级别关着时访问日志什么都不做", "internal/web/accesslog.go", "./xgin", "TestLog_DoesNoWorkWhenLevelDisabled",
+# With the level disabled the whole capture is skipped: by the time slog judges the level itself,
+# buffering the body and capturing the response have already been paid for.
+mutate("the access log does nothing while the level is disabled", "internal/web/accesslog.go", "./xgin", "TestLog_DoesNoWorkWhenLevelDisabled",
        swap(' || !slog.Default().Enabled(r.Context(), slog.LevelInfo)', ''))
-mutate("访问日志带上 gin 登记的错误", "xgin/middleware/log.go", "./xgin", "TestLog_ErrAbortHandlerAbortLoggedAs499",
+mutate("the access log carries the errors gin recorded", "xgin/middleware/log.go", "./xgin", "TestLog_ErrAbortHandlerAbortLoggedAs499",
        swap('\t\t\t\ta.Errors = c.Errors.String()\n', ''))
-# ErrAbortHandler 是「断掉这个连接」的约定写法。兜住它的话本该中止的响应
-# 被写成 500 发出去，还多一份毫无意义的 panic 栈
-mutate("ErrAbortHandler 原样抛给 net/http", "xgin/middleware/middleware.go", "./xgin", "TestRecover",
+# ErrAbortHandler is the agreed way to say "drop this connection". Catching it turns a response that
+# was meant to be aborted into a 500 going out, plus a panic stack that means nothing.
+mutate("ErrAbortHandler is re-panicked to net/http", "xgin/middleware/middleware.go", "./xgin", "TestRecover",
        cut('\t\t\tif err == http.ErrAbortHandler {\n', '\t\t\t\tpanic(err)\n\t\t\t}\n'))
-# 中止的请求往往已经写出了 200 的响应头：照读 c.Writer.Status() 的话，
-# 被截断的响应在访问日志、指标、链路里都是一次成功
-mutate("ErrAbortHandler 中止的请求登记下来", "xgin/middleware/middleware.go", "./xgin", "TestLog_ErrAbortHandlerAbortLoggedAs499|TestMetric_ErrAbortHandlerAbortRecordedAs499|TestTrace_ErrAbortHandlerAbortRecordedAsError",
-       swap('\t\t\t\t_ = c.Error(http.ErrAbortHandler) //nolint:errcheck // 只是登记\n', ''))
-mutate("访问日志把中止的请求记成 499", "xgin/middleware/log.go", "./xgin", "TestLog_ErrAbortHandler",
+# An aborted request has usually written a 200 header already: reading c.Writer.Status() as is makes
+# a truncated response a success in the access log, the metrics and the trace alike.
+mutate("a request aborted with ErrAbortHandler is recorded", "xgin/middleware/middleware.go", "./xgin", "TestLog_ErrAbortHandlerAbortLoggedAs499|TestMetric_ErrAbortHandlerAbortRecordedAs499|TestTrace_ErrAbortHandlerAbortRecordedAsError",
+       swap('\t\t\t\t_ = c.Error(http.ErrAbortHandler) //nolint:errcheck // only recording it\n', ''))
+mutate("the access log records an aborted request as 499", "xgin/middleware/log.go", "./xgin", "TestLog_ErrAbortHandler",
        swap('Status:   status(c, ctx),', 'Status:   c.Writer.Status(),'), swap('\t\tstart, ctx := time.Now(), c.Request.Context()\n', '\t\tstart, ctx := time.Now(), c.Request.Context()\n\t\t_ = ctx\n'))
-mutate("指标把中止的请求记成 499", "xgin/middleware/metric.go", "./xgin", "TestMetric_ErrAbortHandler",
+mutate("the metrics record an aborted request as 499", "xgin/middleware/metric.go", "./xgin", "TestMetric_ErrAbortHandler",
        swap('strconv.Itoa(status(c, ctx))', 'strconv.Itoa(c.Writer.Status())'), swap('\t\tstart, ctx := time.Now(), c.Request.Context()\n', '\t\tstart, ctx := time.Now(), c.Request.Context()\n\t\t_ = ctx\n'))
-mutate("链路把中止的请求记成错误", "xgin/middleware/trace.go", "./xgin", "TestTrace_ErrAbortHandler",
+mutate("tracing marks an aborted request as an error", "xgin/middleware/trace.go", "./xgin", "TestTrace_ErrAbortHandler",
        swap('st := status(c, ctx)', 'st := c.Writer.Status()'))
-# 客户端走了、什么都没写就返回：原先记成 bytes_out 为 0 的 200，客户端其实什么都没收到
-mutate("XGin 客户端走了记 499", "xgin/middleware/middleware.go", "./xgin", "TestClientGoneBeforeAnythingSentRecordedAs499",
+# The client left and the handler returned without writing: this used to be recorded as a 200 with
+# bytes_out 0 while the client received nothing at all.
+mutate("XGin records a client that left as 499", "xgin/middleware/middleware.go", "./xgin", "TestClientGoneBeforeAnythingSentRecordedAs499",
        swap('\tif aborted(c) || (!c.Writer.Written() && web.ClientGone(ctx)) {', '\tif aborted(c) {'))
-mutate("XGin 响应写出去了就记写出去的", "xgin/middleware/middleware.go", "./xgin", "TestClientGoneAfterResponseWrittenKeepsSentStatus",
+mutate("XGin records what was sent once the response went out", "xgin/middleware/middleware.go", "./xgin", "TestClientGoneAfterResponseWrittenKeepsSentStatus",
        swap('\tif aborted(c) || (!c.Writer.Written() && web.ClientGone(ctx)) {', '\tif aborted(c) || web.ClientGone(ctx) {'))
-# 判的是这一层一进来时的 ctx：里面几层换上的、返回时 cancel 掉的 ctx 不算客户端走了。三个调用点各一条
-mutate("XGin 访问日志按一进来时的 ctx 判客户端", "xgin/middleware/log.go", "./xgin", "TestClientGoneIgnoresContextsSetByInnerMiddleware",
+# What is judged is the ctx as this layer saw it on the way in: a ctx installed by an inner layer
+# and cancelled on its way out does not mean the client left. One entry per call site.
+mutate("the XGin access log judges the client by the ctx on the way in", "xgin/middleware/log.go", "./xgin", "TestClientGoneIgnoresContextsSetByInnerMiddleware",
        swap('Status:   status(c, ctx),', 'Status:   status(c, c.Request.Context()),'), swap('\t\tstart, ctx := time.Now(), c.Request.Context()\n', '\t\tstart, ctx := time.Now(), c.Request.Context()\n\t\t_ = ctx\n'))
-mutate("XGin 指标按一进来时的 ctx 判客户端", "xgin/middleware/metric.go", "./xgin", "TestClientGoneIgnoresContextsSetByInnerMiddleware",
+mutate("the XGin metrics judge the client by the ctx on the way in", "xgin/middleware/metric.go", "./xgin", "TestClientGoneIgnoresContextsSetByInnerMiddleware",
        swap('strconv.Itoa(status(c, ctx))', 'strconv.Itoa(status(c, c.Request.Context()))'), swap('\t\tstart, ctx := time.Now(), c.Request.Context()\n', '\t\tstart, ctx := time.Now(), c.Request.Context()\n\t\t_ = ctx\n'))
-mutate("XGin 链路按一进来时的 ctx 判客户端", "xgin/middleware/trace.go", "./xgin", "TestClientGoneIgnoresContextsSetByInnerMiddleware",
+mutate("XGin tracing judges the client by the ctx on the way in", "xgin/middleware/trace.go", "./xgin", "TestClientGoneIgnoresContextsSetByInnerMiddleware",
        swap('st := status(c, ctx)', 'st := status(c, c.Request.Context())'))
-# 客户端走了不是服务端的错，只有 handler 自己中止的才标错
-mutate("XGin 客户端走了的 Span 不标错", "xgin/middleware/trace.go", "./xgin", "TestClientGoneBeforeAnythingSentRecordedAs499",
+# A client leaving is not the server's fault; only a handler aborting itself is marked as an error.
+mutate("the span of a client that left is not marked as an error", "xgin/middleware/trace.go", "./xgin", "TestClientGoneBeforeAnythingSentRecordedAs499",
        swap('\t\t\tcase aborted(c):\n', '\t\t\tcase st == statusAborted:\n'))
-# 压缩中间件排在访问日志里面：截下来的是压缩过的字节，原先整段乱码进了 response_body
-mutate("压缩过的响应体不记内容", "internal/web/accesslog.go", "./xgin", "TestLog_EncodedResponseBodyOmitted",
+# The compression middleware sits inside the access log: what is captured is compressed bytes, which
+# used to reach response_body as garbage.
+mutate("a compressed response body records no content", "internal/web/accesslog.go", "./xgin", "TestLog_EncodedResponseBodyOmitted",
        swap('\t\t\tbody := encodedOmitted(a.RespHeader)\n', '\t\t\tbody := ""\n'))
-# xgin 不给 Access.Ctx：访问日志得退回请求自己的 ctx，trace_id、xlog.AddKV 的字段在那里
-mutate("访问日志的 ctx 缺省用请求的", "internal/web/accesslog.go", "./xgin", "TestLogScope",
+# xgin does not set Access.Ctx: the access log has to fall back to the request's own ctx, where
+# trace_id and the xlog.AddKV fields live.
+mutate("the access log falls back to the request's own ctx", "internal/web/accesslog.go", "./xgin", "TestLogScope",
        swap('\tctx := a.Ctx\n\tif ctx == nil {', '\tctx := a.Ctx\n\tif false {'))
-mutate("链路的 method 收敛", "xgin/middleware/trace.go", "./xgin", "TestTrace",
+mutate("the tracing method is folded", "xgin/middleware/trace.go", "./xgin", "TestTrace",
        swap('method := web.NormalizeMethod(c.Request.Method)', 'method := c.Request.Method'),
        swap('\t\troute := routeOf(c)\n', '\t\troute := routeOf(c)\n\t\t_ = web.NormalizeMethod\n'))
-# 「谁是自己人」只看 TrustedProxies。记号打错一次，要么伪造的头被带进内网，要么透传整个失效
-mutate("对端在 TrustedProxies 里才算可信", "xgin/xgin.go", "./xgin", "TestBuild_PassthroughHeadersOnlyFromTrustedProxies|TestBuild_PassthroughHeadersOnlyFromPrivateByDefault",
+# "Who is one of us" comes from TrustedProxies alone. Get the mark wrong once and either forged
+# headers reach the internal network or forwarding stops working.
+mutate("a peer is trusted only when it is in TrustedProxies", "xgin/xgin.go", "./xgin", "TestBuild_PassthroughHeadersOnlyFromTrustedProxies|TestBuild_PassthroughHeadersOnlyFromPrivateByDefault",
        swap('if g.trusted.Trusts(c.RemoteIP()) {', 'if len(g.trusted) > 0 {'))
-mutate("可信网段来自装配时的配置", "xgin/xgin.go", "./xgin", "TestBuild_PassthroughHeadersOnlyFromTrustedProxies",
+mutate("the trusted ranges come from the config at assembly time", "xgin/xgin.go", "./xgin", "TestBuild_PassthroughHeadersOnlyFromTrustedProxies",
        swap('g.trusted = web.ParseProxies(c.TrustedProxies)', 'g.trusted = web.ParseProxies(nil)'))
-# 透传 Header 的可信判断也得认 private：不展开的话默认配置下谁都不信，透传整个失效
-mutate("对端可信的判断也展开 private", "internal/web/proxy.go", "./xgin", "TestBuild_PassthroughHeadersOnlyFromPrivateByDefault",
+# The peer trust check has to expand private as well: without it nobody is trusted under the default
+# config and forwarding stops working entirely.
+mutate("the peer trust check expands private too", "internal/web/proxy.go", "./xgin", "TestBuild_PassthroughHeadersOnlyFromPrivateByDefault",
        swap('expanded := ExpandProxies(list)', 'expanded := list'))
-# 默认只信私有网段：K8s 里 Pod IP 随机，Ingress、负载均衡、sidecar 转发来的默认就认
-mutate("TrustedProxies 默认是 private", "xgin/config.go", "./xgin", "TestBuild_TrustsOnlyPrivateProxiesByDefault|TestBuild_PassthroughHeadersOnlyFromPrivateByDefault",
+# Private ranges only by default: pod IPs in Kubernetes are random, and what an ingress, a load
+# balancer or a sidecar forwards is trusted out of the box.
+mutate("TrustedProxies defaults to private", "xgin/config.go", "./xgin", "TestBuild_TrustsOnlyPrivateProxiesByDefault|TestBuild_PassthroughHeadersOnlyFromPrivateByDefault",
        swap('\t\tTrustedProxies:     []string{web.TrustPrivate},\n', ''))
-mutate("private 包含运营商级 NAT 网段", "internal/web/proxy.go", "./xgin", "TestBuild_PassthroughHeadersOnlyFromPrivateByDefault",
+mutate("private covers the carrier-grade NAT range", "internal/web/proxy.go", "./xgin", "TestBuild_PassthroughHeadersOnlyFromPrivateByDefault",
        swap('"192.168.0.0/16", "100.64.0.0/10",', '"192.168.0.0/16",'))
-mutate("private 包含 IPv6 ULA", "internal/web/proxy.go", "./xgin", "TestBuild_PassthroughHeadersOnlyFromPrivateByDefault",
+mutate("private covers IPv6 ULA", "internal/web/proxy.go", "./xgin", "TestBuild_PassthroughHeadersOnlyFromPrivateByDefault",
        swap('"::1/128", "fc00::/7",', '"::1/128",'))
-mutate("private 和别的网段一起写时别的网段也算", "internal/web/proxy.go", "./xgin", "TestBuild_TrustedProxiesMixesPrivateWithOtherCIDRs",
+mutate("other ranges written alongside private still count", "internal/web/proxy.go", "./xgin", "TestBuild_TrustedProxiesMixesPrivateWithOtherCIDRs",
        swap('\t\tout = append(out, p)\n\t}\n\treturn out', '\t}\n\treturn out'))
-# 调用点：client_ip 那边（gin）也得拿展开后的网段，直接给 "private" 它解析失败、退回谁都不信
-mutate("gin 拿到的是展开后的网段", "xgin/xgin.go", "./xgin", "TestBuild_TrustsOnlyPrivateProxiesByDefault",
+# Call site: the client_ip side (gin) needs the expanded ranges too — handed "private" directly it
+# fails to parse and falls back to trusting nobody.
+mutate("gin receives the expanded ranges", "xgin/xgin.go", "./xgin", "TestBuild_TrustsOnlyPrivateProxiesByDefault",
        swap('e.SetTrustedProxies(web.ExpandProxies(c.TrustedProxies))', 'e.SetTrustedProxies(c.TrustedProxies)'))
-mutate("装配时先判对端再开链路", "xgin/xgin.go", "./xgin", "TestBuild_PassthroughHeadersOnlyFromTrustedProxies",
+mutate("peer trust is decided before tracing starts", "xgin/xgin.go", "./xgin", "TestBuild_PassthroughHeadersOnlyFromTrustedProxies",
        swap('e.Use(g.markTrustedPeer, skipMetrics(c, middleware.Trace()))', 'e.Use(skipMetrics(c, middleware.Trace()))'))
-# XGin.Trace 只管 Span。原先关掉它连提取一起摘了，上游的链路标识和透传头都不收
-mutate("XGin.Trace 关掉照样接上游的链路和透传", "xgin/xgin.go", "./xgin", "TestBuild_TraceDisabledOnlySkipsSpan_StillPropagates",
+# XGin.Trace governs the span only. Turning it off used to drop the extraction with it, so neither
+# the upstream trace identifiers nor the forwarded headers were accepted.
+mutate("XGin.Trace off still joins upstream tracing and forwarding", "xgin/xgin.go", "./xgin", "TestBuild_TraceDisabledOnlySkipsSpan_StillPropagates",
        swap('e.Use(g.markTrustedPeer, middleware.Propagate())', 'e.Use(g.markTrustedPeer)'))
-mutate("XGin.Trace 关掉时可信规则不变", "xgin/xgin.go", "./xgin", "TestBuild_TraceDisabledOnlySkipsSpan_StillPropagates",
+mutate("XGin.Trace off leaves the trust rules unchanged", "xgin/xgin.go", "./xgin", "TestBuild_TraceDisabledOnlySkipsSpan_StillPropagates",
        swap('e.Use(g.markTrustedPeer, middleware.Propagate())', 'e.Use(middleware.Propagate())'))
-mutate("Propagate 也把可信记号交给 xtrace", "xgin/middleware/trace.go", "./xgin", "TestTrace_PeerTrustFollowsXginMarker",
+mutate("Propagate hands the trust mark to xtrace too", "xgin/middleware/trace.go", "./xgin", "TestTrace_PeerTrustFollowsXginMarker",
        swap('WithContext(otel.GetTextMapPropagator().Extract(c.Request.Context(), inbound(c)))', 'WithContext(otel.GetTextMapPropagator().Extract(c.Request.Context(), propagation.HeaderCarrier(c.Request.Header)))'))
-mutate("链路中间件把可信记号交给 xtrace", "xgin/middleware/trace.go", "./xgin", "TestTrace_PeerTrustFollowsXginMarker",
+mutate("the tracing middleware hands the trust mark to xtrace", "xgin/middleware/trace.go", "./xgin", "TestTrace_PeerTrustFollowsXginMarker",
        swap('\tif c.GetBool(peer.TrustedKey) {\n\t\treturn trustedCarrier{h}\n\t}\n', '\t_ = peer.TrustedKey\n'))
 
-section("客户端")
-mutate("XGin 服务端 TLS 设置交给 http.Server", "internal/web/server.go", "./xgin", "TestStart_ClientCAFile|TestStart_MinVersion",
+section("clients")
+mutate("the XGin server TLS settings reach http.Server", "internal/web/server.go", "./xgin", "TestStart_ClientCAFile|TestStart_MinVersion",
        swap('\tsrv.TLSConfig = tlsCfg', '\t_ = tlsCfg'))
-mutate("XGin ClientCAFile 开双向认证", "internal/web/config.go", "./xgin", "TestStart_ClientCAFileEnablesMutualTLS",
+mutate("XGin ClientCAFile turns on mutual authentication", "internal/web/config.go", "./xgin", "TestStart_ClientCAFileEnablesMutualTLS",
        swap('\t\tcfg.ClientAuth = tls.RequireAndVerifyClientCert\n', ''))
-mutate("XGin MinVersion 生效", "internal/web/config.go", "./xgin", "TestStart_MinVersion",
+mutate("XGin MinVersion takes effect", "internal/web/config.go", "./xgin", "TestStart_MinVersion",
        swap('cfg := &tls.Config{MinVersion: tlsVersions[c.MinVersion]}', 'cfg := &tls.Config{}'))
-# 以为开了双向认证，实际是谁都能连的明文
-mutate("XGin ClientCAFile 要和证书一起配", "internal/web/config.go", "./xgin", "TestValidate_ServerTLSNewFields|TestConfig_ServerTLSLoadedFromFile",
+# Believed to be mutual authentication while in fact anyone can connect, in plaintext.
+mutate("XGin ClientCAFile has to be set together with a certificate", "internal/web/config.go", "./xgin", "TestValidate_ServerTLSNewFields|TestConfig_ServerTLSLoadedFromFile",
        swap('if c.ClientCAFile != "" && !c.tlsEnabled() {', 'if false {'))
-mutate("XGin MinVersion 只收 1.2 / 1.3", "internal/web/config.go", "./xgin", "TestValidate_ServerTLSNewFields",
+mutate("XGin MinVersion accepts 1.2 / 1.3 only", "internal/web/config.go", "./xgin", "TestValidate_ServerTLSNewFields",
        swap('if _, ok := tlsVersions[c.MinVersion]; c.tlsEnabled() && !ok {', 'if false {'))
-# 明文服务上 MinVersion 不起作用：原先照样校验，一个用不上的值让服务起不来
-mutate("没开 TLS 不校验 MinVersion", "internal/web/config.go", "./xgin", "TestValidate_ServerTLSNewFields",
+# MinVersion does nothing on a plaintext server: it used to be validated anyway, so a value nobody
+# used kept the server from starting.
+mutate("MinVersion is not validated without TLS", "internal/web/config.go", "./xgin", "TestValidate_ServerTLSNewFields",
        swap('c.tlsEnabled() && !ok', '!ok'))
-# 调用点：TLS 这几项从 XGin 的配置抄给 web.Server，漏抄一项就是以为开了、实际没开
-mutate("ClientCAFile 交给了 web.Server", "xgin/config.go", "./xgin", "TestStart_ClientCAFileEnablesMutualTLS",
+# Call site: the TLS fields are copied from XGin's config into web.Server, and missing one means
+# believing it is on while it is not.
+mutate("ClientCAFile reaches web.Server", "xgin/config.go", "./xgin", "TestStart_ClientCAFileEnablesMutualTLS",
        swap('\t\tClientCAFile:      c.TLS.ClientCAFile,\n', ''))
-mutate("MinVersion 交给了 web.Server", "xgin/config.go", "./xgin", "TestStart_MinVersion",
+mutate("MinVersion reaches web.Server", "xgin/config.go", "./xgin", "TestStart_MinVersion",
        swap('\t\tMinVersion:        c.TLS.MinVersion,\n', '\t\tMinVersion:        "1.2",\n'))
-# gin 的 ResponseWriter 接口带 WriteString，handler 直接调它是常见写法。
-# 包装层只包 Write 的话，这条路写出去的响应在日志里永远是空的
-mutate("WriteString 写的响应也截得下来", "xgin/middleware/log.go", "./xgin", "TestLog",
+# gin's ResponseWriter interface carries WriteString and handlers calling it directly is a common
+# thing to do. With the wrapper capturing Write alone, a response written that way is always empty
+# in the log.
+mutate("a response written with WriteString is captured too", "xgin/middleware/log.go", "./xgin", "TestLog",
        swap('''\tif w.capture && w.buf.Len() < maxResponseBody {
 \t\tw.buf.WriteString(s[:min(len(s), maxResponseBody-w.buf.Len())])
 \t}''', '\tif false {\n\t}'))
-# gin 的默认是全都信，于是任何人发一个 X-Forwarded-For 就能决定
-# 访问日志里的 client_ip。设置出错时必须退到安全的那一侧
-mutate("代理网段设不上时退回谁都不信", "xgin/xgin.go", "./xgin", "TestApplyConfig|TestBuild_ForwardedHeadersOnlyWithProxiesConfigured",
+# gin's default is to trust everyone, so anyone sending an X-Forwarded-For decides client_ip in the
+# access log. When the setup fails it has to fall back to the safe side.
+mutate("a failed proxy setup falls back to trusting nobody", "xgin/xgin.go", "./xgin", "TestApplyConfig|TestBuild_ForwardedHeadersOnlyWithProxiesConfigured",
        swap('\t\t_ = e.SetTrustedProxies([]string{})', ''))
 
-section("链路")
-# 用了 xgin 就有链路，使用者不用记得另外 import xtrace。摘掉这一行，
-# 全局的 TracerProvider 就一直是 noop：Span 什么都不记、日志没有 trace_id，而且没有任何报错
-mutate("用了 xgin 不另外 import xtrace 也有链路", "xgin/xgin.go", "./xgin", "TestTracingWorksWithoutImportingXtrace",
+section("tracing")
+# Using xgin gives tracing, with no need for the caller to remember importing xtrace. Drop that line
+# and the global TracerProvider stays noop: spans record nothing, logs carry no trace_id, and there
+# is no error anywhere.
+mutate("xgin gives tracing without importing xtrace", "xgin/xgin.go", "./xgin", "TestTracingWorksWithoutImportingXtrace",
        swap('\t_ "github.com/jupiter-eng/xone/xtrace"\n', ''))
 
-section("访问日志的字段")
-# slog 的 JSON 把 Duration 写成纳秒整数：字段叫 elapsed_ms、值却是纳秒的话，照毫秒配的告警差出一百万倍
-mutate("访问日志的耗时是毫秒", "internal/web/accesslog.go", "./xgin", "TestLog_ElapsedIsMilliseconds",
+section("access log fields")
+# slog's JSON writes a Duration as an integer of nanoseconds: with the field called elapsed_ms and a
+# nanosecond value, an alert configured in milliseconds is off by a factor of a million.
+mutate("the access log duration is in milliseconds", "internal/web/accesslog.go", "./xgin", "TestLog_ElapsedIsMilliseconds",
        swap('slog.Float64("elapsed_ms", millis(a.Elapsed))', 'slog.Float64("elapsed_ms", float64(a.Elapsed))'))
-# 没匹配上路由时填真实路径，日志里分不出 /nope 是路由还是 404，也和指标、Span 对不上
-# gin 在没写响应体时 Size() 返回 -1：原样记下来，204 看着像出了错，按 bytes_out 求和还会少算
-# gin 默认的 404 / 405 正文在中间件链之后才写，不在链里写的话 bytes_out 记成 0
-mutate("默认的 404 / 405 在链里写", "xgin/xgin.go", "./xgin", "TestDefault404And405",
+# Filling in the real path for an unmatched route makes /nope indistinguishable between a route and
+# a 404 in the log, and disagrees with the metrics and the span.
+# gin returns -1 from Size() when no response body was written: recorded as is, a 204 looks like a
+# failure and summing bytes_out undercounts.
+# gin writes its default 404 / 405 body only after the middleware chain, so without writing it
+# inside the chain bytes_out records 0.
+mutate("the default 404 / 405 is written inside the chain", "xgin/xgin.go", "./xgin", "TestDefault404And405",
        swap('\t\te.NoRoute(notFound)\n\t\te.NoMethod(methodNotAllowed)\n', ''))
-mutate("没写响应体时 bytes_out 记 0", "xgin/middleware/log.go", "./xgin", "TestLog_BytesOut",
+mutate("bytes_out records 0 when no response body was written", "xgin/middleware/log.go", "./xgin", "TestLog_BytesOut",
        swap('BytesOut:   max(c.Writer.Size(), 0),', 'BytesOut:   c.Writer.Size(),'))
-# 取值写在 routeOf 里，三个中间件共用；这一条改坏它本身，下面三条各打一个调用点
-mutate("没匹配上的路由记 unmatched", "xgin/middleware/middleware.go", "./xgin",
+# The value comes from routeOf, shared by the three middlewares; this entry breaks it directly and
+# the three below mutate one call site each.
+mutate("an unmatched route is recorded as unmatched", "xgin/middleware/middleware.go", "./xgin",
        "TestLog_UnmatchedRouteIsUnmatched|TestMetric_UnmatchedRouteUsesFixedValue|TestTrace_UnmatchedRouteUsesFixedValue",
        swap('\treturn web.RouteUnmatched\n', '\treturn c.Request.URL.Path\n'))
-mutate("访问日志里没匹配上的路由记 unmatched", "xgin/middleware/log.go", "./xgin", "TestLog_UnmatchedRouteIsUnmatched",
+mutate("the access log records an unmatched route as unmatched", "xgin/middleware/log.go", "./xgin", "TestLog_UnmatchedRouteIsUnmatched",
        swap('Route:    routeOf(c),', 'Route:    c.FullPath(),'))
-mutate("指标里没匹配上的路由记 unmatched", "xgin/middleware/metric.go", "./xgin", "TestMetric_UnmatchedRouteUsesFixedValue",
+mutate("the metrics record an unmatched route as unmatched", "xgin/middleware/metric.go", "./xgin", "TestMetric_UnmatchedRouteUsesFixedValue",
        swap('route, method, code := routeOf(c),', 'route, method, code := c.Request.URL.Path,'))
-mutate("Span 里没匹配上的路由记 unmatched", "xgin/middleware/trace.go", "./xgin", "TestTrace_UnmatchedRouteUsesFixedValue",
+mutate("the span records an unmatched route as unmatched", "xgin/middleware/trace.go", "./xgin", "TestTrace_UnmatchedRouteUsesFixedValue",
        swap('\t\troute := routeOf(c)\n', '\t\troute := c.Request.URL.Path\n'))
 
-section("错误文本脱敏")
-mutate("访问日志的 errors 字段脱过敏（xgin）", "internal/web/accesslog.go", "./xgin", "TestLog_ErrorTextIsRedacted",
+section("masking error text")
+mutate("the access log errors field is masked (xgin)", "internal/web/accesslog.go", "./xgin", "TestLog_ErrorTextIsRedacted",
        swap('slog.String("errors", RedactText(a.Errors))', 'slog.String("errors", a.Errors)'))
-mutate("Span 上的 gin.errors 脱过敏", "xgin/middleware/trace.go", "./xgin", "TestTrace_ErrorTextIsRedactedOnSpan",
+mutate("gin.errors on the span is masked", "xgin/middleware/trace.go", "./xgin", "TestTrace_ErrorTextIsRedactedOnSpan",
        swap('web.RedactText(c.Errors.String())', 'c.Errors.String()'))
 
-section("错误文本与 panic 脱敏")
-# panic(err) 里的整串 DSN、"password=..." 原样进 error 字段就是密码落盘
-mutate("panic 的值脱过敏", "xgin/middleware/middleware.go", "./xgin", "TestRecover_PanicValueIsRedacted",
+section("masking error text and panics")
+# The whole DSN inside panic(err), or a "password=..." in it, reaching the error field as is writes
+# the password to disk.
+mutate("the panic value is masked", "xgin/middleware/middleware.go", "./xgin", "TestRecover_PanicValueIsRedacted",
        swap('"error", web.RedactText(fmt.Sprint(err)),', '"error", fmt.Sprint(err),'))
-# 规则在 internal/web（core.py 有它自己的变异），这里验 xgin 的访问日志和 Span 真的是那个样子
-mutate("多条错误用分号隔开（xgin）", "internal/web/redact.go", "./xgin", "TestLog_MultipleErrorsStaySeparated|TestTrace_ErrorTextKeepsSeparationAndMasksDSNOnSpan",
+# The rules live in internal/web (with their own mutations in core.py); this checks that xgin's
+# access log and span really look that way.
+mutate("several errors stay separated (xgin)", "internal/web/redact.go", "./xgin", "TestLog_MultipleErrorsStaySeparated|TestTrace_ErrorTextKeepsSeparationAndMasksDSNOnSpan",
        swap('return textNewlines.Replace(strings.TrimRight(redactCredentials(s), "\\r\\n"))', 'return newlines.Replace(redactCredentials(s))'))
-mutate("errors 里 DSN 的密码被遮掉（xgin）", "internal/web/redact.go", "./xgin", "TestLog_DSNPasswordInErrorIsMasked|TestTrace_ErrorTextKeepsSeparationAndMasksDSNOnSpan",
+mutate("a DSN password in errors is masked (xgin)", "internal/web/redact.go", "./xgin", "TestLog_DSNPasswordInErrorIsMasked|TestTrace_ErrorTextKeepsSeparationAndMasksDSNOnSpan",
        swap('\ts = urlUserinfo.ReplaceAllString(s, "$1:"+Redacted+"@")\n', ''))
 
-section("零值与启动日志")
-# 模块名原先只在 New 里填：&xgin.XGin{} 的错误记在空模块名下，xerror.Is(err, "xgin") 不成立
-mutate("零值 XGin 的错误和日志记在 xgin 名下", "xgin/xgin.go", "./xgin", "TestZeroValue_ReportsUnderModuleName",
+section("the zero value and the startup log")
+# The module name used to be filled in by New alone: the errors of a &xgin.XGin{} were recorded
+# under an empty module name and xerror.Is(err, "xgin") did not hold.
+mutate("a zero value XGin reports errors and logs under xgin", "xgin/xgin.go", "./xgin", "TestZeroValue_ReportsUnderModuleName",
        swap('g.server.Start("xgin", ', 'g.server.Start("", '))
-# listening 原先打在监听之前：证书读不出来、端口被占时先说 listening 再报 listen failed
-mutate("listening 在端口绑上之后才打", "internal/web/server.go", "./xgin", "TestStart_NoListeningLogWhenListenFails",
+# listening used to be printed before listening: with an unreadable certificate or a taken port it
+# said listening first and reported listen failed afterwards.
+mutate("listening is printed only after the port is bound", "internal/web/server.go", "./xgin", "TestStart_NoListeningLogWhenListenFails",
        swap('\tln, err := listen(c, srv)\n', '\tslog.Info(module + " listening")\n\tln, err := listen(c, srv)\n'))
-mutate("listening 在证书读好之后才打", "internal/web/server.go", "./xgin", "TestStart_NoListeningLogWhenListenFails",
+mutate("listening is printed only after the certificate is read", "internal/web/server.go", "./xgin", "TestStart_NoListeningLogWhenListenFails",
        swap('\t\tcert, err := tls.LoadX509KeyPair(c.CertFile, c.KeyFile)\n\t\tif err != nil {\n\t\t\treturn nil, err\n\t\t}\n\t\tsrv.TLSConfig.Certificates = append(srv.TLSConfig.Certificates, cert)\n',
             '\t\t_ = tls.Certificate{}\n'),
        swap('srv.ServeTLS(ln, "", "")', 'srv.ServeTLS(ln, c.CertFile, c.KeyFile)'))
-# 调用点：规矩在 internal/web，XGin 块读配置时真的拦住了映射写法
-mutate("XGin 拦住 IPv4 映射写法的代理", "internal/web/proxy.go", "./xgin", "TestLoadConfig_IPv4MappedProxyFailsStartup",
+# Call site: the rule lives in internal/web, and reading the XGin block really has to reject the
+# mapped spelling.
+mutate("XGin rejects an IPv4-mapped proxy spelling", "internal/web/proxy.go", "./xgin", "TestLoadConfig_IPv4MappedProxyFailsStartup",
        swap('\t\tif plain, ok := unmapped(p); ok {', '\t\tif plain, ok := unmapped(p); ok && false {'))
 
-section("停止、路由与请求上下文")
-# 被劫持走的连接 Shutdown 不等、Close 断不掉：不取消根 ctx 的话，等着请求 ctx 的 WebSocket handler
-# 让 Stop 等满整份预算再报 still running
-mutate("Stop 之后取消劫持连接的 ctx", "internal/web/server.go", "./xgin", "TestStop_HijackedConnGetsCancelled",
+section("stopping, routing and the request context")
+# Shutdown does not wait for a hijacked connection and Close cannot drop it: without cancelling the
+# root ctx, a WebSocket handler waiting on the request ctx makes Stop burn the whole budget before
+# reporting still running.
+mutate("Stop cancels the ctx of a hijacked connection", "internal/web/server.go", "./xgin", "TestStop_HijackedConnGetsCancelled",
        swap('\tcancelBase()\n', '\t_ = cancelBase\n'))
-mutate("请求 ctx 挂在可取消的根上", "internal/web/server.go", "./xgin", "TestStop_HijackedConnGetsCancelled",
+mutate("the request ctx hangs off a cancellable root", "internal/web/server.go", "./xgin", "TestStop_HijackedConnGetsCancelled",
        swap('{ return base }', '{ return context.WithoutCancel(base) }'))
-# 监听失败还记着「在跑」的话，端口空出来之后每次 Start 都说 already running
-mutate("监听失败之后可以再 Start", "internal/web/server.go", "./xgin", "TestStart_RetryAfterListenFailure",
+# Still considering itself running after a failed listen makes every later Start say already
+# running once the port is free.
+mutate("Start works again after a failed listen", "internal/web/server.go", "./xgin", "TestStart_RetryAfterListenFailure",
        swap('\t\t\ts.srv, s.cancel = nil, nil\n', ''))
-# gin 默认的 301 / 307 不跑中间件：/users/ 不进访问日志、指标和链路
-mutate("末尾斜杠不重定向", "xgin/xgin.go", "./xgin", "TestBuild_TrailingSlashGoesThroughMiddlewareAs404",
+# gin's default 301 / 307 runs no middleware: /users/ reaches neither the access log, the metrics
+# nor the trace.
+mutate("trailing slashes are not redirected", "xgin/xgin.go", "./xgin", "TestBuild_TrailingSlashGoesThroughMiddlewareAs404",
        swap('\te.RedirectTrailingSlash = false\n', ''))
-# 不开的话 xlog.AddKV(c, ...)、Start(c, ...) 丢掉日志作用域和父 Span
-mutate("*gin.Context 当 ctx 传转到请求的 ctx", "xgin/xgin.go", "./xgin", "TestBuild_GinContextAsContext",
+# Without it, xlog.AddKV(c, ...) and Start(c, ...) lose the log scope and the parent span.
+mutate("a *gin.Context passed as a ctx reaches the request ctx", "xgin/xgin.go", "./xgin", "TestBuild_GinContextAsContext",
        swap('\t\te.ContextWithFallback = true\n', ''))
-# 调用点：抓 /metrics 每次开一个 Span
-mutate("抓指标不开 Span", "xgin/xgin.go", "./xgin", "TestTrace_MetricsScrapeNotTraced",
+# Call site: scraping /metrics opens a span every time.
+mutate("a metrics scrape opens no span", "xgin/xgin.go", "./xgin", "TestTrace_MetricsScrapeNotTraced",
        swap('skipMetrics(c, middleware.Trace())', 'middleware.Trace()'))
-# engine.Handler() 在 gin 的 UseH2C 开着时包一层 x/net 的 h2c.NewHandler，连接被劫持走
-mutate("交给 net/http 的是 engine 本身", "xgin/xgin.go", "./xgin", "TestStart_GinUseH2CDoesNotBypassShutdown",
+# engine.Handler() wraps x/net's h2c.NewHandler when gin's UseH2C is on, and the connection is
+# hijacked.
+mutate("what is handed to net/http is the engine itself", "xgin/xgin.go", "./xgin", "TestStart_GinUseH2CDoesNotBypassShutdown",
        swap('c.server(), g.engine)', 'c.server(), g.engine.Handler())'))
-# 客户端走了不是服务的故障：ERROR 会让告警跟着客户端的网络抖动响
-mutate("断连记 WARN", "xgin/middleware/middleware.go", "./xgin", "TestRecover_BrokenPipe",
+# A client leaving is not the service's failure: ERROR would make the alerts follow the client's
+# flaky network.
+mutate("a broken connection is logged as WARN", "xgin/middleware/middleware.go", "./xgin", "TestRecover_BrokenPipe",
        swap('slog.WarnContext(ctx, "connection broken"', 'slog.ErrorContext(ctx, "connection broken"'))
