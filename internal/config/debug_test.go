@@ -235,26 +235,37 @@ func TestEnsure_XONE_DEBUGPlaceholderDefaultMaskedKeepsClosingBrace(t *testing.T
 }
 
 func TestEnsure_XONE_DEBUGShowsPlaceholderTextNotExpandedValue(t *testing.T) {
-	// 展开出来的值从前原样打出来：${VAR} 恰恰是凭证的推荐写法，
-	// 放在一个不叫 password 的 key 下面（DSN、Webhook）就进了调试输出
+	// An expanded value used to be printed verbatim, and ${VAR} is exactly the recommended way to
+	// write a credential: under a key not named password (DSN, Webhook) it went into the debug output.
 	t.Setenv(DebugEnvKey, "1")
 	t.Setenv("XONE_T_WEBHOOK", "https://hooks.example.com/services/T0/B0/s3cr3t")
 	t.Setenv("XONE_T_PORT", "8081")
-	out := debugLoad(t, t.TempDir(), map[string]string{
+	// The debug output names every file it read, so the config path is part of what is searched
+	// below. t.TempDir() appends a random number that can contain a value under test: on
+	// 2026-10-20 it produced .../Value80819342/001, main went red on "8081", and nothing had
+	// leaked. Put all three values in the directory name so the collision always happens, then
+	// strip the path before asserting — the test now proves the stripping works instead of
+	// relying on a random number to miss.
+	dir := filepath.Join(t.TempDir(), "port-8081-hook-s3cr3t-dsn-def-pw")
+	raw := debugLoad(t, dir, map[string]string{
 		"application.yml": "Demo:\n  Webhook: ${XONE_T_WEBHOOK}\n  Port: ${XONE_T_PORT}\n" +
 			"  DSN: ${XONE_T_UNSET_DSN:postgres://u:def-pw@db/app}\n  Password: ${XONE_T_UNSET_PW:}\n  Token: ${XONE_T_PORT}\n",
 	}, "application.yml")
+	out := strings.ReplaceAll(raw, dir, "<tmpdir>")
+	if !strings.Contains(out, "<tmpdir>") {
+		t.Fatalf("debug output never names the directory we created, so stripping it proves nothing; got=\n%s", raw)
+	}
 	if strings.Contains(out, "Password: '***'") || !strings.Contains(out, "Token: '***'") {
-		t.Errorf("凭证 key 下展开为空的不遮、有值的遮，got=\n%s", out)
+		t.Errorf("under a credential key an empty expansion stays plain and a non-empty one is masked, got=\n%s", out)
 	}
 	for _, secret := range []string{"s3cr3t", "8081", "def-pw"} {
 		if strings.Contains(out, secret) {
-			t.Errorf("%q 不该出现在调试输出里，got=\n%s", secret, out)
+			t.Errorf("%q must not appear in the debug output, got=\n%s", secret, out)
 		}
 	}
 	for _, want := range []string{"Webhook: ${XONE_T_WEBHOOK}", "Port: ${XONE_T_PORT}", "DSN: ${XONE_T_UNSET_DSN:postgres://u:***@db/app}"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("调试输出里该有 %q，got=\n%s", want, out)
+			t.Errorf("the debug output should contain %q, got=\n%s", want, out)
 		}
 	}
 }
