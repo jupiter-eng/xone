@@ -20,119 +20,137 @@ import (
 	"github.com/jupiter-eng/xone/xhook"
 	"github.com/jupiter-eng/xone/xmetric"
 
-	// 用了 xecho 就有链路：xtrace 装好全局的 TracerProvider 和 Propagator，
-	// 中间件经 otel 的全局 API 用上它们。不要链路配 XTrace.Enable: false
+	// Using xecho means tracing is there: xtrace installs the global TracerProvider and
+	// Propagator, and the middleware reaches them through otel's global API. To go without
+	// tracing, set XTrace.Enable: false.
 	_ "github.com/jupiter-eng/xone/xtrace"
 
-	// 用了 Web 框架就有 xlog：访问日志、请求级字段（xlog.AddKV）都靠它。
-	// 根包不带它，只用 xhook、xgorm 的程序不会被它接管日志
+	// Using a web framework means xlog is there: the access log and per-request fields
+	// (xlog.AddKV) both rely on it. The root package does not pull it in, so a program using only
+	// xhook and xgorm does not have its logging taken over.
 	_ "github.com/jupiter-eng/xone/xlog"
 )
 
-// XEcho 一个待启动的 HTTP 服务。
+// XEcho is an HTTP server waiting to be started.
 //
-// 它满足 xone.Runnable，直接交给 xone.Run 即可：
+// It satisfies xone.Runnable, so it goes straight to xone.Run:
 //
 //	xone.MustRun(xecho.New().WithRoutes(register))
 //
-// 注意这里没有 import 根包——Go 的接口是结构化的，方法对得上就行。
-// 这样「集成不依赖框架」这条在编译层面仍然成立。
+// Note that the root package is not imported here — Go's interfaces are structural, matching
+// methods are enough. That keeps "an integration does not depend on the framework" true at
+// compile time.
 type XEcho struct {
-	override *Config // 见 WithConfig
+	override *Config // see WithConfig
 
 	routes    []func(*echo.Echo)
 	extra     []echo.MiddlewareFunc
 	recover   func(echo.Context, any) error
 	validator echo.Validator
 
-	// 下面这几项由 build 一次写定，之后只读。读它们的要么先调 build，要么是
-	// engine 上的 handler——而 engine 只能经 build 拿到。Once 保证写在读之前，不需要锁
+	// The fields below are written once by build and read-only afterwards. Whoever reads them
+	// either called build first or is a handler on the engine — and the engine is only reachable
+	// through build. Once guarantees the write happens before the reads, so no lock is needed.
 	buildOnce sync.Once
 	engine    *echo.Echo
-	conf      Config      // 装配用的那份配置，Start 用的也是它
-	confErr   error       // 配置不合法时的错误，此时 conf 是默认值
-	trusted   web.Proxies // TrustedProxies 解出来的网段，见 markTrustedPeer
+	conf      Config      // the config assembly used, and the one Start uses
+	confErr   error       // the error when the config is invalid; conf is then the defaults
+	trusted   web.Proxies // the ranges parsed out of TrustedProxies, see markTrustedPeer
 
-	// server 监听和优雅关闭，与 echo 无关的那一半，见 web.Server。
-	// 不用 e.Start：它用的 e.Server 四个超时全是 0，还会往 stdout 打一个 banner
+	// server is the half that has nothing to do with echo: listening and graceful shutdown, see
+	// web.Server. e.Start is not used: all four timeouts on its e.Server are 0, and it prints a
+	// banner to stdout.
 	server web.Server
 }
 
-// New 创建一个 XEcho。
+// New creates an XEcho.
 //
-// 开关、端口、超时都在配置文件的 XEcho 块里；同一个进程里的第二个服务用 WithConfig。
-// 这里什么都不读，配置在装配（Engine 或 Start）那一刻才取。零值 &XEcho{} 与 New() 等价。
+// Switches, port and timeouts live in the XEcho block of the config file; a second server in the
+// same process uses WithConfig. Nothing is read here — the config is taken at assembly time
+// (Engine or Start). The zero value &XEcho{} is equivalent to New().
 func New() *XEcho { return &XEcho{} }
 
-// WithConfig 用这份配置起服务，不再读配置文件里的 XEcho 块。
+// WithConfig starts the server from this config instead of reading the XEcho block of the config
+// file.
 //
-// 一个进程里起第二个服务时用它——比如对外的 API 一个端口、内部的管理端口
-// 另一个。不给它的话两个实例读的是同一块配置，只能监听同一个端口。
+// Use it for a second server in one process — a public API on one port and an internal admin
+// endpoint on another, say. Without it both instances read the same block and can only listen on
+// the same port.
 //
-// 传进来的是完整配置，不是补丁：想在文件配置的基础上改两项，先取
-// CurrentConfig 再改（从头写的话从 DefaultConfig 开始，零值的超时是不合法的）：
+// What it takes is a complete config, not a patch: to change a couple of fields on top of the
+// file's, start from CurrentConfig (or from DefaultConfig when writing one from scratch, since
+// zero timeouts are invalid):
 //
 //	c := xecho.CurrentConfig()
 //	c.Host, c.Port = "127.0.0.1", 9090
 //	admin := xecho.New().WithConfig(c).WithRoutes(adminRoutes)
 //
-// 它在装配时校验，不合法的话 Start 返回错误、不监听。
+// It is validated during assembly; when it is invalid, Start returns the error and never listens.
 func (x *XEcho) WithConfig(c Config) *XEcho {
 	x.override = &c
 	return x
 }
 
-// CurrentConfig 返回配置文件里 XEcho 那一块（拷贝），在 Start 之前任何时候调都行。
+// CurrentConfig returns a copy of the XEcho block of the config file, and may be called any time
+// before Start.
 //
-// 配合 WithConfig 用，见那里的例子。配置文件第一次读的时候才加载，
-// 所以在 main 里、xone.Run 之前拿到的也是最终值。
+// Use it together with WithConfig, see the example there. The config file is loaded the first
+// time it is read, so even a call in main before xone.Run gets the final values.
 //
-// 那一块写得不合法时返回默认值：错误由 xone.Run 在启动时报出来，这里不报第二遍。
+// When that block is invalid it returns the defaults: the error is reported by xone.Run at
+// startup, and is not reported a second time here.
 func CurrentConfig() Config {
 	c, _ := fileConfig()
 	return c
 }
 
-// WithRoutes 注册路由。可以调用多次，按调用顺序生效。
+// WithRoutes registers routes. It may be called several times and takes effect in call order.
 //
-// 回调拿到的是原生的 *echo.Echo，想怎么设都行。它在配置落到 echo 上之后才跑，
-// 所以回调里的设置盖得过配置：换 e.IPExtractor、e.HTTPErrorHandler、e.Validator 都以回调为准。
+// The callback gets the native *echo.Echo and may set anything. It runs after the config has been
+// applied to echo, so settings in the callback win over the config: replacing e.IPExtractor,
+// e.HTTPErrorHandler or e.Validator is taken from the callback.
 //
-// 只有一处跟不过去：透传 Header（XTrace.ForwardHeaders）认的可信对端只看配置里的
-// TrustedProxies，回调里换的 IPExtractor 只管得到 c.RealIP()。两边要一起改就改配置。
+// One thing does not follow: which peers are trusted for forwarded headers
+// (XTrace.ForwardHeaders) comes only from TrustedProxies in the config, while an IPExtractor
+// replaced in the callback only governs c.RealIP(). To move both, change the config.
 func (x *XEcho) WithRoutes(f ...func(*echo.Echo)) *XEcho {
 	x.routes = append(x.routes, f...)
 	return x
 }
 
-// WithMiddleware 追加自定义中间件，排在所有内置中间件之后。
+// WithMiddleware appends custom middleware, after all the built-in middleware.
 //
-// 它们挂在 e.Use 上，在 router 之后跑，取得到 c.Path()、c.Param()；内置的挂在 e.Pre 上，
-// 在使用者自己的 e.Pre 外面，顺序见 build。
-// 它们对每个请求都生效，包括框架挂的 MetricPath 和没匹配上路由的请求（echo 的 e.Use 如此）。
+// It is mounted on e.Use and runs after the router, so c.Path() and c.Param() are available; the
+// built-in middleware is mounted on e.Pre, outside the caller's own e.Pre, in the order build
+// lays out. It applies to every request, including the framework's MetricPath and requests that
+// matched no route (that is how echo's e.Use behaves).
 func (x *XEcho) WithMiddleware(m ...echo.MiddlewareFunc) *XEcho {
 	x.extra = append(x.extra, m...)
 	return x
 }
 
-// WithRecoverFunc 自定义 panic 之后的响应。
+// WithRecoverFunc customizes the response after a panic.
 //
-// f 返回的错误和 handler 返回的一样交给 e.HTTPErrorHandler；自己写了响应就返回 nil。
-// 默认返回 echo.ErrInternalServerError，即 500 {"message":"Internal Server Error"}。
-// 响应已经开始往外写了的话不调 f：再改状态码只会得到一个半截的响应。
+// The error f returns goes to e.HTTPErrorHandler exactly as a handler's would; return nil after
+// writing a response yourself. The default returns echo.ErrInternalServerError, that is, a 500
+// {"message":"Internal Server Error"}. f is not called once the response has started going out:
+// changing the status code then only yields a truncated response.
 func (x *XEcho) WithRecoverFunc(f func(c echo.Context, recovered any) error) *XEcho {
 	x.recover = f
 	return x
 }
 
-// WithValidator 装一个校验器，装上之后 handler 里就能 c.Validate(&req)。
+// WithValidator installs a validator, after which a handler can call c.Validate(&req).
 //
-// echo 不像 gin 那样内置校验：不装的话 c.Validate 返回的是 echo.ErrValidatorNotRegistered，
-// 而不是校验结果——一个忘了装校验器的服务看起来一切正常，直到有人发一份不合法的请求体进来。
-// 它是普通 error（echo.go 的 errors.New），不是 *echo.HTTPError：handler 直接 return 它的话
-// 客户端收到的是 500 {"message":"Internal Server Error"}，原文只进访问日志（实测 v4.16.0）。
+// Echo has no built-in validation the way gin does: without one, c.Validate returns
+// echo.ErrValidatorNotRegistered rather than a validation result — a service that forgot to
+// install a validator looks perfectly fine until someone sends an invalid body. That is a plain
+// error (errors.New in echo.go), not an *echo.HTTPError: a handler returning it directly gives
+// the client a 500 {"message":"Internal Server Error"}, with the text going only to the access
+// log (measured on v4.16.0).
 //
-// 校验库选哪个、报错长什么样是业务的事，框架不替你选，只负责把它装到 e.Validator 上：
+// Which validation library to use and what its errors look like is the business's call; the
+// framework does not choose for you and only installs it on e.Validator:
 //
 //	// github.com/go-playground/validator/v10
 //	type structValidator struct{ v *validator.Validate }
@@ -141,44 +159,51 @@ func (x *XEcho) WithRecoverFunc(f func(c echo.Context, recovered any) error) *XE
 //
 //	xecho.New().WithValidator(structValidator{v: validator.New()}).WithRoutes(register)
 //
-// Validate 返回的错误 c.Validate 原样交给 handler，由 handler 自己处置——想让它变成 400 就
-// return echo.NewHTTPError(http.StatusBadRequest, err.Error())，什么都不做的话普通 error 是 500。
-// 错误原文会进访问日志的 errors 字段（遮过敏感词），但进不了响应，除非开了 Debug。
+// c.Validate hands whatever Validate returns to the handler unchanged, and the handler decides
+// what to do with it — to turn it into a 400, return
+// echo.NewHTTPError(http.StatusBadRequest, err.Error()); doing nothing makes a plain error a 500.
+// The error text reaches the access log's errors field (with sensitive words masked) but not the
+// response, unless Debug is on.
 //
-// 传 nil 等于不装。在 WithRoutes 的回调里设 e.Validator 同样有效，而且盖得过这里。
+// Passing nil is the same as not installing one. Setting e.Validator in a WithRoutes callback
+// works too, and wins over this.
 func (x *XEcho) WithValidator(v echo.Validator) *XEcho {
 	x.validator = v
 	return x
 }
 
-// Engine 返回原生的 *echo.Echo，需要做本包没覆盖的事情时用它。
+// Engine returns the native *echo.Echo, for anything this package does not cover.
 //
-// 调用它会触发装配，用的是 WithConfig 给的那份配置，或者配置文件里的 XEcho 块——
-// 配置文件第一次读的时候才加载，所以在 xone.Run 之前调也拿得到最终值。
-// 装配只有一次：之后再 WithConfig / WithRoutes / WithMiddleware / WithRecoverFunc /
-// WithValidator 就不生效了，Start 也沿用这一次的配置。
+// Calling it triggers assembly, from the config given to WithConfig or from the XEcho block of
+// the config file — which is loaded the first time it is read, so even a call before xone.Run
+// gets the final values. Assembly happens once: WithConfig / WithRoutes / WithMiddleware /
+// WithRecoverFunc / WithValidator have no effect afterwards, and Start reuses that same config.
 //
-// 不要调它的 e.Start / e.StartTLS：服务由 Start 起，超时、TLS、优雅退出都在那一边。
+// Do not call e.Start / e.StartTLS on it: the server is started by Start, which owns the
+// timeouts, TLS and graceful shutdown.
 //
-// 配置不合法时照样返回一个 echo，按默认值装配（只信私有网段的代理，偏安全的那一侧），
-// 并记一条告警。那个错误由 Start 返回，xone.Run 在启动时就会报出来。
+// When the config is invalid it still returns an echo, assembled from the defaults (trusting only
+// private-range proxies, the safe side), and logs a warning. The error itself is returned by
+// Start, so xone.Run reports it at startup.
 func (x *XEcho) Engine() *echo.Echo {
 	x.build()
 	return x.engine
 }
 
-// build 装配 echo，一个实例只装配一次。
+// build assembles echo, once per instance.
 //
-// 用 Once 而不是布尔标志：并发调用时后者会把中间件注册两遍，
-// 表现是每个请求打两条日志、指标翻倍。
+// Once rather than a boolean flag: with a flag, concurrent calls register the middleware twice,
+// which shows up as two log lines per request and doubled metrics.
 //
-// 顺序有讲究：先建 echo、落配置，然后挂中间件和内置路由，最后才跑
-// 使用者的 WithRoutes——所以回调里对 echo 的设置盖得过配置，见 WithRoutes。
+// The order matters: create echo and apply the config, then mount the middleware and the built-in
+// routes, and only then run the caller's WithRoutes — which is why settings in the callback win
+// over the config, see WithRoutes.
 func (x *XEcho) build() {
 	x.buildOnce.Do(func() {
-		// 配置不合法时照样装配，按默认值：Engine() 的调用方总得拿到一个 echo，
-		// 而默认值是偏安全的那一侧。错误记下来由 Start 返回；告警是给只用 Engine()、
-		// 从不调 Start 的使用者的，否则他们拿到一份默认值却毫无迹象
+		// Assemble even when the config is invalid, from the defaults: a caller of Engine() has
+		// to get an echo one way or another, and the defaults are the safe side. The error is
+		// kept for Start to return; the warning is for callers who only use Engine() and never
+		// call Start, who would otherwise get the defaults with nothing to show for it.
 		c, err := x.cfg()
 		if err != nil {
 			slog.Warn("xecho invalid config, assembling the engine with defaults; Start will return the error", "error", err)
@@ -187,33 +212,41 @@ func (x *XEcho) build() {
 
 		e := echo.New()
 		applyConfig(e, c)
-		// 校验器和配置一起落在前面：WithRoutes 的回调里设的 e.Validator 盖得过它，和别的设置一样。
-		// 不装就保持 echo 的默认（nil，c.Validate 返回 ErrValidatorNotRegistered）
+		// The validator lands early, with the config: an e.Validator set in a WithRoutes callback
+		// wins over it, as every other setting does. Without one, echo's default stands (nil, so
+		// c.Validate returns ErrValidatorNotRegistered).
 		if x.validator != nil {
 			e.Validator = x.validator
 		}
 		x.trusted = web.ParseProxies(c.TrustedProxies)
 
-		// 洋葱模型，自外向内：
-		//   LogScope → Trace → Log → Metric → Recover → 用户的 e.Pre → router → 用户中间件 → handler
+		// The onion, outermost first:
+		//   LogScope -> Trace -> Log -> Metric -> Recover -> the caller's e.Pre -> router ->
+		//   the caller's middleware -> handler
 		//
-		// Recover 必须是内置里最内层的：panic 在哪一层被兜住，
-		// 比它更内层的中间件里 next(c) 之后的代码就都不执行了。
-		// 放最内层，外面几层的收尾（记指标、写访问日志）才还跑得到。
+		// Recover has to be the innermost of the built-ins: whichever layer catches a panic, the
+		// code after next(c) in every layer inside it never runs. Innermost, the outer layers
+		// still get to finish their work (record the metric, write the access log).
 		//
-		// 内置的用 e.Pre 而不是 e.Use：后者在 router 之后才跑，使用者在 e.Pre 里拒掉、重定向的请求
-		// （鉴权、限流、末尾斜杠的 301 常写在那里）经过不了它们——不进访问日志、指标、链路，
-		// Pre 里的 panic 也没人兜（echo 自己不兜，客户端读到 EOF）。挂在 Pre 上照样取得到路由模板：
-		// router 在 Pre 链的最里面跑（Echo.ServeHTTP），next(c) 返回时 c.Path() 已经有了，
-		// 没走到 router 的是空串，记 unmatched。它们在 WithRoutes 之前挂上，排在使用者的 e.Pre 外面。
+		// The built-ins use e.Pre rather than e.Use: the latter runs after the router, so
+		// requests the caller rejects or redirects in e.Pre (auth, rate limiting, the trailing
+		// slash 301 all tend to live there) never reach them — no access log, no metrics, no
+		// trace — and a panic in Pre is caught by nobody (echo does not catch it, and the client
+		// reads EOF). Mounting on Pre still yields the route template: the router runs innermost
+		// in the Pre chain (Echo.ServeHTTP), so c.Path() is set by the time next(c) returns, and
+		// a request that never reached the router has an empty one and is recorded as unmatched.
+		// They are mounted before WithRoutes, which puts them outside the caller's e.Pre.
 		//
-		// Pre 里不动请求：日志作用域、Span 只挂在 ctx 上、存进 echo.Context，路由之后由 attachContext
-		// 换到请求上，理由见 reqctx。所以使用者的 e.Pre 看到的是请求原来的 ctx（那里打的日志不带 trace_id）
+		// Nothing in Pre touches the request: the log scope and the span are attached to a ctx
+		// and stored in echo.Context, and attachContext swaps them onto the request after
+		// routing — the reasoning is in reqctx. So the caller's e.Pre sees the request's original
+		// ctx (logs written there carry no trace_id).
 		e.Pre(x.enter)
 		if c.Log {
 			e.Pre(middleware.LogScope())
 		}
-		// Trace 只管 Span：关掉时照样接上游的链路标识和透传 Header，只是不开 Span
+		// Trace governs the span only: with it off, the upstream trace identifiers and forwarded
+		// headers are still accepted, there is simply no span.
 		if c.Trace {
 			e.Pre(skipMetrics(c, middleware.Trace()))
 		} else {
@@ -222,7 +255,8 @@ func (x *XEcho) build() {
 		if c.Log {
 			skip := slices.Clone(c.LogSkipPaths)
 			if c.Metric {
-				// 指标端点会被抓取系统按秒轮询，记日志纯属刷屏
+				// The metrics endpoint is polled every few seconds by the scraper; logging it is
+				// pure noise.
 				skip = append(skip, c.MetricPath)
 			}
 			e.Pre(middleware.Log(
@@ -236,13 +270,16 @@ func (x *XEcho) build() {
 			e.Pre(middleware.Metric())
 		}
 		e.Pre(middleware.Recover(x.recover))
-		// 用户中间件在 router 之后：它们要的是 c.Path()、c.Param()，和使用者自己 e.Use 的一样。
-		// 在它们之前先把 Pre 里建好的 ctx 换到请求上，它们和 handler 看到的就是带着 Span 和日志作用域的 ctx
+		// The caller's middleware runs after the router: what it wants is c.Path() and c.Param(),
+		// the same as the caller's own e.Use. Before it, swap the ctx built in Pre onto the
+		// request, so it and the handler see the ctx carrying the span and the log scope.
 		e.Use(attachContext)
 		e.Use(x.extra...)
 
-		// echo 的 e.Use 在每个请求到来时才套上，和路由注册的先后无关（gin 是注册那一刻定死的）：
-		// 指标端点同样走用户用 WithMiddleware 挂的统一鉴权。照 xgin 的顺序写在中间件之后
+		// Echo wraps e.Use around each request as it arrives, regardless of when routes were
+		// registered (gin fixes the chain at registration time): the metrics endpoint therefore
+		// goes through the shared auth a caller mounted with WithMiddleware too. Written after
+		// the middleware, in xgin's order.
 		if c.Metric {
 			e.GET(c.MetricPath, serveMetrics)
 		}
@@ -254,17 +291,19 @@ func (x *XEcho) build() {
 	})
 }
 
-// serveMetrics 指标端点。每次请求再取 handler，不在装配时定死：装配可能发生在
-// xmetric 初始化之前（在 xone.Run 之前调 Engine() 就会），那时拿到的是兜底 registry，
-// /metrics 会一直是空的
+// serveMetrics is the metrics endpoint. The handler is fetched per request rather than fixed at
+// assembly time: assembly can happen before xmetric is initialized (calling Engine() before
+// xone.Run does exactly that), and the handler taken then belongs to the fallback registry, which
+// would leave /metrics empty forever.
 func serveMetrics(c echo.Context) error {
 	xmetric.Handler().ServeHTTP(c.Response(), c.Request())
 	return nil
 }
 
-// skipMetrics 指标端点不进 m：抓取系统按秒轮询它，每次开一个 Span 只是在链路后端刷屏，
-// 访问日志也是同样的理由跳过它的。挂在 Pre 上的中间件这时还没路由，按路径判断，
-// 和访问日志的 SkipPaths 一样只比 URL.Path
+// skipMetrics keeps the metrics endpoint out of m: the scraper polls it every few seconds, and a
+// span per poll only floods the tracing backend — the access log skips it for the same reason.
+// Middleware mounted on Pre has not routed yet, so the decision is made on the path, comparing
+// URL.Path only, as the access log's SkipPaths does.
 func skipMetrics(c Config, m echo.MiddlewareFunc) echo.MiddlewareFunc {
 	if !c.Metric {
 		return m
@@ -280,42 +319,48 @@ func skipMetrics(c Config, m echo.MiddlewareFunc) echo.MiddlewareFunc {
 	}
 }
 
-// applyConfig 把配置里管 echo 的三件事落到 e 上：client_ip 信谁、echo 自己的日志往哪写、调试开关开不开
+// applyConfig lands the three config items that govern echo onto e: which client_ip is believed,
+// where echo's own log goes, and whether the debug switch is on.
 func applyConfig(e *echo.Echo, c Config) {
-	// e.Debug 管两件使用者看得见的事：错误响应带不带错误原文（echo.go 的 DefaultHTTPErrorHandler）、
-	// c.JSON / c.JSONP / c.XML 缩不缩进（context.go，等于每个请求都带了 ?pretty）。
-	// 实测 echo v4.16.0，默认关，理由见 Config.Debug
+	// e.Debug governs two things the caller can see: whether error responses carry the error text
+	// (DefaultHTTPErrorHandler in echo.go) and whether c.JSON / c.JSONP / c.XML indent
+	// (context.go, the same as every request carrying ?pretty). Measured on echo v4.16.0; off by
+	// default, the reasoning is under Config.Debug.
 	e.Debug = c.Debug
 
-	// 默认只信私有网段。echo 的默认（IPExtractor 为 nil）是谁发来的 X-Forwarded-For 都信：
-	// 公网对端发一个 X-Forwarded-For: 1.2.3.4，c.RealIP() 就是 1.2.3.4（实测 v4.16.0）。
-	// 算法和 xgin 用的 gin ClientIP 一样，见 web.Proxies.ClientIP。
-	// 网段写错在 Validate 里就拦下了；解不出的那几项 ParseProxies 直接跳过，拿不准就不信
+	// Trust only private ranges by default. Echo's default (IPExtractor nil) believes whoever
+	// sends X-Forwarded-For: a public peer sending X-Forwarded-For: 1.2.3.4 makes c.RealIP()
+	// return 1.2.3.4 (measured on v4.16.0). The algorithm matches gin's ClientIP as used by xgin,
+	// see web.Proxies.ClientIP. A malformed range is already rejected in Validate; ParseProxies
+	// skips the entries it cannot parse, trusting nothing it is unsure about.
 	e.IPExtractor = web.ParseProxies(c.TrustedProxies).ClientIP
 
-	// echo 自己的日志（gommon）默认写 os.Stdout，是它自己的 JSON 格式，不经过 slog：
-	// 实测 e.HTTPErrorHandler 写错误响应失败时（客户端已经断开）会在 stdout 留一行
-	// {"time":…,"level":"ERROR","prefix":"echo",…,"message":"write: broken pipe"}。
-	// 接到 slog，级别沿用 echo 的默认（ERROR 以上才写），Debug 开着时放宽到 DEBUG
+	// Echo's own log (gommon) writes to os.Stdout by default, in its own JSON format, bypassing
+	// slog: measured, when e.HTTPErrorHandler fails to write the error response (the client is
+	// already gone) it leaves a line on stdout reading
+	// {"time":…,"level":"ERROR","prefix":"echo",…,"message":"write: broken pipe"}.
+	// Route it into slog, keeping echo's default level (ERROR and above), raised to DEBUG while
+	// Debug is on.
 	e.Logger.SetHeader("${level}")
 	e.Logger.SetOutput(echoLog{})
-	// echo 自己只在 e.Start / e.StartTLS 里按 e.Debug 把 gommon 的级别调到 DEBUG（v4.16.0
-	// echo.go 的 configureServer / configureTLSServer）。这里不用 e.Start，所以自己设一遍，
-	// 否则 Debug 开着也只看得到 ERROR：echo 唯一一条低于 ERROR 的自有日志
-	// （response.go 里的 "response already committed"，WARN）照样写不出来
+	// Echo itself raises gommon's level to DEBUG from e.Debug only inside e.Start / e.StartTLS
+	// (configureServer / configureTLSServer in echo.go, v4.16.0). e.Start is not used here, so
+	// set it directly; otherwise Debug still shows ERROR only, and echo's one log line below
+	// ERROR ("response already committed" in response.go, WARN) stays invisible.
 	if c.Debug {
 		e.Logger.SetLevel(gommonlog.DEBUG)
 	}
-	// e.StdLogger 是 echo 给 http.Server.ErrorLog 准备的（e.Start 里就这么用），在 echo.New 里就绑定了
-	// e.Logger 当时的输出，也就是 os.Stdout（实测 v4.16.0），上面换 Logger 的输出改不到它。
-	// 和服务真正用的 ErrorLog 接到同一处
+	// e.StdLogger is what echo prepares for http.Server.ErrorLog (e.Start uses it that way), and
+	// echo.New binds it to e.Logger's output at that moment, which is os.Stdout (measured on
+	// v4.16.0); replacing the Logger's output above does not reach it. Route it where the
+	// server's real ErrorLog goes.
 	e.StdLogger = web.ErrorLog("xecho")
 }
 
-// echoLog 把 echo 自己的日志一行一行转给 slog。
+// echoLog forwards echo's own log to slog, one line at a time.
 //
-// 配合 SetHeader("${level}")：gommon 写进来的每一行是「级别 消息」，
-// 级别换成 slog 的，消息放进 message 字段
+// It goes with SetHeader("${level}"): every line gommon writes is "level message", the level is
+// mapped to slog's, and the message goes into the message field.
 type echoLog struct{}
 
 func (echoLog) Write(p []byte) (int, error) {
@@ -324,8 +369,9 @@ func (echoLog) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// echoLevel gommon 的级别名换成 slog 的级别。PANIC / FATAL 记成 ERROR：
-// 它们之后 gommon 自己会 panic / 退出进程，slog 只管把这一行记下来
+// echoLevel maps gommon's level names to slog's levels. PANIC / FATAL are recorded as ERROR:
+// gommon panics or exits the process right after them anyway, and slog's job is only to record
+// the line.
 func echoLevel(s string) slog.Level {
 	switch s {
 	case "DEBUG":
@@ -335,13 +381,15 @@ func echoLevel(s string) slog.Level {
 	case "ERROR", "PANIC", "FATAL":
 		return slog.LevelError
 	}
-	return slog.LevelInfo // INFO，以及 Print 系列（级别是 -）
+	return slog.LevelInfo // INFO, and the Print family (whose level is -)
 }
 
-// enter 挂在 Pre 链的最外面，给内置中间件备好两样东西：请求原来的 ctx（内置中间件见到它就只往 echo.Context
-// 里写、不动请求，见 reqctx），和直连的对端可不可信（Trace / Propagate 据此决定收不收透传 Header，见 markTrustedPeer）。
+// enter sits outermost in the Pre chain and prepares two things for the built-in middleware: the
+// request's original ctx (middleware that finds it only writes into echo.Context and leaves the
+// request alone, see reqctx), and whether the directly connected peer is trusted (Trace /
+// Propagate decide from it whether to accept forwarded headers, see markTrustedPeer).
 //
-// c.Set 会建 echo.Context 的存储，一个请求一次，之后的 c.Set 都用它
+// c.Set creates echo.Context's store, once per request; every later c.Set uses it.
 func (x *XEcho) enter(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		c.Set(reqctx.Key, c.Request().Context())
@@ -350,10 +398,11 @@ func (x *XEcho) enter(next echo.HandlerFunc) echo.HandlerFunc {
 	}
 }
 
-// attachContext 路由之后、使用者的中间件之前：把 Pre 里建好的 ctx 换到请求上，照常用 r.WithContext 的副本。
+// attachContext runs after routing and before the caller's middleware: it swaps the ctx built in
+// Pre onto the request, through the usual r.WithContext copy.
 //
-// 使用者在 e.Pre 里换过请求的 ctx 的话，那一层放进去的值到这里就丢了：两棵 ctx 没法合并，
-// 这里保的是 Span 和日志作用域
+// When the caller replaced the request's ctx in e.Pre, the values that layer put there are lost
+// here: two ctx trees cannot be merged, and what is preserved here is the span and the log scope.
 func attachContext(next echo.HandlerFunc) echo.HandlerFunc {
 	return func(c echo.Context) error {
 		if ctx, ok := c.Get(reqctx.Key).(context.Context); ok && ctx != c.Request().Context() {
@@ -363,22 +412,24 @@ func attachContext(next echo.HandlerFunc) echo.HandlerFunc {
 	}
 }
 
-// markTrustedPeer 直连的对端在 TrustedProxies 里时给链路中间件留个记号：
-// 只有这样的对端发来的透传 Header（XTrace.ForwardHeaders）才会被收下。
+// markTrustedPeer leaves a mark for the tracing middleware when the directly connected peer is in
+// TrustedProxies: only such a peer's forwarded headers (XTrace.ForwardHeaders) are accepted.
 //
-// 透传是「把上游给的值原样带给下游」。照单全收的话，公网客户端发一个
-// X-Tenant-Id / X-Internal-Token，就被当成自己人给的，带进内网的每一次调用。
-// 「谁是自己人」用的是信任代理的那张表，不另设开关——同一件事只该有一个地方说。
+// Forwarding means "pass what upstream gave us on to downstream". Accepting it from everyone lets
+// a public client send X-Tenant-Id / X-Internal-Token and have it treated as coming from one of
+// us, carried into every internal call. Who counts as one of us comes from the trusted-proxy
+// table, with no switch of its own — one thing should be stated in one place.
 //
-// 判的是直连的对端（RemoteAddr），不是 c.RealIP()：后者正是从这些可伪造的头里推出来的。
+// What is judged is the directly connected peer (RemoteAddr), not c.RealIP(): the latter is
+// precisely what those forgeable headers produce.
 func (x *XEcho) markTrustedPeer(c echo.Context) {
 	if x.trusted.Trusts(web.RemoteIP(c.Request())) {
 		c.Set(peer.TrustedKey, true)
 	}
 }
 
-// cfg 这个实例该用的配置：WithConfig 给的那份，不给就是配置文件里的 XEcho 块。
-// 不合法时返回默认值和那个错误，见 build
+// cfg is the config this instance should use: the one given to WithConfig, or the XEcho block of
+// the config file. When it is invalid it returns the defaults and that error, see build.
 func (x *XEcho) cfg() (Config, error) {
 	if x.override == nil {
 		return fileConfig()
@@ -389,10 +440,11 @@ func (x *XEcho) cfg() (Config, error) {
 	return *x.override, nil
 }
 
-// fileConfig 配置文件里的 XEcho 块，没写的字段是默认值。
+// fileConfig is the XEcho block of the config file, with unset fields left at their defaults.
 //
-// 在 Start 之前任何时候调都行：配置文件第一次读的时候才加载，读到的永远是最终值。
-// xconfig.Unmarshal 解完会调 Validate；解不出来或者不合法时返回默认值和那个错误
+// It may be called any time before Start: the config file is loaded the first time it is read, so
+// what comes back is always the final values. xconfig.Unmarshal calls Validate after decoding;
+// when it cannot decode, or the result is invalid, it returns the defaults and that error.
 func fileConfig() (Config, error) {
 	c := DefaultConfig()
 	if err := xconfig.Unmarshal(ConfigKey, &c); err != nil {
@@ -401,10 +453,12 @@ func fileConfig() (Config, error) {
 	return c, nil
 }
 
-// Start 启动服务并阻塞到它停止。由 xone.Run 调用。
+// Start starts the server and blocks until it stops. Called by xone.Run.
 //
-// 还没装配的话先装配。监听地址、超时、TLS 和 echo 上的中间件、信任的代理
-// 出自同一份配置——装配时取的那份，这里不再重读。它不合法时直接返回错误，不监听。
+// It assembles first if that has not happened yet. The listen address, the timeouts, TLS and the
+// middleware and trusted proxies on echo all come from one config — the one taken at assembly
+// time, which is not re-read here. When it is invalid, Start returns the error immediately and
+// never listens.
 func (x *XEcho) Start(ctx context.Context) error {
 	x.build()
 	if x.confErr != nil {
@@ -413,43 +467,50 @@ func (x *XEcho) Start(ctx context.Context) error {
 	return x.server.Start("xecho", x.conf.server(), x.engine)
 }
 
-// Stop 优雅关闭服务：等在途请求做完，最多等到 ctx 的截止时间。由 xone.Run 调用。
+// Stop shuts the server down gracefully: it waits for in-flight requests, up to the ctx's
+// deadline. Called by xone.Run.
 //
-// 等多久只看 ctx，这里不另设上限。在 xone.Run 里它带的是服务那一段停止预算
-// （WithStopTimeout 的 2/3，默认 10s）：整个退出流程只有这一份预算，
-// 服务能占多少由框架分，不需要再配一个超时去和它对齐。
+// How long it waits comes from the ctx alone; there is no separate limit here. Inside xone.Run
+// the ctx carries the server's share of the stop budget (2/3 of WithStopTimeout, 10s by default):
+// the whole shutdown has that one budget and the framework decides how much the server gets, so
+// there is no second timeout to keep aligned with it.
 //
-// 单独使用、不经过 xone.Run 时，截止时间由你传进来的 ctx 定：
+// Used on its own, outside xone.Run, the deadline is whatever ctx you pass:
 //
 //	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 //	defer cancel()
 //	err := x.Stop(ctx)
 //
-// 不带截止时间的 ctx 就一直等到在途请求全部做完——挂住的请求会让 Stop 一直不返回。
+// A ctx with no deadline waits until every in-flight request is done — a stuck request then keeps
+// Stop from returning at all.
 //
-// 到点还有请求没做完时强制断开所有连接，再等 handler 返回，并返回错误。
+// When the deadline passes with requests still running, it force-closes every connection, waits
+// for the handlers to return, and returns an error.
 //
-// 框架能保证的是：返回 nil 时所有 handler 都已经返回；到点还有 handler
-// 没返回时，返回的错误里写明还剩几个。它保证不了的是让一个不看请求 ctx 的
-// handler 停下来——Go 没有从外面终止一个协程的办法，断开连接、取消
-// 请求的 ctx 已经是能做的全部。handler 里的慢操作（查库、调下游）
-// 要传 c.Request().Context()，断连之后才停得下来。
+// What the framework guarantees: when it returns nil, every handler has returned; when the
+// deadline passes with handlers still running, the error says how many are left. What it cannot
+// guarantee is stopping a handler that ignores the request ctx — Go has no way to terminate a
+// goroutine from outside, and closing the connection and cancelling the request's ctx is already
+// everything available. Slow work inside a handler (a query, a downstream call) has to be given
+// c.Request().Context() to be stoppable once the client is gone.
 func (x *XEcho) Stop(ctx context.Context) error { return x.server.Stop(ctx, "xecho") }
 
-// ---- 登记 ----
+// ---- Registration ----
 
-// 本包不登记停止钩子：服务本身由使用者交给 xone.Run 启停，
-// 框架的 Runnable 只有一个，那个位置是使用者的。
+// This package registers no stop hook: the server itself is started and stopped by the caller
+// through xone.Run, and the framework has exactly one Runnable — that slot belongs to the caller.
 func init() {
 	xhook.BeforeStart(loadConfig, xhook.At(xhook.StageServer))
 }
 
-// loadConfig 在启动阶段把 XEcho 块读一遍：认领它，并让配错的值在这里就失败。
+// loadConfig reads the XEcho block once during startup: it claims the block, and makes a
+// misconfigured value fail right there.
 //
-// 读出来不存：XEcho 在装配时自己去读（CurrentConfig 也是），读到的是同一份最终值。
-// 少了这一步，这一块要到服务 Start 时才有人读——那已经在框架检查「没人认领的块」
-// 之后了，它会被当成拼错的 key 让启动失败；进程里的服务都用 WithConfig 时更是
-// 永远没人读。配错的值也要拖到 Start 才报出来。
+// What it reads is not stored: XEcho reads it again during assembly (so does CurrentConfig), and
+// gets the same final values. Without this step nobody would read the block until the server
+// starts — which is after the framework checks for unclaimed blocks, so it would be taken for a
+// misspelled key and fail startup; and when every server in the process uses WithConfig, nobody
+// would ever read it. A misconfigured value would also wait until Start to be reported.
 func loadConfig(context.Context) error {
 	_, err := fileConfig()
 	return err

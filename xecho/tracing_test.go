@@ -10,8 +10,9 @@ import (
 	"github.com/jupiter-eng/xone/xonetest"
 )
 
-// 用了 xecho 就有链路，使用者不用另外 import xtrace：xecho.go 替他 import 了。
-// 先把全局的 TracerProvider 换回 noop，免得别的测试装过的 provider 让这里白白通过
+// Using xecho means tracing is there, without the caller importing xtrace: xecho.go imports it
+// for them. The global TracerProvider is reset to noop first, so that a provider installed by
+// another test cannot make this pass for free.
 func TestTracingWorksWithoutImportingXtrace(t *testing.T) {
 	prev := otel.GetTracerProvider()
 	otel.SetTracerProvider(noop.NewTracerProvider())
@@ -23,6 +24,6 @@ func TestTracingWorksWithoutImportingXtrace(t *testing.T) {
 	_, span := otel.Tracer("test").Start(context.Background(), "op")
 	defer span.End()
 	if !span.SpanContext().IsValid() {
-		t.Fatal("用了 xecho 就该有链路，拿到的却是 noop 的 Span：xecho 没把 xtrace 带进来")
+		t.Fatal("using xecho should give tracing, but the span is a noop one: xecho did not pull xtrace in")
 	}
 }

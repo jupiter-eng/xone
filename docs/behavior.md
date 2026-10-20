@@ -22,13 +22,13 @@
 | [gin `RedirectTrailingSlash`](../xgin/README.md#行为与实测) | 开着：`/users/` 回 301（GET）/ 307（其余方法）到 `/users` | 关掉，走 `NoRoute` 记 404 `unmatched` | 重定向的请求不跑任何中间件，访问日志、指标、链路里都没有 |
 | [gin `ContextWithFallback`](../xgin/README.md#行为与实测) | 关着：`*gin.Context` 的 `Value` 只查 `c.Keys`、`Done()` 是 nil | 开着，转到 `c.Request.Context()` | 否则 `xlog.AddKV(c, ...)`、`Start(c, ...)` 丢掉日志作用域和父 Span，取消也传不下去 |
 | [`http.Server` 劫持的连接](../xgin/README.md#行为与实测) | `Shutdown` 不等、`Close()` 断不掉，请求 ctx 不取消 | `Shutdown` / `Close()` 之后取消 `BaseContext` | 否则等着 ctx 的 WebSocket handler 让 `Stop` 等满预算再报错 |
-| [`XEcho.TrustedProxies`](../xecho/README.md#行为与实测) | `IPExtractor` 为 nil：`X-Forwarded-For` / `X-Real-IP` 谁发来的都信 | 只信私有网段（`private`），算法同 xgin | 实测公网对端发 `X-Forwarded-For: 1.2.3.4`，`c.RealIP()` 就是 `1.2.3.4` |
-| [`XEcho` 错误响应](../xecho/README.md#行为与实测) | 整条中间件链返回之后才由 `HTTPErrorHandler` 渲染 | 内置中间件在自己这一层渲染 | 否则 404 / 405 / 500 在访问日志、指标、链路里都是 `bytes_out` 为 0 的 200 |
-| [`XEcho` panic](../xecho/README.md#行为与实测) | 不兜：连接断掉，栈由 net/http 写 stderr | 兜住，记 ERROR 日志、回 500 | 栈进不了日志平台，客户端只看到 EOF |
-| [`XEcho` 服务器超时](../xecho/README.md#行为与实测) | `e.Server` 四个超时全是 0 | 不用 `e.Start`，同 `XGin` 的四个超时 | 同 `XGin.ReadHeaderTimeout` |
-| [echo 自己的日志](../xecho/README.md#行为与实测) | gommon 写 `os.Stdout`，自己的 JSON 格式 | 接到 slog，级别沿用 echo 的（`XEcho.Debug` 开着时放宽到 DEBUG，echo 只在 `e.Start` 里做这一步） | 绕开 slog 的输出进不了日志平台 |
-| [`XEcho` 分组的兜底路由](../xecho/README.md#行为与实测) | 带中间件的分组悄悄注册 `RouteNotFound`，`c.Path()` 是 `/api/v1/*` | 落到兜底上的记 `unmatched` | 否则 404 在看板上是 `/api/v1/*`，和 xgin 对不上 |
-| [`XEcho` 的 `e.Pre`](../xecho/README.md#行为与实测) | 挂在 `e.Use` 上的中间件看不到 Pre 里结束的请求，也兜不住 Pre 里的 panic | 内置中间件挂在 `e.Pre` 上，Pre 里不动请求、ctx 存在 `echo.Context` 上，路由之后才换到请求上 | Pre 里的鉴权、限流、301 不进日志和指标；Pre 里换请求的话 `MethodOverride` 失效 |
+| [`XEcho.TrustedProxies`](../xecho/README.md#behavior-measured) | `IPExtractor` 为 nil：`X-Forwarded-For` / `X-Real-IP` 谁发来的都信 | 只信私有网段（`private`），算法同 xgin | 实测公网对端发 `X-Forwarded-For: 1.2.3.4`，`c.RealIP()` 就是 `1.2.3.4` |
+| [`XEcho` 错误响应](../xecho/README.md#behavior-measured) | 整条中间件链返回之后才由 `HTTPErrorHandler` 渲染 | 内置中间件在自己这一层渲染 | 否则 404 / 405 / 500 在访问日志、指标、链路里都是 `bytes_out` 为 0 的 200 |
+| [`XEcho` panic](../xecho/README.md#behavior-measured) | 不兜：连接断掉，栈由 net/http 写 stderr | 兜住，记 ERROR 日志、回 500 | 栈进不了日志平台，客户端只看到 EOF |
+| [`XEcho` 服务器超时](../xecho/README.md#behavior-measured) | `e.Server` 四个超时全是 0 | 不用 `e.Start`，同 `XGin` 的四个超时 | 同 `XGin.ReadHeaderTimeout` |
+| [echo 自己的日志](../xecho/README.md#behavior-measured) | gommon 写 `os.Stdout`，自己的 JSON 格式 | 接到 slog，级别沿用 echo 的（`XEcho.Debug` 开着时放宽到 DEBUG，echo 只在 `e.Start` 里做这一步） | 绕开 slog 的输出进不了日志平台 |
+| [`XEcho` 分组的兜底路由](../xecho/README.md#behavior-measured) | 带中间件的分组悄悄注册 `RouteNotFound`，`c.Path()` 是 `/api/v1/*` | 落到兜底上的记 `unmatched` | 否则 404 在看板上是 `/api/v1/*`，和 xgin 对不上 |
+| [`XEcho` 的 `e.Pre`](../xecho/README.md#behavior-measured) | 挂在 `e.Use` 上的中间件看不到 Pre 里结束的请求，也兜不住 Pre 里的 panic | 内置中间件挂在 `e.Pre` 上，Pre 里不动请求、ctx 存在 `echo.Context` 上，路由之后才换到请求上 | Pre 里的鉴权、限流、301 不进日志和指标；Pre 里换请求的话 `MethodOverride` 失效 |
 | [`http.Server.ErrorLog`](../xgin/README.md#日志) | nil：写标准库的 log（经 slog 是 INFO、消息每行不同） | 接到 slog，WARN，消息 `<模块> http server error` | TLS 握手失败这类错误没法按消息检索和告警 |
 | [`XGorm.Log: false`](../xgorm/README.md#行为与实测) | 换成 GORM 自己的 stdout logger | 真的不打 | 那个默认实现带 ANSI 颜色直写 `os.Stdout` |
 | [`XGorm.Log: true`](../xgorm/README.md#行为与实测) | 参数值代进 SQL 再记 | 只记带占位符的 SQL | 否则 `WHERE password = ?` 记下来的是真实的密码 |
@@ -87,7 +87,7 @@ XGorm、XRedis、XKafka 启动时各探一次，共用同一份实现（`interna
 | [xhttp](../xhttp/README.md#行为与实测) | resty / otelhttp / 标准库 Transport 的默认 |
 | [xcron](../xcron/README.md#行为与实测) | cronexpr：段数、时区前缀、夏令时、永远不会到的 spec；`@every` 的漂移 |
 | [xgin](../xgin/README.md#行为与实测) | gin / net/http：代理、上传、超时、h2c、TLS、优雅退出 |
-| [xecho](../xecho/README.md#行为与实测) | echo：client_ip、错误渲染、路由模板、分组的兜底路由、`e.Pre`、超时中间件、panic、gommon 日志、压缩、multipart 阈值、路由的严格匹配 |
+| [xecho](../xecho/README.md#behavior-measured) | echo：client_ip、错误渲染、路由模板、分组的兜底路由、`e.Pre`、超时中间件、panic、gommon 日志、压缩、multipart 阈值、路由的严格匹配 |
 | [xmetric](../xmetric/README.md#行为与实测) | client_golang：桶、名字、常量标签 |
 | [xtrace](../xtrace/README.md#行为与实测) | OTel SDK：采样、service.name、透传 |
 | [xlog](../xlog/README.md#行为与实测) | `Perm`、轮转文件名、时区 |

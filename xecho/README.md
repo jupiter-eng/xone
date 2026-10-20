@@ -1,27 +1,38 @@
 # xecho
 
-Web 服务：拿到的是原生 `*echo.Echo`（[Echo](https://echo.labstack.com/) v4），`xecho.New()` 就是交给 `xone.Run` 的 Runnable，
-监听、优雅退出都是框架的事。和 [xgin](../xgin/README.md) 是同一套东西换了个框架：访问日志的字段、指标名、Span 名、
-client_ip 信谁、退出时等不等 handler，两边一字不差（写在两者共用的 `internal/web` 里）。
+A web server: what you get is a native `*echo.Echo` ([Echo](https://echo.labstack.com/) v4), and
+`xecho.New()` is the Runnable you hand to `xone.Run`; listening and graceful shutdown are the
+framework's business. It is the same thing as [xgin](../xgin/README.md) with the framework
+swapped: the access log fields, the metric names, the span names, which client_ip is believed and
+whether shutdown waits for handlers are identical on both sides (they live in `internal/web`,
+which both share).
 
-- 访问日志（凭证逐字段脱敏）、链路、指标（自动挂 `/metrics`）、panic 恢复已经装好
-- handler 返回的错误在中间件里就渲染成响应：404、405、500 在访问日志、指标、链路里记的是客户端真正收到的状态码和字节数
-- 内置中间件挂在 `e.Pre` 上：你在 `e.Pre` 里拒掉、重定向的请求照样进访问日志、指标、链路，Pre 里的 panic 也兜得住
-- `c.RealIP()` 按 `X-Forwarded-For` / `X-Real-IP` 取客户端真实 IP，但只认可信代理发来的：默认只信私有网段（echo 自己默认全信），负载均衡、Ingress、Pod 转发来的照收，公网直连的伪造不了
-- 慢连接有防线：`ReadHeaderTimeout` 10s、`IdleTimeout` 60s，写 0 启动失败（echo 自己的 `e.Server` 全是 0）
-- HTTPS、双向认证、h2c 都在配置里开
-- 停止时等在途请求做完，到点断连并报出还没返回的 handler 数
-- echo 自己的日志（gommon，默认写 stdout）接到 slog
+- Access logging (credentials masked field by field), tracing, metrics (`/metrics` mounted
+  automatically) and panic recovery are already installed
+- Errors returned by a handler are rendered into a response inside the middleware: 404, 405 and
+  500 are recorded in the access log, the metrics and the trace as the status code and byte count
+  the client really received
+- The built-in middleware sits on `e.Pre`: requests rejected or redirected in your own `e.Pre`
+  still reach the access log, the metrics and the trace, and a panic in Pre is caught
+- `c.RealIP()` takes the client's real IP from `X-Forwarded-For` / `X-Real-IP`, but only from a
+  trusted proxy: private ranges only by default (echo's own default believes everyone), so what a
+  load balancer, an ingress or a pod forwards is accepted while a public peer cannot forge it
+- Slow connections have a defense: `ReadHeaderTimeout` 10s, `IdleTimeout` 60s, and a 0 fails
+  startup (all four on echo's own `e.Server` are 0)
+- HTTPS, mutual authentication and h2c are all turned on from the config
+- Shutdown waits for in-flight requests, then drops connections at the deadline and reports how
+  many handlers have not returned
+- Echo's own log (gommon, writing to stdout by default) is routed into slog
 
-## 快速上手
+## Quick start
 
 ```yaml
 # conf/application.yml
 XApp:
-  Name: demo.user.api          # 链路里的 service.name
+  Name: demo.user.api          # the service.name in traces
 XEcho:
   Port: 8080
-  LogSkipPaths: [/healthz]     # 健康检查不记访问日志
+  LogSkipPaths: [/healthz]     # health checks are not access-logged
 ```
 
 ```go
@@ -41,52 +52,56 @@ func main() {
 
 		v1 := e.Group("/api/v1")
 		v1.GET("/users/:id", func(c echo.Context) error {
-			ctx := c.Request().Context() // 客户端断开、服务停止时跟着取消，往下游传它
-			slog.InfoContext(ctx, "get user", "user_id", c.Param("id")) // 自动带上这次请求的 trace_id
+			ctx := c.Request().Context() // cancelled when the client leaves or the server stops; pass it downstream
+			slog.InfoContext(ctx, "get user", "user_id", c.Param("id")) // carries this request's trace_id automatically
 			return c.JSON(http.StatusOK, map[string]string{"id": c.Param("id")})
 		})
 	}))
 }
 ```
 
-`curl localhost:8080/api/v1/users/1` 的响应头带 `X-Trace-Id`；`curl localhost:8080/metrics` 能看到
-`http_requests_total`，`route` 标签是 `/api/v1/users/:id`。
+The response to `curl localhost:8080/api/v1/users/1` carries `X-Trace-Id`, and
+`curl localhost:8080/metrics` shows `http_requests_total` with the `route` label
+`/api/v1/users/:id`.
 
-## 配置
+## Configuration
 
 ```yaml
 XEcho:
   Host: "0.0.0.0"
   Port: 8080
-  UseH2C: false            # 非 TLS 下启用 HTTP/2（只认先验知识，不支持 Upgrade: h2c）
-  TLS:                     # 服务端证书；没有 Enable，CertFile 和 KeyFile 都配了就是 https
-    CertFile: ""           # 与 KeyFile 同时配或同时留空
+  UseH2C: false            # HTTP/2 without TLS (prior knowledge only, no Upgrade: h2c)
+  TLS:                     # the server certificate; no Enable, setting CertFile and KeyFile makes it https
+    CertFile: ""           # set together with KeyFile, or leave both empty
     KeyFile: ""
-    ClientCAFile: ""       # 校验客户端证书的 CA；配了就是双向认证，需同时配证书
-    MinVersion: "1.2"      # "1.2" / "1.3"，留空同 "1.2"；只在配了证书时生效、也只在那时校验
-  ReadHeaderTimeout: 10s   # 慢连接攻击的主要防线，必须 > 0
-  ReadTimeout: 0s          # 默认不限：限制它会打断大文件上传
-  WriteTimeout: 0s         # 默认不限：限制它会打断 SSE、长轮询、大文件下载
-  IdleTimeout: 60s         # 必须 > 0
-  TrustedProxies: [private]  # 信任哪些直连对端的 X-Forwarded-For / X-Real-IP 和透传 Header；private = 回环 + 私有网段，[] = 谁都不信
-  Debug: false             # echo 的调试开关（实例级）：错误响应带错误原文、c.JSON / c.XML 一律缩进，线上别开
-  Log: true                # 访问日志
-  LogSkipPaths: []         # 不记访问日志的路径：以 / 结尾的按前缀，其余精确匹配
-  LogQuery: false          # 查询串进访问日志（逐字段脱敏），默认关
-  LogRequestHeaders: false  # 请求头进访问日志（凭证类脱敏），默认关
-  LogRequestBody: false    # 请求体进访问日志（逐字段脱敏），默认关
-  LogResponseHeaders: false  # 响应头进访问日志（凭证类脱敏），默认关
-  LogResponseBody: false   # 响应体进访问日志，默认关
-  Trace: true              # 每个请求一个服务端 Span、回带 X-Trace-Id
-  Metric: true             # 请求指标，并自动挂上 MetricPath
-  MetricPath: /metrics     # 必须以 / 开头；Metric 开着时自动加进 LogSkipPaths
+    ClientCAFile: ""       # the CA verifying client certificates; setting it means mutual TLS and needs a certificate too
+    MinVersion: "1.2"      # "1.2" / "1.3", empty means "1.2"; applies, and is validated, only with a certificate
+  ReadHeaderTimeout: 10s   # the main defense against slow-connection attacks, must be > 0
+  ReadTimeout: 0s          # unlimited by default: a limit cuts off large uploads
+  WriteTimeout: 0s         # unlimited by default: a limit cuts off SSE, long polling and large downloads
+  IdleTimeout: 60s         # must be > 0
+  TrustedProxies: [private]  # whose X-Forwarded-For / X-Real-IP and forwarded headers are believed; private = loopback + private ranges, [] = nobody
+  Debug: false             # echo's debug switch (per instance): error responses carry the error text and c.JSON / c.XML always indent; keep it off in production
+  Log: true                # the access log
+  LogSkipPaths: []         # paths that are not access-logged: trailing / matches by prefix, anything else exactly
+  LogQuery: false          # the query string in the access log (masked field by field), off by default
+  LogRequestHeaders: false  # request headers in the access log (credentials masked), off by default
+  LogRequestBody: false    # the request body in the access log (masked field by field), off by default
+  LogResponseHeaders: false  # response headers in the access log (credentials masked), off by default
+  LogResponseBody: false   # the response body in the access log, off by default
+  Trace: true              # a server span per request, with X-Trace-Id echoed back
+  Metric: true             # request metrics, with MetricPath mounted automatically
+  MetricPath: /metrics     # must start with /; with Metric on it is added to LogSkipPaths automatically
 ```
 
-和 XGin 块相比少了 `Mode`、`MaxMultipartMemory`、`ZHTranslations` 三项（写了启动失败）：echo 没有进程级的运行模式，
-`Debug` 是实例级的，同一进程里两个服务可以一个开一个关；multipart 的落盘阈值是写死的（见[「行为与实测」](#行为与实测)）；
-validator 不是 echo 内置的，用 [`WithValidator`](#api) 装一个，翻译报错也由那个校验库自己管。
+Compared with the XGin block, three fields are missing and writing them fails startup: `Mode`,
+`MaxMultipartMemory` and `ZHTranslations`. Echo has no process-wide run mode (`Debug` is per
+instance, so two servers in one process can differ); the multipart spill threshold is fixed (see
+[Behavior (measured)](#behavior-measured)); and validation is not built into echo, so install one
+with [`WithValidator`](#api), with translated messages being that library's business.
 
-**同一进程里的第二个服务**（比如内部管理端口）不读配置文件，用 `WithConfig` 给一份完整配置，从 `CurrentConfig()` 改起：
+**A second server in the same process** (an internal admin port, say) reads no config file: hand
+it a complete config with `WithConfig`, starting from `CurrentConfig()`:
 
 ```go
 c := xecho.CurrentConfig()
@@ -94,58 +109,87 @@ c.Host, c.Port = "127.0.0.1", 9090
 admin := xecho.New().WithConfig(c).WithRoutes(adminRoutes)
 ```
 
-- `private` 展开成 `127.0.0.0/8`、`10.0.0.0/8`、`172.16.0.0/12`、`192.168.0.0/16`、`100.64.0.0/10`、`::1/128`、`fc00::/7`。
-  列表整体替换默认值：要再加网段就连 `private` 一起写（`[private, 203.0.113.0/24]`），写错的网段启动失败；
-  内网里也有不可信的客户端（办公网、VPN 用户能直连服务）时别用 `private`，写确切的那几段，或者 `[]`。
-- `TLS.ClientCAFile` 管整个端口：`/metrics` 同样要客户端证书。handler 里用 `c.Request().TLS.PeerCertificates` 看是谁。
-- xgin 和 xecho 可以在一个进程里同时用：两块配置各是各的（`XGin` / `XEcho`），端口别撞上。
+- `private` expands to `127.0.0.0/8`, `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`,
+  `100.64.0.0/10`, `::1/128` and `fc00::/7`. The list replaces the default wholesale: to add a
+  range, write `private` alongside it (`[private, 203.0.113.0/24]`), and a malformed range fails
+  startup. When the internal network also holds untrusted clients (an office network or VPN users
+  can reach the service directly), do not use `private`: list the exact ranges, or write `[]`.
+- `TLS.ClientCAFile` governs the whole port: `/metrics` requires a client certificate too. Inside
+  a handler, `c.Request().TLS.PeerCertificates` says who it is.
+- xgin and xecho can be used in one process: the two config blocks are separate (`XGin` /
+  `XEcho`), just keep the ports apart.
 
 ## API
 
-| 函数 | 说明 |
+| Function | What it does |
 |---|---|
-| `New() *XEcho` | 创建一个服务（Runnable），什么都不读，配置在装配那一刻才取 |
-| `(*XEcho).WithRoutes(f ...func(*echo.Echo))` | 注册路由，回调拿到原生 echo；可以调多次，按顺序生效 |
-| `(*XEcho).WithMiddleware(m ...echo.MiddlewareFunc)` | 追加自定义中间件（`e.Use`，router 之后），排在所有内置中间件之后，对每个请求都生效（含 `/metrics` 和 404） |
-| `(*XEcho).WithRecoverFunc(f func(echo.Context, any) error)` | 自定义 panic 之后的响应；返回的错误交给 `e.HTTPErrorHandler`，默认回 500 |
-| `(*XEcho).WithValidator(v echo.Validator)` | 装一个校验器，之后 handler 里可以 `c.Validate(&req)`；不装的话 `c.Validate` 返回 `echo.ErrValidatorNotRegistered` |
-| `(*XEcho).WithConfig(c Config)` | 用这份完整配置起服务，不读配置文件里的 XEcho 块 |
-| `(*XEcho).Engine() *echo.Echo` | 触发装配并返回原生 echo；之后再 `With...` 不生效 |
-| `(*XEcho).Start(ctx)` / `(*XEcho).Stop(ctx)` | 监听 / 优雅停止，通常交给 `xone.Run`，不用自己调 |
-| `CurrentConfig() Config` | 配置文件里 XEcho 那一块的拷贝，`Start` 之前任何时候调都行 |
-| `DefaultConfig() Config` | 全部默认值；`WithConfig` 从头写时从它开始 |
-| `middleware.AddSensitiveFields(...string)` | 追加访问日志的脱敏敏感词（body 和请求头一起生效；和 xgin 共用一张词表） |
-| `middleware.AddSensitiveHeaders(...string)` | 追加精确匹配的敏感请求头名 |
+| `New() *XEcho` | Creates a server (a Runnable); it reads nothing, and the config is taken at assembly time |
+| `(*XEcho).WithRoutes(f ...func(*echo.Echo))` | Registers routes, with the callback receiving the native echo; may be called several times, in call order |
+| `(*XEcho).WithMiddleware(m ...echo.MiddlewareFunc)` | Appends custom middleware (`e.Use`, after the router) behind every built-in one; it applies to every request, `/metrics` and 404s included |
+| `(*XEcho).WithRecoverFunc(f func(echo.Context, any) error)` | Customizes the response after a panic; the error it returns goes to `e.HTTPErrorHandler`, and the default is a 500 |
+| `(*XEcho).WithValidator(v echo.Validator)` | Installs a validator, after which a handler can call `c.Validate(&req)`; without one, `c.Validate` returns `echo.ErrValidatorNotRegistered` |
+| `(*XEcho).WithConfig(c Config)` | Starts the server from this complete config instead of the XEcho block of the config file |
+| `(*XEcho).Engine() *echo.Echo` | Triggers assembly and returns the native echo; `With...` has no effect afterwards |
+| `(*XEcho).Start(ctx)` / `(*XEcho).Stop(ctx)` | Listen / stop gracefully; normally left to `xone.Run` |
+| `CurrentConfig() Config` | A copy of the XEcho block of the config file, callable any time before `Start` |
+| `DefaultConfig() Config` | Every default value; where to start when writing a `WithConfig` from scratch |
+| `middleware.AddSensitiveFields(...string)` | Appends sensitive words for the access log (applying to bodies and request headers alike; one word list shared with xgin) |
+| `middleware.AddSensitiveHeaders(...string)` | Appends sensitive request header names matched exactly |
 
-## 注意事项
+## Notes
 
-- **不要调 `e.Start` / `e.StartTLS`**：服务由 `Start` 起（`xone.Run` 替你调），超时、TLS、h2c、优雅退出都在那一边；
-  `e.Server` 的四个超时全是 0，用不上。
-- **handler 返回错误就行**：`return echo.NewHTTPError(http.StatusNotFound, "no such user")` 或者普通的 `error`，
-  响应由 `e.HTTPErrorHandler` 写（默认是 echo 的 JSON `{"message":...}`，普通 error 一律 500、不带原文），
-  要换格式就在 `WithRoutes` 里设 `e.HTTPErrorHandler`。错误原文进访问日志的 `errors` 和 Span 的 `echo.errors`，出现敏感词（password、token……）就整段遮掉，URL / MySQL DSN 里的密码换成 `***REDACTED***`。
-  自定义的错误处理只会被调一次；响应已经写出去了（`c.Response().Committed`）再返回错误时，echo 默认的错误处理什么都不做。
-- **请求体没有上限**：框架不替业务定，要限就用 echo 自带的中间件，比如 `e.Use(echomw.BodyLimit("10M"))`
-  （`echomw` 即 `github.com/labstack/echo/v4/middleware`）。multipart 的落盘阈值写死 32MB，见[「行为与实测」](#行为与实测)。
-- **handler 里的慢操作传 `c.Request().Context()`**：`Stop` 没有单独的超时，等在途请求最多到停止预算的 2/3
-  （`xone.WithStopTimeout` 的 2/3，默认 10s），到点断开连接、取消请求的 ctx；不看 ctx 的 handler 停不下来，
-  `Stop` 会报 `N handler(s) still running`。
-- **`WithRoutes` 回调里的设置盖过配置**（如 `e.IPExtractor`、`e.HTTPErrorHandler`），但透传 Header 的可信判断只看配置里的
-  `TrustedProxies`，两边要一起改就改配置。XEcho 块在装配（`Engine()` 或 `Start`）那一刻才读。
-- **路由**：末尾斜杠严格匹配（`/a/` 是 404，和 xgin 一样）；只注册了 GET 时 HEAD 是 405（xgin 同样）；
-  路径参数在路由末尾时吃得下后面的 `/`（`/users/:id` 匹配 `/users/1/z`，`id` 是 `1/z`；xgin 是 404）。这些是 echo 的行为，框架没改；
-  要放宽末尾斜杠用 `e.Pre(echomw.RemoveTrailingSlash())`。
-- **中间件的顺序**，自外向内：`LogScope → Trace → Log → Metric → Recover →` 你的 `e.Pre` `→ router →` `WithMiddleware` / 你的 `e.Use` `→ handler`。
-  内置的挂在 `e.Pre` 上、排在你的 `e.Pre` 外面：Pre 里拒掉（`return echo.ErrUnauthorized`）、重定向（`RemoveTrailingSlashWithConfig` 的 301）的请求
-  照样进访问日志、指标、链路、带 `X-Trace-Id`，Pre 里的 panic 兜住回 500。这时 router 还没跑，`route` 记 `unmatched`。
-  要用 `c.Path()`、`c.Param()`、请求 ctx（`trace_id`、`xlog.AddKV`）的中间件挂 `e.Use` 或 `WithMiddleware`：你的 `e.Pre` 看到的是请求原来的 ctx，见[「行为与实测」](#行为与实测)。
-  `e.Pre(echomw.MethodOverride())`、`RemoveTrailingSlash`、`Rewrite` 照常生效，记下的是改过之后的方法。
-- **超时用 `echomw.ContextTimeout`，别用 `echomw.Timeout`**：后者（echo 已标弃用）在另一个协程里跑 handler、自己往原始的 writer 写 503，
-  实测客户端收到 503，访问日志、指标、链路记的却是 200、`bytes_out` 0，`-race` 下还和访问日志中间件读写同一个响应。
-  `ContextTimeout` 只给请求套截止时间，handler 看 `c.Request().Context()` 返回，由它换成 503，记的就是 503。
-- **校验器要自己装**：echo 不像 gin 那样内置 validator。不装的话 `c.Validate(&req)` 返回的是 `echo.ErrValidatorNotRegistered`
-  （普通 error，不是 `*echo.HTTPError`：直接 `return` 它，客户端收到的是 500 `{"message":"Internal Server Error"}`），
-  而不是校验结果——忘了装的服务看起来一切正常。选哪个校验库是业务的事，框架只负责把它装到 `e.Validator` 上：
+- **Do not call `e.Start` / `e.StartTLS`**: the server is started by `Start` (which `xone.Run`
+  calls for you), and the timeouts, TLS, h2c and graceful shutdown all live there; the four
+  timeouts on `e.Server` are 0 and unused.
+- **Returning an error from a handler is enough**:
+  `return echo.NewHTTPError(http.StatusNotFound, "no such user")` or a plain `error`. The response
+  is written by `e.HTTPErrorHandler` (echo's JSON `{"message":...}` by default, with a plain error
+  always a 500 and no text); to change the format, set `e.HTTPErrorHandler` inside `WithRoutes`.
+  The error text goes into the access log's `errors` and the span's `echo.errors`, and a sensitive
+  word (password, token, ...) masks the whole thing, while a password inside a URL or MySQL DSN
+  becomes `***REDACTED***`. A custom error handler is called exactly once; when the response has
+  already gone out (`c.Response().Committed`) and an error is returned, echo's default error
+  handler does nothing.
+- **The request body has no limit**: the framework does not set one for the business. To limit it,
+  use echo's own middleware, for instance `e.Use(echomw.BodyLimit("10M"))` (`echomw` being
+  `github.com/labstack/echo/v4/middleware`). The multipart spill threshold is fixed at 32MB, see
+  [Behavior (measured)](#behavior-measured).
+- **Pass `c.Request().Context()` to slow work inside a handler**: `Stop` has no timeout of its
+  own and waits for in-flight requests for at most two thirds of the stop budget (2/3 of
+  `xone.WithStopTimeout`, 10s by default), then drops connections and cancels the request ctx.
+  A handler ignoring the ctx cannot be stopped, and `Stop` reports `N handler(s) still running`.
+- **Settings in a `WithRoutes` callback win over the config** (`e.IPExtractor`,
+  `e.HTTPErrorHandler`, `e.Validator`), but which peers are trusted for forwarded headers comes
+  only from `TrustedProxies` in the config; to move both, change the config. The XEcho block is
+  read at assembly time (`Engine()` or `Start`).
+- **Routing**: trailing slashes match strictly (`/a/` is a 404, as in xgin); with only GET
+  registered, HEAD is a 405 (xgin too); a path parameter at the end of a route swallows the
+  slashes after it (`/users/:id` matches `/users/1/z` with `id` being `1/z`; xgin answers 404).
+  These are echo's behaviors and the framework does not change them; to relax trailing slashes,
+  use `e.Pre(echomw.RemoveTrailingSlash())`.
+- **The middleware order**, outermost first:
+  `LogScope -> Trace -> Log -> Metric -> Recover ->` your `e.Pre` `-> router ->` `WithMiddleware` /
+  your `e.Use` `-> handler`. The built-ins sit on `e.Pre`, outside your own: a request rejected in
+  Pre (`return echo.ErrUnauthorized`) or redirected there (the 301 of
+  `RemoveTrailingSlashWithConfig`) still reaches the access log, the metrics and the trace and
+  carries `X-Trace-Id`, and a panic in Pre is caught and answered with a 500. The router has not
+  run yet, so `route` is recorded as `unmatched`. Middleware that needs `c.Path()`, `c.Param()` or
+  the request ctx (`trace_id`, `xlog.AddKV`) goes on `e.Use` or `WithMiddleware`: your `e.Pre`
+  sees the request's original ctx, see [Behavior (measured)](#behavior-measured).
+  `e.Pre(echomw.MethodOverride())`, `RemoveTrailingSlash` and `Rewrite` all work as usual, and
+  what is recorded is the rewritten method.
+- **Use `echomw.ContextTimeout` for timeouts, not `echomw.Timeout`**: the latter (deprecated by
+  echo) runs the handler in another goroutine and writes a 503 to the original writer itself.
+  Measured, the client receives a 503 while the access log, the metrics and the trace record a 200
+  with `bytes_out` 0, and under `-race` it reads and writes the same response as the access log
+  middleware. `ContextTimeout` only puts a deadline on the request; the handler returns on
+  `c.Request().Context()` and it turns that into a 503, which is what gets recorded.
+- **Install a validator yourself**: echo has no built-in validation the way gin does. Without one,
+  `c.Validate(&req)` returns `echo.ErrValidatorNotRegistered` (a plain error, not an
+  `*echo.HTTPError`: returning it directly gives the client a 500
+  `{"message":"Internal Server Error"}`) rather than a validation result — a service that forgot
+  looks perfectly fine. Which validation library to use is the business's call, and the framework
+  only installs it on `e.Validator`:
 
   ```go
   // github.com/go-playground/validator/v10
@@ -156,115 +200,156 @@ admin := xecho.New().WithConfig(c).WithRoutes(adminRoutes)
   xecho.New().WithValidator(structValidator{v: validator.New()}).WithRoutes(register)
   ```
 
-  `Validate` 返回的错误 `c.Validate` 原样交给 handler，由 handler 自己处置（`return echo.NewHTTPError(http.StatusBadRequest, err.Error())`
-  才是 400，什么都不做是 500）。`WithRoutes` 回调里设 `e.Validator` 盖得过它。
-- **`Debug` 线上别开**：`XEcho.Debug: true` 落到 `e.Debug` 上，错误响应带上错误原文（`{"message":...,"error":"..."}`），
-  `c.JSON` / `c.JSONP` / `c.XML` 还一律缩进输出（等于每个请求都带了 `?pretty`，`bytes_out` 跟着变大）。
-  默认关，实测的字节数见[「行为与实测」](#行为与实测)。
+  `c.Validate` hands whatever `Validate` returns to the handler unchanged, and the handler decides
+  (`return echo.NewHTTPError(http.StatusBadRequest, err.Error())` is what makes it a 400; doing
+  nothing makes it a 500). An `e.Validator` set in a `WithRoutes` callback wins over it.
+- **Keep `Debug` off in production**: `XEcho.Debug: true` lands on `e.Debug`, so error responses
+  carry the error text (`{"message":...,"error":"..."}`) and `c.JSON` / `c.JSONP` / `c.XML` always
+  indent (the same as every request carrying `?pretty`, with `bytes_out` growing accordingly).
+  It is off by default; the measured byte counts are under
+  [Behavior (measured)](#behavior-measured).
 
-## 在负载均衡 / Cloudflare 后面
+## Behind a load balancer or Cloudflare
 
-和 xgin 完全一样，见 [xgin「在负载均衡 / Cloudflare 后面」](../xgin/README.md#在负载均衡--cloudflare-后面)。
-client_ip 的算法也一样：直连对端可信时先看 `X-Forwarded-For` 再看 `X-Real-IP`，从右往左找第一个不在 `TrustedProxies` 里的地址。
-echo 自带的 `ExtractIPFromXFFHeader` 默认信任回环、链路本地和私有网段，规则与这里不同，别在回调里换成它，除非你就是要它的规则。
+Exactly as in xgin, see
+[xgin "在负载均衡 / Cloudflare 后面"](../xgin/README.md#在负载均衡--cloudflare-后面). The
+client_ip algorithm is the same too: with the direct peer trusted, look at `X-Forwarded-For` first
+and `X-Real-IP` second, walking right to left for the first address not in `TrustedProxies`.
+Echo's own `ExtractIPFromXFFHeader` trusts loopback, link-local and private ranges by its own
+fixed rules, which differ from these; do not swap it in from a callback unless those rules are
+exactly what you want.
 
-## 可观测
+## Observability
 
-### 访问日志
+### Access log
 
-每个请求结束时一条，消息 `request completed`，级别 INFO（`XEcho.Log` 开着时；`LogSkipPaths` 里的路径和指标端点不记）。
-字段的名字、顺序、取值和脱敏规则与 xgin 相同（同一份实现），完整说明见 [xgin「访问日志」](../xgin/README.md#访问日志)：
+One line when each request ends, message `request completed`, level INFO (while `XEcho.Log` is on;
+paths in `LogSkipPaths` and the metrics endpoint are not recorded). The field names, their order,
+their values and the masking rules are identical to xgin's (the same implementation), and the full
+description is in [xgin "访问日志"](../xgin/README.md#访问日志):
 
-| 字段 | 内容 |
+| Field | Content |
 |---|---|
-| `method` | 请求方法，原样 |
-| `route` | 路由模板，如 `/users/:id`；没匹配上路由（404）、方法不对（405）、echo 自动应答的 OPTIONS、落到 `RouteNotFound` 兜底上的（含分组悄悄注册的，见[「行为与实测」](#行为与实测)）、在 `e.Pre` 里就结束了的都是 `unmatched`，真实路径看 `path` |
-| `path` | 请求路径，**不带查询串** |
-| `status` | 客户端收到的状态码（handler 返回的错误渲染之后的那个）；中止的、客户端走了还什么都没发的记 `499`，见[下文](#499中止的请求) |
-| `elapsed_ms` | 耗时，毫秒，保留到微秒 |
-| `client_ip` | `c.RealIP()`：直连对端，或 `XEcho.TrustedProxies` 里的代理转发来的地址 |
-| `host` / `proto` / `user_agent` | 请求的 `Host`、`HTTP/1.1` / `HTTP/2.0`、`User-Agent` |
-| `bytes_in` | 请求头里的 `Content-Length`；分块上传记 `-1` |
-| `bytes_out` | 写出的响应体字节数（`c.Response().Size`），不含响应头；错误响应也算。挂了 `echomw.Gzip` 时是**压缩前**的字节数（xgin 配 gin-contrib/gzip 是压缩后的），见[「行为与实测」](#行为与实测) |
-| `query` / `request_headers` / `request_body` / `response_headers` / `response_body` | 各自的开关打开时，脱敏规则同 xgin；响应带着 `Content-Encoding`（`echomw.Gzip` 压缩过）时 `response_body` 只记一句 `[gzip-encoded content omitted]` |
-| `errors` | handler 返回的错误（`err.Error()`，如 `code=404, message=Not Found`）、中止或断连的原因；没有就不写；出现敏感词就整段记成 `***REDACTED***`，否则只把 `postgres://app:pw@db`、`app:pw@tcp(db:3306)` 里的密码换成 `***REDACTED***`（Span 的 `echo.errors` 同理） |
-| `trace_id` / `span_id` | 有链路时 |
+| `method` | The request method, as is |
+| `route` | The route template, `/users/:id` for instance; an unmatched route (404), a wrong method (405), an OPTIONS echo answered itself, anything landing on a `RouteNotFound` fallback (including the ones a group registers quietly, see [Behavior (measured)](#behavior-measured)) and anything that ended inside `e.Pre` are all `unmatched`, with the real path in `path` |
+| `path` | The request path, **without the query string** |
+| `status` | The status code the client received (after an error returned by the handler was rendered); an aborted request, or one whose client left before a single byte was sent, is recorded as `499`, see [below](#499-aborted-requests) |
+| `elapsed_ms` | The duration in milliseconds, down to the microsecond |
+| `client_ip` | `c.RealIP()`: the direct peer, or the address forwarded by a proxy in `XEcho.TrustedProxies` |
+| `host` / `proto` / `user_agent` | The request's `Host`, `HTTP/1.1` / `HTTP/2.0`, and `User-Agent` |
+| `bytes_in` | The `Content-Length` of the request; a chunked upload records `-1` |
+| `bytes_out` | The response body bytes written (`c.Response().Size`), headers excluded; error responses count too. With `echomw.Gzip` installed this is the byte count **before** compression (xgin with gin-contrib/gzip records the compressed one), see [Behavior (measured)](#behavior-measured) |
+| `query` / `request_headers` / `request_body` / `response_headers` / `response_body` | Each when its own switch is on, masked by the same rules as xgin; when the response carries `Content-Encoding` (compressed by `echomw.Gzip`), `response_body` records only `[gzip-encoded content omitted]` |
+| `errors` | The error returned by the handler (`err.Error()`, such as `code=404, message=Not Found`), or the reason for an abort or a broken connection; absent when there is none; a sensitive word masks the whole thing as `***REDACTED***`, and otherwise only the password inside `postgres://app:pw@db` or `app:pw@tcp(db:3306)` becomes `***REDACTED***` (the span's `echo.errors` works the same way) |
+| `trace_id` / `span_id` | When tracing is on |
 
-`middleware.AddSensitiveFields(...)` / `AddSensitiveHeaders(...)` 和 xgin 的同名函数写的是同一张表，用哪个都行。
+`middleware.AddSensitiveFields(...)` / `AddSensitiveHeaders(...)` write to the same table as
+xgin's identically named functions, so either will do.
 
-panic 由 Recover 中间件记一条 `panic while handling request`（ERROR，带 `error`、`stack`、`path`、`method`；`error` 按 `errors` 字段的规矩脱敏，`stack` 只有函数和行号、原样记）并回 500，
-`e.Pre` 里的 panic 也一样。响应已经开始写了（写出了状态码）再 panic 的，不再改状态码：访问日志、指标、链路记的是已经发出去的那个（通常 200），
-`errors` 为空、Span 不标错，那条 panic 日志是唯一的迹象（xgin 相同）。
+A panic is recorded by the Recover middleware as `panic while handling request` (ERROR, with
+`error`, `stack`, `path` and `method`; `error` is masked by the rules of the `errors` field, and
+`stack` holds only function names and line numbers and is recorded as is) and answered with a 500,
+and a panic inside `e.Pre` works the same way. When the response has already started (a status
+code went out) and a panic follows, the status code is not changed: the access log, the metrics
+and the trace record what was already sent (usually a 200), `errors` is empty and the span is not
+marked as an error, leaving that panic log line as the only sign (xgin behaves identically).
 
-客户端提前断开之后的写失败，echo 是**返回**错误而不是 panic：访问日志照常一条，`status` 是已经发出去的那个（通常 200），
-`errors` 是 `write tcp …: write: broken pipe`（或 `connection reset by peer`），不打栈；错误响应已经写不出去，echo 的错误处理见 `Committed` 什么都不做。
-只有 handler 自己把这样的错误 panic 出来时才记 `connection broken`（WARN，不打栈，规则同 xgin）。
+A write failing after the client disconnected early is **returned** by echo rather than panicked:
+there is one access log line as usual, `status` is what was already sent (usually 200), `errors`
+is `write tcp …: write: broken pipe` (or `connection reset by peer`), and no stack is printed. The
+error response can no longer be written, and echo's error handler sees `Committed` and does
+nothing. Only when a handler panics with such an error is `connection broken` recorded (WARN, no
+stack, the same rules as xgin).
 
-### 日志
+### Logs
 
-| 消息 | 级别 | 字段 |
+| Message | Level | Fields |
 |---|---|---|
-| `xecho listening` | INFO | `addr`、`tls`、`mtls`、`h2c`；证书读好、端口绑上之后才打 |
-| `echo internal log` | echo 的级别（默认只有 ERROR） | `message`：echo 自己写的那一行，如错误响应写失败时的 `write: broken pipe` |
-| `xecho http server error` | WARN | `error`：net/http 自己报的那一行，如 `http: TLS handshake error from 203.0.113.9:1234: EOF`；`e.StdLogger` 写的也在这里 |
-| `xecho received the shutdown signal before starting, the server will not start` | WARN | 退出信号早于监听到达 |
-| `xecho invalid config, assembling the engine with defaults; Start will return the error` | WARN | `error`；配置不合法时 `Engine()` 按默认值装配，`Start` 返回那个错误 |
+| `xecho listening` | INFO | `addr`, `tls`, `mtls`, `h2c`; printed only after the certificate is read and the port is bound |
+| `echo internal log` | Echo's level (ERROR only, by default) | `message`: the line echo wrote itself, such as `write: broken pipe` when an error response fails to go out |
+| `xecho http server error` | WARN | `error`: the line net/http reported, such as `http: TLS handshake error from 203.0.113.9:1234: EOF`; what `e.StdLogger` writes lands here too |
+| `xecho received the shutdown signal before starting, the server will not start` | WARN | The stop signal arrived before listening |
+| `xecho invalid config, assembling the engine with defaults; Start will return the error` | WARN | `error`; with an invalid config `Engine()` assembles from the defaults and `Start` returns that error |
 
-日志的全局约定见 [`docs/observability.md`](../docs/observability.md#日志)。
+The global logging conventions are in
+[`docs/observability.md`](../docs/observability.md#日志).
 
-### 指标
+### Metrics
 
-和 xgin 同名、同标签、同桶，看板和告警两边通用：
+The same names, labels and buckets as xgin, so dashboards and alerts work for both:
 
-| 指标 | 类型 | 标签 | 来源 |
+| Metric | Type | Labels | Source |
 |---|---|---|---|
-| `http_requests_total` | counter | `method`、`route`、`status` | xecho，`XEcho.Metric` |
-| `http_request_duration_seconds` | histogram | `method`、`route`、`status` | xecho，桶是 `XMetric.HTTPDurationBuckets` |
+| `http_requests_total` | counter | `method`, `route`, `status` | xecho, `XEcho.Metric` |
+| `http_request_duration_seconds` | histogram | `method`, `route`, `status` | xecho, with buckets from `XMetric.HTTPDurationBuckets` |
 
-- **`route`** 是路由模板；没匹配上的是 `unmatched`，规则同访问日志。`method` 收敛到标准方法，别的记 `OTHER`。
-- 同一个进程里 xgin 和 xecho 都用时，两边的请求记在同一组指标上，分不出是哪个服务的；要分开就给它们不同的路由前缀。
+- **`route`** is the route template; anything unmatched is `unmatched`, by the same rules as the
+  access log. `method` folds into the standard methods, and anything else is recorded as `OTHER`.
+- When one process uses both xgin and xecho, their requests land on the same metrics and cannot be
+  told apart; to separate them, give them different route prefixes.
 
-### 链路
+### Tracing
 
-| 来源 | Span 名 | 关键属性 |
+| Source | Span name | Key attributes |
 |---|---|---|
-| xecho（入站） | `GET /users/:id`：方法 + 路由模板；没匹配上是 `GET unmatched` | `http.request.method`（收敛过的）、`http.request.method_original`（原始值和收敛值不同时）、`http.route`、`url.path`、`http.response.status_code`、`echo.errors`（handler 返回的错误） |
+| xecho (inbound) | `GET /users/:id`: the method plus the route template; unmatched is `GET unmatched` | `http.request.method` (folded), `http.request.method_original` (when the original differs from the folded one), `http.route`, `url.path`, `http.response.status_code`, `echo.errors` (the error returned by the handler) |
 
-5xx 和中止标成错误，4xx 不算。`XEcho.Trace` 开着时每个响应（包括 echo 渲染的错误响应）带 `X-Trace-Id`。
-`Metric` 开着时抓 `MetricPath` 的请求不开 Span、不回带 `X-Trace-Id`，同 xgin。
-链路的全貌、传播与信任边界见 [`docs/observability.md`「链路」](../docs/observability.md#链路)。
+A 5xx and an abort are marked as errors; a 4xx is not. While `XEcho.Trace` is on, every response
+(including an error response echo rendered) carries `X-Trace-Id`. While `Metric` is on, a scrape
+of `MetricPath` opens no span and echoes no `X-Trace-Id`, as in xgin. The whole picture of
+tracing, propagation and the trust boundary is in
+[`docs/observability.md` "链路"](../docs/observability.md#链路).
 
-### 499：中止的请求
+### 499: aborted requests
 
-两种请求在访问日志、指标、链路里记 499，规则同 [xgin「499：中止的请求」](../xgin/README.md#499中止的请求)：
+Two kinds of request are recorded as 499 in the access log, the metrics and the trace, by the same
+rules as [xgin "499：中止的请求"](../xgin/README.md#499中止的请求):
 
-- handler `panic(http.ErrAbortHandler)` 中止的（Span 标错）。**返回**一个包着它的错误（`fmt.Errorf("proxy: %w", http.ErrAbortHandler)`）不算：
-  连接没断，客户端收到的是 `HTTPErrorHandler` 渲染的 500，记 500；
-- 客户端已经走了、响应还一个字节都没发的（Span 不标错）：handler 照惯例 `return ctx.Err()`，否则会被渲染成一个谁也收不到的 500。
-  echo 往断开的连接上写错误响应照样把 `Committed` 置上、`Status` 记成 500（实测），所以在交给 `HTTPErrorHandler` 之前就判。
+- A handler that aborted with `panic(http.ErrAbortHandler)` (the span is marked as an error).
+  **Returning** an error wrapping it (`fmt.Errorf("proxy: %w", http.ErrAbortHandler)`) does not
+  count: the connection was never broken, the client received the 500 `HTTPErrorHandler` rendered,
+  and 500 is recorded;
+- A request whose client is already gone with not one byte of response sent (the span is not
+  marked as an error): the handler conventionally does `return ctx.Err()`, which would otherwise
+  be rendered into a 500 nobody will receive. Echo writing an error response to a broken
+  connection still sets `Committed` and records `Status` 500 (measured), so the decision is made
+  before handing it to `HTTPErrorHandler`.
 
-## 行为与实测
+## Behavior (measured)
 
-实测环境和跨模块的总表见 [`docs/behavior.md`](../docs/behavior.md)。echo v4.16.0、gommon v0.5.0、Go 1.25 net/http。
+The measurement environment and the cross-module summary are in
+[`docs/behavior.md`](../docs/behavior.md). Echo v4.16.0, gommon v0.5.0, Go 1.25 net/http.
 
-**client_ip（`e.IPExtractor`）**：echo 的默认是 `nil`，`c.RealIP()` 退回老的写法——谁发来的 `X-Forwarded-For`、`X-Real-IP` 都信。
-实测公网对端 `203.0.113.9` 发 `X-Forwarded-For: 1.2.3.4`，`c.RealIP()` 是 `1.2.3.4`；只发 `X-Real-IP: 5.6.7.8` 就是 `5.6.7.8`。
-这里按 `TrustedProxies` 装上 `IPExtractor`（默认只信私有网段），算法照抄 gin v1.12.0 的 `ClientIP`，xgin 的测试逐条比对两边的结果。
-IPv4 映射成 IPv6 的写法（`::ffff:10.0.0.1`、`::ffff:10.0.0.0/104`）启动失败，理由同 [xgin](../xgin/README.md#行为与实测)：写成 `10.0.0.1`、`10.0.0.0/8`。
+**client_ip (`e.IPExtractor`)**: echo's default is `nil`, which makes `c.RealIP()` fall back to
+the old behavior — whoever sends `X-Forwarded-For` or `X-Real-IP` is believed. Measured, a public
+peer `203.0.113.9` sending `X-Forwarded-For: 1.2.3.4` makes `c.RealIP()` return `1.2.3.4`, and
+`X-Real-IP: 5.6.7.8` alone makes it `5.6.7.8`. Here an `IPExtractor` is installed from
+`TrustedProxies` (private ranges only by default), with the algorithm copied from gin v1.12.0's
+`ClientIP`; xgin's tests compare the two side by side. An IPv4-mapped IPv6 spelling
+(`::ffff:10.0.0.1`, `::ffff:10.0.0.0/104`) fails startup for the reason given in
+[xgin](../xgin/README.md#行为与实测): write `10.0.0.1` and `10.0.0.0/8`.
 
-**handler 返回的错误**在整条中间件链返回之后才由 `e.HTTPErrorHandler` 写成响应（`Echo.ServeHTTP` 的最后一步）。
-包在外面的中间件拿到错误的那一刻，404、405、500 实测都是 `Status 200`、`Committed false`、`Size 0`——照读的话每个出错的请求
-在访问日志、指标、链路里都是一次 `bytes_out` 为 0 的 200。所以内置的三个中间件在自己这一层就调 `c.Error(err)` 渲染、
-再往外返回 `nil`：404 是 `{"message":"Not Found"}` 24 字节，405 是 `{"message":"Method Not Allowed"}` 33 字节、带
-`Allow: OPTIONS, GET`，普通 error 是 500 `{"message":"Internal Server Error"}` 36 字节（错误原文不进响应），
-`echo.NewHTTPError(418)` 是 `{"message":"I'm a teapot"}` 27 字节，都是 `application/json`，访问日志记的就是这些数。
-`HTTPErrorHandler` 只跑这一次；照样返回错误的话 echo 会再调一遍，不查 `Committed` 的自定义错误处理会把错误响应写两遍。
-handler 先写了 200 再返回错误时，echo 默认的错误处理见 `Committed` 就什么都不做，客户端收到的是那个 200，日志也记 200。
+**An error returned by a handler** is only written into a response by `e.HTTPErrorHandler` after
+the whole middleware chain has returned (the last step of `Echo.ServeHTTP`). At the moment an
+outer middleware receives the error, 404, 405 and 500 all measure as `Status 200`,
+`Committed false`, `Size 0` — taken at face value, every failing request would appear in the
+access log, the metrics and the trace as a 200 with `bytes_out` 0. So the three built-in
+middlewares call `c.Error(err)` in their own layer and return `nil` outwards: a 404 is
+`{"message":"Not Found"}` at 24 bytes, a 405 is `{"message":"Method Not Allowed"}` at 33 bytes
+with `Allow: OPTIONS, GET`, a plain error is a 500 `{"message":"Internal Server Error"}` at 36
+bytes (the error text stays out of the response), and `echo.NewHTTPError(418)` is
+`{"message":"I'm a teapot"}` at 27 bytes, all of them `application/json` — those are the numbers
+the access log records. `HTTPErrorHandler` runs exactly once; returning the error as well makes
+echo call it again, and a custom error handler that does not check `Committed` writes the error
+response twice. When a handler writes a 200 and then returns an error, echo's default error
+handler sees `Committed` and does nothing, the client receives that 200, and the log records 200.
 
-**`e.Debug`**（`XEcho.Debug`，默认 false）在 echo v4.16.0 的源码里一共被读到三处，两处影响使用者看得到的东西：
+**`e.Debug`** (`XEcho.Debug`, false by default) is read in exactly three places in echo v4.16.0's
+source, two of which affect what the caller sees:
 
-- 默认的错误处理（`echo.go` 的 `DefaultHTTPErrorHandler`，只对 `Message` 是字符串的那种）把错误原文放进响应。
-  一个普通 `error`，关着是 `{"message":"Internal Server Error"}` 36 字节，开着是 60 字节的
+- The default error handler (`DefaultHTTPErrorHandler` in `echo.go`, and only when `Message` is a
+  string) puts the error text into the response. For a plain `error`, off it is
+  `{"message":"Internal Server Error"}` at 36 bytes and on it is the 60 bytes of
 
   ```json
   {
@@ -273,98 +358,147 @@ handler 先写了 200 再返回错误时，echo 默认的错误处理见 `Commit
   }
   ```
 
-- `c.JSON` / `c.JSONP` / `c.XML`（`context.go` 里的 `c.echo.Debug || pretty`）一律按两个空格缩进，
-  等于每个请求都带了 `?pretty`：`{"a":"b"}` 从 10 字节变成 15 字节，访问日志的 `bytes_out` 记的就是变大之后的数。
+- `c.JSON` / `c.JSONP` / `c.XML` (`c.echo.Debug || pretty` in `context.go`) indent by two spaces,
+  the same as every request carrying `?pretty`: `{"a":"b"}` goes from 10 bytes to 15, and the
+  access log's `bytes_out` records the larger number.
 
-第三处在 `e.Start` / `e.StartTLS` 里：把 gommon 的级别调到 DEBUG。这里不用 `e.Start`，所以这一件由 `applyConfig` 自己做，
-否则 `Debug: true` 也只看得到 ERROR，echo 唯一一条低于 ERROR 的自有日志
-（`response.go` 的 `response already committed`，WARN）照样写不出来。
+The third place is inside `e.Start` / `e.StartTLS`: raising gommon's level to DEBUG. `e.Start` is
+not used here, so `applyConfig` does that part itself; otherwise `Debug: true` would still show
+ERROR only, and echo's one log line below ERROR (`response already committed` in `response.go`,
+WARN) would stay invisible.
 
-**校验器**：`e.Validator` 默认是 `nil`，此时 `c.Validate(&req)` 一眼都不看 `req`，直接返回 `echo.ErrValidatorNotRegistered`
-（`errors.New("validator not registered")`，普通 error）：handler 把它返回出去是 500 `{"message":"Internal Server Error"}` 36 字节，
-原文只进访问日志的 `errors`。`WithValidator` 装的那个在配置之后、`WithRoutes` 之前落到 `e.Validator` 上，回调里再设盖得过它。
+**The validator**: `e.Validator` is `nil` by default, and `c.Validate(&req)` then returns
+`echo.ErrValidatorNotRegistered` (`errors.New("validator not registered")`, a plain error) without
+looking at `req` at all: a handler returning it produces a 500
+`{"message":"Internal Server Error"}` at 36 bytes, with the text reaching only the access log's
+`errors`. What `WithValidator` installs lands on `e.Validator` after the config and before
+`WithRoutes`, and setting it in a callback wins over it.
 
-**路由模板**：没匹配上任何路由时 `c.Path()` 是空串；路径对、方法不对时 `c.Path()` 是那条路由的模板、handler 是
-`MethodNotAllowedHandler`（405），方法是 OPTIONS 时 echo 自己回 204 和 `Allow`。后两种和 404 一样记 `unmatched`，
-和 xgin（gin 在这两种情况下都没有模板）对得上。
+**Route templates**: with no route matching the path, `c.Path()` is empty; when the path matches
+and the method does not, `c.Path()` is that route's template and the handler is
+`MethodNotAllowedHandler` (405), while for OPTIONS echo answers 204 with `Allow` itself. The
+latter two are recorded as `unmatched` just like a 404, which matches xgin (gin has no template in
+either case).
 
-**分组的兜底路由**：`g.Use(...)` 和 `e.Group("/api/v1", mw)` 会悄悄给分组注册两条 `RouteNotFound`（`e.Routes()` 里 `Method` 是
-`echo.RouteNotFound`，即 `echo_route_not_found`）：`/api/v1` 和 `/api/v1/*`，好让分组中间件对分组下的 404 也生效；不带中间件的
-`e.Group` 不注册。于是 `GET /api/v1/nope` 的 `c.Path()` 是 `/api/v1/*`；方法不对也落到兜底上——兜底比 405 优先，
-`POST /api/v1/users`（只注册了 GET）回的是 **404** 不是 405，这是 echo 的行为，框架不改。落到兜底上的（包括自己 `e.RouteNotFound` 注册的）
-都记 `unmatched`；兜底和真正的路由是同一个模板时（分组里 `g.GET("/*", proxy)`），命中那条路由的方法照记模板 `/api/v1/*`。
-兜底的表在第一个请求到来时从 `e.Routes()`（连同 `e.Routers()` 里按 Host 分的）取一次。
-`e.Static("/static", dir)` 注册的是一条真正的 GET 路由 `/static*`，文件不存在时由它自己回 404，记的是 `/static*`：基数照样有界。
+**A group's fallback routes**: `g.Use(...)` and `e.Group("/api/v1", mw)` quietly register two
+`RouteNotFound` routes for the group (their `Method` in `e.Routes()` is `echo.RouteNotFound`, that
+is `echo_route_not_found`): `/api/v1` and `/api/v1/*`, so that group middleware applies to 404s
+under the group as well; an `e.Group` without middleware registers none. So the `c.Path()` of
+`GET /api/v1/nope` is `/api/v1/*`; a wrong method lands on the fallback too — it wins over 405, so
+`POST /api/v1/users` (with only GET registered) answers **404** rather than 405, which is echo's
+behavior and is left alone. Anything landing on a fallback (including one registered with
+`e.RouteNotFound`) is recorded as `unmatched`; when a fallback and a real route share a template
+(`g.GET("/*", proxy)` inside a group), the method hitting that route still records the template
+`/api/v1/*`. The fallback table is taken once from `e.Routes()` (together with the host-specific
+ones in `e.Routers()`) when the first request arrives. `e.Static("/static", dir)` registers a real
+GET route `/static*` which answers 404 itself when the file is missing, and records `/static*`:
+the cardinality stays bounded.
 
-**`e.Pre`**：`Echo.ServeHTTP` 有 Pre 中间件时把 router 包在 Pre 链的最里面，所以挂在 Pre 上的内置中间件在 `next(c)` 返回时
-`c.Path()`、`c.Handler()` 已经有了，405 的 `Allow` 也已经留在 c 上。router 找路由用的是请求刚进来时的那个 `*http.Request`
-（闭包里捕获的），不是 `c.Request()`：Pre 里换成 `r.WithContext` 的副本的话，排在后面的 `e.Pre(echomw.MethodOverride())`
-改的是副本上的 `Method`，实测 `POST` + `X-HTTP-Method-Override: PUT` 走进了 POST 的 handler。原地改请求也不行：net/http 约定
-handler 不改交进来的 `Request`，handler 把请求交给活得比它久的协程（异步记日志）时还是数据竞争。所以内置中间件在 Pre 里
-一概不动请求，日志作用域和 Span 只挂在 ctx 上、存进 `echo.Context`：访问日志、指标、Span、panic 日志用的都是它，在 Pre 里就结束了的
-请求照样带 `trace_id`；路由之后、`WithMiddleware` 之前再照常 `c.SetRequest(r.WithContext(ctx))` 换到请求上（一个请求复制一次）。
-代价是**你的 `e.Pre` 看到的是请求原来的 ctx**：那里打的日志不带 `trace_id`、`xlog.AddKV` 写不进访问日志；在 `e.Pre` 里往请求 ctx
-放的值到了 handler 里也看不到（两棵 ctx 没法合并，这里保的是 Span 和日志作用域）。要用 ctx 的中间件挂 `e.Use` / `WithMiddleware`。
+**`e.Pre`**: when Pre middleware exists, `Echo.ServeHTTP` wraps the router innermost in the Pre
+chain, so by the time `next(c)` returns for a built-in middleware mounted on Pre, `c.Path()` and
+`c.Handler()` are set and the `Allow` of a 405 is already on c. The router matches on the
+`*http.Request` as it arrived (captured in the closure), not on `c.Request()`: swapping in an
+`r.WithContext` copy inside Pre makes a later `e.Pre(echomw.MethodOverride())` change the `Method`
+on the copy, and measured, `POST` plus `X-HTTP-Method-Override: PUT` walked into the POST handler.
+Mutating the request in place is no better: net/http's contract says a handler does not modify the
+request it was handed, and it is still a data race once the handler passes the request to a
+goroutine outliving it. So the built-in middleware touches no request inside Pre and attaches the
+log scope and the span to a ctx stored in `echo.Context`: the access log, the metrics, the span
+and the panic log all use it, so a request that ended inside Pre still carries `trace_id`; after
+routing and before `WithMiddleware`, the usual `c.SetRequest(r.WithContext(ctx))` swaps it onto
+the request (one copy per request). The cost is that **your `e.Pre` sees the request's original
+ctx**: logs written there carry no `trace_id`, `xlog.AddKV` does not reach the access log, and a
+value put into the request ctx inside `e.Pre` is not visible in the handler (two ctx trees cannot
+be merged, and what is preserved here is the span and the log scope). Middleware that needs the
+ctx goes on `e.Use` / `WithMiddleware`.
 
-**超时中间件**：`echomw.Timeout`（已弃用）配 50ms、handler 睡 200ms：客户端收到 503 和一页 HTML，包在外面的中间件读到的是
-`Status 200`、`Size 0`，`-race` 报数据竞争。`echomw.ContextTimeout` 返回 `echo.ErrServiceUnavailable`，由 `HTTPErrorHandler` 渲染成
-`{"message":"Service Unavailable"}`，记的是 503；它返回时 `defer cancel()` 了自己套的 ctx，出了那一层请求的 ctx 就是 `Canceled`——
-判「客户端走了」用的是内置中间件一进来时的 ctx，不受它影响。
+**Timeout middleware**: `echomw.Timeout` (deprecated) with 50ms and a handler sleeping 200ms: the
+client receives a 503 and a page of HTML, the outer middleware reads `Status 200` and `Size 0`,
+and `-race` reports a data race. `echomw.ContextTimeout` returns `echo.ErrServiceUnavailable`,
+which `HTTPErrorHandler` renders into `{"message":"Service Unavailable"}` and records as 503; it
+cancels the ctx it wrapped in a defer when it returns, so outside that layer the request ctx is
+`Canceled` — deciding whether "the client left" uses the ctx as the built-in middleware saw it on
+the way in, which that does not affect.
 
-**panic** echo 默认不兜：实测客户端读到 `EOF`（连接被 net/http 断掉），栈由 net/http 写进 stderr
-（`http: panic serving 127.0.0.1:…: boom`），不经过 slog；`e.Use(echomw.Recover())` 也兜不住 `e.Pre` 里的 panic（实测同样是 EOF）。
-这里的 Recover 挂在 Pre 上，记一条 ERROR 日志并回 500。
+**Panics** are not caught by echo: measured, the client reads `EOF` (net/http breaks the
+connection) and the stack goes to stderr through net/http
+(`http: panic serving 127.0.0.1:…: boom`), bypassing slog; `e.Use(echomw.Recover())` does not
+catch a panic inside `e.Pre` either (measured, also an EOF). The Recover here sits on Pre, records
+one ERROR log line and answers 500.
 
-**echo 自己的日志**（gommon）默认写 `os.Stdout`，是它自己的 JSON：错误响应写失败（客户端已经断开）时实测留下
-`{"time":…,"level":"ERROR","prefix":"echo","file":"echo.go","line":"492","message":"write: broken pipe"}`。
-级别默认 ERROR，`Warn("response already committed")` 这类写不出来，`Print` 系列不看级别、总会写。
-这里把它接到 slog（消息 `echo internal log`），级别沿用 echo 的。
-`e.StdLogger` 在 `echo.New` 里就绑定了 `e.Logger` 当时的输出（`os.Stdout`），换 `e.Logger` 的输出改不到它；它是 echo 给
-`http.Server.ErrorLog` 准备的（`e.Start` 里这么用），这里接到和服务的 `ErrorLog` 同一处（`xecho http server error`，WARN）。
+**Echo's own log** (gommon) writes to `os.Stdout` by default in its own JSON: measured, a failing
+error response write (the client is already gone) leaves
+`{"time":…,"level":"ERROR","prefix":"echo","file":"echo.go","line":"492","message":"write: broken pipe"}`.
+The level is ERROR by default, so a `Warn("response already committed")` never comes out, while
+the `Print` family ignores the level and always writes. Here it is routed into slog (message
+`echo internal log`), keeping echo's level. `e.StdLogger` is bound in `echo.New` to `e.Logger`'s
+output at that moment (`os.Stdout`), and replacing `e.Logger`'s output does not reach it; it is
+what echo prepares for `http.Server.ErrorLog` (`e.Start` uses it that way), and here it is routed
+where the server's `ErrorLog` goes (`xecho http server error`, WARN).
 
-**客户端断开之后**：handler 等到请求的 ctx 取消、再 `c.Error(ctx.Err())`，调用前 `Committed false`、`Status 200`，调用后
-`Committed true`、`Status 500`、`Size 36`——写失败了照样这么记。往断开的连接上 `c.Response().Write` 写 1MB 的块，
-实测写出 3963 字节之后返回 `write tcp …: write: broken pipe`，`Committed true`、`Status 200`。
+**After the client disconnects**: the handler waits for the request ctx to be cancelled and then
+calls `c.Error(ctx.Err())`; before the call `Committed` is false and `Status` is 200, and after it
+`Committed` is true, `Status` is 500 and `Size` is 36 — recorded that way even when the write
+failed. Writing 1MB chunks to a broken connection through `c.Response().Write` measured 3963 bytes
+written before `write tcp …: write: broken pipe` came back, with `Committed` true and `Status` 200.
 
-**压缩**：`echomw.Gzip` 把 `c.Response().Writer` 换成它的 gzip writer，`c.Response().Size` 数的是交给它之前的字节：
-一个 12000 字节的 `c.String`，线上是 77 字节，`bytes_out` 记 12000。xgin 配 gin-contrib/gzip v1.2.8 记的是线上的 77（它换的是
-`c.Writer`，访问日志读的是它下面那个）。要让 xecho 也记线上的字节数，得在 Gzip 下面每个请求再包一层计数的 writer，框架没这么做。
-截响应体的 writer 在 Gzip 外面，截到的是压缩过的字节，`response_body` 只记一句 `[gzip-encoded content omitted]`。
+**Compression**: `echomw.Gzip` replaces `c.Response().Writer` with its gzip writer, and
+`c.Response().Size` counts the bytes handed to it: a 12000-byte `c.String` is 77 bytes on the wire
+while `bytes_out` records 12000. xgin with gin-contrib/gzip v1.2.8 records the 77 on the wire (it
+replaces `c.Writer`, and the access log reads the one below it). Making xecho record the on-wire
+count too would mean wrapping another counting writer under Gzip for every request, which the
+framework does not do. The writer capturing the response body sits outside Gzip, so what it
+captures is compressed bytes and `response_body` records only
+`[gzip-encoded content omitted]`.
 
-**截响应体的 writer**（`LogResponseBody: true` 时换进 `c.Response().Writer` 的那个）实现了 `http.Flusher`、`http.Hijacker` 和 `Unwrap`：
-直接做类型断言的老代码、`c.Response().Flush()`、`http.ResponseController` 的读写超时都落到真正的连接上；
-下面的 writer 不支持 Hijack 时返回 `http.ErrNotSupported`，和 net/http 一样。
+**The writer capturing the response body** (the one swapped into `c.Response().Writer` while
+`LogResponseBody: true`) implements `http.Flusher`, `http.Hijacker` and `Unwrap`: older code that
+type-asserts directly, `c.Response().Flush()` and `http.ResponseController`'s read and write
+deadlines all reach the real connection; when the writer below does not support Hijack it returns
+`http.ErrNotSupported`, as net/http does.
 
-**服务器**：`e.Server` 的 `ReadHeaderTimeout`、`ReadTimeout`、`WriteTimeout`、`IdleTimeout` 全是 0，banner 只在 `e.Start` 时打。
-这里不用 `e.Start`，服务由和 xgin 共用的 `web.Server` 按配置起，超时、TLS、h2c、优雅退出的实测见
-[xgin「行为与实测」](../xgin/README.md#行为与实测)：劫持了连接（WebSocket）的 handler 在停止时同样看得到请求 ctx 取消，
-监听失败之后同样可以再 `Start`。
+**The server**: the `ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout` and `IdleTimeout` of
+`e.Server` are all 0, and the banner is printed only by `e.Start`. `e.Start` is not used here; the
+server is built from the config by `web.Server`, shared with xgin, and the measurements for
+timeouts, TLS, h2c and graceful shutdown are in
+[xgin "行为与实测"](../xgin/README.md#行为与实测): a handler that hijacked the connection (a
+WebSocket) also sees the request ctx cancelled on shutdown, and `Start` works again after a failed
+listen.
 
-**`echo.Context` 不是 `context.Context`**（没有 `Deadline` / `Done` / `Err`），传不进要 ctx 的函数：一律传 `c.Request().Context()`。
+**`echo.Context` is not a `context.Context`** (it has no `Deadline` / `Done` / `Err`) and cannot
+be passed to a function expecting one: always pass `c.Request().Context()`.
 
-**`MetricPath`** echo 不拒绝不以 `/` 开头的写法：`metrics` 注册成 `/metrics`，访问日志却跳不过它；留空注册在根路径 `/` 上，
-业务再注册首页时后注册的那个悄悄盖掉前一个（不报错，也不 panic）。所以读配置时就失败。
+**`MetricPath`**: echo does not reject a path without a leading `/`: `metrics` is registered as
+`/metrics` while the access log fails to skip it, and an empty one is registered on the root path
+`/`, where a home page registered later silently replaces one or the other (with no error and no
+panic). So both fail while the config is read.
 
-**请求体**：没有上限，实测 64MB 的 body 照收。`c.FormValue`、`c.FormFile`、`c.Bind` 解析 multipart 时用写死的 32MB 落盘阈值
-（`ParseMultipartForm(32 << 20)`，没有配置项）：一次 60MB 的上传，解析这一步实测分配 128MB（`TotalAlloc`）；
-在中间件里先 `c.Request().ParseMultipartForm(8 << 20)` 的话是 32MB——请求只会被解析一次，先调的那个说了算。
-框架不替你做这一步：提前解析会打断用 `c.Request().MultipartReader()` 流式读上传的 handler。
+**The request body**: there is no limit, and a 64MB body measured fine. `c.FormValue`,
+`c.FormFile` and `c.Bind` parse multipart with a fixed 32MB spill threshold
+(`ParseMultipartForm(32 << 20)`, with no config field): a 60MB upload measured 128MB allocated
+(`TotalAlloc`) in that parsing step, which becomes 32MB after a middleware calls
+`c.Request().ParseMultipartForm(8 << 20)` first — a request is parsed only once and whoever calls
+first decides. The framework does not do that step: parsing early would break a handler streaming
+the upload through `c.Request().MultipartReader()`.
 
-**响应字节数** `c.Response().Size` 数的是经 `c.Response()` 写出去的正文：`c.String(200, "hello")` 是 5；`c.JSON` 带一个换行
-（`{"a":"b"}` 记 10）；分三次写、每次 `Flush` 的 `chunk` 是 15；`c.NoContent(204)` 是 0，`Status` 是 204。
-绕过 `c.Response()`、直接写 `c.Response().Writer` 的不算在内。`?pretty` 查询参数会让 `c.JSON` 缩进输出（`{"a":"b"}` 变成 15 字节）。
+**The response byte count**: `c.Response().Size` counts the body written through `c.Response()`:
+`c.String(200, "hello")` is 5; `c.JSON` adds one newline (`{"a":"b"}` records 10); three writes
+each followed by `Flush` of `chunk` is 15; `c.NoContent(204)` is 0 with `Status` 204. Anything
+written straight to `c.Response().Writer`, bypassing `c.Response()`, does not count. A `?pretty`
+query parameter makes `c.JSON` indent its output (`{"a":"b"}` becomes 15 bytes).
 
-## 排错
+## Troubleshooting
 
-| 错误原文 | 原因 | 怎么改 |
+| Error text | Cause | What to do |
 |---|---|---|
-| `TLS.CertFile and TLS.KeyFile must both be set or both be empty`（XEcho） | 服务端证书只配了一半 | 两个都填，或者都留空 |
-| `TLS.ClientCAFile requires TLS.CertFile and TLS.KeyFile, mutual TLS runs on top of TLS`（XEcho） | 配了双向认证却没配服务端证书 | 补上 `TLS.CertFile` / `TLS.KeyFile` |
-| `unknown TLS.MinVersion="1.1", supported: 1.2 / 1.3`（XEcho） | 写了不收的版本，或者写成了 `TLS1.3` | 写 `"1.2"` 或 `"1.3"` |
-| `read TLS.ClientCAFile: ...` / `TLS.ClientCAFile ... contains no PEM certificate`（XEcho） | CA 文件读不出来，或者里面没有 PEM 证书 | 检查路径和文件内容；服务不监听 |
-| `field CertFile not found in type xecho.Config (did you mean TLS.CertFile? move it under TLS:)`（`KeyFile`、`ClientCAFile`、`MinVersion` 同理） | 写在了 `XEcho` 顶层，这几项属于 `TLS:` 块 | 这几行缩进进 `TLS:` 块，见[「配置」](#配置) |
-| `TrustedProxies entry "::ffff:10.0.0.1" is an IPv4-mapped IPv6 address; write it as 10.0.0.1`（XEcho） | `TrustedProxies` 里写了 IPv4 映射成 IPv6 的地址或网段 | 照报错给的写：`::ffff:10.0.0.1` → `10.0.0.1`，`::ffff:10.0.0.0/104` → `10.0.0.0/8` |
-| 响应是 500 `{"message":"Internal Server Error"}`，访问日志的 `errors` 是 `validator not registered` | handler 调了 `c.Validate`，但没装校验器 | `xecho.New().WithValidator(...)`，见[「注意事项」](#注意事项) |
-| `field Mode not found in type xecho.Config`（`MaxMultipartMemory`、`ZHTranslations` 同理） | 照抄了 XGin 块 | 删掉这几项，理由见[「配置」](#配置) |
+| `TLS.CertFile and TLS.KeyFile must both be set or both be empty` (XEcho) | Only half of the server certificate is configured | Set both, or leave both empty |
+| `TLS.ClientCAFile requires TLS.CertFile and TLS.KeyFile, mutual TLS runs on top of TLS` (XEcho) | Mutual TLS is configured without a server certificate | Add `TLS.CertFile` / `TLS.KeyFile` |
+| `unknown TLS.MinVersion="1.1", supported: 1.2 / 1.3` (XEcho) | A version that is not accepted, or written as `TLS1.3` | Write `"1.2"` or `"1.3"` |
+| `read TLS.ClientCAFile: ...` / `TLS.ClientCAFile ... contains no PEM certificate` (XEcho) | The CA file cannot be read, or holds no PEM certificate | Check the path and the contents; the server does not listen |
+| `field CertFile not found in type xecho.Config (did you mean TLS.CertFile? move it under TLS:)` (same for `KeyFile`, `ClientCAFile`, `MinVersion`) | Written at the top level of `XEcho`, while these belong to the `TLS:` block | Indent those lines into the `TLS:` block, see [Configuration](#configuration) |
+| `TrustedProxies entry "::ffff:10.0.0.1" is an IPv4-mapped IPv6 address; write it as 10.0.0.1` (XEcho) | An IPv4-mapped IPv6 address or range in `TrustedProxies` | Write it as the message says: `::ffff:10.0.0.1` → `10.0.0.1`, `::ffff:10.0.0.0/104` → `10.0.0.0/8` |
+| A 500 `{"message":"Internal Server Error"}` with `validator not registered` in the access log's `errors` | A handler called `c.Validate` without a validator installed | `xecho.New().WithValidator(...)`, see [Notes](#notes) |
+| `field Mode not found in type xecho.Config` (same for `MaxMultipartMemory`, `ZHTranslations`) | An XGin block was copied over | Remove those fields, the reasoning is under [Configuration](#configuration) |
 
-停止时的 `N handler(s) still running when the shutdown deadline passed` 见 [`docs/troubleshooting.md`「Runnable 与退出」](../docs/troubleshooting.md#runnable-与退出)。
+The `N handler(s) still running when the shutdown deadline passed` on shutdown is covered in
+[`docs/troubleshooting.md` "Runnable 与退出"](../docs/troubleshooting.md#runnable-与退出).

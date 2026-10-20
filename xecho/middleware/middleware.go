@@ -1,18 +1,22 @@
-// Package middleware 提供 xecho 内置的中间件。
+// Package middleware holds xecho's built-in middleware.
 //
-// 洋葱模型，自外向内的顺序是（xecho 把它们挂在 e.Pre 上，理由见 xecho/README.md「注意事项」）：
+// The onion, outermost first (xecho mounts them on e.Pre; the reasoning is under "Notes" in
+// xecho/README.md):
 //
-//	LogScope → Trace → Log → Metric → Recover → 用户的 e.Pre → router → 用户中间件 → handler
+//	LogScope -> Trace -> Log -> Metric -> Recover -> the caller's e.Pre -> router ->
+//	the caller's middleware -> handler
 //
-// 挂在 e.Use 上也成立，只是看不到在 e.Pre 里就结束了的请求。
+// Mounting them on e.Use works too, it just cannot see requests that ended inside e.Pre.
 //
-// Recover 必须是框架中间件里最内层的一个：panic 一路向外抛，
-// 在哪一层被兜住，比它更内层的中间件里 next(c) 之后的代码就都不执行。
-// 放在最内层，外面几层的收尾（记指标、写访问日志）才都还跑得到。
+// Recover has to be the innermost of the framework's middleware: a panic travels outwards, and
+// whichever layer catches it, the code after next(c) in every layer inside it never runs.
+// Innermost, the outer layers still get to finish their work (record the metric, write the
+// access log).
 //
-// 和 gin 不同的一点：echo 里 handler 返回的错误要等整条链返回之后才由 e.HTTPErrorHandler
-// 渲染成响应。Trace、Log、Metric 因此都在自己这一层就把错误交给 c.Error、再往外返回 nil，
-// 否则它们记下的状态码全是 200，见 finish。单独用其中哪一个都成立。
+// One difference from gin: in echo, an error returned by a handler is only rendered into a
+// response by e.HTTPErrorHandler once the whole chain has returned. Trace, Log and Metric
+// therefore hand the error to c.Error in their own layer and return nil outwards, since otherwise
+// the status code they record is always 200; see finish. Each of them works on its own as well.
 package middleware
 
 import (
@@ -29,13 +33,14 @@ import (
 	"github.com/jupiter-eng/xone/xlog"
 )
 
-// LogScope 为本次请求开一个日志 KV 作用域。
+// LogScope opens a log key-value scope for this request.
 //
-// 装上之后，业务代码在任意调用层级都可以 xlog.AddKV(ctx, ...) 补字段，
-// 不用把新 context 逐层回传——调用栈深处拿不到 echo.Context，本来也没机会回传。
-// 写进去的字段对整条请求可见，所以 Log 在 next(c) 之后打的访问日志也带得上。
+// With it installed, business code can call xlog.AddKV(ctx, ...) at any depth to add fields,
+// without passing a new context back up layer by layer — deep in the call stack there is no
+// echo.Context anyway, so there was never a chance to pass it back. Fields written there are
+// visible for the whole request, so the access log Log writes after next(c) carries them too.
 //
-// 必须排在所有中间件最前面：在它之后才有作用域可写。
+// It has to come before every other middleware: only after it is there a scope to write to.
 func LogScope() echo.MiddlewareFunc {
 	return func(next echo.HandlerFunc) echo.HandlerFunc {
 		return func(c echo.Context) error {
@@ -45,8 +50,9 @@ func LogScope() echo.MiddlewareFunc {
 	}
 }
 
-// contextOf 这个请求到目前为止该用的 ctx：xecho 装配时是存在 echo.Context 上的那个（见 reqctx），
-// 单独用中间件时就是请求自己的
+// contextOf is the ctx this request should be using so far: the one stored on echo.Context when
+// xecho assembled the server (see reqctx), or the request's own when the middleware is used
+// on its own.
 func contextOf(c echo.Context) context.Context {
 	if ctx, ok := c.Get(reqctx.Key).(context.Context); ok {
 		return ctx
@@ -54,10 +60,12 @@ func contextOf(c echo.Context) context.Context {
 	return c.Request().Context()
 }
 
-// withContext 把 ctx 交给这个请求之后的各层。
+// withContext hands ctx to the layers after this one.
 //
-// xecho 装配时内置中间件在 e.Pre 上，不动请求，只存进 echo.Context：路由之后 xecho 再把它换到请求上，
-// 理由见 reqctx。单独用中间件（挂在 e.Use 上，已经路由过了）时照常换请求的 ctx
+// Under xecho the built-in middleware sits on e.Pre, touches no request and only stores into
+// echo.Context: xecho swaps it onto the request after routing, the reasoning is in reqctx. Used
+// on its own (mounted on e.Use, where routing already happened) the middleware swaps the
+// request's ctx as usual.
 func withContext(c echo.Context, ctx context.Context) {
 	if _, deferred := c.Get(reqctx.Key).(context.Context); deferred {
 		c.Set(reqctx.Key, ctx)
@@ -66,39 +74,46 @@ func withContext(c echo.Context, ctx context.Context) {
 	c.SetRequest(c.Request().WithContext(ctx))
 }
 
-// routes 取请求的路由模板，访问日志、指标、Span 各持有一份。
+// routes resolves a request's route template, one copy each for the access log, the metrics and
+// the span.
 //
-// 没匹配上的记 web.RouteUnmatched（理由见那里），和 xgin 一样，包括三种 echo 给了模板的情况
-// （实测 echo v4.16.0）：
+// Anything unmatched is recorded as web.RouteUnmatched (the reasoning is there), as in xgin, and
+// that includes the three cases where echo does hand out a template (measured on echo v4.16.0):
 //
-//   - 没有任何路由匹配这个路径：c.Path() 是空串；
-//   - 路径对、方法不对：c.Path() 是那条路由的模板，handler 是 echo 的 MethodNotAllowedHandler（405）；
-//     方法是 OPTIONS 时 echo 自己回 204 和 Allow。这两种 router 都会在 c 上留下 Allow 的值
-//     （echo.ContextKeyHeaderAllow），别的情况不留；
-//   - 落到了 RouteNotFound 注册的兜底上：c.Path() 是兜底的模板。使用者不写 RouteNotFound 也会有——
-//     g.Use(...) 和 e.Group(prefix, mw...) 给分组悄悄注册了 "<prefix>" 和 "<prefix>/*" 两条兜底，
-//     好让分组中间件对分组下的 404 也生效。于是分组下没匹配上的路径记成 /api/v1/*；
-//     方法不对也一样，兜底比 405 优先，echo 回的是 404。
+//   - no route matches the path at all: c.Path() is empty;
+//   - the path matches and the method does not: c.Path() is that route's template and the handler
+//     is echo's MethodNotAllowedHandler (405); for OPTIONS, echo answers 204 with Allow itself.
+//     In both cases the router leaves the Allow value on c (echo.ContextKeyHeaderAllow), which it
+//     does not do otherwise;
+//   - the request landed on a fallback registered through RouteNotFound: c.Path() is the
+//     fallback's template. These exist without the caller writing RouteNotFound — g.Use(...) and
+//     e.Group(prefix, mw...) quietly register "<prefix>" and "<prefix>/*" for the group so that
+//     group middleware applies to 404s under it too. An unmatched path under the group would
+//     therefore be recorded as /api/v1/*; so would a wrong method, since the fallback wins over
+//     405 and echo answers 404.
 //
-// 405 和兜底记成模板的话，xgin 服务和 xecho 服务的同一种请求在看板上是两个样子；
-// 而且那条路由在这个方法上根本不存在
+// Recording the 405 and the fallback as templates would make the same request look like two
+// different things on a dashboard depending on whether the service runs xgin or xecho — and that
+// route does not exist for that method in the first place.
 type routes struct {
 	once sync.Once
-	// fallback 注册过兜底的模板 → 同一模板上真正注册了的方法。兜底和真正的路由可以是同一个模板
-	// （分组里 GET("/*") 做转发，echo 又给分组注册了 /proxy/* 的兜底），所以按方法分：
-	// GET 命中的是那条路由，别的方法落到兜底上
+	// fallback maps a template that has a fallback registered to the methods actually registered
+	// on that same template. A fallback and a real route can share a template (a group with
+	// GET("/*") proxying, plus the /proxy/* fallback echo registered for the group), so it is
+	// kept per method: GET hits the route, every other method lands on the fallback.
 	fallback map[string]map[string]bool
 }
 
-// of 这个请求的路由模板，没匹配上是 web.RouteUnmatched
+// of is this request's route template, or web.RouteUnmatched when nothing matched.
 func (rs *routes) of(c echo.Context) string {
 	p := c.Path()
 	if p == "" || c.Get(echo.ContextKeyHeaderAllow) != nil {
 		return web.RouteUnmatched
 	}
-	// 兜底的表在第一个请求到来时才从 echo 里取：路由注册在前、服务请求在后（echo 的 router
-	// 不能边服务边加路由），这时候注册的已经全了。xecho 装配之后才跑 WithRoutes，
-	// 使用者还可能拿 Engine() 再加，装配时取就漏了这些
+	// The fallback table is taken from echo when the first request arrives: routes are registered
+	// before requests are served (echo's router cannot take new routes while serving), so by then
+	// registration is complete. WithRoutes only runs after xecho has assembled, and the caller
+	// may add more through Engine(), so taking it at assembly time would miss those.
 	rs.once.Do(func() { rs.fallback = fallbackRoutes(c.Echo()) })
 	if methods, ok := rs.fallback[p]; ok && !methods[c.Request().Method] {
 		return web.RouteUnmatched
@@ -106,8 +121,10 @@ func (rs *routes) of(c echo.Context) string {
 	return p
 }
 
-// fallbackRoutes e 上所有 RouteNotFound 注册的模板（echo.RouteNotFound 是它们在 Routes() 里的 Method），
-// 以及同一模板上真正注册了的方法。按 Host 分的 router 一起算：模板只是标签，不必分得那么细
+// fallbackRoutes collects every template registered on e through RouteNotFound (echo.RouteNotFound
+// is their Method in Routes()), together with the methods actually registered on the same
+// template. Host-specific routers are folded in: a template is only a label, and splitting it
+// that finely serves nothing.
 func fallbackRoutes(e *echo.Echo) map[string]map[string]bool {
 	all := e.Routes()
 	for _, r := range e.Routers() {
@@ -127,29 +144,35 @@ func fallbackRoutes(e *echo.Echo) map[string]map[string]bool {
 	return fallback
 }
 
-// 这几样记在 echo.Context 上，见 finish、Recover、status
+// These are recorded on echo.Context; see finish, Recover and status.
 const (
-	errKey     = "xone/xecho.error"   // 这个请求的错误：handler 返回的，或者 Recover 登记的中止和断连
-	abortedKey = "xone/xecho.aborted" // handler 以 panic(http.ErrAbortHandler) 中止，由 Recover 登记
-	goneKey    = "xone/xecho.gone"    // 客户端已经走了、响应一个字节都没发，由 finish 登记
+	errKey     = "xone/xecho.error"   // this request's error: returned by the handler, or recorded by Recover for an abort or a broken connection
+	abortedKey = "xone/xecho.aborted" // the handler aborted with panic(http.ErrAbortHandler), recorded by Recover
+	goneKey    = "xone/xecho.gone"    // the client is already gone and not one byte of response was sent, recorded by finish
 )
 
-// finish 在这一层就把 handler 返回的错误渲染成响应，并把它记在 c 上。ctx 是这一层一进来时请求的 ctx，
-// 用来判客户端是不是已经走了（见 web.ClientGone）。
+// finish renders the error a handler returned into a response in this layer, and records it on c.
+// ctx is the request's ctx as this layer saw it on the way in, used to tell whether the client is
+// already gone (see web.ClientGone).
 //
-// echo 在整条中间件链返回之后才调 e.HTTPErrorHandler 把错误写成响应（echo v4.16.0 的
-// Echo.ServeHTTP）。链里的中间件拿到错误的那一刻响应还一个字节都没写：实测 404、405、500
-// 都是 Status 200、Committed false、Size 0。照读的话每个出错的请求在访问日志、指标、链路里
-// 都是一次 bytes_out 为 0 的 200。
+// Echo only calls e.HTTPErrorHandler to write the error as a response once the whole middleware
+// chain has returned (Echo.ServeHTTP in echo v4.16.0). At the moment a middleware in the chain
+// receives the error, not one byte of the response has been written: measured, 404, 405 and 500
+// all read as Status 200, Committed false, Size 0. Taken at face value, every failing request
+// would appear in the access log, the metrics and the trace as a 200 with bytes_out 0.
 //
-// 所以在这里就交给 c.Error（它调的是 e.HTTPErrorHandler，WithRoutes 里换掉的也算），
-// 再往外返回 nil：外面几层读到的是已经发出去的状态码和字节数，HTTPErrorHandler 也只跑这一次——
-// 照样返回错误的话 echo 会再调它一遍，不查 Committed 的自定义错误处理会把错误响应写两遍。
+// So the error goes to c.Error here (which calls e.HTTPErrorHandler, including one replaced in
+// WithRoutes) and nil is returned outwards: the outer layers read the status code and byte count
+// actually sent, and HTTPErrorHandler runs exactly once — returning the error as well would make
+// echo call it again, and a custom error handler that does not check Committed would write the
+// error response twice.
 //
-// 错误本身记在 c 上：外面几层拿到的是 nil，访问日志的 errors、Span 的 echo.errors 靠 errorOf 取到它
+// The error itself is recorded on c: the outer layers receive nil, and the access log's errors
+// field and the span's echo.errors reach it through errorOf.
 func finish(c echo.Context, ctx context.Context, err error) {
-	// 客户端走了、还什么都没发：记 499（见 web.StatusAborted）。要在 c.Error 之前判——
-	// 它往断开的连接上写错误响应照样置上 Committed、把 Status 记成 500（实测 echo v4.16.0，写失败也一样）
+	// The client is gone and nothing was sent: record 499 (see web.StatusAborted). This has to be
+	// decided before c.Error — writing an error response to a closed connection still sets
+	// Committed and records Status 500 (measured on echo v4.16.0, including when the write fails).
 	if !c.Response().Committed && web.ClientGone(ctx) {
 		c.Set(goneKey, true)
 	}
@@ -160,29 +183,33 @@ func finish(c echo.Context, ctx context.Context, err error) {
 	c.Error(err)
 }
 
-// errorOf 这个请求登记下的错误：handler 返回的（见 finish），或者 Recover 登记的中止和断连
+// errorOf is the error recorded for this request: returned by the handler (see finish), or
+// recorded by Recover for an abort or a broken connection.
 func errorOf(c echo.Context) error {
 	err, _ := c.Get(errKey).(error)
 	return err
 }
 
-// aborted handler 是不是以 panic(http.ErrAbortHandler) 中止的。
+// aborted reports whether the handler aborted with panic(http.ErrAbortHandler).
 //
-// 看的是 Recover 登记的记号，不看错误本身：handler 返回（不是 panic）一个包着 http.ErrAbortHandler
-// 的错误时连接并没有断，客户端收到的是 HTTPErrorHandler 渲染的 500，该记 500
+// It reads the mark Recover left rather than the error itself: when a handler returns (rather
+// than panics with) an error wrapping http.ErrAbortHandler, the connection was never broken and
+// the client received the 500 HTTPErrorHandler rendered, which is what should be recorded.
 func aborted(c echo.Context) bool {
 	v, _ := c.Get(abortedKey).(bool)
 	return v
 }
 
-// Recover 兜住 panic，把它变成一条错误日志和一个错误响应。
+// Recover catches a panic and turns it into an error log line and an error response.
 //
-// handle 决定 panic 之后回什么：它返回的错误和 handler 返回的一样交给 e.HTTPErrorHandler。
-// 为 nil 时返回 echo.ErrInternalServerError，也就是 echo 默认的
-// 500 {"message":"Internal Server Error"}，和 handler 返回一个普通 error 时一个样子。
+// handle decides what to answer after a panic: the error it returns goes to e.HTTPErrorHandler
+// exactly as a handler's would. When it is nil, echo.ErrInternalServerError is returned, that is,
+// echo's default 500 {"message":"Internal Server Error"}, the same shape a plain error returned
+// by a handler produces.
 //
-// echo 自己默认不兜 panic：实测连接被直接断掉（客户端读到 EOF），栈由 net/http 的日志写进 stderr，
-// 不进 slog。http.ErrAbortHandler 不兜，原样抛给 net/http 去断开连接。
+// Echo itself does not catch panics by default: measured, the connection is simply broken (the
+// client reads EOF) and net/http's logger writes the stack to stderr, bypassing slog.
+// http.ErrAbortHandler is not caught and is re-panicked for net/http to break the connection.
 func Recover(handle func(c echo.Context, recovered any) error) echo.MiddlewareFunc {
 	if handle == nil {
 		handle = func(echo.Context, any) error { return echo.ErrInternalServerError }
@@ -195,32 +222,37 @@ func Recover(handle func(c echo.Context, recovered any) error) echo.MiddlewareFu
 				if r == nil {
 					return
 				}
-				// http.ErrAbortHandler 是 handler 主动要求「断掉这个连接」的约定写法
-				// （httputil.ReverseProxy 在上游断开时也这么做）。net/http 接到它会
-				// 静默断连、不打栈；在这里兜住的话，本该中止的响应会被写成 500 发出去，
-				// 还多一份毫无意义的栈。所以原样抛回给它。
+				// http.ErrAbortHandler is the agreed way for a handler to ask for this connection
+				// to be dropped (httputil.ReverseProxy does it when the upstream goes away).
+				// net/http receives it, breaks the connection silently and prints no stack;
+				// catching it here would turn a response that was meant to be aborted into a 500
+				// going out, plus a stack trace that means nothing. So it is re-panicked.
 				//
-				// 抛回之前登记下来：外面几层（访问日志、指标、链路）的收尾据此
-				// 把它记成中止，见 status——它们读到的 Response().Status 往往是
-				// 已经发出去的 200，一个被截断的响应就全都记成了成功
+				// It is recorded before being re-panicked: the outer layers (access log, metrics,
+				// tracing) use that to record it as an abort, see status — what they read from
+				// Response().Status is usually the 200 already sent, which would record a
+				// truncated response as a success.
 				if r == http.ErrAbortHandler {
 					c.Set(abortedKey, true)
 					c.Set(errKey, http.ErrAbortHandler)
 					panic(r)
 				}
 
-				// 连接断了不算故障：不打栈，记 WARN 而不是 ERROR——客户端的网络抖动不该触发服务的告警
+				// A broken connection is not a failure: no stack, and WARN rather than ERROR — a
+				// client's flaky network should not fire the service's alerts.
 				ctx := contextOf(c)
 				if web.IsBrokenPipe(r) {
 					slog.WarnContext(ctx, "connection broken", "error", r)
-					c.Set(errKey, r.(error)) // web.IsBrokenPipe 保证它是 *net.OpError
+					c.Set(errKey, r.(error)) // web.IsBrokenPipe guarantees it is an *net.OpError
 					err = nil
 					return
 				}
 
-				// panic 的值和 handler 返回的错误一样会夹带凭证（panic(err) 里的整串 DSN），
-				// 过一遍 RedactText 再记。栈不用过：runtime.Stack 只打函数名、文件行号和参数的十六进制原始字
-				// （指针、长度），字符串和结构体的内容不在里面
+				// A panic value carries credentials just as an error returned by a handler does
+				// (the whole DSN inside panic(err)), so it goes through RedactText before being
+				// recorded. The stack does not need it: runtime.Stack prints function names, file
+				// and line, and the raw hexadecimal words of the arguments (pointers, lengths) —
+				// the contents of strings and structs are not in there.
 				slog.ErrorContext(ctx, "panic while handling request",
 					"error", web.RedactText(fmt.Sprint(r)),
 					"stack", web.Stack(),
@@ -228,7 +260,8 @@ func Recover(handle func(c echo.Context, recovered any) error) echo.MiddlewareFu
 					"method", c.Request().Method)
 
 				if c.Response().Committed {
-					// 响应已经开始往外写了，再改状态码只会得到一个半截的响应
+					// The response has started going out; changing the status code now only
+					// yields a truncated response.
 					err = nil
 					return
 				}
@@ -239,10 +272,11 @@ func Recover(handle func(c echo.Context, recovered any) error) echo.MiddlewareFu
 	}
 }
 
-// status 本次请求该记下的状态码。
+// status is the status code that should be recorded for this request.
 //
-// 不能直接读 Response().Status：中止的请求往往已经写出了 200 的响应头，客户端走了的请求
-// 可能被渲染成了一个谁也收不到的 500。这两种记 499，见 web.StatusAborted
+// Response().Status cannot be read directly: an aborted request has usually written a 200 header
+// already, and a request whose client left may have been rendered into a 500 nobody will ever
+// receive. Both are recorded as 499, see web.StatusAborted.
 func status(c echo.Context) int {
 	if gone, _ := c.Get(goneKey).(bool); gone || aborted(c) {
 		return web.StatusAborted

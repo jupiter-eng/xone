@@ -192,7 +192,6 @@ scripts/mutations/example.py
 scripts/mutations/schemagen.py
 scripts/mutations/xcache.py
 scripts/mutations/xcron.py
-scripts/mutations/xecho.py
 scripts/mutations/xgin.py
 scripts/mutations/xginswagger.py
 scripts/mutations/xgorm.py
@@ -225,24 +224,10 @@ xcron/schedule_test.go
 xcron/scheduler.go
 xcron/xcron.go
 xcron/xcron_test.go
+# xecho/README.md is translated; what is left are anchors into files that are still
+# Chinese (../xgin/README.md#..., ../docs/...#...). Changing them would break the links,
+# so this line goes when those files are translated.
 xecho/README.md
-xecho/config.go
-xecho/go.mod
-xecho/internal/peer/peer.go
-xecho/internal/reqctx/reqctx.go
-xecho/middleware/bench_test.go
-xecho/middleware/log.go
-xecho/middleware/metric.go
-xecho/middleware/middleware.go
-xecho/middleware/middleware_test.go
-xecho/middleware/redact.go
-xecho/middleware/redact_test.go
-xecho/middleware/trace.go
-xecho/middleware/trace_metric_test.go
-xecho/tls_test.go
-xecho/tracing_test.go
-xecho/xecho.go
-xecho/xecho_test.go
 xerror/xerror.go
 xerror/xerror_test.go
 xflow/README.md

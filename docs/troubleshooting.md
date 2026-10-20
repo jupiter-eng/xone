@@ -5,7 +5,7 @@
 
 这里是跨模块的报错；只属于一个模块的在它 README 的「排错」一节：
 [xgorm](../xgorm/README.md#排错)（`unknown Driver=…`）· [xtls](../xtls/README.md#排错)（客户端 TLS）·
-[xgin](../xgin/README.md#排错)（服务端证书）· [xecho](../xecho/README.md#排错)（服务端证书、照抄了 XGin 块）。
+[xgin](../xgin/README.md#排错)（服务端证书）· [xecho](../xecho/README.md#troubleshooting)（服务端证书、照抄了 XGin 块）。
 
 - [配置](#配置)
 - [取实例：C()](#取实例c)
@@ -152,4 +152,4 @@ K8s 里要让 `terminationGracePeriodSeconds` 比 `WithStopTimeout` 长，见 [g
 
 ## TLS
 
-客户端 TLS 块（XGorm / XRedis / XHttp）的报错见 [xtls「排错」](../xtls/README.md#排错)，XGin 服务端证书的见 [xgin「排错」](../xgin/README.md#排错)，XEcho 的见 [xecho「排错」](../xecho/README.md#排错)。
+客户端 TLS 块（XGorm / XRedis / XHttp）的报错见 [xtls「排错」](../xtls/README.md#排错)，XGin 服务端证书的见 [xgin「排错」](../xgin/README.md#排错)，XEcho 的见 [xecho「排错」](../xecho/README.md#troubleshooting)。
