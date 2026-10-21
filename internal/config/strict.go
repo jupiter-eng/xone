@@ -10,21 +10,23 @@ import (
 	"github.com/jupiter-eng/xone/xerror"
 )
 
-// DecodeStrict 严格解码：认不出的字段是错误，不是忽略。
+// DecodeStrict decodes strictly: a field that is not recognized is an error, not something ignored.
 //
-// 集成包经 xconfig.DecodeStrict 用的是这同一个实现：集合元素的默认值要靠元素
-// 自己的 UnmarshalYAML 铺，那里必须能拿到同样的严格检查，
-// 否则「拼错就失败」在集合里会悄悄失效。
+// An integration using xconfig.DecodeStrict uses this very implementation: the defaults of a
+// collection's elements are spread by each element's own UnmarshalYAML, which has to get the same
+// strict checking there, or "a misspelling fails" would quietly stop working inside a collection.
 //
-// yaml.v3 的严格检查只有 Decoder 上有，而 Decoder 只收文本。所以不借它，
-// 先拿 target 的类型把节点走一遍，查出认不出的字段和类型不对的值，再直接
-// node.Decode。走的是节点本身，于是每条报错都知道是哪个节点：行号就是它的
-// 行号，文件是 load 记下的它来自的那个，占位符展开出来的值按节点遮掉。
+// yaml.v3's strict checking exists on a Decoder alone, and a Decoder takes text alone. So it is not
+// borrowed: the nodes are walked with target's type first, looking for fields that are not
+// recognized and values of the wrong type, and node.Decode follows. It walks the nodes themselves,
+// so every error knows which node it is about: the line number is that node's, the file is the one
+// load recorded it as coming from, and a value expanded from a placeholder is masked per node.
 //
-// target 不是非 nil 的指针时返回 xconfig 的 config 错误（见 checkTarget）。
-// 其余的错误要么是 nil，要么是 yaml 自己的错误；字段和类型层面的问题一律是
-// *yaml.TypeError——嵌套在 UnmarshalYAML 里的那一次也是，于是 yaml 把它并进
-// 外层的报错列表。那一次拿到的就是配置文件里的节点，报错在那里已经说清楚了。
+// A target that is not a non-nil pointer returns an xconfig config error (see checkTarget).
+// Every other error is either nil or yaml's own; a problem at the field or type level is always a
+// *yaml.TypeError -- including the one nested inside an UnmarshalYAML, which yaml then joins into
+// the outer list of errors. That one received the node from the configuration file and the error
+// said everything there.
 func DecodeStrict(node *yaml.Node, target any) error {
 	if err := checkTarget(target); err != nil {
 		return err
@@ -39,11 +41,12 @@ func DecodeStrict(node *yaml.Node, target any) error {
 	return node.Decode(target)
 }
 
-// checkTarget 解码目标必须是非 nil 的指针。
+// checkTarget: the decoding target has to be a non-nil pointer.
 //
-// 传了值或者 nil 时 yaml 和 reflect 都是当场 panic，整个进程崩在启动钩子里；
-// 这是调用方写错了，但它该是一条说得清的错误。Unmarshal 在找配置块之前就查：
-// 块没配时照样报出来，不必等到哪天配上了才崩
+// With a value or nil passed in, yaml and reflect both panic on the spot and the whole process dies
+// inside a start hook; the caller wrote it wrong, but it deserves an error that says so. Unmarshal
+// checks before looking for the configuration block: it is reported even when the block is
+// unconfigured, rather than crashing the day somebody configures it
 func checkTarget(target any) error {
 	if v := reflect.ValueOf(target); v.Kind() != reflect.Pointer || v.IsNil() {
 		return xerror.Newf("xconfig", "config", "decode target must be a non-nil pointer, got %T", target)
@@ -51,14 +54,15 @@ func checkTarget(target any) error {
 	return nil
 }
 
-// checker 拿目标类型走一遍节点，收集字段和类型层面的问题
+// checker walks the nodes with the target type and gathers the problems at the field and type
+// level
 type checker struct {
-	files map[*yaml.Node]string // 节点 → 它来自哪个文件
-	raw   map[*yaml.Node]string // 占位符展开过的节点 → 配置里写的原文
+	files map[*yaml.Node]string // a node -> the file it came from
+	raw   map[*yaml.Node]string // a node whose placeholder was expanded -> the text written in the configuration
 	errs  []string
 }
 
-// newChecker 带上最近一次加载记下的节点来历
+// newChecker carries the node origins the last load recorded
 func newChecker() *checker {
 	c := &checker{}
 	if m := origins.Load(); m != nil {
@@ -73,20 +77,24 @@ func newChecker() *checker {
 var (
 	nodeType        = reflect.TypeOf(yaml.Node{})
 	unmarshalerType = reflect.TypeOf((*yaml.Unmarshaler)(nil)).Elem()
-	// v2 风格的 UnmarshalYAML，yaml.v3 仍然认
+	// The v2-style UnmarshalYAML, which yaml.v3 still recognizes
 	obsoleteType = reflect.TypeOf((*interface {
 		UnmarshalYAML(func(any) error) error
 	})(nil)).Elem()
 )
 
-// walk 按 t 的形状往下走，和 yaml.v3 解码时的走法一致：mapping 进结构体和 map，
-// 序列进切片和数组，形状对不上、或者走到了标量，就地试解一次看 yaml 怎么说。
+// walk goes down by t's shape, the way yaml.v3 goes while decoding: a mapping into a struct or a
+// map, a sequence into a slice or an array, and a shape that does not match, or a scalar, is tried
+// on the spot to see what yaml says.
 //
-// 自己会解的类型（实现了 yaml.Unmarshaler）不往里走，也是试解：严格与否由它的
-// UnmarshalYAML 自己决定——文档要求那里也用 DecodeStrict，那一次报的已经是
-// 配置文件里的位置，原样收下。在这里就试一次而不是等 node.Decode，是为了
-// 集合元素里的问题和外面的一起报，不必改一处、重启一次才看见下一处。
-// encoding.TextUnmarshaler（time.Time、netip.Addr）配的是标量，落在试解那一支。
+// A type that decodes itself (one implementing yaml.Unmarshaler) is not walked into and is tried as
+// well: how strict it is, is its own UnmarshalYAML's decision -- the documentation asks for
+// DecodeStrict there too, and what that reports is already a position in the configuration file and
+// is taken as it is. It is tried here rather than left to node.Decode so that the problems inside a
+// collection's elements are reported along with the rest, instead of one being fixed and the
+// process restarted before the next appears.
+// An encoding.TextUnmarshaler (time.Time, netip.Addr) is configured as a scalar and lands on the
+// try branch.
 func (c *checker) walk(n *yaml.Node, t reflect.Type) error {
 	for n.Kind == yaml.AliasNode && n.Alias != nil {
 		n = n.Alias
@@ -101,7 +109,7 @@ func (c *checker) walk(n *yaml.Node, t reflect.Type) error {
 		t = t.Elem()
 	}
 	if n.ShortTag() == "!!null" || t == nodeType || t.Kind() == reflect.Interface {
-		return nil // null 保持原值；Node、any 什么都收
+		return nil // null keeps the value it had; a Node and an any take everything
 	}
 	switch {
 	case reflect.PointerTo(t).Implements(unmarshalerType) || reflect.PointerTo(t).Implements(obsoleteType):
@@ -121,10 +129,12 @@ func (c *checker) walk(n *yaml.Node, t reflect.Type) error {
 	return c.try(n, t)
 }
 
-// mapping 逐个 key 往下走。s 为 nil 时 t 是 map，否则 t 是结构体、s 是它的字段
+// mapping goes down key by key. With s nil, t is a map; otherwise t is a struct and s holds its
+// fields
 func (c *checker) mapping(n *yaml.Node, t reflect.Type, s *structFields) error {
 	for i := 0; i+1 < len(n.Content); i += 2 {
-		// 合并键 << 在解析时已经摊平成普通的 key（见 flattenMerges），这里见不到它
+		// The merge key << was flattened into ordinary keys while parsing (see flattenMerges) and is
+		// never seen here
 		k, v := n.Content[i], n.Content[i+1]
 		if s == nil {
 			if err := c.walk(k, t.Key()); err != nil {
@@ -150,14 +160,16 @@ func (c *checker) mapping(n *yaml.Node, t reflect.Type, s *structFields) error {
 	return nil
 }
 
-// try 把 n 单独解进一个 t 类型的新值，yaml 报在 n 这一行的类型错误记在 n 名下。
-// 节点就是这一个，于是行号、文件、要不要遮掉展开出来的值，都照它说。
-// 不在这一行的（嵌套的 UnmarshalYAML 报的）原样收下
+// try decodes n on its own into a new value of type t, and a type error yaml reports on n's line is
+// recorded against n.
+// The node is this one, so the line number, the file and whether an expanded value is masked all go
+// by it.
+// One not on this line (reported by a nested UnmarshalYAML) is taken as it is
 func (c *checker) try(n *yaml.Node, t reflect.Type) error {
 	err := n.Decode(reflect.New(t).Interface())
 	te, ok := err.(*yaml.TypeError)
 	if !ok {
-		if err != nil { // yaml 当成致命错误的（比如 UnmarshalText 失败），照样停在这里
+		if err != nil { // what yaml treats as fatal (a failed UnmarshalText, say) still stops here
 			return fmt.Errorf("%s: %w", c.at(n), err)
 		}
 		return nil
@@ -171,8 +183,8 @@ func (c *checker) try(n *yaml.Node, t reflect.Type) error {
 	return nil
 }
 
-// at 报错开头的位置：n 是从配置文件里解析出来的（load 记过它）时是「文件:行号」，
-// 否则是 yaml 自己的写法「line 行号」
+// at is the position an error opens with: "file:line" when n was parsed out of a configuration
+// file (and load recorded it), and yaml's own "line <number>" otherwise
 func (c *checker) at(n *yaml.Node) string {
 	if file := fileOf(n, c.files); file != "" {
 		return fmt.Sprintf("%s:%d", file, n.Line)
@@ -180,10 +192,10 @@ func (c *checker) at(n *yaml.Node) string {
 	return fmt.Sprintf("line %d", n.Line)
 }
 
-// fileOf n 来自哪个文件，不知道时为空。
+// fileOf is which file n came from, empty when that is unknown.
 //
-// 合并出来的 map 节点是一份新的副本（见 mergeMapping），load 没记过它；
-// 它的行号取自第一个 key，所以文件也跟第一个 key 走
+// A merged map node is a fresh copy (see mergeMapping) that load never recorded; its line number is
+// taken from its first key, so its file goes by that first key as well
 func fileOf(n *yaml.Node, files map[*yaml.Node]string) string {
 	for ; n != nil; n = first(n) {
 		if f, ok := files[n]; ok {
@@ -200,12 +212,15 @@ func first(n *yaml.Node) *yaml.Node {
 	return n.Content[0]
 }
 
-// redact 把 n 的类型错误里带出来的值换回配置里写的那段原文。
+// redact puts the text written in the configuration back in place of the value n's type error
+// carried out with it.
 //
-// yaml 的类型错误会带上值的前几个字符：密码填进了 int 字段，
-// 报的就是 cannot unmarshal !!str `hunter2...` into int——凭证的一截进了启动日志，
-// 而 ${VAR} 恰恰是凭证的推荐写法。换成 `${DB_PASSWORD}` 之后照样看得出是哪一项配错了。
-// 只看这一个节点是不是展开出来的，配置里别处恰好同值的字面量不受影响。
+// A yaml type error carries the first few characters of the value: a password written into an int
+// field is reported as cannot unmarshal !!str `hunter2...` into int -- part of a credential in the
+// startup log, while ${VAR} is exactly the recommended spelling for a credential. Replaced with
+// `${DB_PASSWORD}`, which field is misconfigured is just as visible.
+// It goes by whether this one node was expanded, so a literal elsewhere in the configuration that
+// happens to hold the same value is unaffected.
 func (c *checker) redact(n *yaml.Node, msg string) string {
 	raw, ok := c.raw[n]
 	if !ok {
@@ -213,16 +228,17 @@ func (c *checker) redact(n *yaml.Node, msg string) string {
 	}
 	i, j := strings.Index(msg, "`"), strings.LastIndex(msg, "`")
 	if i == j {
-		return msg // 报错里没带值（!!map into string 这一类）
+		return msg // the error carries no value (the !!map into string kind)
 	}
 	return msg[:i] + "`" + raw + "` (expanded value redacted)" + msg[j+1:]
 }
 
-// structFields 一个结构体在 yaml 眼里有哪些 key，规则照搬 yaml.v3 的 getStructInfo
+// structFields is which keys a struct has in yaml's eyes, with the rules copied from yaml.v3's
+// getStructInfo
 type structFields struct {
-	byKey    map[string]reflect.Type // key → 字段类型，,inline 的结构体已经摊平
-	inline   reflect.Type            // ,inline 的 map 的元素类型：认不出的 key 都进它，没有则为 nil
-	untagged map[string]bool         // 没写 yaml tag 的字段名，给报错补提示用
+	byKey    map[string]reflect.Type // key -> the field type, with an ,inline struct flattened already
+	inline   reflect.Type            // the element type of an ,inline map, which every unrecognized key goes into; nil when there is none
+	untagged map[string]bool         // the names of the fields with no yaml tag, for the hint added to an error
 }
 
 func fieldsOf(t reflect.Type) *structFields {
@@ -239,7 +255,7 @@ func (s *structFields) add(t reflect.Type) {
 		}
 		tag := f.Tag.Get("yaml")
 		if tag == "" && !strings.Contains(string(f.Tag), ":") {
-			tag = string(f.Tag) // yaml.v3 还认整段 tag 就是名字的老写法
+			tag = string(f.Tag) // yaml.v3 still recognizes the old spelling where the whole tag is the name
 		}
 		if tag == "-" {
 			continue
@@ -254,7 +270,7 @@ func (s *structFields) add(t reflect.Type) {
 			case ft.Kind() == reflect.Map:
 				s.inline = ft.Elem()
 			case !reflect.PointerTo(ft).Implements(unmarshalerType):
-				s.add(ft) // 自己会解的内嵌结构体 yaml 不摊平，它的字段在这里也认不出
+				s.add(ft) // yaml does not flatten an embedded struct that decodes itself, so its fields are not recognized here either
 			}
 			continue
 		}
@@ -268,13 +284,16 @@ func (s *structFields) add(t reflect.Type) {
 	}
 }
 
-// notFound 认不出的字段怎么报：和 yaml.v3 的原文一致，再补一句怎么改。
+// notFound is how a field that is not recognized is reported: yaml.v3's own text, plus a sentence
+// about how to fix it.
 //
-// 字段忘了写 yaml tag：yaml.v3 对没写 tag 的字段只认全小写的 key，字段 Endpoint 认 endpoint，
-// 不认 Endpoint。于是配置里照着字段名写，报的是
-// 「field Endpoint not found in type C」——字段明明就叫这个，使用者只会一头雾水。
+// A field whose yaml tag was forgotten: yaml.v3 recognizes an untagged field only in all lowercase,
+// so the field Endpoint is recognized as endpoint and not as Endpoint. Writing it in the
+// configuration as the field is named reports "field Endpoint not found in type C" -- the field is
+// called exactly that, and the caller is left baffled.
 //
-// key 写在了上一层：它是某个子块里的字段（XGin 的 CertFile 在 TLS: 里），指出该挪到哪。
+// A key written one level too high: it is a field of some block (xgin's CertFile lives under TLS:),
+// and where it belongs is pointed out.
 func (s *structFields) notFound(key string, t reflect.Type) string {
 	msg := fmt.Sprintf("field %s not found in type %s", key, t)
 	if s.untagged[key] {
@@ -286,7 +305,8 @@ func (s *structFields) notFound(key string, t reflect.Type) string {
 	return msg
 }
 
-// blockOf key 是哪个子块的字段。只往下看一层，恰好一个子块有它才算，几个都有时不猜
+// blockOf is which block a key is a field of. It looks one level down and counts only when exactly
+// one block holds it, guessing at nothing when several do
 func (s *structFields) blockOf(key string) string {
 	found := ""
 	for name, ft := range s.byKey {

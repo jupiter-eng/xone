@@ -9,21 +9,21 @@ import (
 )
 
 const (
-	// ArgKey / EnvKey 显式指定配置文件位置的两种方式
+	// ArgKey / EnvKey are the two ways of naming the configuration file explicitly
 	ArgKey = "config"
 	EnvKey = "XONE_CONFIG"
 
-	// ProfileArgKey / ProfileEnvKey 指定激活哪些 profile，
-	// 对应 Spring 的 spring.profiles.active。多个用逗号分隔
+	// ProfileArgKey / ProfileEnvKey say which profiles are active, as Spring's
+	// spring.profiles.active does. Several are separated by commas
 	ProfileArgKey = "profile"
 	ProfileEnvKey = "XONE_PROFILE"
 )
 
-// profiles 决定激活哪些 profile：启动参数 > 环境变量 > 配置文件里的 XApp.Profiles，
-// 另外说明是从哪来的（XONE_DEBUG 打出来）。
+// profiles decides which profiles are active: the command line > the environment > XApp.Profiles
+// in the configuration file, and says where it came from along the way (which XONE_DEBUG prints).
 //
-// 与 Spring 一致：靠后的 profile 压过靠前的，
-// 所以 --profile=base,prod 里 prod 的值最终生效。
+// As in Spring, a later profile overrides an earlier one, so prod's values are what take effect in
+// --profile=base,prod.
 func profiles(fromFile []string) ([]string, string) {
 	if v := fromArgs(ProfileArgKey); v != "" {
 		return splitProfiles(v), "--" + ProfileArgKey
@@ -34,7 +34,7 @@ func profiles(fromFile []string) ([]string, string) {
 	return fromFile, AppKey + "." + ProfilesKey + " in the config file"
 }
 
-// splitProfiles 按逗号拆开，去掉空白和空项
+// splitProfiles cuts on commas and drops the whitespace and the empty entries
 func splitProfiles(s string) []string {
 	out := make([]string, 0, 2)
 	for _, p := range strings.Split(s, ",") {
@@ -45,7 +45,7 @@ func splitProfiles(s string) []string {
 	return out
 }
 
-// SearchPaths 未显式指定时，按顺序查找的约定位置
+// SearchPaths are the conventional locations looked at, in order, when none is named explicitly
 var SearchPaths = []string{
 	"conf/application.yml",
 	"conf/application.yaml",
@@ -55,9 +55,11 @@ var SearchPaths = []string{
 	"application.yaml",
 }
 
-// locate 定位配置文件：启动参数 > 环境变量 > 约定路径，另外说明是怎么找到的（XONE_DEBUG 打出来）。
+// locate finds the configuration file: the command line > the environment > the conventional
+// paths, and says how it was found along the way (which XONE_DEBUG prints).
 //
-// 都找不到时返回空串，由调用方决定是报错还是全用默认值起。
+// With none found it returns an empty string, leaving the caller to decide between an error and
+// starting on the defaults alone.
 func locate() (path, from string) {
 	if v := fromArgs(ArgKey); v != "" {
 		return v, "--" + ArgKey
@@ -73,10 +75,11 @@ func locate() (path, from string) {
 	return "", ""
 }
 
-// fromArgs 从命令行读 --key=value 或 --key value，两种写法都支持。
+// fromArgs reads --key=value or --key value from the command line, accepting both spellings.
 //
-// 不用 flag 包：flag.Parse 会接管整个命令行，而使用者的程序多半有自己的参数，
-// 框架不该替他们决定怎么解析。
+// The flag package is not used: flag.Parse takes the whole command line over, while a caller's
+// program most likely has arguments of its own, and the framework must not decide how they are
+// parsed.
 func fromArgs(key string) string {
 	args := os.Args[1:]
 	for i, a := range args {
@@ -94,10 +97,11 @@ func fromArgs(key string) string {
 	return ""
 }
 
-// danglingArg 框架认的启动参数写在了最后、没带值时报错。
+// danglingArg is an error when one of the framework's flags is written last with no value.
 //
-// fromArgs 对这种写法取不到值，于是当它没写：`./app --config` 接着按 XONE_CONFIG、
-// 约定路径找，起来的是另一份配置，或者一份全是默认值的——写的人以为自己点名了。
+// fromArgs finds no value in that spelling and treats it as not written: `./app --config` goes on
+// to XONE_CONFIG and the conventional paths, and what comes up is another configuration, or one of
+// nothing but defaults -- while whoever wrote it believes they named a file.
 func danglingArg() error {
 	args := os.Args[1:]
 	if len(args) == 0 {

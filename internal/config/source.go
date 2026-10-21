@@ -14,77 +14,87 @@ import (
 	"github.com/jupiter-eng/xone/xerror"
 )
 
-// AppKey 应用级的配置块：应用叫什么（Name、Version，xapp 读），跑在哪个环境、配置从哪些文件来
-// （Profiles、Import，加载器自己读）。对应 Spring 把 spring.application.name、
-// spring.profiles.active、spring.config.import 收在 spring 下面。
+// AppKey is the application-level configuration block: what the application is called (Name and
+// Version, which xapp reads) and which environment it runs in and which files its configuration
+// comes from (Profiles and Import, which the loader reads itself). It mirrors Spring gathering
+// spring.application.name, spring.profiles.active and spring.config.import under spring.
 const AppKey = "XApp"
 
-// XApp 里由加载器自己消费的两项。读完就从文档里摘掉，交给 xapp 的只剩 Name、Version
+// The two fields of XApp the loader consumes itself. They are taken out of the document once
+// read, so what reaches xapp is Name and Version alone
 const (
-	// ProfilesKey 声明激活哪些 profile，对应 Spring 的 spring.profiles.active
+	// ProfilesKey declares which profiles are active, as Spring's spring.profiles.active does
 	ProfilesKey = "Profiles"
-	// ImportKey 引入别的配置文件，对应 Spring 的 spring.config.import
+	// ImportKey imports other configuration files, as Spring's spring.config.import does
 	ImportKey = "Import"
 )
 
-// optionalPrefix 带这个前缀的 import 文件不存在时跳过，不报错
+// optionalPrefix: an imported file carrying this prefix is skipped rather than reported when it
+// does not exist
 const optionalPrefix = "optional:"
 
-// maxImportDepth import 的嵌套上限，防止配置写出一条看不见的深链。
-// 成环走不到这里：同一个文件只读一次，环在第二次遇到时就断了
+// maxImportDepth is the upper bound on nested imports, keeping a configuration from growing an
+// invisible deep chain.
+// A cycle never reaches it: one file is read once, and a cycle breaks the second time it is met
 const maxImportDepth = 16
 
-// maxResolvedNodes 一个文件在别名展开之后最多有多少个节点。
-// 正常的配置只有几百个；这条线挡的是别名层层相乘的「十亿笑」——
-// 十层、每层十个别名，展开后是一百亿个节点
+// maxResolvedNodes is how many nodes one file may hold once its aliases are expanded.
+// An ordinary configuration holds a few hundred; this line guards against the "billion laughs" of
+// aliases multiplying layer by layer -- ten layers of ten aliases each expand into ten billion
+// nodes
 const maxResolvedNodes = 100_000
 
-// loaded 一个加载好的配置文件
+// loaded is one configuration file once loaded
 type loaded struct {
 	path string
-	node *yaml.Node // 文档节点
+	node *yaml.Node // the document node
 }
 
-// loadAll 按优先级从低到高列出所有要合并的文件。
+// loadAll lists every file to be merged, in priority order from lowest to highest.
 //
-// 顺序与 Spring 一致：
+// The order matches Spring's:
 //
-//	application.yml  <  它 import 的  <  application-prod.yml  <  prod import 的
+//	application.yml  <  what it imports  <  application-prod.yml  <  what prod imports
 //
-// 也就是说 import 进来的会压过引它的那个文件（Spring 的说法是
-// 「import 相当于插在声明它的那份文档正下方」，而下面的压过上面的），
-// profile 文件又压过不带 profile 的那份。
+// That is, an imported file overrides the one importing it (Spring puts it as "an import behaves as
+// though inserted directly below the document declaring it", where what is below overrides what is
+// above), and a profile file overrides the one without a profile.
 //
-// 另外返回激活的 profile 和它们是从哪来的，XONE_DEBUG 打出来。
+// It also returns the active profiles and where they came from, which XONE_DEBUG prints.
 func loadAll(base string) ([]loaded, []string, string, error) {
-	seen := map[string]bool{} // 同一个文件只 import 一次，与 Spring 一致
+	seen := map[string]bool{} // one file is imported once, as in Spring
 	doc, err := read(base, true, seen)
 	if err != nil {
 		return nil, nil, "", err
 	}
 
-	// profile 从三个地方来，优先级：启动参数 > 环境变量 > base 文件里的 XApp.Profiles。
-	// 文件里那一份要在往下走之前取出来：base 的 import 和变体都按它选文件
+	// The profiles come from three places, in priority order: the command line > the environment >
+	// XApp.Profiles in the base file.
+	// The one in the file has to be taken out before going on: base's imports and variants both pick
+	// their files by it
 	declared, err := profilesOf(doc, base)
 	if err != nil {
 		return nil, nil, "", err
 	}
 	active, from := profiles(declared)
 
-	// 主文件的 profile 变体必须存在：点名要了某个 profile 文件却不在，
-	// 几乎总是名字写错了，静默跳过的结果是一份谁都没看过的配置以默认值起来。
-	// 被 import 进来的文件的变体则是可选的，见 fileSet
+	// The main file's profile variant has to exist: a profile file named and not there is almost
+	// always a misspelled name, and skipping it quietly brings up a configuration nobody ever looked
+	// at, on the defaults.
+	// An imported file's variant is optional, see fileSet
 	files, err := fileSet(base, doc, true, active, seen, 0)
 	return files, active, from, err
 }
 
-// fileSet 一个已经读好的文件连同它 import 的和它的 profile 变体，按优先级从低到高：
+// fileSet is one file already read along with what it imports and its profile variants, in
+// priority order from lowest to highest:
 //
-//	F、F 的 import、F-p1、F-p1 的 import、F-p2、……
+//	F, F's imports, F-p1, F-p1's imports, F-p2, ...
 //
-// variantRequired 说的是「F-p1 不存在算不算错」。主文件算，import 进来的不算：
-// 拆成十个片段之后，要求每个片段都备齐每个环境的变体是没法用的，
-// 而 profile 名写错这件事已经由主文件的变体挡住了。
+// variantRequired says whether "F-p1 does not exist" counts as an error. It does for the main file
+// and does not for an imported one: split into ten fragments, requiring every fragment to carry a
+// variant for every environment is unusable, and a misspelled profile name is caught by the main
+// file's variant already.
 func fileSet(path string, doc *yaml.Node, variantRequired bool, profiles []string, seen map[string]bool, depth int) ([]loaded, error) {
 	out, err := withImports(path, doc, profiles, seen, depth)
 	if err != nil {
@@ -99,7 +109,7 @@ func fileSet(path string, doc *yaml.Node, variantRequired bool, profiles []strin
 		if v == nil {
 			continue
 		}
-		// 变体自己也能 import，所以照样走 withImports
+		// A variant may import as well, so it goes through withImports too
 		nested, err := withImports(vp, v, profiles, seen, depth)
 		if err != nil {
 			return nil, err
@@ -109,7 +119,8 @@ func fileSet(path string, doc *yaml.Node, variantRequired bool, profiles []strin
 	return out, nil
 }
 
-// withImports 一个已经读好的文件，后面跟着它 import 的文件（于是压过它）
+// withImports is one file already read, followed by the files it imports (which therefore override
+// it)
 func withImports(path string, doc *yaml.Node, profiles []string, seen map[string]bool, depth int) ([]loaded, error) {
 	imports, err := importsOf(doc, path)
 	if err != nil {
@@ -119,8 +130,9 @@ func withImports(path string, doc *yaml.Node, profiles []string, seen map[string
 	out := []loaded{{path: path, node: doc}}
 	for _, spec := range imports {
 		target, optional := strings.CutPrefix(spec, optionalPrefix)
-		// 相对路径按「引它的那个文件所在目录」解析，而不是进程的工作目录：
-		// 配置目录整个搬个位置，里面的相对引用不该跟着失效
+		// A relative path resolves against "the directory of the file importing it" rather than the
+		// process's working directory: moving the whole configuration directory elsewhere must not
+		// break the relative references inside it
 		if !filepath.IsAbs(target) {
 			target = filepath.Join(filepath.Dir(path), target)
 		}
@@ -135,7 +147,7 @@ func withImports(path string, doc *yaml.Node, profiles []string, seen map[string
 		if d == nil {
 			continue
 		}
-		// import 进来的文件同样有 profile 变体，但变体不存在不算错
+		// An imported file has profile variants too, but a missing variant is not an error
 		nested, err := fileSet(target, d, false, profiles, seen, depth+1)
 		if err != nil {
 			return nil, err
@@ -145,15 +157,16 @@ func withImports(path string, doc *yaml.Node, profiles []string, seen map[string
 	return out, nil
 }
 
-// read 读并解析一个文件。已经读过、或者不要求存在而它不在时返回 nil
+// read reads and parses one file. It returns nil for one already read, and for one that is not
+// required and is not there
 func read(path string, required bool, seen map[string]bool) (*yaml.Node, error) {
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		abs = path
 	}
 	if seen[abs] {
-		// 同一个文件只算一次，与 Spring 一致。菱形引用（两个片段都引了
-		// 同一份公共配置）和成环都在这里断开，后者因此不会报错
+		// One file counts once, as in Spring. A diamond (two fragments both importing the same shared
+		// configuration) and a cycle both break here, so the latter is never an error
 		return nil, nil
 	}
 
@@ -168,11 +181,12 @@ func read(path string, required bool, seen map[string]bool) (*yaml.Node, error) 
 	return parse(path, raw)
 }
 
-// importsOf 取出并移除文档里的 XApp.Import。
+// importsOf takes XApp.Import out of the document and removes it.
 //
-// 路径上的 ${VAR} 在这里就展开：要先知道读哪个文件，才谈得上合并。
-// 其余字段的展开留到全部合并完之后——base 里一个必填的 ${VAR}
-// 如果被 profile 文件覆盖掉了，就不该再要求它必须设置。
+// A ${VAR} in a path is expanded right here: which file to read has to be known before anything can
+// be merged.
+// The other fields are expanded once everything has been merged -- a required ${VAR} in base that a
+// profile file overrode must no longer have to be set.
 func importsOf(doc *yaml.Node, path string) ([]string, error) {
 	node := takeFromApp(doc, ImportKey)
 	if node == nil {
@@ -194,11 +208,11 @@ func importsOf(doc *yaml.Node, path string) ([]string, error) {
 	return out, nil
 }
 
-// scalarList 取「一个字符串，或一个字符串列表」形状的值。
-// null 和空串算一个都没有；形状不对时 ok 为 false
+// scalarList takes a value shaped as "one string, or a list of strings".
+// null and an empty string count as none; a shape that does not match gives ok false
 func scalarList(n *yaml.Node) (out []string, ok bool) {
 	switch n.Kind {
-	case 0: // 解码进 yaml.Node 的字段压根没写
+	case 0: // a field decoded into a yaml.Node that was never written at all
 		return nil, true
 	case yaml.ScalarNode:
 		if isNull(n) || n.Value == "" {
@@ -217,17 +231,20 @@ func scalarList(n *yaml.Node) (out []string, ok bool) {
 	return nil, false
 }
 
-// parse 解析一个配置文件，把两件只能在合并之前做的事一并做掉。
+// parse parses one configuration file and does, along the way, the things that can only be done
+// before merging.
 //
-//   - 一个文件只能有一份文档，见 onlyDocument。
-//   - 重复的 key 报错，带文件和行号。合并按名字对齐 key，重复在那一步就被
-//     吞掉了，后面的严格解码再也看不见它——于是同一个块写两遍能正常加载，
-//     静默地以后一份为准，而写的人多半以为两份都生效了。从前只有第一个文件
-//     能靠严格解码查出来，profile 和 import 进来的文件全都漏掉。
-//   - 别名换成它指向的内容。各顶层块是分开解码的，别名若指向另一个块里的
-//     锚点，解码那一块时锚点已经不在了（unknown anchor）；展开之后
-//     profile 文件也就能覆盖别名带进来的字段。
-//   - 合并键 `<<` 摊平成普通的 key，见 flattenMerges。
+//   - one file may hold one document, see onlyDocument.
+//   - a duplicate key is an error, with its file and line. Merging aligns keys by name and a
+//     duplicate is swallowed at that step, after which the strict decoding never sees it again --
+//     so the same block written twice loads fine, quietly going by the second one, while whoever
+//     wrote it most likely believes both took effect. Only the first file used to be caught by the
+//     strict decoding, and the profile files and the imported ones were all missed.
+//   - an alias is replaced with what it points at. Each top-level block is decoded separately, and
+//     an alias pointing at an anchor inside another block would find the anchor gone while that
+//     block is decoded (unknown anchor); once expanded, a profile file can also override the fields
+//     an alias brought in.
+//   - the merge key `<<` is flattened into ordinary keys, see flattenMerges.
 func parse(path string, raw []byte) (*yaml.Node, error) {
 	doc, err := onlyDocument(raw)
 	if err != nil {
@@ -247,15 +264,18 @@ func parse(path string, raw []byte) (*yaml.Node, error) {
 	return out, nil
 }
 
-// onlyDocument 解析 raw 里唯一的那份文档；空文件（只有注释也算）得到 Kind 为 0 的节点。
+// onlyDocument parses the one document in raw; an empty file (holding only comments counts) gives a
+// node whose Kind is 0.
 //
-// 一个文件里用 --- 隔开好几份文档不支持：yaml.Unmarshal 只读第一份，
-// 后面的整段静默丢掉，连「没人读的配置块」都报不出来——写的人以为那段生效了。
-// 分环境的写法是 application-{profile}.yml，所以直接报错，指过去。
+// Several documents separated by --- inside one file are not supported: yaml.Unmarshal reads the
+// first one alone and drops the rest quietly, so not even "a configuration block nobody reads" is
+// reported -- while whoever wrote it believes that part took effect.
+// Per-environment settings are written as application-{profile}.yml, so this is an error outright,
+// pointing there.
 //
-// 只有「空」的文档不算第二份（量过，go.yaml.in/yaml/v3 v3.0.4）：开头一个 ---、
-// 结尾多写一个 ---（后面什么都没有、只有注释、或者写着 ~）解出来都是一个 null，
-// 结尾的 ... 则根本不产生文档。它们照常加载。
+// An "empty" document does not count as a second one (measured on go.yaml.in/yaml/v3 v3.0.4): a ---
+// at the start and an extra --- at the end (with nothing after it, only comments, or a ~) all parse
+// into one null, and a trailing ... produces no document at all. Those load as usual.
 func onlyDocument(raw []byte) (yaml.Node, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(raw))
 	var doc yaml.Node
@@ -271,7 +291,7 @@ func onlyDocument(raw []byte) (yaml.Node, error) {
 		}
 		if len(d.Content) == 0 || isNull(d.Content[0]) {
 			if !found && doc.Kind == 0 {
-				doc = d // 全是空文档时留第一份：「只有一个 --- 的文件」照旧是它
+				doc = d // with every document empty, the first is kept: "a file holding one ---" is still it
 			}
 			continue
 		}
@@ -283,10 +303,10 @@ func onlyDocument(raw []byte) (yaml.Node, error) {
 	}
 }
 
-// checkDuplicates 查出同一个 mapping 里重复的 key
+// checkDuplicates finds duplicate keys inside one mapping
 func checkDuplicates(n *yaml.Node) error {
 	if n.Kind == yaml.MappingNode {
-		lines := map[string]int{} // key → 第一次出现的行号
+		lines := map[string]int{} // key -> the line it first appeared on
 		for i := 0; i+1 < len(n.Content); i += 2 {
 			key := n.Content[i]
 			if prev, dup := lines[key.Value]; dup {
@@ -303,10 +323,11 @@ func checkDuplicates(n *yaml.Node) error {
 	return nil
 }
 
-// resolveAliases 返回 n 的一份副本，其中的别名都换成了它指向的内容。
+// resolveAliases returns a copy of n with every alias replaced by what it points at.
 //
-// 每处引用各得一份副本而不是共用同一个节点：占位符按节点展开，
-// 共用的话同一个值会被展开两次，环境变量的值里恰好带着 ${ 时就错了。
+// Every reference gets a copy of its own rather than sharing one node: placeholders are expanded
+// per node, and sharing would expand the same value twice, which goes wrong as soon as an
+// environment variable's value happens to hold a ${.
 func resolveAliases(n *yaml.Node, budget *int) (*yaml.Node, error) {
 	if n.Kind == yaml.AliasNode {
 		return resolveAliases(n.Alias, budget)
@@ -315,7 +336,7 @@ func resolveAliases(n *yaml.Node, budget *int) (*yaml.Node, error) {
 		return nil, fmt.Errorf("alias expansion exceeds %d nodes", maxResolvedNodes)
 	}
 	out := *n
-	out.Anchor = "" // 别名都已展开，锚点再留着只会在序列化时多出一个没人引用的定义
+	out.Anchor = "" // the aliases are expanded, and keeping the anchor would only add a definition nobody references when serializing
 	out.Content = make([]*yaml.Node, len(n.Content))
 	for i, c := range n.Content {
 		r, err := resolveAliases(c, budget)
@@ -327,20 +348,25 @@ func resolveAliases(n *yaml.Node, budget *int) (*yaml.Node, error) {
 	return &out, nil
 }
 
-// flattenMerges 把每个 mapping 里的合并键 `<<` 摊平成普通的 key，就地改 n。
+// flattenMerges flattens the merge key `<<` of every mapping into ordinary keys, changing n in
+// place.
 //
-// yaml 的规矩是「写明的 key 压过 << 并进来的」，这条规矩只该在一个文件内部用。
-// 留到几个文件合并完再交给解码器的话，profile 文件里 `<<: *prod` 带进来的
-// Addr 会输给 base 里写明的 Addr——优先级高的文件反而没生效。
-// 在解析时摊平，合并时看到的就只有普通的 key，谁压过谁全按文件的优先级。
+// yaml's rule is "a key written out overrides one merged in with <<", and that rule belongs inside
+// one file alone. Left to the decoder until several files have been merged, an Addr a profile
+// file's `<<: *prod` brought in would lose to an Addr written out in base -- the higher-priority
+// file would be the one that did not take effect.
+// Flattened while parsing, merging sees ordinary keys alone and what overrides what goes entirely
+// by the files' priority.
 //
-// 规则和 yaml.v3 解码时一致（量过，go.yaml.in/yaml/v3 v3.0.4）：
-//   - 写明的 key 压过并进来的，不论写在 << 之前还是之后；
-//   - << 后面是列表时，靠前的压过靠后的；
-//   - 并进来的只有那一层：写明了 Nested 就整个用写明的，不和并进来的 Nested 再合；
-//   - 并进来的 mapping 自己也能带 <<，先摊平它。
+// The rules match yaml.v3's while decoding (measured on go.yaml.in/yaml/v3 v3.0.4):
+//   - a key written out overrides one merged in, whether it is written before or after the <<;
+//   - with a list after the <<, an earlier entry overrides a later one;
+//   - only that one level is merged in: a Nested written out is used whole and is not merged with
+//     the Nested brought in;
+//   - a mapping merged in may carry a << of its own, which is flattened first.
 //
-// 调用前别名已经展开成各自的副本（见 resolveAliases），所以就地改不会改到别处。
+// The aliases were expanded into copies of their own before this is called (see resolveAliases), so
+// changing them in place reaches nowhere else.
 func flattenMerges(n *yaml.Node) error {
 	for _, c := range n.Content {
 		if err := flattenMerges(c); err != nil {
@@ -351,7 +377,7 @@ func flattenMerges(n *yaml.Node) error {
 		return nil
 	}
 
-	own := map[string]bool{} // 写明的 key
+	own := map[string]bool{} // the keys written out
 	merges := false
 	for i := 0; i+1 < len(n.Content); i += 2 {
 		if isMergeKey(n.Content[i]) {
@@ -364,7 +390,8 @@ func flattenMerges(n *yaml.Node) error {
 		return nil
 	}
 
-	// 并进来的 key 放在 << 原来的位置上，节点顺序因此和文件里读到的一致
+	// A key merged in takes the << 's own position, so the node order matches what was read from the
+	// file
 	out := make([]*yaml.Node, 0, len(n.Content))
 	for i := 0; i+1 < len(n.Content); i += 2 {
 		k, v := n.Content[i], n.Content[i+1]
@@ -382,7 +409,7 @@ func flattenMerges(n *yaml.Node) error {
 			}
 			for j := 0; j+1 < len(src.Content); j += 2 {
 				if key := src.Content[j].Value; !own[key] {
-					own[key] = true // 靠前的来源压过靠后的
+					own[key] = true // an earlier source overrides a later one
 					out = append(out, src.Content[j], src.Content[j+1])
 				}
 			}
@@ -392,15 +419,18 @@ func flattenMerges(n *yaml.Node) error {
 	return nil
 }
 
-// isMergeKey 是不是合并键：`<<` 且没加引号（加了引号的 "<<" 是个普通字符串 key）
+// isMergeKey reports whether this is the merge key: a `<<` with no quotes (a quoted "<<" is an
+// ordinary string key)
 func isMergeKey(k *yaml.Node) bool {
 	return k.Kind == yaml.ScalarNode && k.Value == "<<" && k.ShortTag() == "!!merge"
 }
 
-// takeFromApp 取出 XApp 下面的某个 key 并把它从文档里摘掉，没有则返回 nil。
+// takeFromApp takes one key out from under XApp and removes it from the document, returning nil
+// when there is none.
 //
-// 摘完 XApp 空了就连它一起摘掉：只写了 Profiles / Import 的 XApp 交给 xapp 时
-// 是一个空块，没 import xapp 的程序会把它当成「没人读的配置块」启动失败
+// XApp left empty is removed along with it: an XApp holding only Profiles / Import would reach xapp
+// as an empty block, and a program that never imported xapp would fail startup over "a
+// configuration block nobody reads"
 func takeFromApp(doc *yaml.Node, key string) *yaml.Node {
 	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
 		return nil
@@ -421,7 +451,7 @@ func takeFromApp(doc *yaml.Node, key string) *yaml.Node {
 	return val
 }
 
-// removeKey 取出 mapping m 里的某个 key 并把它摘掉，没有则返回 nil
+// removeKey takes one key out of the mapping m and removes it, returning nil when there is none
 func removeKey(m *yaml.Node, key string) *yaml.Node {
 	i := keyIndex(m, key)
 	if i < 0 {
@@ -432,8 +462,10 @@ func removeKey(m *yaml.Node, key string) *yaml.Node {
 	return val
 }
 
-// keyIndex mapping m 里 key 所在的下标（值在 i+1），没有则返回 -1。
-// 重复的 key 在解析时就拦下了（见 checkDuplicates），所以第一个就是唯一的那个
+// keyIndex is the index key sits at inside the mapping m (its value at i+1), or -1 when there is
+// none.
+// A duplicate key was caught while parsing (see checkDuplicates), so the first one is the only
+// one
 func keyIndex(m *yaml.Node, key string) int {
 	for i := 0; i+1 < len(m.Content); i += 2 {
 		if m.Content[i].Value == key {
@@ -443,7 +475,8 @@ func keyIndex(m *yaml.Node, key string) int {
 	return -1
 }
 
-// profilePath 由 application.yml 推出 application-prod.yml，目录和扩展名都跟着原文件
+// profilePath derives application-prod.yml from application.yml, keeping the original file's
+// directory and extension
 func profilePath(base, profile string) string {
 	ext := filepath.Ext(base)
 	return strings.TrimSuffix(base, ext) + "-" + profile + ext

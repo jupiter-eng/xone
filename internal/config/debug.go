@@ -10,13 +10,16 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// DebugEnvKey 设成 1 / true / yes / on 时，框架把启动过程打给人看：用了哪份配置、怎么找到的、
-// 激活了哪些 profile、按优先级读了哪些文件、合并之后的最终配置（凭证已遮掉）、启动钩子的顺序。
+// DebugEnvKey, set to 1 / true / yes / on, has the framework print the startup for a person to
+// read: which configuration was used and how it was found, which profiles are active, which files
+// were read in priority order, the final configuration after merging (with the credentials masked),
+// and the order of the start hooks.
 //
-// 写的是 stderr、多行、给人读的文本，不是 JSON——只在本地排查时开，别带进生产的日志管道。
+// What it writes is multi-line text on stderr for a person to read, not JSON -- turn it on while
+// tracking something down locally and keep it out of a production logging pipeline.
 const DebugEnvKey = "XONE_DEBUG"
 
-// Debug XONE_DEBUG 开着没有
+// Debug reports whether XONE_DEBUG is on
 func Debug() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(DebugEnvKey))) {
 	case "1", "true", "yes", "on":
@@ -25,26 +28,26 @@ func Debug() bool {
 	return false
 }
 
-// DebugOut 调试输出写到哪里。测试换成 buffer
+// DebugOut is where the debug output is written. The tests swap in a buffer
 var DebugOut io.Writer = os.Stderr
 
-// Debugf 在 XONE_DEBUG 开着时写一行调试输出，前缀 [xone debug]
+// Debugf writes one line of debug output while XONE_DEBUG is on, prefixed with [xone debug]
 func Debugf(format string, args ...any) {
 	if Debug() {
 		fmt.Fprintf(DebugOut, "[xone debug] "+format+"\n", args...)
 	}
 }
 
-// report 一次加载的经过，XONE_DEBUG 开着时打出来
+// report is how one load went, printed while XONE_DEBUG is on
 type report struct {
-	files        []string              // 按优先级从低到高
-	profiles     []string              // 激活的 profile
-	profilesFrom string                // profile 是从哪来的
-	root         *yaml.Node            // 合并、展开之后的整份配置；nil 表示什么都没写
-	raw          map[*yaml.Node]string // 占位符展开过的节点 → 配置里写的原文，打印时显示原文
+	files        []string              // in priority order, lowest to highest
+	profiles     []string              // the active profiles
+	profilesFrom string                // where the profiles came from
+	root         *yaml.Node            // the whole configuration once merged and expanded; nil means nothing was written
+	raw          map[*yaml.Node]string // a node whose placeholder was expanded -> the text written in the configuration, which is what is printed
 }
 
-// debugReport 把一次加载的经过写进 DebugOut
+// debugReport writes how one load went into DebugOut
 func debugReport(base, from string, r *report) {
 	if !Debug() {
 		return
@@ -78,11 +81,13 @@ func debugReport(base, from string, r *report) {
 	fmt.Fprint(DebugOut, b.String())
 }
 
-// redactedValue 遮掉之后显示的值
+// redactedValue is what a masked value is shown as
 const redactedValue = "***"
 
-// sensitiveKeys key 里含这些词（比较前转小写、去掉 _ - . 和空格）的值整个遮掉。
-// 不含 key：KeyPrefix、KeyFile 这类不是凭证，遮了反而看不出配了什么
+// sensitiveKeys: a value whose key contains one of these words (lowercased and with _ - . and
+// spaces removed before the comparison) is masked whole.
+// key is not among them: KeyPrefix and KeyFile are not credentials, and masking them only hides
+// what was configured
 var sensitiveKeys = []string{"password", "passwd", "secret", "token", "credential", "apikey", "accesskey", "privatekey"}
 
 func sensitiveKey(k string) bool {
@@ -95,17 +100,21 @@ func sensitiveKey(k string) bool {
 	return false
 }
 
-// 值里夹着的凭证：DSN、URL 里的密码，查询串和 key=value 写法里的凭证。
+// Credentials hiding inside a value: the password in a DSN or a URL, and the credentials in a
+// query string or a key=value spelling.
 //
-// 密码里带 @ 或 / 的（`postgres://u:p@ss@h`、`u:p/ss@h`、`u:p@ss@tcp(h)`）要遮到最后一个 @：
-// 只遮到第一个的话，后半截连同主机原样打出来。代价是同一段里后面再有 @
-// （查询串里写了邮箱）时连主机也遮掉——调试输出宁可多遮
+// A password holding @ or / (`postgres://u:p@ss@h`, `u:p/ss@h`, `u:p@ss@tcp(h)`) has to be masked
+// up to the last @: masked up to the first, the rest of it would be printed along with the host.
+// The price is masking the host as well when another @ follows in the same piece (an email address
+// in a query string) -- the debug output would rather mask too much
 var (
-	urlUserinfo = regexp.MustCompile(`(://[^:/?#@\s]*):\S*@`) // postgres://u:p@h、redis://:p@h
+	urlUserinfo = regexp.MustCompile(`(://[^:/?#@\s]*):\S*@`) // postgres://u:p@h, redis://:p@h
 	mysqlDSN    = regexp.MustCompile(`^([^:@/\s]+):\S*@`)     // u:p@tcp(h:3306)/db
-	// 查询串（?token=x&page=2）和 PG 关键字写法（host=db password=x）里的一对 name=value。
-	// 值停在 } 之前：显示的是原文时它是 ${VAR:默认值} 的收尾（占位符的默认值里不会有 }），
-	// 一起遮掉的话打出来是 ${OPT:https://h/?api_key=***，后面的 /path 也跟着没了
+	// One name=value pair inside a query string (?token=x&page=2) or a PG keyword spelling
+	// (host=db password=x).
+	// The value stops before a }: with the text shown as written, that is the closing brace of a
+	// ${VAR:default} (a placeholder default never holds a }), and masking it along would print
+	// ${OPT:https://h/?api_key=*** with the /path behind it gone as well
 	kvPair = regexp.MustCompile(`([A-Za-z0-9_.\-]+)=('[^']*'|[^\s&#;}]+)`)
 )
 
@@ -116,21 +125,26 @@ func redactString(s string) string {
 	}
 	return kvPair.ReplaceAllStringFunc(s, func(m string) string {
 		name, _, _ := strings.Cut(m, "=")
-		if sensitiveKey(name) || strings.EqualFold(name, "pwd") { // pwd 是 ODBC、SQL Server 连接串的写法
+		if sensitiveKey(name) || strings.EqualFold(name, "pwd") { // pwd is how an ODBC / SQL Server connection string spells it
 			return name + "=" + redactedValue
 		}
 		return m
 	})
 }
 
-// redacted 返回 n 的深拷贝，凭证已遮掉、注释去掉；n 本身不动。
-// 注释不留：合并之后看不出一条注释是哪个文件写的，留着只会让人对着错的文件找。
+// redacted returns a deep copy of n with the credentials masked and the comments removed; n itself
+// is left alone.
+// The comments are not kept: after merging there is no telling which file a comment was written in,
+// and keeping it would only send somebody to the wrong file.
 //
-// raw 是占位符展开过的节点 → 配置里写的原文（见 expand）。这些节点显示原文 `${VAR}`，
-// 不显示展开出来的值：${VAR} 恰恰是凭证的推荐写法，而它不一定放在叫 password 的 key 下面
-// （DSN、Webhook 地址）。原文也照样过一遍遮挡：`${DSN:postgres://u:p@h}` 的默认值里也可能有密码。
+// raw maps a node whose placeholder was expanded to the text written in the configuration (see
+// expand). Such a node shows the text `${VAR}` rather than the value it expanded to: ${VAR} is
+// exactly the recommended spelling for a credential, and it need not sit under a key called
+// password (a DSN, a webhook address). The text goes through the masking all the same:
+// `${DSN:postgres://u:p@h}`'s default may hold a password too.
 //
-// key 名是凭证的，值不论什么形状（标量、列表、map）整个换成 ***；空的不遮，看得出没配。
+// Under a credential key the value is replaced with *** whatever its shape (a scalar, a list, a
+// map); an empty one is not masked, so it is visible as unconfigured.
 func redacted(n *yaml.Node, raw map[*yaml.Node]string) *yaml.Node {
 	c := *n
 	c.HeadComment, c.LineComment, c.FootComment = "", "", ""
@@ -149,7 +163,8 @@ func redacted(n *yaml.Node, raw map[*yaml.Node]string) *yaml.Node {
 			if !sensitiveKey(c.Content[i].Value) {
 				continue
 			}
-			// 空不空看展开之后的值：`${PW:}` 没设时是空的，显示原文反倒会让人以为配了
+			// Empty or not goes by the expanded value: `${PW:}` is empty when unset, and showing the
+			// text as written would make it look configured
 			if v := n.Content[i+1]; isEmptyNode(v) || v.Kind == yaml.ScalarNode && v.Value == "" {
 				c.Content[i+1] = redacted(v, nil)
 			} else {

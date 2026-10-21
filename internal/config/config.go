@@ -1,13 +1,16 @@
-// Package config 读配置文件，并把结果留在这里等人来取。
+// Package config reads the configuration file and keeps the result here for whoever comes to take
+// it.
 //
-// 三条规矩：默认值预填在结构体里；未知字段是错误；${VAR} 未设置是错误。
+// Three rules: the defaults are pre-filled in the structs; an unknown field is an error; an unset
+// ${VAR} is an error.
 //
-// 什么时候取都行：第一次有人取的时候才去找文件、加载，之后都是同一份。
-// 于是使用者不必知道配置是什么时候加载的——在 main 里、在 Run 之前、在钩子里，
-// 读到的都是配置文件里的最终值。xone.Run 只是确保它加载过，结束时再交还。
+// It may be taken at any time: the file is found and loaded on the first read, and every read
+// afterwards gets the same one. So a caller never has to know when the configuration was loaded --
+// in main, before Run, or inside a hook, what is read is the final value from the configuration
+// file. xone.Run only makes sure it has been loaded, and hands it back when it ends.
 //
-// 「谁读了哪一块」是运行时才知道的，没人读过的顶层 key 由 Unclaimed
-// 在钩子全跑完之后报出来。
+// "Who read which block" is only known at run time, and a top-level key nobody read is reported by
+// Unclaimed once every hook has run.
 package config
 
 import (
@@ -31,25 +34,28 @@ var placeholder = regexp.MustCompile(`\$\{([^}:]+)(?::([^}]*))?\}`)
 
 var (
 	mu       sync.Mutex
-	sections map[string]*yaml.Node // 顶层 key → 那一段的节点
-	claimed  map[string]bool       // 被 Unmarshal / Has 问过的 key
-	ready    bool                  // 已加载：读到了文件，或者没找到文件、全用默认值
-	source   string                // 加载的是哪个文件；没找到文件时为空
-	failed   error                 // 加载失败的原因，之后每次读都原样返回
+	sections map[string]*yaml.Node // a top-level key -> that block's node
+	claimed  map[string]bool       // the keys Unmarshal / Has was asked about
+	ready    bool                  // loaded: either a file was read, or none was found and everything uses its defaults
+	source   string                // which file was loaded; empty when none was found
+	failed   error                 // why loading failed, returned unchanged by every read afterwards
 
-	// expanded 占位符展开过的节点 → 配置里写的那段原文（如 ${DB_PASSWORD}），见 checker.redact。
-	// 不归 mu 管：DecodeStrict 经 xconfig 导出，调用方不一定持有 mu
+	// expanded maps a node whose placeholder was expanded to the text written in the configuration
+	// (${DB_PASSWORD}, say), see checker.redact.
+	// It is not under mu: DecodeStrict is exported through xconfig and a caller need not hold mu
 	expanded atomic.Pointer[map[*yaml.Node]string]
 
-	// origins 每个解析出来的节点 → 它来自哪个文件，见 checker.at。不归 mu 管，理由同 expanded
+	// origins maps every parsed node to the file it came from, see checker.at. Not under mu, for
+	// expanded's reason
 	origins atomic.Pointer[map[*yaml.Node]string]
 )
 
-// Ensure 确保配置已经加载，由 xone.Run 在启动时调用。
+// Ensure makes sure the configuration has been loaded, and is called by xone.Run at startup.
 //
-// path 是 WithConfigPath 点名要的文件，留空按 locate 的顺序找。已经有人提前
-// 读过配置（于是已经加载过）时沿用那一份：提前读到的值和之后生效的必须是
-// 同一份。所以点名的文件和它不是同一个时报错，而不是悄悄换一份。
+// path is the file WithConfigPath names, and left empty it is found in locate's order. When
+// somebody read the configuration earlier (and it is loaded already), that one is reused: what was
+// read early and what takes effect afterwards have to be one and the same. So a named file that is
+// not that one is an error rather than a quiet swap.
 func Ensure(path string, log *slog.Logger) error {
 	mu.Lock()
 	defer mu.Unlock()
@@ -68,11 +74,13 @@ func Ensure(path string, log *slog.Logger) error {
 	return failed
 }
 
-// sameFile 两个路径是不是同一个文件。
+// sameFile reports whether two paths are the same file.
 //
-// 不能按字符串比：同一个文件写成 dir/./b.yml、相对路径或者经符号链接，
-// 从前都被当成另一个文件，Run 报「已经加载过另一份」而启动失败。
-// 先比清理过的绝对路径；两边都存在时再按 os.SameFile 认（管得到符号链接和硬链接）。
+// They must not be compared as strings: the same file written as dir/./b.yml, as a relative path or
+// through a symlink each used to count as another file, and Run failed startup over "another one
+// was loaded already".
+// The cleaned absolute paths are compared first; when both exist, os.SameFile decides (which covers
+// symlinks and hard links).
 func sameFile(a, b string) bool {
 	if a == "" || b == "" {
 		return a == b
@@ -87,7 +95,7 @@ func sameFile(a, b string) bool {
 	return errA == nil && errB == nil && os.SameFile(infoA, infoB)
 }
 
-// ensureLocked 第一次读的时候按 locate 的顺序找文件、加载。调用方持有 mu
+// ensureLocked finds and loads the file in locate's order on the first read. The caller holds mu
 func ensureLocked() error {
 	if ready || failed != nil {
 		return failed
@@ -95,14 +103,17 @@ func ensureLocked() error {
 	return loadLocked("", slog.Default())
 }
 
-// loadLocked 找文件并加载，调用方持有 mu。
+// loadLocked finds and loads the file; the caller holds mu.
 //
-// 点名要的文件（WithConfigPath、--config、XONE_CONFIG）找不到是错误；约定路径
-// 一个都没命中则只告警、全用默认值——这对一个没有任何外部依赖的服务是合理的。
-// 两者的区别与「你要的」和「约定俗成的」一致。
+// A named file (WithConfigPath, --config, XONE_CONFIG) that cannot be found is an error; none of
+// the conventional paths matching only warns and uses the defaults for everything -- which is
+// reasonable for a service with no external dependency at all.
+// The difference between the two is the difference between "what you asked for" and "what is
+// conventional".
 //
-// 失败也记下来：一份写坏了的配置，之后每一次读都该报同一个错，
-// 而不是每次重读一遍、或者第二次读时悄悄当成没配。
+// A failure is recorded as well: a malformed configuration should report the same error on every
+// read afterwards, rather than being re-read every time, or quietly counting as unconfigured on the
+// second read.
 func loadLocked(path string, log *slog.Logger) error {
 	if failed = danglingArg(); failed != nil {
 		return failed
@@ -121,7 +132,8 @@ func loadLocked(path string, log *slog.Logger) error {
 		sections, claimed, ready = nil, map[string]bool{}, true
 		return nil
 	case !xutil.FileExist(path):
-		// locate 只在文件确实存在时才返回约定路径，所以走到这里的一定是点名要的
+		// locate returns a conventional path only when the file really exists, so whatever reaches
+		// here was named explicitly
 		failed = xerror.Newf("xconfig", "config", "config file does not exist: %s", path)
 		return failed
 	}
@@ -137,8 +149,9 @@ func loadLocked(path string, log *slog.Logger) error {
 	return nil
 }
 
-// Load 读配置文件，把结果留在包里，替换掉原来的那一份。只给测试用——
-// 生产路径走 Ensure 和第一次读时的自动加载。
+// Load reads a configuration file and keeps the result in the package, replacing whatever was
+// there. For the tests alone -- the production path goes through Ensure and the automatic load on
+// the first read.
 func Load(path string) error {
 	s, _, err := load(path)
 	if err != nil {
@@ -150,13 +163,15 @@ func Load(path string) error {
 	return nil
 }
 
-// load 读配置文件，解析、合并、展开占位符，返回各顶层 key 对应的节点。
+// load reads the configuration file, parses, merges and expands the placeholders, and returns the
+// node of each top-level key.
 //
-// 读的不一定只有一个文件：base 文件可以 Import 别的文件，
-// 激活的 profile 还会带上 application-{profile}.yml。
-// 合并规则和优先级见 loadAll 与 merge。
+// What is read need not be one file: the base file may Import others, and an active profile brings
+// application-{profile}.yml along.
+// The merge rules and the priorities are in loadAll and merge.
 //
-// 另外返回这次加载的经过（读了哪些文件、激活了哪些 profile、最终的配置），XONE_DEBUG 打出来。
+// It also returns how this load went (which files were read, which profiles are active, the final
+// configuration), which XONE_DEBUG prints.
 func load(path string) (map[string]*yaml.Node, *report, error) {
 	files, active, activeFrom, err := loadAll(path)
 	if err != nil {
@@ -166,7 +181,8 @@ func load(path string) (map[string]*yaml.Node, *report, error) {
 	for _, f := range files {
 		r.files = append(r.files, f.path)
 	}
-	// 合并之后一个块里的字段可能来自好几个文件，报错时得说清是哪一个
+	// After merging, the fields of one block may come from several files, and an error has to say
+	// which one
 	from := map[*yaml.Node]string{}
 	for _, f := range files {
 		remember(f.node, f.path, from)
@@ -175,11 +191,12 @@ func load(path string) (map[string]*yaml.Node, *report, error) {
 
 	var root *yaml.Node
 	for _, f := range files {
-		// Profiles 只认 base 文件里那一份，loadAll 已经把它取走了，这里还剩的都是
-		// 被引进来的文件写的。它们再去激活 profile 的话，
-		// 「谁决定加载哪些文件」就成了一个和加载顺序互相依赖的问题。
-		// 写了就算，哪怕是个空列表——那多半是抄 base 时带过来的，留着只会让人
-		// 以为它在起作用
+		// Profiles is recognized in the base file alone, which loadAll took out already, so whatever
+		// is left here was written by an imported file. Were those to activate profiles as well,
+		// "who decides which files are loaded" would become a question depending on the loading order
+		// that depends on it.
+		// Writing it at all counts, even as an empty list -- it most likely came along while copying
+		// base, and keeping it would only make it look as though it did something
 		if takeFromApp(f.node, ProfilesKey) != nil {
 			return nil, nil, xerror.Newf("xconfig", "config",
 				"%s.%s may only be set in the base config file, found it in %s", AppKey, ProfilesKey, f.path)
@@ -190,8 +207,8 @@ func load(path string) (map[string]*yaml.Node, *report, error) {
 		return nil, r, nil
 	}
 
-	// 占位符在全部合并完之后统一展开一次：base 里一个必填的 ${VAR}
-	// 如果已经被 profile 文件覆盖掉了，就不该再要求它必须设置
+	// The placeholders are expanded once, after everything has been merged: a required ${VAR} in
+	// base that a profile file overrode must no longer have to be set
 	var missing []string
 	values := map[*yaml.Node]string{}
 	expand(root, &missing, values)
@@ -205,13 +222,15 @@ func load(path string) (map[string]*yaml.Node, *report, error) {
 	return s, r, err
 }
 
-// Unmarshal 把 key 那一段解进 into，并记下这一块有人读过。
+// Unmarshal decodes the key's block into into and records that the block has been read.
 //
-// into 里已经是默认值，文件里没写的字段保持不变——所以不需要指针字段来区分
-// 「没配」和「配成零值」。整块没配时 into 原样不动，返回 nil。
+// into holds the defaults already and a field the file does not set stays as it is -- which is why
+// no pointer field is needed to tell "not configured" from "configured as the zero value". With the
+// whole block unconfigured, into is left alone and nil is returned.
 //
-// 在 Start 之前任何时候调都行：还没加载的话先加载，读到的永远是配置文件里的最终值，
-// 不会因为读得早就静默拿到一份默认值。
+// It may be called at any time before Start: it loads first when nothing has been loaded, so what
+// is read is always the final value from the configuration file, and reading early never quietly
+// yields a set of defaults.
 func Unmarshal(key string, into any) error {
 	if err := checkTarget(into); err != nil {
 		return err
@@ -224,16 +243,17 @@ func Unmarshal(key string, into any) error {
 		return err
 	}
 	if node == nil {
-		return nil // 没配这一块，或者写了个空块，都保持默认值
+		return nil // the block is unconfigured, or written empty; either way the defaults stay
 	}
 	if err := DecodeStrict(node, into); err != nil {
 		return xerror.Newf("xconfig", "config", "invalid config %s: %w", key, err)
 	}
 
-	// 配置结构体自己说得清什么算合法，就让它说——在建任何东西之前拦住配错的
-	// 配置。有些配错不会让初始化失败，只是让某个行为永远走不到（XFlow 的
-	// RollbackTimeout 配成 0 会让每次回滚一进去就判超时、补偿全被跳过，
-	// 而流程本身看起来一切正常），那种只能靠这里拦。
+	// Where a configuration struct can say what counts as valid, it says so -- catching a
+	// misconfiguration before anything is built. Some misconfigurations do not fail initialization
+	// and merely make a behavior unreachable (an XFlow RollbackTimeout of 0 has every rollback time
+	// out the moment it begins and every compensation skipped, while the flow itself looks perfectly
+	// fine), and those can only be caught here.
 	if v, ok := into.(interface{ Validate() error }); ok {
 		if err := v.Validate(); err != nil {
 			return xerror.Newf("xconfig", "config", "invalid config %s: %w", key, err)
@@ -242,15 +262,17 @@ func Unmarshal(key string, into any) error {
 	return nil
 }
 
-// Has 报告配置文件里有没有写这一块。用于「配了才初始化」。
+// Has reports whether the configuration file holds this block. It is for "initialize it only when
+// it is configured".
 //
-// 和 Unmarshal 一样记一笔认领：问过就算有人要。少了这一笔，
-// 「XRedis:」这样的空块会让启动直接失败——Has 返回 false，那个包就此跳过、
-// 不再 Unmarshal，于是这个 key 没人认领，而 Unclaimed 报出来的原因
-// （拼错了、或者忘了 import）两条都不成立，使用者照着查什么都查不出来。
+// It records a claim as Unmarshal does: asking counts as wanting it. Without that, an empty block
+// such as "XRedis:" fails startup outright -- Has returns false, the package skips it and never
+// Unmarshals, so the key is claimed by nobody, and neither reason Unclaimed reports (a misspelling,
+// a forgotten import) applies, so following them finds nothing.
 //
-// 和 Unmarshal 一样，还没加载的话先加载。加载失败时报告没有：那个错误由
-// xone.Run 启动时原样报出来，这里再报一遍只会让可选组件各说各的。
+// As in Unmarshal, it loads first when nothing has been loaded. On a failed load it reports that
+// there is none: that error is reported as it is by xone.Run at startup, and reporting it again
+// here would only have every optional component say its own version of it.
 func Has(key string) bool {
 	mu.Lock()
 	defer mu.Unlock()
@@ -258,12 +280,14 @@ func Has(key string) bool {
 	return err == nil && node != nil
 }
 
-// sectionLocked 取出 key 那一段，调用方持有 mu。Unmarshal、Has、UnmarshalClients 共用。
+// sectionLocked takes the key's block out; the caller holds mu. Unmarshal, Has and
+// UnmarshalClients share it.
 //
-// 三步的顺序是有意的：还没加载就先加载（读得早也拿到文件里的值）；
-// 加载成功就记一笔认领——问过就算有人要，哪怕这一块没配或者是空的；
-// 最后才看有没有写。没配这一块、或者写了个空块时返回 nil。
-// 加载失败时原样返回那个错误，不记认领。
+// The order of the three steps is deliberate: load first when nothing has been loaded (so reading
+// early gets the values from the file); record a claim once the load succeeded -- asking counts as
+// wanting it, even when the block is unconfigured or empty; and only then look at whether anything
+// was written. It returns nil for a block that is unconfigured or written empty.
+// On a failed load it returns that error unchanged and records no claim.
 func sectionLocked(key string) (*yaml.Node, error) {
 	if err := ensureLocked(); err != nil {
 		return nil, err
@@ -275,10 +299,11 @@ func sectionLocked(key string) (*yaml.Node, error) {
 	return nil, nil
 }
 
-// Unclaimed 返回配置文件里没有任何人读过的顶层 key，按名字排序。
+// Unclaimed returns the top-level keys of the configuration file that nobody read, sorted by name.
 //
-// 由框架在全部 BeforeStart 钩子跑完之后检查：一个没人读的 key 多半是拼错了，
-// 或者忘了 import 对应的集成包——两种都会让人配了半天发现不生效。
+// The framework checks it once every BeforeStart hook has run: a key nobody read is most likely
+// misspelled, or the matching integration was never imported -- either way somebody configures
+// something for a while before finding it has no effect.
 func Unclaimed() []string {
 	mu.Lock()
 	defer mu.Unlock()
@@ -293,7 +318,7 @@ func Unclaimed() []string {
 	return out
 }
 
-// LoadInto 加载一个配置文件并把其中 key 那一块取出来。只给测试用。
+// LoadInto loads a configuration file and takes the key's block out of it. For the tests alone.
 func LoadInto(path, key string, into any) error {
 	Reset()
 	if err := Load(path); err != nil {
@@ -302,10 +327,11 @@ func LoadInto(path, key string, into any) error {
 	return Unmarshal(key, into)
 }
 
-// Reset 回到「还没加载」：下一次读会重新找文件、重新加载。
+// Reset goes back to "nothing has been loaded": the next read finds the file and loads it again.
 //
-// xone.Run 结束时调它——配置跟着一次 Run 走，同一个进程里的下一次 Run
-// （测试里很常见）要读它自己的那一份。测试也直接用它。
+// xone.Run calls it when it ends -- the configuration belongs to one Run, and the next Run in the
+// same process (common in the tests) has to read one of its own. The tests use it directly as
+// well.
 func Reset() {
 	mu.Lock()
 	defer mu.Unlock()
@@ -314,7 +340,7 @@ func Reset() {
 	origins.Store(nil)
 }
 
-// remember 记下 n 和它下面每个节点来自 path
+// remember records that n and every node below it came from path
 func remember(n *yaml.Node, path string, into map[*yaml.Node]string) {
 	into[n] = path
 	for _, c := range n.Content {
@@ -325,24 +351,25 @@ func remember(n *yaml.Node, path string, into map[*yaml.Node]string) {
 func topLevel(root *yaml.Node) (map[string]*yaml.Node, error) {
 	out := map[string]*yaml.Node{}
 	if len(root.Content) == 0 || isNull(root.Content[0]) {
-		return out, nil // 只有一个 --- 的文件
+		return out, nil // a file holding one --- alone
 	}
 	doc := root.Content[0]
 	if doc.Kind != yaml.MappingNode {
 		return nil, xerror.New("xconfig", "config", errors.New("top level of the config file must be a mapping"))
 	}
-	// 重复的 key 在这里已经不可能出现：每个文件解析时就查过了，见 parse
+	// A duplicate key is impossible by now: every file was checked while it was parsed, see parse
 	for i := 0; i+1 < len(doc.Content); i += 2 {
 		out[doc.Content[i].Value] = doc.Content[i+1]
 	}
 	return out, nil
 }
 
-// isEmptyNode 判断一个配置块是否没有任何内容
+// isEmptyNode reports whether a configuration block holds nothing at all.
 //
-// `Demo:` 后面什么都不写，解析出来是一个 null 标量；`Demo: {}` 是一个空 mapping。
-// 两种都该等同于「没配这一块」——直接交给解码器的话，前者会得到一个
-// 意义不明的 EOF 错误，后者虽然能过但没必要走一趟。
+// `Demo:` with nothing after it parses into a null scalar, and `Demo: {}` is an empty mapping.
+// Both should mean "the block is unconfigured" -- handed to the decoder directly, the former gives
+// an EOF error that says nothing, and the latter passes while there was no point going through
+// it.
 func isEmptyNode(n *yaml.Node) bool {
 	if n == nil {
 		return true
@@ -353,10 +380,12 @@ func isEmptyNode(n *yaml.Node) bool {
 	return (n.Kind == yaml.MappingNode || n.Kind == yaml.SequenceNode) && len(n.Content) == 0
 }
 
-// expand 在解析后的节点上展开占位符，不在原始字节上做文本替换：
-// 环境变量的值里若含冒号或换行，文本替换会改变 YAML 结构。
+// expand expands the placeholders on the parsed nodes rather than replacing text in the raw bytes:
+// an environment variable whose value holds a colon or a line break would have a text replacement
+// change the YAML structure.
 //
-// values 不为 nil 时记下每个展开过的标量和它的原文，报错时按节点遮掉展开出来的值。
+// With values not nil it records every expanded scalar and the text it was written as, so that an
+// error masks the expanded value per node.
 func expand(n *yaml.Node, missing *[]string, values map[*yaml.Node]string) {
 	if n.Kind == yaml.ScalarNode && strings.Contains(n.Value, "${") {
 		before := n.Value
@@ -384,46 +413,51 @@ func expand(n *yaml.Node, missing *[]string, values map[*yaml.Node]string) {
 	}
 }
 
-// missingNames 没设的变量，按名字排好、每个只列一次：同一个变量用在好几处时
-// 不必在报错里读到好几遍
+// missingNames are the unset variables, sorted by name and listed once each: one variable used in
+// several places need not be read several times in an error
 func missingNames(missing []string) string {
 	slices.Sort(missing)
 	return strings.Join(slices.Compact(missing), ", ")
 }
 
-// retag 让替换过的标量按新内容重新判定类型。
+// retag has a scalar that was replaced decide its type again from its new content.
 //
-// 解析的时候整个 ${PORT:8080} 是一段文本，所以这个标量被打上了 !!str。
-// 替换之后它的内容是 8080，标签却还留在 !!str 上，于是
+// While parsing, the whole ${PORT:8080} is one piece of text, so the scalar was tagged !!str.
+// After the replacement its content is 8080 while the tag is still !!str, so
 //
 //	Port: ${PORT:8080}
 //
-// 会以「cannot unmarshal !!str into int」失败——占位符因此只能用在字符串字段上，
-// 而文档里它是一条通用规则。清掉标签，让 yaml 按替换后的内容重新判定即可。
+// would fail with "cannot unmarshal !!str into int" -- which would leave placeholders usable in
+// string fields alone, while the documentation presents them as a general rule. Clearing the tag
+// and letting yaml decide again from the replaced content is all it takes.
 //
-// 这不会让环境变量的值改变 YAML 结构：重新判定的对象仍是这一个标量，
-// 值里的冒号、换行、星号都留在标量内部。
+// This does not let an environment variable's value change the YAML structure: what is decided
+// again is still this one scalar, and a colon, a line break or an asterisk in the value all stay
+// inside it.
 //
-// 分三种情况：
+// There are three cases:
 //
-// 使用者显式加了引号或写了标签（Style 非 0）时保持原样：那是明确的
-// 「按字符串处理」，数字形态的密码、版本号都指望它。
+// A caller who wrote quotes or a tag explicitly (a Style other than 0) keeps it as it is: that is
+// an explicit "treat it as a string", which a numeric-looking password or version depends on.
 //
-// 替换结果为空（`${PORT:}`，或者变量设成了空串）时标成 null，也就是
-// 「这一项没写」：解码时 null 让字段保持结构体里预填的默认值，不论字段
-// 是什么类型。留着 !!str 的话，字符串字段被清成空串，非字符串字段以
-// cannot unmarshal !!str "" into int 失败——同一个占位符在不同字段上
-// 两种下场。真要空串就加引号：`"${PW:}"`。
+// A replacement that comes out empty (`${PORT:}`, or a variable set to an empty string) is tagged
+// null, that is "this field was not written": while decoding, null leaves a field at the default
+// pre-filled in the struct, whatever its type. Kept as !!str, a string field would be cleared to an
+// empty string and a non-string field would fail with cannot unmarshal !!str "" into int -- the
+// same placeholder with two different fates depending on the field. An empty string that is really
+// wanted is written with quotes: `"${PW:}"`.
 //
-// 合并发生在展开之前，所以这里的「没写」落回的是结构体默认值，
-// 不是低优先级文件里写的那个值。
+// Merging happens before expanding, so the "not written" here falls back to the struct's default
+// and not to the value a lower-priority file wrote.
 //
-// 其余的清掉标签重新判定，但展开出来的值永远不是 null：变量的值恰好是 null、~、Null 这类
-// YAML 的 null 写法时，重新判定会把它当成「没写」，字段悄悄留在默认值上。
-// 那种情况固定成 !!str——字符串字段拿到字面量，别的字段报一个看得懂的类型错误。
+// Everything else has its tag cleared and decided again, while an expanded value is never null: a
+// variable whose value happens to be one of YAML's null spellings (null, ~, Null) would be taken as
+// "not written" when decided again, and the field would quietly stay at its default.
+// That case is fixed at !!str -- a string field gets the literal and any other field gets a type
+// error that reads sensibly.
 func retag(n *yaml.Node) {
 	switch {
-	case n.Style != 0: // 引号或标签：保持原样
+	case n.Style != 0: // quotes or a tag: kept as it is
 	case n.Value == "":
 		n.Tag = "!!null"
 	default:
@@ -434,10 +468,12 @@ func retag(n *yaml.Node) {
 	}
 }
 
-// profilesOf 取出并移除文档里的 XApp.Profiles，返回它声明的 profile 列表。
+// profilesOf takes XApp.Profiles out of the document, removes it, and returns the profiles it
+// declares.
 //
-// 占位符在这里就展开，理由和 Import 的路径一样：要先知道激活哪些 profile，
-// 才知道读哪些文件，等不到全部合并完。于是 `Profiles: ${APP_ENV:dev}` 可用。
+// The placeholders are expanded right here, for the reason an Import path is: which profiles are
+// active has to be known before which files to read is, and that cannot wait for everything to be
+// merged. So `Profiles: ${APP_ENV:dev}` works.
 func profilesOf(doc *yaml.Node, path string) ([]string, error) {
 	node := takeFromApp(doc, ProfilesKey)
 	if node == nil {
@@ -457,8 +493,8 @@ func profilesOf(doc *yaml.Node, path string) ([]string, error) {
 			"%s.%s in %s must be a profile name, a comma-separated string or a list", AppKey, ProfilesKey, path)
 	}
 
-	// 列表和逗号分隔的字符串两种写法都收，跟 Spring 一样：
-	// Profiles: "dev,prod" 解出来是一个元素，这里再拆开
+	// A list and a comma-separated string are both accepted, as in Spring:
+	// Profiles: "dev,prod" parses into one element, which is cut apart here
 	out := make([]string, 0, len(active))
 	for _, a := range active {
 		out = append(out, splitProfiles(a)...)

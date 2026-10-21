@@ -138,7 +138,7 @@ mutate("<< is flattened inside each file", "internal/config/source.go", ".", "Me
 mutate("a key written out overrides one merged in with <<", "internal/config/source.go", ".", "TestLoad_MergeKeyRulesWithinOneFile",
        swap('\t\t\town[n.Content[i].Value] = true\n', '\t\t\t_ = own\n'))
 mutate("earlier entries of a << list override later ones", "internal/config/source.go", ".", "TestLoad_MergeKeyRulesWithinOneFile",
-       swap('\t\t\t\t\town[key] = true // 靠前的来源压过靠后的\n', ''))
+       swap('\t\t\t\t\town[key] = true // an earlier source overrides a later one\n', ''))
 # A second document separated by --- inside one file used to be dropped quietly by yaml.Unmarshal,
 # invisible even to Unclaimed. One mutation each for the call site, the error, and "an empty
 # document does not count as one"
@@ -244,7 +244,7 @@ mutate("a list is replaced whole rather than merged element by element", "intern
 # identical `out = append(out, nested...)` + return
 mutate("an imported file overrides the one importing it", "internal/config/source.go", ".", "TestLoad",
        swap('\tout := []loaded{{path: path, node: doc}}\n', '\tvar out []loaded\n'),
-       swap('''\t\t// import 进来的文件同样有 profile 变体，但变体不存在不算错
+       swap('''\t\t// An imported file has profile variants too, but a missing variant is not an error
 \t\tnested, err := fileSet(target, d, false, profiles, seen, depth+1)
 \t\tif err != nil {
 \t\t\treturn nil, err
