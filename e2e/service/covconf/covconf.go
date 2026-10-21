@@ -1,10 +1,14 @@
-// Package covconf 是 e2e 服务里给配置测试用的业务配置块 Cov。
+// Package covconf is the Cov business configuration block in the e2e service, for the
+// configuration tests.
 //
-// 它和 Service 块互为对照：Service 在 main 里、xone.Run 之前读（docs/config.md「通用规则·什么时候读」），
-// Cov 在启动钩子里读（docs/guide.md「读自己的配置」的另一种写法）。两处读到的
-// 都应该是合并完 profile / Import、展开完 ${VAR} 之后的最终值，GET /probe/config 把两者一起回给测试。
+// It stands against the Service block: Service is read in main before xone.Run (docs/config.md,
+// "The common rules - when it is read") while Cov is read in a start hook (the other way of
+// docs/guide.md, "Reading your own configuration"). Both should see the final values, with the
+// profiles / Imports merged and the ${VAR}s expanded, and GET /probe/config hands the test both at
+// once.
 //
-// 不配这一块就是默认值，也不会被当成「没人认领」：启动钩子里读过它就算认领了
+// Leaving this block out means the defaults and does not count as "unclaimed": reading it in a
+// start hook is what claims it
 package covconf
 
 import (
@@ -15,14 +19,15 @@ import (
 	"github.com/jupiter-eng/xone/xhook"
 )
 
-// Config 配置测试用的几项：一个标量、一个列表（测列表整体替换）、一个 map（测递归合并）
+// Config holds the few fields the configuration tests use: a scalar, a list (to test that a list is
+// replaced whole) and a map (to test the recursive merge)
 type Config struct {
 	Label  string            `yaml:"Label"`
 	Items  []string          `yaml:"Items"`
 	Labels map[string]string `yaml:"Labels"`
 }
 
-// DefaultConfig 默认值
+// DefaultConfig are the defaults
 func DefaultConfig() Config { return Config{Label: "default", Items: []string{"default"}} }
 
 var (
@@ -43,7 +48,7 @@ func load(context.Context) error {
 	return nil
 }
 
-// C 启动钩子读到的 Cov 块
+// C is the Cov block as the start hook read it
 func C() Config {
 	mu.RLock()
 	defer mu.RUnlock()

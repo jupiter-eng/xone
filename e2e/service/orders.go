@@ -15,13 +15,14 @@ import (
 	"github.com/jupiter-eng/xone/xredis"
 )
 
-// order 下单请求，也是贯穿三步的共享数据。三个注入字段都是步骤序号（1..3），0 表示不注入：
+// order is the request to place an order, and the data shared across the three steps. The three
+// injection fields are all a step number (1..3), with 0 injecting nothing:
 //
-//	fail_at           这一步的 Process 返回错误
-//	panic_at          这一步的 Process panic
-//	rollback_fail_at  这一步的 Rollback 返回错误
+//	fail_at           this step's Process returns an error
+//	panic_at          this step's Process panics
+//	rollback_fail_at  this step's Rollback returns an error
 type order struct {
-	ID             string `json:"id"` // 留空时生成一个
+	ID             string `json:"id"` // generated when left empty
 	UserID         int64  `json:"user_id"`
 	Amount         int64  `json:"amount"`
 	FailAt         int    `json:"fail_at"`
@@ -29,17 +30,18 @@ type order struct {
 	RollbackFailAt int    `json:"rollback_fail_at"`
 }
 
-// orderFlow 三步，每一步的副作用都落在测试查得到的地方：
+// orderFlow has three steps, and each one's side effect lands where a test can find it:
 //
-//	1 create   PG 订单表插一行（status=created）   回滚：删掉这一行
-//	2 charge   Redis SET {prefix}order:{id}:charged  回滚：DEL
-//	3 confirm  PG 里 status 改成 confirmed          回滚：改回 created
+//	1 create   inserts a row into the PG order table (status=created)   rollback: deletes that row
+//	2 charge   Redis SET {prefix}order:{id}:charged                     rollback: DEL
+//	3 confirm  sets status to confirmed in PG                           rollback: back to created
 //
-// 注入的故障都发生在副作用之前：失败的那一步自己什么都没做，
-// 按 xflow 的规矩它也不会被回滚，被回滚的只有它前面成功了的那几步
+// Every injected fault happens before the side effect: the failing step did nothing itself, and by
+// xflow's rule it is not rolled back either -- what is rolled back are the steps before it that
+// succeeded
 var orderFlow = xflow.New[*order]("create_order", createStep{}, chargeStep{}, confirmStep{})
 
-// inject 按请求在第 step 步注入故障
+// inject injects the fault at step step as the request asks
 func (o *order) inject(step int) error {
 	if o.PanicAt == step {
 		panic(fmt.Sprintf("injected panic at step %d", step))
@@ -113,8 +115,9 @@ func (confirmStep) Rollback(ctx context.Context, o *order) error {
 	return store.SetOrderStatus(ctx, o.ID, "created")
 }
 
-// createOrder 跑一遍 orderFlow。成功 201，失败 500；两种情况都带上 id，
-// 失败时另有 error、rolled、rollback_errors，测试据此去 PG / Redis 核对补偿做没做
+// createOrder runs orderFlow once. Success answers 201 and failure 500, both carrying id, and a
+// failure carries error, rolled and rollback_errors besides, which a test checks against PG /
+// Redis to see whether the compensation ran
 func createOrder(c *gin.Context) {
 	ctx := c.Request.Context()
 	var o order

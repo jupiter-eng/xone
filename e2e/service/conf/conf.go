@@ -1,8 +1,9 @@
-// Package conf 是 e2e 服务自己的配置块 Service。
+// Package conf is the e2e service's own configuration block, Service.
 //
-// 和 example/component/conf 一个写法：默认值预填在结构体里，main 里读一次，
-// 之后 C() 处处可用。表名、key 前缀、下游地址都由测试经 ${VAR} 注入，
-// 每个测试各用各的，互不干扰。
+// It is written the way example/component/conf is: the defaults are pre-filled in the struct, main
+// reads it once, and C() has it everywhere afterwards. The table name, the key prefix and the
+// downstream address are injected by the test through ${VAR}, and every test has its own, so they
+// do not disturb each other.
 package conf
 
 import (
@@ -13,62 +14,67 @@ import (
 	"github.com/jupiter-eng/xone/xconfig"
 )
 
-// Config 业务配置
+// Config is the business configuration
 type Config struct {
-	// Table 用户表名；订单表是它加上 _orders。会被拼进 SQL，所以只收小写的标识符
+	// Table is the user table's name; the order table is this plus _orders. It goes into SQL, so it
+	// takes a lower-case identifier alone
 	Table string `yaml:"Table"`
 
-	// KeyPrefix Redis 与本地缓存的 key 前缀
+	// KeyPrefix is the key prefix in Redis and in the local cache
 	KeyPrefix string `yaml:"KeyPrefix"`
 
-	// Downstream GET /proxy 调的下游 base URL，比如 http://127.0.0.1:9000。
-	// 留空时 /proxy 返回 503
+	// Downstream is the base URL GET /proxy calls, http://127.0.0.1:9000 for instance.
+	// Empty, /proxy answers 503
 	Downstream string `yaml:"Downstream"`
 
-	// SpanFile 把每个 Span 以一行 JSON 写进这个文件，留空不写
+	// SpanFile writes every span into this file as one JSON line, and writes none when empty
 	SpanFile string `yaml:"SpanFile"`
 
-	// SpanDiscard 挂一个 BatchSpanProcessor，后面的 exporter 只计数不上报。
-	// 压测用：量文档推荐的那条导出管线的开销，而不是 SpanFile 同步写文件的开销
+	// SpanDiscard hangs a BatchSpanProcessor whose exporter counts alone and reports nothing.
+	// It is for the load tests: it measures the overhead of the export pipeline the documentation
+	// recommends rather than of SpanFile writing to a file synchronously
 	SpanDiscard bool `yaml:"SpanDiscard"`
 
-	// UserTTL 用户在 Redis 里缓存多久
+	// UserTTL is how long a user is cached in Redis
 	UserTTL time.Duration `yaml:"UserTTL"`
 
-	// StopTimeout 整个退出流程的预算，交给 xone.WithStopTimeout
+	// StopTimeout is the budget for the whole shutdown, handed to xone.WithStopTimeout
 	StopTimeout time.Duration `yaml:"StopTimeout"`
 
-	// StartStall 大于 0 时，warmup 那个启动钩子不看 ctx 地睡这么久再成功返回，
-	// 测「框架在每个钩子之前再查一次 ctx」。0 是不睡
+	// StartStall, above 0, has the warmup start hook sleep that long without looking at ctx before
+	// returning successfully, to test "the framework checks ctx once more before every hook". 0 does
+	// not sleep
 	StartStall time.Duration `yaml:"StartStall"`
 
-	// Drain 大于 0 时，服务的 Start 在 xgin 返回之后再收这么久的尾（不看 ctx），
-	// 然后碰一次 PG 和 Redis，测「框架等 Start 真正返回才关其余组件」。0 是不收尾
+	// Drain, above 0, has the service's Start wind down for that long after xgin has returned
+	// (without looking at ctx) and then touch PG and Redis once, to test "the framework waits for
+	// Start to really return before it closes the rest". 0 does not wind down
 	Drain time.Duration `yaml:"Drain"`
 
-	// CronEvery 大于 0 时登记一个 @every CronEvery 的定时任务 e2e-tick（见 cron.go）。0 是不登记
+	// CronEvery, above 0, registers an @every CronEvery scheduled job named e2e-tick (see cron.go). 0 registers none
 	CronEvery time.Duration `yaml:"CronEvery"`
 
-	// CronHold e2e-tick 每次执行看着 ctx 等多久；ctx 被取消时再不看 ctx 地收尾 300ms
+	// CronHold is how long each e2e-tick run waits while watching ctx; once ctx is cancelled it
+	// winds down for 300ms without looking at ctx again
 	CronHold time.Duration `yaml:"CronHold"`
 
-	// KafkaTopic 非空时用 xkafka.Consume 消费它，消费组是 KafkaGroup（见 kafka.go）。空是不消费
+	// KafkaTopic, non-empty, is consumed with xkafka.Consume in the consumer group KafkaGroup (see kafka.go). Empty consumes nothing
 	KafkaTopic string `yaml:"KafkaTopic"`
 
-	// KafkaGroup 消费组，KafkaTopic 非空时必填
+	// KafkaGroup is the consumer group, required when KafkaTopic is non-empty
 	KafkaGroup string `yaml:"KafkaGroup"`
 
-	// KafkaRetry 交给 xkafka.WithRetry；-1 是不写这个 Option（用 xkafka 的默认值）
+	// KafkaRetry is handed to xkafka.WithRetry; -1 writes no such option (xkafka's default applies)
 	KafkaRetry int `yaml:"KafkaRetry"`
 
-	// KafkaTimeout 交给 xkafka.WithTimeout；0 是不写这个 Option
+	// KafkaTimeout is handed to xkafka.WithTimeout; 0 writes no such option
 	KafkaTimeout time.Duration `yaml:"KafkaTimeout"`
 
-	// NoHTTP 不起 xgin，xone.MustRun(xone.UntilSignal())：只消费的进程
+	// NoHTTP starts no xgin, xone.MustRun(xone.UntilSignal()): a process that only consumes
 	NoHTTP bool `yaml:"NoHTTP"`
 }
 
-// DefaultConfig 默认值
+// DefaultConfig are the defaults
 func DefaultConfig() Config {
 	return Config{
 		Table:       "e2e_users",
@@ -79,10 +85,11 @@ func DefaultConfig() Config {
 	}
 }
 
-// ident 表名的写法。PG 的标识符上限是 63 字节，订单表还要再加 7 个
+// ident is how a table name has to look. A PG identifier stops at 63 bytes and the order table adds
+// 7 more
 var ident = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,55}$`)
 
-// Validate 解完配置之后由 xconfig.Unmarshal 调一次
+// Validate is called once by xconfig.Unmarshal after the configuration is decoded
 func (c Config) Validate() error {
 	if !ident.MatchString(c.Table) {
 		return fmt.Errorf("Table %q must match %s", c.Table, ident)
@@ -102,11 +109,11 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// conf 生效中的配置
+// conf is the configuration in force
 var conf = DefaultConfig()
 
-// Load 读出 Service 这一块。main 里调一次，之后 C() 处处可用
+// Load reads the Service block. main calls it once, and C() has it everywhere afterwards
 func Load() error { return xconfig.Unmarshal("Service", &conf) }
 
-// C 返回最终配置
+// C returns the final configuration
 func C() Config { return conf }

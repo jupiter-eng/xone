@@ -1,11 +1,12 @@
-# Kafka：application.yml 的 profile 变体，--profile=kafka 时叠上去。
-# harness 在 Options.Kafka 时激活它；其余用例的进程没有 XKafka，/kafka/... 一律 503。
+# Kafka: a profile variant of application.yml, laid over with --profile=kafka.
+# The harness activates it with Options.Kafka; the processes of the other cases have no XKafka and
+# answer 503 to every /kafka/....
 #
-#   E2E_KAFKA_ADDR   XKafka.Brokers（激活时必填）
-#   E2E_KAFKA_TOPIC  Service.KafkaTopic：非空时消费它（见 kafka.go）
-#   E2E_KAFKA_GROUP  Service.KafkaGroup：消费组
+#   E2E_KAFKA_ADDR   XKafka.Brokers (required once activated)
+#   E2E_KAFKA_TOPIC  Service.KafkaTopic: non-empty, it is consumed (see kafka.go)
+#   E2E_KAFKA_GROUP  Service.KafkaGroup: the consumer group
 #
-# 其余配置项一律取 xkafka 的默认值。
+# Every other setting is xkafka's default.
 
 XKafka:
   Brokers: ["${E2E_KAFKA_ADDR}"]

@@ -1,9 +1,10 @@
-// Package apidoc 是 e2e 服务的 Swagger 文档，写法照 swag init 生成的 docs.go：
-// 一份模板加一个 *swag.Spec。注解里写的值（@title、@version、@host、@schemes……）
-// 就是 SwaggerInfo 里预填的这些，测试拿它们核对「没配的字段沿用注解、配了的才覆盖」。
+// Package apidoc is the e2e service's Swagger documentation, written the way the docs.go swag init
+// generates is: one template and one *swag.Spec. The values in the annotations (@title, @version,
+// @host, @schemes and so on) are the ones pre-filled in SwaggerInfo here, and a test checks them to
+// see that "a field left unconfigured keeps the annotation and only a configured one overrides it".
 //
-// 和 swag 生成的不同：这里不在 init 里 swag.Register，由 Register 显式登记——
-// scripts/check.sh 只许集成包有 init()
+// Unlike what swag generates: there is no swag.Register in init here, and Register does it
+// explicitly -- scripts/check.sh allows an init() in the integration packages alone
 package apidoc
 
 import (
@@ -12,7 +13,8 @@ import (
 	"github.com/swaggo/swag"
 )
 
-// 注解里的值。测试按这几个常量核对（e2e 测试不 import 服务的包，值在测试里另抄一份）
+// The values from the annotations. The tests check against these constants (an e2e test imports no
+// package of the service, so the values are written out once more in the test)
 const (
 	AnnotatedTitle       = "annotated title"
 	AnnotatedVersion     = "annotated-1"
@@ -41,7 +43,8 @@ const docTemplate = `{
     }
 }`
 
-// SwaggerInfo 注解生成的元信息，交给 xginswagger.Register。注解里的 @schemes 是 http
+// SwaggerInfo is the metadata the annotations generate, handed to xginswagger.Register. @schemes in
+// the annotations is http
 var SwaggerInfo = &swag.Spec{
 	Version:          AnnotatedVersion,
 	Host:             AnnotatedHost,
@@ -57,7 +60,8 @@ var SwaggerInfo = &swag.Spec{
 
 var once sync.Once
 
-// Register 把 SwaggerInfo 登记进 swag。swag.Register 重复登记会 panic，所以只登记一次
+// Register registers SwaggerInfo with swag. swag.Register panics on a second registration, so this
+// registers once
 func Register() {
 	once.Do(func() { swag.Register(SwaggerInfo.InstanceName(), SwaggerInfo) })
 }
