@@ -1,14 +1,14 @@
-// Package xonetest 给使用者的测试用：换一份配置、跑一遍启动钩子，不起整个服务。
+// Package xonetest is for callers' own tests: swap in a configuration and run the start hooks, without starting the whole service.
 //
 //	func TestInitXKV(t *testing.T) {
 //		xonetest.UseConfigYAML(t, "XKV:\n  Path: /tmp/kv.json\n")
-//		xonetest.StartHooks(t) // 测试结束时自动跑配对的停止钩子
+//		xonetest.StartHooks(t) // the matching stop hooks run when the test ends
 //		if xkv.C() == nil { ... }
 //	}
 //
-// 配置和钩子都是进程级的全局状态，所以用了本包的测试不能 t.Parallel。
+// Configuration and hooks are both process-wide global state, so a test using this package cannot t.Parallel.
 //
-// 本包不引入任何新的依赖。
+// This package introduces no new dependencies.
 package xonetest
 
 import (
@@ -21,10 +21,10 @@ import (
 	"github.com/jupiter-eng/xone/internal/hook"
 )
 
-// UseConfig 让这个测试读 path 这份配置：xconfig.Unmarshal 读到的就是它，
-// 和 xone.Run 加载时走的是同一条路（Import、profile、${VAR} 都照常生效）。
+// UseConfig makes this test read the configuration at path: that is what xconfig.Unmarshal reads, by the
+// same route xone.Run loads it (Import, profiles and ${VAR} all work as usual).
 //
-// 加载失败时测试直接失败。测试结束时清掉，下一个测试从「还没加载」开始。
+// The test fails outright when loading fails. It is cleared when the test ends, so the next test starts from "not loaded yet".
 func UseConfig(t testing.TB, path string) {
 	t.Helper()
 	config.Reset()
@@ -34,8 +34,8 @@ func UseConfig(t testing.TB, path string) {
 	}
 }
 
-// UseConfigYAML 同 UseConfig，配置内容直接写在测试里：
-// 它被写进临时目录下的 application.yml 再加载。
+// UseConfigYAML is UseConfig with the configuration written inline in the test:
+// it is written to an application.yml in a temporary directory and loaded from there.
 func UseConfigYAML(t testing.TB, yml string) {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "application.yml")
@@ -45,14 +45,14 @@ func UseConfigYAML(t testing.TB, yml string) {
 	UseConfig(t, p)
 }
 
-// StartHooks 按档位跑一遍已登记的全部启动钩子，和 xone.Run 的顺序一样；
-// 测试结束时逆序跑停止钩子——同样只跑和成功了的启动钩子配对的那些。
+// StartHooks runs every registered start hook once, by stage, in the same order as xone.Run; the stop hooks
+// run in reverse when the test ends -- again only those paired with a start hook that succeeded.
 //
-// 跑的是这个测试二进制里登记过的全部钩子，也就是被测包连同它 import 的集成。
-// 一个启动钩子失败时测试直接失败，已经成功的照样会被关掉。
+// It runs every hook registered in this test binary, that is the package under test together with the
+// integrations it imports. A failing start hook fails the test, and whatever already succeeded is still closed.
 //
-// 不起服务、不接管退出信号、不检查没人读的配置 key、停止钩子也不限时：
-// 这些是 xone.Run 的事，要测它们就直接调 Run。
+// It starts no server, does not take over the stop signals, does not check for config keys nobody reads, and
+// puts no deadline on the stop hooks: those are xone.Run's job, and testing them means calling Run directly.
 func StartHooks(t testing.TB) {
 	t.Helper()
 	started := map[int]bool{}

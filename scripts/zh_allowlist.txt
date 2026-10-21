@@ -285,8 +285,6 @@ xmetric/xmetric.go
 xmetric/xmetric_test.go
 xone.go
 xone_test.go
-xonetest/xonetest.go
-xonetest/xonetest_test.go
 xredis/README.md
 xredis/config.go
 xredis/config_test.go

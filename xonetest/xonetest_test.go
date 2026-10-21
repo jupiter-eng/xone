@@ -17,7 +17,7 @@ type demo struct {
 	Name string `yaml:"Name"`
 }
 
-// fakeT 替测试记下「失败了没有」和 Cleanup，用来测本包自己让测试失败、收尾的行为
+// fakeT records "did it fail" and the Cleanups on behalf of a test, to test this package's own failing and cleanup behavior.
 type fakeT struct {
 	*testing.T
 	failed   bool
@@ -28,8 +28,8 @@ func (f *fakeT) Errorf(string, ...any) { f.failed = true }
 func (f *fakeT) Fatalf(string, ...any) { f.failed = true; runtime.Goexit() }
 func (f *fakeT) Cleanup(fn func())     { f.cleanups = append(f.cleanups, fn) }
 
-// run 在自己的协程里跑 fn（Fatalf 的 Goexit 只结束这个协程），再逆序跑 Cleanup，
-// 和一个子测试结束时一样
+// run executes fn in a goroutine of its own (the Goexit from Fatalf only ends that goroutine) and then runs
+// the Cleanups in reverse, the same way a subtest ends.
 func run(t *testing.T, fn func(testing.TB)) *fakeT {
 	f := &fakeT{T: t}
 	done := make(chan struct{})
@@ -46,22 +46,22 @@ func TestUseConfigYAML_ReadsGivenYAMLAndCleansUpAtEnd(t *testing.T) {
 		UseConfigYAML(tb, "Demo:\n  Name: inner\n")
 		var d demo
 		if err := xconfig.Unmarshal("Demo", &d); err != nil || d.Name != "inner" {
-			t.Errorf("该读到测试给的配置，got=%+v err=%v", d, err)
+			t.Errorf("the configuration given by the test must be read, got=%+v err=%v", d, err)
 		}
 	})
-	// 结束时清掉：下一个测试的配置不该还是上一个的
+	// Cleared at the end: the next test's configuration must not still be the previous one's.
 	if config.Has("Demo") {
-		t.Error("测试结束之后配置该被清掉")
+		t.Error("the configuration must be cleared when the test ends")
 	}
 }
 
 func TestUseConfig_LoadFailureFailsTest(t *testing.T) {
 	if f := run(t, func(tb testing.TB) { UseConfig(tb, "/definitely/not/here.yml") }); !f.failed {
-		t.Error("配置文件不存在时该让测试失败")
+		t.Error("a missing configuration file must fail the test")
 	}
 }
 
-// board 换一块空的登记板，测试结束时清空
+// board swaps in an empty registration board and clears it when the test ends.
 func board(t *testing.T) *[]string {
 	t.Helper()
 	hook.Reset()
@@ -83,15 +83,15 @@ func TestStartHooks_StartsByStageAndClosesInReverseAtEnd(t *testing.T) {
 	f := run(t, func(tb testing.TB) {
 		StartHooks(tb)
 		if got := strings.Join(*seq, " "); got != "start:client start:biz" {
-			t.Errorf("启动钩子该按档位升序跑，got=%s", got)
+			t.Errorf("the start hooks must run in ascending stage order, got=%s", got)
 		}
 	})
 
 	if f.failed {
-		t.Error("钩子都成功了，测试不该失败")
+		t.Error("the hooks all succeeded, so the test must not fail")
 	}
 	if got := strings.Join(*seq, " "); got != "start:client start:biz stop:biz stop:client" {
-		t.Errorf("测试结束时该逆序跑停止钩子，got=%s", got)
+		t.Errorf("the stop hooks must run in reverse when the test ends, got=%s", got)
 	}
 }
 
@@ -103,10 +103,10 @@ func TestStartHooks_OnStartFailureClosesOnlyStarted(t *testing.T) {
 	xhook.BeforeStop(rec(seq, "stop:b", nil))
 
 	if f := run(t, StartHooks); !f.failed {
-		t.Error("启动钩子失败时该让测试失败")
+		t.Error("a failing start hook must fail the test")
 	}
 	if got := strings.Join(*seq, " "); got != "start:a start:b stop:a" {
-		t.Errorf("失败的那一对不该跑停止钩子，已经起来的要关掉，got=%s", got)
+		t.Errorf("the failing pair must not run its stop hook, and what is already up must be closed, got=%s", got)
 	}
 }
 
@@ -116,6 +116,6 @@ func TestStartHooks_StopHookErrorFailsTest(t *testing.T) {
 	xhook.BeforeStop(rec(seq, "stop:a", errors.New("flush failed")))
 
 	if f := run(t, StartHooks); !f.failed {
-		t.Error("停止钩子出错不该被吞掉")
+		t.Error("an error from a stop hook must not be swallowed")
 	}
 }
