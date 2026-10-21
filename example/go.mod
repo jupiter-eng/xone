@@ -67,8 +67,9 @@ require (
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 
-// 开发用：本地和 CI 编的都是仓库里的代码，不是已发布的版本。
-// 使用者的构建会忽略依赖里的 replace、只看 require 的版本，这里的 replace 对他们不起作用
+// For development: both local builds and CI build the code in the repository, not a released
+// version. A caller's build ignores a dependency's replace and goes by the require version alone, so
+// the replace here has no effect on them
 replace (
 	github.com/jupiter-eng/xone => ../
 	github.com/jupiter-eng/xone/xcache => ../xcache

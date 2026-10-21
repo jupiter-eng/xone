@@ -8,7 +8,7 @@ XLog:
 
 XTrace:
   SampleRatio: 1
-  ForwardHeaders:           # 只收 XGin.TrustedProxies 里的对端发来的值，默认只信私有网段
+  ForwardHeaders:           # taken only from a peer in XGin.TrustedProxies, which by default trusts the private ranges only
     - X-Request-Id
 
 XMetric:

@@ -8,7 +8,8 @@ import (
 )
 
 func TestLoad_BadValuesFailAtStartup(t *testing.T) {
-	// 这两项配错都不报错，只会让服务「正常地什么都不做」
+	// Neither of these two produces an error on its own; they only make the service "do nothing,
+	// normally"
 	cases := []struct{ yml, field string }{
 		{"MyApp:\n  Workers: 0\n", "Workers"},
 		{"MyApp:\n  MessageTimeout: 0s\n", "MessageTimeout"},
@@ -17,7 +18,7 @@ func TestLoad_BadValuesFailAtStartup(t *testing.T) {
 		useConf(t, c.yml)
 		err := Load()
 		if err == nil || !strings.Contains(err.Error(), c.field) {
-			t.Errorf("%s 配错应当让启动失败并点出字段名，got=%v", c.field, err)
+			t.Errorf("a misconfigured %s must fail startup and name the field, got=%v", c.field, err)
 		}
 	}
 }
@@ -29,7 +30,7 @@ func TestLoad_DefaultsPassValidation(t *testing.T) {
 	}
 }
 
-// useConf 把一份配置装进全局配置，并还原 conf
+// useConf installs a configuration into the global one and restores conf afterwards
 func useConf(t *testing.T, yml string) {
 	t.Helper()
 	old := conf

@@ -7,43 +7,46 @@ import (
 	"time"
 )
 
-// Consumer 一个消息队列消费者服务。
+// Consumer is a message queue consumer service.
 //
-// 它满足 xone.Runnable，所以跟 xgin 一样直接交给 xone.Run：
+// It satisfies xone.Runnable, so it is handed to xone.Run just like xgin:
 //
 //	xone.MustRun(&Consumer{q: client, handle: handle, settings: settings})
 //
-// 框架负责的事一件都没变：读配置、按 Stage 建好数据库和缓存、
-// 收到信号时取消 ctx、等这里返回之后再逆序关掉那些资源。
-// 这个类型只负责「怎么消费」。
+// Nothing the framework takes care of changes: reading the configuration, building the database and
+// the cache by Stage, cancelling the ctx when the signal arrives, and closing those resources in
+// reverse order only after this has returned. This type is responsible for "how to consume" alone.
 type Consumer struct {
 	q      Queue
 	handle func(context.Context, Message) error
 
-	// settings 从哪来本类型不管：这个例子在 main 里从配置文件读，
-	// 测试直接传几个数进来
+	// Where settings comes from is none of this type's business: this example reads it from the
+	// configuration file in main, and the tests simply pass a few numbers in
 	settings Settings
 
 	wg sync.WaitGroup
 }
 
-// Settings Consumer 需要的几个数。从哪来由调用方决定——
-// 这个例子是配置文件，你也可以写死或者从别处拿
+// Settings is the handful of numbers a Consumer needs. Where they come from is the caller's
+// decision -- this example uses the configuration file, while writing them down or taking them from
+// somewhere else works as well
 type Settings struct {
-	// Workers 并发处理消息的协程数
+	// Workers is how many goroutines handle messages concurrently
 	Workers int
 
-	// Timeout 单条消息的处理上限。
+	// Timeout is the upper bound on handling one message.
 	//
-	// 它同时决定了退出时最多等多久：收到信号后不再取新消息，
-	// 但在途的那几条各自还有最多 Timeout 的时间做完。所以它必须小于服务那一段
-	// 停止预算（xone.WithStopTimeout 的 2/3，默认 10s），否则框架等不到就往下关资源了。
+	// It also decides how long the exit waits at most: once the signal has arrived no new message is
+	// taken, while the few in flight each still have up to Timeout to finish. So it has to be smaller
+	// than the server's share of the stop budget (2/3 of xone.WithStopTimeout, 10s by default), or
+	// the framework stops waiting and closes the resources anyway.
 	Timeout time.Duration
 }
 
-// Start 拉起 worker 并阻塞到它们全部收工。由 xone.Run 调用。
+// Start brings the workers up and blocks until all of them have finished. It is called by
+// xone.Run.
 //
-// ctx 在退出信号到达时被取消。
+// The ctx is cancelled when a shutdown signal arrives.
 func (c *Consumer) Start(ctx context.Context) error {
 	s := c.settings
 	slog.InfoContext(ctx, "consumer starting", "workers", s.Workers, "message_timeout", s.Timeout.String())
@@ -56,26 +59,27 @@ func (c *Consumer) Start(ctx context.Context) error {
 		}()
 	}
 
-	// 等所有在途消息处理完再返回。
+	// Returning only once every message in flight has been handled.
 	//
-	// 这一行是整个类型里最要紧的：框架在 Start 返回之后才关数据库、
-	// 缓存和 HTTP 连接池。提前返回的话，还在处理的那几条消息会摸到
-	// 已经关掉的连接池——表现是退出时零星几条「connection is closed」，
-	// 而那几条消息既没处理完、也已经不在队列里了。
+	// This line matters most in the whole type: the framework closes the database, the cache and the
+	// HTTP connection pool only after Start has returned. Returning early, the messages still being
+	// handled would reach connection pools that are already closed -- showing up as a scattering of
+	// "connection is closed" on exit, with those messages neither finished nor still in the queue.
 	c.wg.Wait()
 
-	// Close 放在在途消息做完之后，不要更早。多数客户端 Close 时会顺带
-	// 提交 offset，提前提交等于把还没处理完的消息标记成已消费——
-	// 退出时静默丢消息，而且只在「正好有在途消息」的那一刻发生，很难复现。
+	// Close goes after the messages in flight are done, not earlier. Most clients commit their
+	// offsets along with Close, and committing early marks messages that have not been handled as
+	// consumed -- messages lost quietly on exit, and only at the moment "there happens to be
+	// something in flight", which is hard to reproduce.
 	//
-	// 这个类型没有 Stop：ctx 被取消就足够让 Next 醒过来。你的客户端要是
-	// 得调 Pause / Unsubscribe 才停得下来，再写一个 Stop(ctx) error 放它们，
-	// 同样别在里面 Close——框架是先调 Stop、再等 Start 返回的
+	// This type has no Stop: a cancelled ctx is enough to wake Next. A client that can only be
+	// stopped by calling Pause / Unsubscribe gets a Stop(ctx) error holding those, and likewise does
+	// not Close inside it -- the framework calls Stop first and waits for Start to return afterwards
 	slog.InfoContext(ctx, "consumer drained, closing the queue client")
 	return c.q.Close()
 }
 
-// loop 一个 worker：取一条、处理一条，直到 ctx 被取消或队列关闭
+// loop is one worker: take one, handle one, until the ctx is cancelled or the queue is closed
 func (c *Consumer) loop(ctx context.Context, timeout time.Duration) {
 	for {
 		m, ok := c.q.Next(ctx)
@@ -86,20 +90,24 @@ func (c *Consumer) loop(ctx context.Context, timeout time.Duration) {
 	}
 }
 
-// process 处理一条消息。
+// process handles one message.
 //
-// 第一行是这里的关键：剥掉取消，另给一份处理预算。
+// The first line is what matters here: the cancellation is stripped off and a handling budget of its
+// own is given.
 //
-// 沿用已取消的 parent 的话，这条消息里每一次写库、每一次调下游、
-// 连最后那次 Ack 都会一进去就被拒绝——消息没做完，队列那边也没收到确认。
-// 补偿逻辑最需要跑完的时机，恰恰就是退出的这一刻，和 xflow 的回滚同理。
+// Reusing an already cancelled parent, every write to the database, every call downstream and even
+// the final Ack in this message would be refused the moment it begins -- the message unfinished and
+// the queue never acknowledged. The moment compensating logic most needs to run to completion is
+// exactly this one, on the way out, for the same reason xflow's rollback does.
 //
-// 剥掉之后由 Timeout 单独限时，免得一条卡住的消息拖住整个退出流程。
+// Once stripped, Timeout bounds it on its own, so that one stuck message cannot hold up the whole
+// shutdown.
 func (c *Consumer) process(parent context.Context, m Message, timeout time.Duration) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), timeout)
 	defer cancel()
 
-	// panic 隔离：一条毒消息不该让整个 worker 挂掉，剩下的消息没人消费
+	// Containing a panic: one poison message should not take the whole worker down and leave the
+	// remaining messages unconsumed
 	defer func() {
 		if r := recover(); r != nil {
 			slog.ErrorContext(ctx, "message handler panicked", "message_id", m.ID, "panic", r)

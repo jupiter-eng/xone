@@ -1,99 +1,113 @@
 ---
 name: ship
-description: 一条龙发版（vX.Y.Z）：钉版本号、开 PR、等 CI、合并、触发打 tag、核对装得上，全程不停。用户说「一条龙发版」「发 v1.1.0 一条龙」「ship v1.1.0」「自动发版」时用。只想做到开 PR 为止、自己点按钮打 tag 的，用 `release` skill。
+description: Release end to end (vX.Y.Z): pin the version, open the PR, wait for CI, merge, trigger the tagging, and confirm it installs, without stopping along the way. Use it when the user says "release it end to end", "ship v1.1.0" or "release it automatically". For stopping at the PR and pressing the tagging button yourself, use the `release` skill.
 ---
 
-# 一条龙发版
+# Releasing end to end
 
-从定版本号一路做到 tag 推出去、外部工程装得上，中途不停下来问。
+From deciding the version all the way to the tags being pushed and an external project installing
+it, without stopping to ask along the way.
 
-**tag 推出去就被 Go 的 module proxy 和 sum.golang.org 永久缓存，删不掉、改不了。**
-整条流程只有「推送 tag」这一步不可逆，而它在 GitHub Actions 里跑、不经过你的手——
-所以**阶段 0 的检查就是唯一的安全网，一条都不能跳**。检查没过就停下来告诉用户，不要绕过。
+**Once a tag is pushed it is cached forever by Go's module proxy and sum.golang.org, and can be
+neither removed nor changed.** "Pushing the tags" is the one irreversible step of the whole flow,
+and it runs inside GitHub Actions, out of your hands -- so **the checks in stage 0 are the only
+safety net there is, and not one of them may be skipped**. If a check does not pass, stop and tell
+the user rather than going around it.
 
-分两个 skill 是有意的：需要人工审阅 CHANGELOG、或者这一版有不兼容变更时，用 `release`（只到开 PR）。
+Splitting this into two skills is deliberate: when the CHANGELOG needs reviewing by hand, or this
+version carries an incompatible change, use `release` (which stops at the PR).
 
-## 阶段 0：开工前检查
+## Stage 0: checks before starting
 
-全部通过才往下走。任何一条不过，停下来把原话给用户看。
+Every one of them has to pass before going on. If any does not, stop and show the user the output
+verbatim.
 
 ```bash
 cd "$(git rev-parse --show-toplevel)"
-V=vX.Y.Z                                    # 用户给的版本号
+V=vX.Y.Z                                    # the version the user gave
 
-# 1. 版本号格式：只收 v0 / v1（模块路径没有 /vN 后缀）
-echo "$V" | grep -qE '^v[01]\.[0-9]+\.[0-9]+$' || echo "✗ 版本号只收 v0 / v1"
+# 1. The version format: v0 / v1 only (the module path has no /vN suffix)
+echo "$V" | grep -qE '^v[01]\.[0-9]+\.[0-9]+$' || echo "✗ only v0 / v1 are accepted"
 
-# 2. 工作区干净、在 main 上、和远端同步
+# 2. A clean working tree, on main, in sync with the remote
 git fetch -q origin --tags
 [ "$(git branch --show-current)" = main ] && [ -z "$(git status --porcelain)" ] \
   && [ "$(git rev-parse main)" = "$(git rev-parse origin/main)" ]
 
-# 3. 这组 tag 一个都不能已经存在（本地和远端都查）
-#    挡的是：在 GitHub 上建 Release 会顺带创建同名 tag。一旦某个版本号的 tag 进过
-#    sum.golang.org，那个版本号就作废了——module zip 包含 .github/，所以任何后续
-#    改动都会让 zip hash 和 sumdb 的记录对不上，只能换版本号。
-git ls-remote --tags origin | grep -E "refs/tags/($V|[a-z/]+/$V)$" && echo "✗ 这组 tag 已经存在，换版本号"
+# 3. Not one of this set of tags may exist already (checking locally and on the remote)
+#    What this guards against: creating a Release on GitHub creates a tag of the same name along
+#    with it. Once a version's tag has been through sum.golang.org that version is spent -- the
+#    module zip includes .github/, so any later change makes the zip hash disagree with the sumdb's
+#    record and the only way out is another version.
+git ls-remote --tags origin | grep -E "refs/tags/($V|[a-z/]+/$V)$" && echo "✗ this set of tags already exists, pick another version"
 
-# 4. CHANGELOG 的 Unreleased 一节有条目（release.sh --bump 会拒绝空的）
+# 4. The CHANGELOG's Unreleased section has entries (release.sh --bump refuses an empty one)
 awk '/^## \[Unreleased\]/{s=1;next} s&&/^## /{exit} s&&/^- /{f=1} END{exit !f}' docs/CHANGELOG.md \
-  || echo "✗ CHANGELOG 的 Unreleased 是空的，先写这一版使用者看得见的变化"
+  || echo "✗ the CHANGELOG's Unreleased is empty; write this version's caller-visible changes first"
 
-# 5. 推 tag 的凭证在：org 禁用了 GITHUB_TOKEN 的写权限，release.yml 读的是这个 secret
-gh secret list | grep -q RELEASE_TOKEN || echo "✗ 仓库 secret RELEASE_TOKEN 没配，workflow 推不了 tag"
+# 5. The credentials for pushing tags are in place: the org has disabled GITHUB_TOKEN's write
+#    permission, and release.yml reads this secret
+gh secret list | grep -q RELEASE_TOKEN || echo "✗ the repository secret RELEASE_TOKEN is not set and the workflow cannot push tags"
 
-# 6. main 上的 release.yml 确实在用它（workflow_dispatch 跑的是 main 上的那一份）
+# 6. The release.yml on main really does use it (workflow_dispatch runs the copy on main)
 git show origin/main:.github/workflows/release.yml | grep -q 'secrets.RELEASE_TOKEN' \
-  || echo "✗ main 上的 release.yml 还在用 github.token，推 tag 会 403"
+  || echo "✗ the release.yml on main still uses github.token and pushing tags will 403"
 ```
 
-不兼容变更不能在 v1 里发（要改模块路径为 `/v2`）。看出来有，停下来和用户商量，不要自己决定版本号。
+An incompatible change cannot go out in v1 (the module path has to become `/v2`). If you see one,
+stop and discuss it with the user rather than deciding the version yourself.
 
-## 阶段 1：开 release PR
+## Stage 1: open the release PR
 
 ```bash
 git switch -c "release/$V"
-scripts/release.sh "$V" --bump          # 钉各模块 go.mod、CHANGELOG 开新节、README 版本号，末尾跑 check.sh
-git diff --stat                         # 只该有各模块 go.mod、docs/CHANGELOG.md、README.md
-scripts/test.sh -count=1                # 必须 EXIT=0
-git commit -am "release: $V"            # 结尾带上会话要求的署名
+scripts/release.sh "$V" --bump          # pins the modules' go.mod, opens a new CHANGELOG section, replaces the README version, and runs check.sh at the end
+git diff --stat                         # only the modules' go.mod, docs/CHANGELOG.md and README.md
+scripts/test.sh -count=1                # EXIT=0 is required
+git commit -am "release: $V"            # ending with the attribution this session asks for
 git push -u origin "release/$V"
-gh pr create --base main --head "release/$V" --title "release: $V" --body-file <正文>
+gh pr create --base main --head "release/$V" --title "release: $V" --body-file <the body>
 ```
 
-正文贴 CHANGELOG 里 `## [$V]` 那一节。`--bump` 或测试报错就停下，把输出给用户看。
+The body is the `## [$V]` section of the CHANGELOG. If `--bump` or the tests report an error, stop
+and show the user the output.
 
-**commit 不要用 `git commit -F - <<EOF` 接 heredoc 串在 `&&` 链里**——heredoc 会让链的短路失效，
-前面的步骤失败了后面照样跑。消息写进临时文件再 `-F 文件`。
+**Do not commit with `git commit -F - <<EOF` and a heredoc inside an `&&` chain** -- a heredoc
+breaks the chain's short-circuiting, and the later steps run even after an earlier one has failed.
+Write the message into a temporary file and use `-F <file>`.
 
-## 阶段 2：等 PR 的检查
+## Stage 2: wait for the PR's checks
 
 ```bash
-gh pr checks <PR号> --watch
+gh pr checks <PR number> --watch
 ```
 
-这个 PR 改了 go.mod，所以除 `check` / `core-go-floor` 外还会触发 **e2e**（`e2e.yml` 按 `**/go.mod` 过滤）。
+This PR changes go.mod, so besides `check` / `core-go-floor` it also triggers **e2e** (`e2e.yml`
+filters on `**/go.mod`).
 
-**e2e 红了先别急着报故障**：里面有几条按毫秒卡的时序断言（如
-`TestMySQL_SIGTERMWhileSilentAtStartup_ExitsImmediately` 要求信号后 200ms 内退出），
-在共享 runner 上会偶尔超。做法：
+**Do not report a failure the moment e2e goes red**: it holds a few timing assertions measured in
+milliseconds (`TestMySQL_SIGTERMWhileSilentAtStartup_ExitsImmediately` requires an exit within 200ms
+of the signal, for one), which occasionally overrun on a shared runner. What to do:
 
-1. 先看测试自己打印的数字（`gh run view <id> --log-failed | grep 数字：`）。
-   超出阈值不多（几十 ms）是抖动；差一个数量级（比如卡到 ReadTimeout）是真问题。
-2. 抖动 → `gh run rerun <id> --failed` 重跑一次。**再红就停下**，不要反复重跑掩盖问题。
-3. `check` / `core-go-floor` 红 → 直接停，那是代码问题。
+1. Look first at the numbers the test printed itself (`gh run view <id> --log-failed`; the cases log
+   their measured numbers).
+   Overrunning the threshold by a little (tens of milliseconds) is jitter; being off by an order of
+   magnitude (stuck until ReadTimeout, say) is a real problem.
+2. Jitter → re-run once with `gh run rerun <id> --failed`. **If it goes red again, stop** rather
+   than re-running repeatedly to paper over the problem.
+3. `check` / `core-go-floor` red → stop outright, that is a problem in the code.
 
-## 阶段 3：合并
+## Stage 3: merge
 
 ```bash
-gh pr merge <PR号> --merge
+gh pr merge <PR number> --merge
 git fetch -q origin && git switch -q main && git pull --ff-only -q origin main
 ```
 
-合完确认 main 上的 go.mod 钉的是 `$V`、CHANGELOG 有 `## [$V]` 那一节——
-这两条是下一步 `release.sh --tag` 开头就查的。
+Once merged, confirm that the go.mod on main is pinned to `$V` and that the CHANGELOG has the
+`## [$V]` section -- those two are the first things the next step, `release.sh --tag`, checks.
 
-## 阶段 4：触发打 tag
+## Stage 4: trigger the tagging
 
 ```bash
 gh workflow run release.yml --ref main -f version="$V"
@@ -101,36 +115,40 @@ sleep 5 && gh run list --workflow=release.yml --limit 1 --json databaseId --jq '
 gh run watch <run-id> --exit-status
 ```
 
-按钮里的步骤依次是：`release.sh --tag`（检查 + 单测 + 本地打 13 个 tag）→ e2e → `--smoke`
-→ **推送 tag** → `--verify`（全新工程里 `go get`）。
+The steps behind the button, in order: `release.sh --tag` (checks + unit tests + 13 tags created
+locally) → e2e → `--smoke` → **pushing the tags** → `--verify` (`go get` in a brand new project).
 
-推送在第 8 步，e2e 在第 6 步：**e2e 红了 tag 不会离开 runner**，重跑安全（同阶段 2 的判断）。
-但 `--verify` 红了说明 tag 已经推出去、而发出去的版本装不上——那时不能重跑，
-要停下来告诉用户，修好之后发下一个修订号。
+The push is step 8 and e2e is step 6: **when e2e goes red the tags never leave the runner**, so
+re-running is safe (judged as in stage 2). But a red `--verify` means the tags are already pushed
+and the released version cannot be installed -- that one must not be re-run; stop, tell the user,
+and release the next patch once it is fixed.
 
-## 阶段 5：核对
+## Stage 5: confirm
 
 ```bash
 git fetch -q origin --tags
-git ls-remote --tags origin | sed 's#.*refs/tags/##' | sort        # 13 个：根 + 12 个子模块
+git ls-remote --tags origin | sed 's#.*refs/tags/##' | sort        # 13 of them: the root + 12 submodules
 for m in "" /xgin /xgorm /xredis /xkafka /xcron /xecho /xcache /xhttp /xmetric /xtrace /xginswagger /xgorm/clickhouse; do
   curl -s -o /dev/null -w "$m %{http_code}\n" "https://proxy.golang.org/github.com/jupiter-eng/xone$m/@v/$V.info"
-done                                                               # 全要 200
+done                                                               # all have to be 200
 ```
 
-只有根 tag、子模块缺着，是「半套」——使用者照 README 装会失败。真发生了就停下来告诉用户，
-不要自己手动补 tag：补出来的 tag 绕过了 e2e 和 smoke。
+Only the root tag with the submodules missing is "half a release" -- a caller following the README
+will fail to install. If that really happens, stop and tell the user rather than adding the missing
+tags by hand: a tag added that way went around e2e and smoke.
 
-有 `retract` 的版本顺带验一下生效：`go list -m -versions github.com/jupiter-eng/xone`
-里不该出现被撤回的那个（加 `-retracted` 才看得到）。
+For a version with a `retract`, confirm along the way that it took effect: the retracted version
+must not appear in `go list -m -versions github.com/jupiter-eng/xone` (it only shows with
+`-retracted`).
 
-最后把这些报给用户：PR 链接、release run 链接、13 个 tag、proxy 状态、安装命令。
+Finally report these to the user: the PR link, the release run link, the 13 tags, the proxy status,
+and the install command.
 
-## 失败了怎么收场
+## How to recover from a failure
 
-| 停在哪 | 远端留下了什么 | 怎么接着来 |
+| Where it stopped | What is left on the remote | How to carry on |
 |---|---|---|
-| 阶段 0 | 什么都没有 | 修好那一条，重跑 |
-| 阶段 1、2 | 一个 release PR | 在同一个 PR 上改，或关掉 PR 删分支重来 |
-| 阶段 3 之后、tag 推出去之前 | PR 已合进 main | main 上 go.mod 已经钉好，直接从阶段 4 重新触发 |
-| tag 已推出去 | **tag 和 proxy 记录撤不回** | 这个版本号作废。在根 `go.mod` 里 `retract` 它，发下一个修订号 |
+| stage 0 | nothing at all | fix that one check and run again |
+| stages 1 and 2 | one release PR | change it in the same PR, or close the PR, delete the branch and start over |
+| after stage 3, before the tags are pushed | the PR is merged into main | the go.mod on main is already pinned, so trigger stage 4 again directly |
+| the tags are pushed | **the tags and the proxy's records cannot be withdrawn** | this version is spent. `retract` it in the root `go.mod` and release the next patch |

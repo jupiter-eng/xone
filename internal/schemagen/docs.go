@@ -19,10 +19,10 @@ var configDocs = map[string]docSection{
 	"XTrace":      {"xtrace/README.md", "Configuration"},
 	"XMetric":     {"xmetric/README.md", "Configuration"},
 	"XGorm":       {"xgorm/README.md", "Configuration"},
-	"XRedis":      {"xredis/README.md", "配置"},
+	"XRedis":      {"xredis/README.md", "Configuration"},
 	"XKafka":      {"xkafka/README.md", "Configuration"},
 	"XCache":      {"xcache/README.md", "Configuration"},
-	"XHttp":       {"xhttp/README.md", "配置"},
+	"XHttp":       {"xhttp/README.md", "Configuration"},
 	"XGin":        {"xgin/README.md", "Configuration"},
 	"XGinSwagger": {"xginswagger/README.md", "Configuration"},
 	// xecho 的 README 已经英文化，小节名是 Configuration；其余模块随各自的批次改

@@ -1,12 +1,14 @@
-// 一个用到「自己写的集成」的服务。
+// A service using an integration of its own.
 //
 //	cd example/component && go run . --config=application.yml
 //
-// 看点有三个：
+// There are three things to look at:
 //
-//	xkv/      自己写的集成：BeforeStart 里读配置、建实例，BeforeStop 里关掉，C() 取实例
-//	conf/     业务自己的配置块：一个 Load、一个 C()，在 Start 之前任何时候读都行
-//	main()    装配就是匿名 import + 一行 Run，没有别的
+//	xkv/      an integration of our own: BeforeStart reads the configuration and builds the
+//	          instance, BeforeStop closes it, and C() takes it
+//	conf/     the business's own configuration block: one Load and one C(), read at any time before
+//	          Start
+//	main()    the wiring is an anonymous import plus one line of Run, and nothing else
 package main
 
 import (
@@ -20,29 +22,29 @@ import (
 	"github.com/jupiter-eng/xone/example/component/conf"
 	"github.com/jupiter-eng/xone/example/component/xkv"
 
-	// 匿名 import 就是全部「装配」。想用数据库就加上 xgorm，
-	// 想用 Redis 就加上 xredis——下面的 App 一个字都不用改
+	// An anonymous import is the whole of the "wiring". Add xgorm for a database, add xredis for
+	// Redis -- without changing one word of the App below
 	_ "github.com/jupiter-eng/xone/example/component/xkv"
 )
 
 func main() {
-	// 业务配置在这里读就行：第一次读的时候框架才去找配置文件、加载它，
-	// 读到的就是最终值
+	// The business configuration is read right here: the framework looks for the configuration file
+	// and loads it on the first read, so what is read is the final value
 	if err := conf.Load(); err != nil {
 		log.Fatal(err)
 	}
 
-	// 交给框架的只有一个 Runnable。按档位建好 XKV、收到信号时取消 ctx、
-	// 等 App 返回之后再把 XKV 关掉——都是框架的事
+	// All the framework is handed is one Runnable. Building XKV by stage, cancelling the ctx when the
+	// signal arrives, and closing XKV only after App has returned are all its business
 	xone.MustRun(&App{})
 }
 
-// App 本服务要干的活。它满足 xone.Runnable，所以能直接交给 Run
+// App is the work this service does. It satisfies xone.Runnable and can be handed to Run directly
 type App struct{}
 
-// Start 由 xone.Run 调用，此时配置已加载、XKV 已就绪。
+// Start is called by xone.Run, by which time the configuration is loaded and XKV is ready.
 //
-// ctx 在退出信号到达时被取消。
+// The ctx is cancelled when a shutdown signal arrives.
 func (a *App) Start(ctx context.Context) error {
 	c := conf.C()
 	slog.InfoContext(ctx, "app starting",
@@ -56,7 +58,7 @@ func (a *App) Start(ctx context.Context) error {
 		case <-time.After(300 * time.Millisecond):
 		}
 
-		// 拿到的就是 xkv 自己的原生类型，没有任何包装
+		// What comes back is xkv's own native type, with no wrapper around it
 		key := "round-" + strconv.Itoa(i)
 		xkv.C().Set(key, c.Greeting)
 		got, _ := xkv.C().Get(key)

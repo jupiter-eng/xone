@@ -34,7 +34,7 @@ func liveCfg(f *fakeRedis) ClientConfig {
 	return c
 }
 
-// deadAddr 一个没人监听的地址
+// deadAddr is an address nobody is listening on.
 func deadAddr(t *testing.T) string {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -50,30 +50,30 @@ func TestNew_ReturnsUsableClientWhenReachable(t *testing.T) {
 	f := newFakeRedis(t)
 	client, closer, err := New(context.Background(), liveCfg(f))
 	if err != nil {
-		t.Fatalf("应当连得上：%v", err)
+		t.Fatalf("it must connect: %v", err)
 	}
 	defer closer.Close()
 
 	if err := client.Ping(context.Background()).Err(); err != nil {
-		t.Errorf("拿到的应是可用的原生 client：%v", err)
+		t.Errorf("what comes back must be a usable native client: %v", err)
 	}
 	if !slices.Contains(f.seen(), "ping") {
-		t.Errorf("建连时应当 Ping 一次确认连得上，实际收到的命令=%v", f.seen())
+		t.Errorf("connecting must Ping once to confirm it works, commands received=%v", f.seen())
 	}
 }
 
 func TestNew_VerifiesConnectivityAtStartup(t *testing.T) {
-	// 地址写错、密码不对这类问题该在启动时暴露，而不是线上第一次读缓存才发现
+	// A wrong address or a wrong password should surface at startup, not at the first cache read in production.
 	f := newFakeRedis(t)
 	f.setFailPing(true)
 
 	c := liveCfg(f)
 	_, _, err := New(context.Background(), c)
 	if err == nil {
-		t.Fatal("Ping 失败时应当报错")
+		t.Fatal("a failing Ping must be an error")
 	}
 	if !strings.Contains(err.Error(), c.Addr) {
-		t.Errorf("错误里应有地址，否则排查不了连的是谁：%v", err)
+		t.Errorf("the error must carry the address, otherwise there is no telling what was connected to: %v", err)
 	}
 }
 
@@ -88,14 +88,14 @@ func TestNew_NoPoolLeakWhenUnreachable(t *testing.T) {
 		client, closer, err := New(context.Background(), c)
 		if err == nil {
 			reg.Close()
-			t.Fatal("连不上时应当报错")
+			t.Fatal("failing to connect must be an error")
 		}
 		if client != nil || closer != nil {
-			t.Error("失败时不该返回半成品")
+			t.Error("nothing half-built may be returned on failure")
 		}
 	}
 	if after := testkit.SettleTo(before); after > before+1 {
-		t.Errorf("建连失败 5 次后协程数从 %d 涨到 %d，说明 client 没被关掉", before, after)
+		t.Errorf("after 5 failed connections the goroutine count rose from %d to %d, so the client was not closed", before, after)
 	}
 }
 
@@ -113,15 +113,15 @@ func TestInstall_LogsNameAndAddrButNotPassword(t *testing.T) {
 	for _, l := range lines() {
 		blob := fmt.Sprint(l)
 		if strings.Contains(blob, "hunter2") {
-			t.Errorf("日志里出现了密码：%v", l)
+			t.Errorf("the password appeared in the log: %v", l)
 		}
 		if l["msg"] == "xredis connected" {
 			connected = l
 		}
 	}
-	// 配了好几个 Redis 时，只写地址分不出是哪一个
+	// With several Redis instances configured, the address alone does not say which one it is.
 	if connected == nil || connected["addr"] != c.Addr || connected["name"] != "session" {
-		t.Errorf("该写出实例名和地址，否则排查不了连的是谁，got=%v", lines())
+		t.Errorf("the instance name and the address must be written, otherwise there is no telling what was connected to, got=%v", lines())
 	}
 }
 
@@ -129,12 +129,12 @@ func TestNew_NoConnectOnInvalidConfig(t *testing.T) {
 	c := DefaultClientConfig()
 	c.Addr = ""
 	if _, _, err := New(context.Background(), c); err == nil {
-		t.Fatal("Addr 为空应当报错")
+		t.Fatal("an empty Addr must be an error")
 	}
 }
 
 func TestNew_ValidatesBeforeConnecting(t *testing.T) {
-	// 对端是好的，只有配置不合法：不校验的话 go-redis 把 -1s 当成「不限时」，建连照样成功
+	// The peer is fine and only the configuration is invalid: without validation go-redis takes -1s as "no limit" and connects as usual.
 	c := liveCfg(newFakeRedis(t))
 	c.ReadTimeout = -time.Second
 	_, closer, err := New(context.Background(), c)
@@ -143,7 +143,7 @@ func TestNew_ValidatesBeforeConnecting(t *testing.T) {
 	}
 	var xe *xerror.Error
 	if !errors.As(err, &xe) || xe.Op != "config" {
-		t.Fatalf("直接调 New 也该先校验配置，以 op=config 报错，got=%v", err)
+		t.Fatalf("a direct New must validate the configuration first and report op=config, got=%v", err)
 	}
 }
 
@@ -159,31 +159,31 @@ func TestNew_PoolOptionsPassedThrough(t *testing.T) {
 	defer closer.Close()
 
 	if got := client.Options().PoolSize; got != 7 {
-		t.Errorf("PoolSize 应传下去，got=%d", got)
+		t.Errorf("PoolSize must be passed down, got=%d", got)
 	}
 	if got := client.Options().MinIdleConns; got != 2 {
-		t.Errorf("MinIdleConns 应传下去，got=%d", got)
+		t.Errorf("MinIdleConns must be passed down, got=%d", got)
 	}
 }
 
 func TestPingTimeout(t *testing.T) {
 	if got := pingTimeout(&redis.Options{DialTimeout: time.Second, ReadTimeout: 2 * time.Second}); got != 3*time.Second {
-		t.Errorf("Ping 预算应为建连 + 读超时，got=%v", got)
+		t.Errorf("the Ping budget must be dial + read timeout, got=%v", got)
 	}
-	// 配置里的 0 交给 go-redis 补成默认值，预算按补完的算
+	// A 0 in the configuration is left to go-redis to fill in, and the budget follows what it filled in.
 	c := redis.NewClient(&redis.Options{})
 	defer c.Close()
 	if got := pingTimeout(c.Options()); got != 10*time.Second {
-		t.Errorf("0 是 go-redis 的默认值（5s + 5s），got=%v", got)
+		t.Errorf("0 is go-redis's default (5s + 5s), got=%v", got)
 	}
 	if got := pingTimeout(&redis.Options{}); got != fallbackPingTimeout {
-		t.Errorf("推算不出时该用兜底值，got=%v", got)
+		t.Errorf("the fallback must be used when nothing can be worked out, got=%v", got)
 	}
 }
 
-// 配 0 在 go-redis v9.22.0 里是「用它的默认值」（DialTimeout 5s、ReadTimeout 5s，options.go init），
-// 不是「不花时间」。预算按配置里的 0 + 0 算的话只剩 1s 兜底：一次 1.5s 才回 PONG 的建连，
-// go-redis 自己还愿意等，建连验证先判了超时，3 次都失败
+// A 0 means "use its default" in go-redis v9.22.0 (DialTimeout 5s, ReadTimeout 5s, options.go init),
+// not "costs no time". Computing the budget from the configured 0 + 0 would leave only the 1s fallback: a connection
+// answering PONG after 1.5s, which go-redis itself was still willing to wait for, would be timed out by the check, three times over.
 func TestNew_ZeroTimeoutsProbeWithGoRedisDefaults(t *testing.T) {
 	f := newFakeRedis(t)
 	f.setDelay("ping", 1500*time.Millisecond)
@@ -191,37 +191,37 @@ func TestNew_ZeroTimeoutsProbeWithGoRedisDefaults(t *testing.T) {
 	c.DialTimeout, c.ReadTimeout, c.WriteTimeout = 0, 0, 0
 	client, closer, err := New(context.Background(), c)
 	if err != nil {
-		t.Fatalf("go-redis 默认等 5s，1.5s 的 PONG 该连得上：%v", err)
+		t.Fatalf("go-redis waits 5s by default, so a 1.5s PONG must connect: %v", err)
 	}
 	defer closer.Close()
 	if o := client.Options(); o.DialTimeout != 5*time.Second || o.ReadTimeout != 5*time.Second {
-		t.Errorf("前提：0 交给 go-redis 换成默认值，got dial=%v read=%v", o.DialTimeout, o.ReadTimeout)
+		t.Errorf("precondition: a 0 handed to go-redis becomes its default, got dial=%v read=%v", o.DialTimeout, o.ReadTimeout)
 	}
 }
 
 func TestNew_AbortsConnectOnExitSignal(t *testing.T) {
-	// 地址不通时这里要走满一轮 Ping 重试（默认 3 次 × 间隔）。
-	// 启动到一半收到 SIGTERM，就该立刻放弃，而不是让进程卡在一个
-	// 注定连不上的库上，把退出时间拖满整轮重试
+	// With the address unreachable this runs a full round of Ping retries (3 attempts with their intervals by default).
+	// A SIGTERM halfway through startup should make it give up at once rather than leaving the process stuck on a
+	// database it will never reach, stretching the exit by a whole round of retries.
 	f := newFakeRedis(t)
 	f.setFailPing(true)
 	c := liveCfg(f)
-	// 重试间隔调成一小时：走整轮就是挂住，当场放弃是毫秒级，上界 5s 离两头都远。
-	// TestMain 里的 10ms 拿来当上界的话，机器一忙就误报
+	// The retry interval is set to an hour: a full round means hanging, while giving up at once is milliseconds, and the 5s bound is far from both.
+	// Using TestMain's 10ms as the bound would misfire as soon as the machine is busy.
 	old := pingInterval
 	pingInterval = time.Hour
 	t.Cleanup(func() { pingInterval = old })
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // 模拟建连之前就收到了退出信号
+	cancel() // simulate a stop signal arriving before the connection is made
 
 	start := time.Now()
 	_, _, err := New(ctx, c)
 	if err == nil {
-		t.Fatal("ctx 已取消时不该建连成功")
+		t.Fatal("connecting must not succeed once the ctx is cancelled")
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
-		t.Errorf("应当当场放弃而不是走完整轮重试，耗时=%v", elapsed)
+		t.Errorf("it must give up on the spot rather than run a full round of retries, took=%v", elapsed)
 	}
 }
 
@@ -234,11 +234,11 @@ func TestProbe_FailsAfterRetries(t *testing.T) {
 	defer client.Close()
 
 	if err := xclient.Probe(context.Background(), probePolicy(client.Options()), probe(client)); err == nil {
-		t.Fatal("Ping 一直失败时应当返回错误")
+		t.Fatal("a Ping that keeps failing must return an error")
 	}
-	// 数服务端收到几次 ping，不看耗时：退避带抖动之后，
-	// 每次等待是 [0, 当前退避] 之间的随机值，可以短到接近零。
-	// 「重试了几次」本来就该数次数，耗时只是它的一个弱代理
+	// Count the pings the server received rather than looking at the elapsed time: with jitter,
+	// each wait is a random value in [0, the current backoff] and can be close to zero.
+	// "how many retries" should be counted, and the elapsed time is only a weak proxy for it.
 	n := 0
 	for _, cmd := range f.seen() {
 		if cmd == "ping" {
@@ -246,11 +246,11 @@ func TestProbe_FailsAfterRetries(t *testing.T) {
 		}
 	}
 	if n != pingAttempts {
-		t.Errorf("服务端应收到 %d 次 ping，实际 %d 次", pingAttempts, n)
+		t.Errorf("the server must receive %d pings, got %d", pingAttempts, n)
 	}
 }
 
-// ---- 全局实例 ----
+// ---- global instances ----
 
 func withClients(t *testing.T, m map[string]*redis.Client) {
 	t.Helper()
@@ -261,7 +261,7 @@ func withClients(t *testing.T, m map[string]*redis.Client) {
 	publish(t, insts)
 }
 
-// publish 把一组现成的实例经 xclient.Build 发布出去，测试结束后清空
+// publish hands a set of ready-made instances to xclient.Build and clears them again when the test ends.
 func publish(t *testing.T, insts map[string]instance) {
 	t.Helper()
 	keep := func(_ context.Context, _ string, v instance) (instance, io.Closer, error) { return v, nil, nil }
@@ -276,10 +276,10 @@ func TestC_PanicsWhenNotFound(t *testing.T) {
 	defer func() {
 		msg := fmt.Sprint(recover())
 		if msg == "<nil>" {
-			t.Fatal("取不到实例应当 panic")
+			t.Fatal("fetching an instance that does not exist must panic")
 		}
 		if !strings.Contains(msg, ConfigKey) {
-			t.Errorf("一个都没配时该提示去看配置块，got=%v", msg)
+			t.Errorf("with nothing configured it must point at the config block, got=%v", msg)
 		}
 	}()
 	C()
@@ -290,7 +290,7 @@ func TestC_PanicMessageListsConfiguredInstances(t *testing.T) {
 	defer func() {
 		msg := fmt.Sprint(recover())
 		if !strings.Contains(msg, "cache") || !strings.Contains(msg, "session") {
-			t.Errorf("应列出已配置的实例名，got=%v", msg)
+			t.Errorf("the configured instance names must be listed, got=%v", msg)
 		}
 	}()
 	C("typo")
@@ -299,16 +299,16 @@ func TestC_PanicMessageListsConfiguredInstances(t *testing.T) {
 func TestHasNames(t *testing.T) {
 	withClients(t, map[string]*redis.Client{"session": {}, "cache": {}})
 	if !Has("cache") || Has("nope") || Has() {
-		t.Error("Has 应如实反映是否配过")
+		t.Error("Has must report truthfully whether something was configured")
 	}
 	if got := Names(); len(got) != 2 || got[0] != "cache" {
-		t.Errorf("Names 应按名字排序，got=%v", got)
+		t.Errorf("Names must be sorted by name, got=%v", got)
 	}
 }
 
 func TestRegister_RegistrationMatchesFramework(t *testing.T) {
-	// 这是本包和框架之间唯一的一根线：钩子漏登记、档位挂错，
-	// 表现是「配置不生效」或者「实例比用它的东西晚就绪」，别处都测不出来
+	// This is the only wire between this package and the framework: a missing hook registration or a wrong stage
+	// shows up as "the config has no effect" or "the instance is ready later than what uses it", and nothing else catches it.
 	var got *hook.Entry
 	for _, e := range hook.Start() {
 		if e.Pkg == "github.com/jupiter-eng/xone/xredis" {
@@ -317,10 +317,10 @@ func TestRegister_RegistrationMatchesFramework(t *testing.T) {
 		}
 	}
 	if got == nil {
-		t.Fatal("没有登记启动钩子")
+		t.Fatal("no start hook was registered")
 	}
 	if got.Stage != hook.StageClient {
-		t.Errorf("缓存要在业务之前就绪（StageClient），got=%v", got.Stage)
+		t.Errorf("the cache must be ready before business code (StageClient), got=%v", got.Stage)
 	}
 
 	var stopped bool
@@ -328,40 +328,40 @@ func TestRegister_RegistrationMatchesFramework(t *testing.T) {
 		if e.Pkg == "github.com/jupiter-eng/xone/xredis" {
 			stopped = true
 			if e.Stage != hook.StageClient {
-				// 启动和停止不在同一档的话，业务还在用的时候它就被关了
-				t.Errorf("停止钩子也该在 StageClient，got=%v", e.Stage)
+				// If start and stop are not on the same stage, it is closed while business code is still using it.
+				t.Errorf("the stop hook must be on StageClient too, got=%v", e.Stage)
 			}
 		}
 	}
 	if true != stopped {
-		t.Errorf("停止钩子登记情况不对，got=%v", stopped)
+		t.Errorf("the stop hook registration is wrong, got=%v", stopped)
 	}
 }
 
 func TestInitAll_BuildsAndClosesCleanly(t *testing.T) {
-	// 配置直接传进去，不用换包级变量再记得换回来：
-	// start 的接收者就是那份配置
+	// The configuration is passed in directly, with no package variable to swap and remember to swap back:
+	// start's receiver is that configuration.
 	f := newFakeRedis(t)
 	c := Config{Clients: map[string]ClientConfig{"a": liveCfg(f), "b": liveCfg(f)}}
 
 	err := initComponent(t, c)
 	if err != nil {
-		t.Fatalf("应当建得起来：%v", err)
+		t.Fatalf("it must build: %v", err)
 	}
 	if got := Names(); len(got) != 2 {
-		t.Fatalf("应有两个实例，got=%v", got)
+		t.Fatalf("there must be two instances, got=%v", got)
 	}
 	if err := reg.Close(); err != nil {
-		t.Errorf("关闭不该报错：%v", err)
+		t.Errorf("closing must not be an error: %v", err)
 	}
 	if got := Names(); len(got) != 0 {
-		t.Errorf("关闭后应清空，否则 C() 会返回已关闭的实例，got=%v", got)
+		t.Errorf("it must be cleared after closing, otherwise C() would return a closed instance, got=%v", got)
 	}
 }
 
 func TestInitAll_OneFailureRollsBackAll(t *testing.T) {
-	// Init 返回错误时框架拿不到 closer，已经建好的实例必须自己收拾——
-	// 不收拾的话那些连接会一直挂到进程结束，而且 C() 还可能摸到它们
+	// When Init returns an error the framework never gets the closer, so whatever was already built has to clean
+	// itself up -- otherwise those connections live until the process ends and C() may still touch them.
 	f := newFakeRedis(t)
 
 	bad := DefaultClientConfig()
@@ -371,17 +371,17 @@ func TestInitAll_OneFailureRollsBackAll(t *testing.T) {
 
 	err := initComponent(t, cfg)
 	if err == nil {
-		t.Fatal("有实例连不上时应当报错")
+		t.Fatal("an instance that cannot connect must be an error")
 	}
 	if !strings.Contains(err.Error(), `"z"`) {
-		t.Errorf("错误里应点名是哪个实例，got=%v", err)
+		t.Errorf("the error must name the instance, got=%v", err)
 	}
 	if got := Names(); len(got) != 0 {
-		t.Errorf("失败时不该发布任何实例，否则 C() 会摸到半成品，got=%v", got)
+		t.Errorf("no instance may be published on failure, or C() would touch something half-built, got=%v", got)
 	}
-	// 直接看假服务端：连接都断了，才说明先建好的那个真被关了
+	// Look at the fake server directly: only with the connections gone is the one built first really closed.
 	if n := f.waitConns(0); n != 0 {
-		t.Errorf("先建好的实例应当被回滚关闭，假服务端上还开着 %d 个连接", n)
+		t.Errorf("the instance built first must be rolled back and closed, %d connections remain on the fake server", n)
 	}
 }
 
@@ -390,17 +390,17 @@ func TestInitAll_NoOpWhenUnconfigured(t *testing.T) {
 
 	err := initComponent(t, cfg)
 	if err != nil {
-		t.Fatalf("没配不该报错：%v", err)
+		t.Fatalf("not configuring it must not be an error: %v", err)
 	}
 	reg.Close()
 	if len(Names()) != 0 {
-		t.Errorf("不该建出实例，got=%v", Names())
+		t.Errorf("no instance may be built, got=%v", Names())
 	}
 }
 
 func TestInstallPoolMetrics_RegistersOnceWhenInstalledRepeatedly(t *testing.T) {
-	// 每个开了指标的实例都会调它一次，而 collector 是进程级的一个：
-	// 第二次注册 Prometheus 会报 duplicate，这套指标从此一个都导不出去
+	// Every instance with metrics enabled calls it once, while the collector is a single process-wide object:
+	// a second registration makes Prometheus report a duplicate and none of these metrics is ever exported again.
 	m, closer, err := xmetric.New(xmetric.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -408,7 +408,7 @@ func TestInstallPoolMetrics_RegistersOnceWhenInstalledRepeatedly(t *testing.T) {
 	defer closer.Close()
 	m.Install()
 
-	// 别的用例留下的 go-redis 后台协程也会往默认 logger 写，buffer 得并发安全
+	// go-redis background goroutines left by other cases also write to the default logger, so the buffer has to be safe across goroutines.
 	var buf syncBuffer
 	old := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
@@ -418,7 +418,7 @@ func TestInstallPoolMetrics_RegistersOnceWhenInstalledRepeatedly(t *testing.T) {
 	installPoolMetrics()
 
 	if strings.Contains(buf.String(), "failed to register") {
-		t.Errorf("挂第二次应当复用已有的那个，而不是让 Prometheus 报重复注册\n实际=\n%s", buf.String())
+		t.Errorf("attaching a second time must reuse the existing one instead of making Prometheus report a duplicate registration\ngot=\n%s", buf.String())
 	}
 }
 
@@ -447,7 +447,7 @@ func TestPoolCollector(t *testing.T) {
 		`demo_redis_pool_timeouts_total{name="cache"} 2`,
 	} {
 		if !strings.Contains(out, want) {
-			t.Errorf("导出里应有 %s\n实际=\n%s", want, out)
+			t.Errorf("the export must contain %s\ngot=\n%s", want, out)
 		}
 	}
 }
@@ -463,21 +463,21 @@ func TestPoolStats_ReadsLiveInstance(t *testing.T) {
 
 	got := poolStats()
 	if len(got) != 1 || got["cache"] == nil {
-		t.Errorf("应读到活着的实例，got=%v", got)
+		t.Errorf("a live instance must be read, got=%v", got)
 	}
 }
 
 func TestNew_CommandsHonorCallerDeadline(t *testing.T) {
-	// go-redis 默认不让请求的 context 管住 socket 读写：不开
-	// ContextTimeoutEnabled 的话，每个命令用的是 ReadTimeout 这组固定值，
-	// 调用方给的 deadline 只是摆设——一个 200ms 超时的请求照样会在一个
-	// 慢 Redis 上等满 ReadTimeout，上游的超时预算和级联保护跟着一起失效
+	// go-redis does not let the request context govern the socket reads and writes by default: without
+	// ContextTimeoutEnabled, every command uses the fixed ReadTimeout pair and
+	// the caller's deadline is decoration -- a request with a 200ms timeout would still wait out
+	// ReadTimeout on a slow Redis, and the upstream's timeout budget and cascade protection fail with it.
 	f := newFakeRedis(t)
-	f.setStall("get") // 收下 GET 但永不回复
+	f.setStall("get") // accept GET and never answer
 
 	c := liveCfg(f)
-	c.ReadTimeout = 5 * time.Second // 比 ctx 的预算大得多
-	c.MaxRetries = -1               // 重试会掩盖掉这件事
+	c.ReadTimeout = 5 * time.Second // far larger than the ctx's budget
+	c.MaxRetries = -1               // retries would mask this
 	client, closer, err := New(context.Background(), c)
 	if err != nil {
 		t.Fatal(err)
@@ -492,21 +492,21 @@ func TestNew_CommandsHonorCallerDeadline(t *testing.T) {
 	elapsed := time.Since(start)
 
 	if err == nil {
-		t.Fatal("该超时的")
+		t.Fatal("it must time out")
 	}
-	// go-redis 把 ctx 的 deadline 设到 socket 上，所以报上来的是
-	// os.ErrDeadlineExceeded（i/o timeout）而不是 context.DeadlineExceeded。
-	// 调用方要判超时得认这个，或者干脆判 ctx.Err()
+	// go-redis sets the ctx deadline on the socket, so what is reported is
+	// os.ErrDeadlineExceeded (i/o timeout) rather than context.DeadlineExceeded.
+	// A caller checking for a timeout has to recognize that one, or simply check ctx.Err().
 	if !errors.Is(err, os.ErrDeadlineExceeded) && !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("该是超时错误，got=%v (%T)", err, err)
+		t.Errorf("it must be a timeout error, got=%v (%T)", err, err)
 	}
 	if elapsed > 2*time.Second {
-		t.Errorf("ctx 给了 200ms，实际等了 %v —— deadline 没管住 socket 读写", elapsed.Round(10*time.Millisecond))
+		t.Errorf("the ctx gave 200ms and it waited %v -- the deadline did not govern the socket reads and writes", elapsed.Round(10*time.Millisecond))
 	}
 }
 
-// initComponent 走一遍框架真正会走的路径：按这份配置把实例挨个建出来。
-// 多实例的建法（排序、失败回滚、panic 隔离）全在那条路上。
+// initComponent walks the path the framework really takes: build the instances one by one from this config.
+// Everything about building several of them (ordering, rollback on failure, panic isolation) lives on that path.
 func initComponent(t *testing.T, c Config) error {
 	t.Helper()
 	t.Cleanup(func() { _ = reg.Close() })
@@ -514,15 +514,15 @@ func initComponent(t *testing.T, c Config) error {
 }
 
 func TestInitXRedis_NoConnectionsWithoutSection(t *testing.T) {
-	// xredis 是可选依赖：没配不该让服务起不来，更不该去连 localhost:6379
+	// xredis is an optional dependency: not configuring it must not keep the service from starting, and must certainly not connect to localhost:6379.
 	t.Cleanup(func() { _ = closeXRedis(context.Background()) })
 	xonetest.UseConfigYAML(t, "XApp:\n  Name: demo\n")
 
 	if err := initXRedis(context.Background()); err != nil {
-		t.Fatalf("没配不该报错：%v", err)
+		t.Fatalf("not configuring it must not be an error: %v", err)
 	}
 	if got := Names(); len(got) != 0 {
-		t.Errorf("不该建出实例，got=%v", got)
+		t.Errorf("no instance may be built, got=%v", got)
 	}
 }
 
@@ -531,10 +531,10 @@ func TestInitXRedis_NoConnectionsWithEmptySection(t *testing.T) {
 	xonetest.UseConfigYAML(t, "XRedis:\n")
 
 	if err := initXRedis(context.Background()); err != nil {
-		t.Fatalf("空块不该报错：%v", err)
+		t.Fatalf("an empty block must not be an error: %v", err)
 	}
 	if got := Names(); len(got) != 0 {
-		t.Errorf("不该建出实例，got=%v", got)
+		t.Errorf("no instance may be built, got=%v", got)
 	}
 }
 
@@ -543,10 +543,10 @@ func TestInitXRedis_ConfigTypoFailsStartup(t *testing.T) {
 	xonetest.UseConfigYAML(t, "XRedis:\n  Addrs: \"127.0.0.1:6379\"\n")
 
 	if err := initXRedis(context.Background()); err == nil {
-		t.Fatal("字段拼错应当让启动失败，否则使用者会一直以为自己配上了")
+		t.Fatal("a misspelled field must fail startup, otherwise the caller keeps believing the setting took")
 	}
 	if got := Names(); len(got) != 0 {
-		t.Errorf("失败时不该留下实例，got=%v", got)
+		t.Errorf("no instance may be left behind on failure, got=%v", got)
 	}
 }
 
@@ -556,20 +556,20 @@ func TestInitXRedis_BuildsFromConfigAndClosesCleanly(t *testing.T) {
 	xonetest.UseConfigYAML(t, "XRedis:\n  Clients:\n    cache:\n      Addr: \""+f.addr()+"\"\n    session:\n      Addr: \""+f.addr()+"\"\n")
 
 	if err := initXRedis(context.Background()); err != nil {
-		t.Fatalf("应当建得起来：%v", err)
+		t.Fatalf("it must build: %v", err)
 	}
 	if got := Names(); len(got) != 2 {
-		t.Fatalf("应有两个实例，got=%v", got)
+		t.Fatalf("there must be two instances, got=%v", got)
 	}
 	if C("cache").Options().Addr != f.addr() {
-		t.Errorf("配置里的地址没传到实例上，got=%v", C("cache").Options().Addr)
+		t.Errorf("the address from the configuration did not reach the instance, got=%v", C("cache").Options().Addr)
 	}
 
 	if err := closeXRedis(context.Background()); err != nil {
-		t.Errorf("关闭不该报错：%v", err)
+		t.Errorf("closing must not be an error: %v", err)
 	}
 	if got := Names(); len(got) != 0 {
-		t.Errorf("关完还取得到实例，调用方会摸到一个已经关掉的连接池，got=%v", got)
+		t.Errorf("an instance is still reachable after closing, so a caller would touch a closed pool, got=%v", got)
 	}
 }
 
@@ -580,34 +580,34 @@ func TestCloseXRedis_ClosesWithoutInit(t *testing.T) {
 }
 
 func TestInitXRedis_EmptySectionDoesNotFailStartup(t *testing.T) {
-	// 空块是「我先占个位」：把内容注释掉、或者挪到 profile 文件里之后，
-	// 留下的就是这个形状。它曾经让 Run 报「XRedis 这个 key 没人读，
-	// 检查拼写、或者有没有 import 对应的包」——两条都不成立
+	// An empty block is "holding the place": commenting the contents out, or moving them into a profile file,
+	// leaves exactly this shape. It used to make Run report "nobody reads the key XRedis,
+	// check the spelling, or whether the matching package is imported" -- neither of which was true.
 	t.Cleanup(func() { _ = closeXRedis(context.Background()) })
 	xonetest.UseConfigYAML(t, "XRedis:\n")
 
 	if err := initXRedis(context.Background()); err != nil {
-		t.Fatalf("空块不该报错：%v", err)
+		t.Fatalf("an empty block must not be an error: %v", err)
 	}
 	if got := config.Unclaimed(); len(got) != 0 {
-		t.Errorf("跳过了也算读过，否则框架会因为这个 key 没人认领而让启动失败，got=%v", got)
+		t.Errorf("skipping it still counts as reading it, or the framework would fail startup over an unclaimed key, got=%v", got)
 	}
 }
 
-// assertOneFrame 断言错误恰好是一层本模块的 xerror，op 是期望的那个。
-// 一个模块边界一个 xerror：每层都包的话模块名重复出现，真正的 op 被压进里层
+// assertOneFrame asserts the error is exactly one xerror frame from this module with the expected op.
+// One module boundary, one xerror: wrapping at every level repeats the module name and buries the real op inside.
 func assertOneFrame(t *testing.T, err error, module, op string) {
 	t.Helper()
 	var xe *xerror.Error
 	if !errors.As(err, &xe) {
-		t.Fatalf("应当是 xerror，got %v", err)
+		t.Fatalf("must be an xerror, got %v", err)
 	}
 	if xe.Module != module || xe.Op != op {
-		t.Errorf("want module=%s op=%s，got module=%s op=%s（%v）", module, op, xe.Module, xe.Op, err)
+		t.Errorf("want module=%s op=%s, got module=%s op=%s (%v)", module, op, xe.Module, xe.Op, err)
 	}
 	var inner *xerror.Error
 	if errors.As(xe.Err, &inner) {
-		t.Errorf("同一个模块只该有一层 xerror，got %v", err)
+		t.Errorf("there must be only one xerror frame per module, got %v", err)
 	}
 }
 
@@ -622,14 +622,14 @@ func TestInstall_ErrorWrappedOnceWithAccurateOp(t *testing.T) {
 	err = initComponent(t, Config{Clients: map[string]ClientConfig{"b": dead}})
 	assertOneFrame(t, err, "xredis", "connect")
 	if !strings.Contains(err.Error(), `"b"`) {
-		t.Errorf("错误里要点名实例，got %v", err)
+		t.Errorf("the error must name the instance, got %v", err)
 	}
 }
 
 func TestInstall_ExportsOnlyMetricEnabledInstances_SurvivesXmetricReinstall(t *testing.T) {
-	// collector 是进程级的一个，抓取时遍历全部实例：不看实例自己的开关，
-	// Metric: false 就是一句空话。第二轮是同一进程里再走一遍生命周期——
-	// xmetric 换了新的 Registry，collector 得跟着挂上去，否则连接池指标全丢
+	// The collector is a single process-wide object that walks every instance when scraped: without consulting
+	// each instance's own switch, Metric: false is an empty phrase. The second round is another lifecycle in the
+	// same process -- xmetric has a new Registry, and the collector has to be attached to it or every pool metric is lost.
 	f := newFakeRedis(t)
 	on, off := liveCfg(f), liveCfg(f)
 	off.Metric = false
@@ -645,10 +645,10 @@ func TestInstall_ExportsOnlyMetricEnabledInstances_SurvivesXmetricReinstall(t *t
 		}
 		out := testkit.Scrape(m.Handler)
 		if !strings.Contains(out, `redis_pool_connections{name="on"}`) {
-			t.Errorf("第 %d 轮：开了 Metric 的实例该导出\n实际=\n%s", round, out)
+			t.Errorf("round %d: an instance with Metric on must export\ngot=\n%s", round, out)
 		}
 		if strings.Contains(out, `name="off"`) {
-			t.Errorf("第 %d 轮：Metric: false 的实例不该导出\n实际=\n%s", round, out)
+			t.Errorf("round %d: an instance with Metric: false must not export\ngot=\n%s", round, out)
 		}
 		if err := reg.Close(); err != nil {
 			t.Fatal(err)
@@ -658,8 +658,8 @@ func TestInstall_ExportsOnlyMetricEnabledInstances_SurvivesXmetricReinstall(t *t
 }
 
 func TestInitXRedis_CSaysUnconfiguredNotTooEarly(t *testing.T) {
-	// 没配也要让注册表知道启动钩子跑过了。否则 C() 会把「没配」说成「调早了」，
-	// 使用者会去查调用时机，而真正该查的是配置文件
+	// Even with nothing configured the registry must know the start hook ran. Otherwise C() would report "not
+	// configured" as "called too early", sending the caller to look at call timing when the config file is what needs checking.
 	t.Cleanup(func() { _ = closeXRedis(context.Background()) })
 	xonetest.UseConfigYAML(t, "XApp:\n  Name: demo\n")
 	if err := initXRedis(context.Background()); err != nil {
@@ -668,13 +668,13 @@ func TestInitXRedis_CSaysUnconfiguredNotTooEarly(t *testing.T) {
 	defer func() {
 		msg := fmt.Sprint(recover())
 		if !strings.Contains(msg, "none is configured") {
-			t.Errorf("没配时要说没配，got=%v", msg)
+			t.Errorf("when nothing is configured it must say so, got=%v", msg)
 		}
 	}()
 	C()
 }
 
-// syncBuffer 是加了锁的 bytes.Buffer
+// syncBuffer is a bytes.Buffer with a lock.
 type syncBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer

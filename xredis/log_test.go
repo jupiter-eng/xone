@@ -18,7 +18,7 @@ import (
 	"go.opentelemetry.io/otel/trace/noop"
 )
 
-// secret 一个长随机串：「日志里不该出现」的检查用它，短的数字会和时间戳、耗时撞上
+// secret is a long random string: the "must not appear in the log" checks use it, since a short number would collide with a timestamp or a duration.
 func secret(t *testing.T, prefix string) string {
 	t.Helper()
 	b := make([]byte, 16)
@@ -28,7 +28,7 @@ func secret(t *testing.T, prefix string) string {
 	return prefix + "-" + hex.EncodeToString(b)
 }
 
-// logClient 建一个 Log 开着的实例，实例名 name
+// logClient builds an instance with Log on, under the instance name name.
 func logClient(t *testing.T, f *fakeRedis, name string, mutate ...func(*ClientConfig)) *redis.Client {
 	t.Helper()
 	c := liveCfg(f)
@@ -44,7 +44,7 @@ func logClient(t *testing.T, f *fakeRedis, name string, mutate ...func(*ClientCo
 	return client
 }
 
-// cmdLines 取 msg 为这几种之一的日志，去掉每条新连接上的 HELLO（假 Redis 不认它，每条连接回一次错）
+// cmdLines picks out the logs whose msg is one of these, dropping the HELLO on each new connection (the fake Redis does not know it and answers an error once per connection).
 func cmdLines(all []map[string]any, msgs ...string) []map[string]any {
 	var out []map[string]any
 	for _, l := range all {
@@ -67,24 +67,24 @@ func TestLog_CommandLineHasNameCmdFirstKeyElapsed(t *testing.T) {
 	}
 	got := cmdLines(lines(), "redis command")
 	if len(got) != 1 {
-		t.Fatalf("一条命令一行 redis command，got=%v", lines())
+		t.Fatalf("one redis command line per command, got=%v", lines())
 	}
 	l := got[0]
 	if l["level"] != "INFO" || l["name"] != "session" || l["cmd"] != "set" || l["key"] != "session:42" {
-		t.Errorf("该带实例名、命令名、第一个 key，级别 INFO，got=%v", l)
+		t.Errorf("it must carry the instance name, the command name and the first key at INFO, got=%v", l)
 	}
 	if _, ok := l["elapsed_ms"].(float64); !ok {
-		t.Errorf("该带 elapsed_ms（毫秒，数字），got=%v", l)
+		t.Errorf("it must carry elapsed_ms (milliseconds, a number), got=%v", l)
 	}
 	for _, k := range []string{"error", "nil", "key_truncated", "threshold_ms"} {
 		if _, ok := l[k]; ok {
-			t.Errorf("成功、非 nil、短 key、不慢的命令不该带 %s，got=%v", k, l)
+			t.Errorf("a successful, non-nil, short-key, non-slow command must not carry %s, got=%v", k, l)
 		}
 	}
 }
 
 func TestLog_InstanceNameFromConfigReachesLog(t *testing.T) {
-	// 打在调用点上：框架建实例时要把配置里的名字交下去，否则多实例时分不出是哪个
+	// Aimed at the call site: the framework has to hand the configured name down when building an instance, or several instances cannot be told apart.
 	f := newFakeRedis(t)
 	lines := capture(t)
 	c := liveCfg(f)
@@ -97,7 +97,7 @@ func TestLog_InstanceNameFromConfigReachesLog(t *testing.T) {
 	}
 	got := cmdLines(lines(), "redis command")
 	if len(got) != 1 || got[0]["name"] != "cache" {
-		t.Errorf("日志的 name 该是配置里的实例名 cache，got=%v", got)
+		t.Errorf("the log's name must be the configured instance name cache, got=%v", got)
 	}
 }
 
@@ -114,10 +114,10 @@ func TestLog_DirectNewHasNoNameField(t *testing.T) {
 	client.Get(context.Background(), "k")
 	got := cmdLines(lines(), "redis command")
 	if len(got) != 1 {
-		t.Fatalf("直接调 New、Log 开着也该记，got=%v", lines())
+		t.Fatalf("a direct New with Log on must record too, got=%v", lines())
 	}
 	if _, ok := got[0]["name"]; ok {
-		t.Errorf("直接调 New 没有实例名，不该写一个空的 name，got=%v", got[0])
+		t.Errorf("a direct New has no instance name and must not write an empty one, got=%v", got[0])
 	}
 }
 
@@ -131,7 +131,7 @@ func TestLog_OffMeansNoCommandLines(t *testing.T) {
 	client.Pipelined(context.Background(), func(p redis.Pipeliner) error { p.Incr(context.Background(), "c"); return nil })
 	for _, l := range lines() {
 		if msg, _ := l["msg"].(string); strings.HasPrefix(msg, "redis ") || strings.HasPrefix(msg, "slow redis") {
-			t.Errorf("Log 默认关着，不该有命令日志，got=%v", l)
+			t.Errorf("Log is off by default, so there must be no command log, got=%v", l)
 		}
 	}
 }
@@ -164,11 +164,11 @@ func TestLog_ValuesAndOtherArgsNeverLogged(t *testing.T) {
 		blob := fmt.Sprint(l)
 		for _, s := range []string{val, field, hval, argv, pw, pipeVal, "return ARGV", "10.0.0.1"} {
 			if strings.Contains(blob, s) {
-				t.Errorf("日志里出现了值或其余参数 %q：%v", s, l)
+				t.Errorf("a value or another argument %q reached the log: %v", s, l)
 			}
 		}
 	}
-	// 前提：这些命令确实都记了，否则上面什么都没验
+	// Precondition: these commands really were recorded, or the above verified nothing.
 	want := map[string]string{"set": "k:set", "hset": "k:hash", "mset": "k:m1", "auth": "", "migrate": "", "config": ""}
 	var evalKeys []string
 	for _, l := range all {
@@ -178,7 +178,7 @@ func TestLog_ValuesAndOtherArgsNeverLogged(t *testing.T) {
 		}
 	}
 	if len(evalKeys) != 2 || evalKeys[0] != "k:lua" || evalKeys[1] != "" {
-		t.Errorf("Eval 带 key 时记 key、不带时不记，got=%v", evalKeys)
+		t.Errorf("Eval records the key when it has one and none when it does not, got=%v", evalKeys)
 	}
 	seen := map[string]bool{}
 	for _, l := range all {
@@ -186,49 +186,49 @@ func TestLog_ValuesAndOtherArgsNeverLogged(t *testing.T) {
 		if k, ok := want[cmd]; ok {
 			seen[cmd] = true
 			if got, _ := l["key"].(string); got != k {
-				t.Errorf("%s 的 key 该是 %q，got=%v", cmd, k, l)
+				t.Errorf("%s's key must be %q, got=%v", cmd, k, l)
 			}
 		}
 	}
 	for cmd := range want {
 		if !seen[cmd] {
-			t.Errorf("前提：%s 该有一行日志，got=%v", cmd, all)
+			t.Errorf("precondition: %s must have a log line, got=%v", cmd, all)
 		}
 	}
 }
 
 func TestLog_NilIsNotAFailure(t *testing.T) {
-	// key 不存在是正常的业务分支（读穿缓存天天走），不该刷成 WARN
+	// A missing key is a normal business branch (a cache read-through happens all day) and must not be noise at WARN.
 	f := newFakeRedis(t)
 	f.setReply("get", "$-1\r\n")
 	lines := capture(t)
 	client := logClient(t, f, "default")
 	if err := client.Get(context.Background(), "user:404").Err(); err != redis.Nil {
-		t.Fatalf("前提：该拿到 redis.Nil，got=%v", err)
+		t.Fatalf("precondition: redis.Nil must come back, got=%v", err)
 	}
 	got := cmdLines(lines(), "redis command", "redis command failed", "slow redis command")
 	if len(got) != 1 {
-		t.Fatalf("该有一行，got=%v", lines())
+		t.Fatalf("there must be one line, got=%v", lines())
 	}
 	l := got[0]
 	if l["msg"] != "redis command" || l["level"] != "INFO" || l["nil"] != true || l["key"] != "user:404" {
-		t.Errorf("redis.Nil 该记成 INFO 的 redis command、带 nil=true，got=%v", l)
+		t.Errorf("redis.Nil must be an INFO redis command carrying nil=true, got=%v", l)
 	}
 	if _, ok := l["error"]; ok {
-		t.Errorf("redis.Nil 不是错误，不该带 error，got=%v", l)
+		t.Errorf("redis.Nil is not an error and must carry no error, got=%v", l)
 	}
 }
 
 func TestLog_FailedCommandLogsOnlyErrorCode(t *testing.T) {
-	// 实测 Redis 7.0.15：ERR unknown command 的原文把参数带出来；
-	// EVAL 里 return {err=ARGV[1]} 的错误原文整个就是值，连「错误码」的位置都是
+	// Measured on Redis 7.0.15: the text of ERR unknown command carries the arguments out;
+	// and the error text of return {err=ARGV[1]} inside an EVAL is the value entirely, even in the "error code" position.
 	arg := secret(t, "arg")
 	for _, c := range []struct {
 		name, reply, code string
 	}{
-		{"错误原文带着参数", "-ERR unknown command 'foo', with args beginning with: '" + arg + "'\r\n", "ERR"},
+		{"the error text carries the arguments", "-ERR unknown command 'foo', with args beginning with: '" + arg + "'\r\n", "ERR"},
 		{"WRONGTYPE", "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n", "WRONGTYPE"},
-		{"错误码位置上是值", "-" + arg + "\r\n", ""},
+		{"a value in the error code position", "-" + arg + "\r\n", ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newFakeRedis(t)
@@ -237,31 +237,31 @@ func TestLog_FailedCommandLogsOnlyErrorCode(t *testing.T) {
 			client := logClient(t, f, "default")
 			err := client.Get(context.Background(), "k:1").Err()
 			if err == nil || !strings.Contains(err.Error(), strings.TrimSuffix(c.reply[1:], "\r\n")) {
-				t.Fatalf("返回给调用方的错误该是原文，got=%v", err)
+				t.Fatalf("the error returned to the caller must be the original text, got=%v", err)
 			}
 			got := cmdLines(lines(), "redis command failed")
 			if len(got) != 1 {
-				t.Fatalf("失败的命令该有一行 redis command failed，got=%v", lines())
+				t.Fatalf("a failed command must have one redis command failed line, got=%v", lines())
 			}
 			l := got[0]
 			if l["level"] != "WARN" || l["key"] != "k:1" {
-				t.Errorf("该是 WARN、带 key，got=%v", l)
+				t.Errorf("it must be a WARN carrying the key, got=%v", l)
 			}
 			if code, _ := l["error_code"].(string); code != c.code {
-				t.Errorf("error_code 该是 %q，got=%v", c.code, l)
+				t.Errorf("error_code must be %q, got=%v", c.code, l)
 			}
 			if e, _ := l["error"].(string); !strings.HasPrefix(e, "redis server error") || strings.Contains(e, arg) {
-				t.Errorf("error 只该说是服务端的错和错误码，不带原文，got=%v", l)
+				t.Errorf("error must only say it is a server error and give the code, without the text, got=%v", l)
 			}
 			if strings.Contains(fmt.Sprint(lines()), arg) {
-				t.Errorf("参数从错误原文进了日志：%v", lines())
+				t.Errorf("an argument reached the log through the error text: %v", lines())
 			}
 		})
 	}
 }
 
 func TestLog_ClientSideErrorKeepsText(t *testing.T) {
-	// 超时、连不上这类是客户端这一侧的，原文里只有地址，排查正要看它
+	// A timeout or a failed connection is on the client side and its text holds only the address, which is exactly what an investigation needs.
 	f := newFakeRedis(t)
 	lines := capture(t)
 	client := logClient(t, f, "default")
@@ -271,18 +271,18 @@ func TestLog_ClientSideErrorKeepsText(t *testing.T) {
 	client.Get(ctx, "k").Err()
 	got := cmdLines(lines(), "redis command failed")
 	if len(got) != 1 || got[0]["error"] != "context deadline exceeded" {
-		t.Errorf("超时该照原文记，got=%v", lines())
+		t.Errorf("a timeout must be recorded verbatim, got=%v", lines())
 	}
 }
 
 func TestErrorAttrs(t *testing.T) {
-	// go-redis 解析回复失败时把回复内容写进错误（reader.go 的 can't parse %q）
+	// When go-redis fails to parse a reply it writes the reply content into the error (reader.go's can't parse %q).
 	attrs := errorAttrs(fmt.Errorf("redis: can't parse %q", "reply-with-value"))
 	if strings.Contains(fmt.Sprint(attrs), "reply-with-value") {
-		t.Errorf("不认得的客户端错误不记原文，got=%v", attrs)
+		t.Errorf("an unrecognized client error records no text, got=%v", attrs)
 	}
 	if got := fmt.Sprint(errorAttrs(redis.ErrClosed)); !strings.Contains(got, "client is closed") {
-		t.Errorf("ErrClosed 照原文，got=%v", got)
+		t.Errorf("ErrClosed is recorded verbatim, got=%v", got)
 	}
 }
 
@@ -292,9 +292,9 @@ func TestLog_SlowThreshold(t *testing.T) {
 		threshold time.Duration
 		wantMsg   string
 	}{
-		{"超过阈值记 WARN", 20 * time.Millisecond, "slow redis command"},
-		{"配 0 不记慢命令", 0, "redis command"},
-		{"没超过阈值照常 INFO", time.Second, "redis command"},
+		{"above the threshold is a WARN", 20 * time.Millisecond, "slow redis command"},
+		{"0 records no slow commands", 0, "redis command"},
+		{"below the threshold is INFO as usual", time.Second, "redis command"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			f := newFakeRedis(t)
@@ -304,11 +304,11 @@ func TestLog_SlowThreshold(t *testing.T) {
 			client.Get(context.Background(), "k:slow")
 			got := cmdLines(lines(), "redis command", "slow redis command")
 			if len(got) != 1 || got[0]["msg"] != c.wantMsg {
-				t.Fatalf("该是一行 %s，got=%v", c.wantMsg, lines())
+				t.Fatalf("it must be one %s line, got=%v", c.wantMsg, lines())
 			}
 			if c.wantMsg == "slow redis command" {
 				if got[0]["level"] != "WARN" || got[0]["threshold_ms"] != float64(20) || got[0]["key"] != "k:slow" {
-					t.Errorf("慢命令该是 WARN、带 threshold_ms 和 key，got=%v", got[0])
+					t.Errorf("a slow command must be a WARN carrying threshold_ms and the key, got=%v", got[0])
 				}
 			}
 		})
@@ -324,7 +324,7 @@ func TestLog_SlowNilStillMarksNil(t *testing.T) {
 	client.Get(context.Background(), "k")
 	got := cmdLines(lines(), "slow redis command")
 	if len(got) != 1 || got[0]["nil"] != true {
-		t.Errorf("慢的 nil 也该带 nil=true，got=%v", lines())
+		t.Errorf("a slow nil must carry nil=true too, got=%v", lines())
 	}
 }
 
@@ -339,15 +339,15 @@ func TestLog_LongKeyTruncated(t *testing.T) {
 		t.Fatalf("got=%v", lines())
 	}
 	if k, _ := got[0]["key"].(string); len(k) != maxLoggedKey || got[0]["key_truncated"] != true {
-		t.Errorf("超长的 key 该截到 %d 字节并带 key_truncated，got=%v", maxLoggedKey, got[0])
+		t.Errorf("an overlong key must be cut to %d bytes and carry key_truncated, got=%v", maxLoggedKey, got[0])
 	}
 }
 
 func TestKeyAttrs_DoesNotSplitUTF8(t *testing.T) {
-	key := strings.Repeat("a", maxLoggedKey-1) + "键" + "tail"
+	key := strings.Repeat("a", maxLoggedKey-1) + "€" + "tail"
 	got := keyAttrs(key)[1].(string)
 	if !strings.HasSuffix(got, "a") || len(got) != maxLoggedKey-1 {
-		t.Errorf("截断不该切开一个 UTF-8 字符，got 尾部 %q、长度 %d", got[len(got)-3:], len(got))
+		t.Errorf("truncation must not cut a UTF-8 character, got tail %q, length %d", got[len(got)-3:], len(got))
 	}
 }
 
@@ -355,7 +355,7 @@ func TestFirstKey(t *testing.T) {
 	ctx := context.Background()
 	for _, c := range []struct {
 		args []any
-		want string // 空串表示不该给 key
+		want string // an empty string means no key may be given
 	}{
 		{[]any{"get", "user:1"}, "user:1"},
 		{[]any{"set", "user:1", "value", "ex", 10}, "user:1"},
@@ -364,7 +364,7 @@ func TestFirstKey(t *testing.T) {
 		{[]any{"eval", "return 1", "1", "lua:k", "argv"}, "lua:k"},
 		{[]any{"evalsha", "abc", "2", "k1", "k2", "argv"}, "k1"},
 		{[]any{"eval", "return 1", "0", "argv-not-a-key"}, ""},
-		{[]any{"eval", "return 1", 1, "lua:int"}, "lua:int"}, // go-redis 的 Eval 传的 numkeys 是 int
+		{[]any{"eval", "return 1", 1, "lua:int"}, "lua:int"}, // go-redis's Eval passes numkeys as an int
 		{[]any{"eval", "return 1", 0, "argv-not-a-key"}, ""},
 		{[]any{"eval", "return 1", "x", "argv-not-a-key"}, ""},
 		{[]any{"fcall", "fn", "1", "fk", "argv"}, "fk"},
@@ -381,13 +381,13 @@ func TestFirstKey(t *testing.T) {
 		{[]any{"client", "setname", "x"}, ""},
 		{[]any{"script", "load", "return 1"}, ""},
 		{[]any{"keys", "user:*"}, ""},
-		{[]any{"get", 42}, ""}, // 不是字符串的参数不猜
+		{[]any{"get", 42}, ""}, // a non-string argument is not guessed at
 		{[]any{"get", []byte("b:1")}, "b:1"},
 		{[]any{"get"}, ""},
 	} {
 		got, ok := firstKey(redis.NewCmd(ctx, c.args...))
 		if got != c.want || ok != (c.want != "") {
-			t.Errorf("firstKey(%v) = %q, %v；want %q", c.args, got, ok, c.want)
+			t.Errorf("firstKey(%v) = %q, %v; want %q", c.args, got, ok, c.want)
 		}
 	}
 }
@@ -409,22 +409,22 @@ func TestLog_PipelineOneLine(t *testing.T) {
 	}
 	all := lines()
 	if n := len(cmdLines(all, "redis command")); n != 0 {
-		t.Errorf("pipeline 里的命令不该各记一行，got %d 行", n)
+		t.Errorf("the commands in a pipeline must not each get a line, got %d lines", n)
 	}
 	got := cmdLines(all, "redis pipeline")
 	if len(got) != 1 {
-		t.Fatalf("整个 pipeline 一行，got=%v", all)
+		t.Fatalf("one line for the whole pipeline, got=%v", all)
 	}
 	l := got[0]
 	cmds, _ := l["cmds"].([]any)
 	if l["level"] != "INFO" || l["name"] != "default" || l["count"] != float64(12) || len(cmds) != maxLoggedPipelineCmds || cmds[0] != "set" {
-		t.Errorf("该带总数 12、前 %d 个命令名，got=%v", maxLoggedPipelineCmds, l)
+		t.Errorf("it must carry the total of 12 and the first %d command names, got=%v", maxLoggedPipelineCmds, l)
 	}
 	if _, ok := l["elapsed_ms"].(float64); !ok {
-		t.Errorf("该带 elapsed_ms，got=%v", l)
+		t.Errorf("it must carry elapsed_ms, got=%v", l)
 	}
 	if strings.Contains(fmt.Sprint(all), val) || strings.Contains(fmt.Sprint(all), "p:1") {
-		t.Errorf("pipeline 的日志不带 key 和值：%v", all)
+		t.Errorf("a pipeline log carries no key and no value: %v", all)
 	}
 }
 
@@ -436,10 +436,10 @@ func TestLog_PipelineNilIsNotFailureButLaterErrorIs(t *testing.T) {
 	lines := capture(t)
 	client := logClient(t, f, "default")
 	if _, err := client.Pipelined(ctx, func(p redis.Pipeliner) error { p.Get(ctx, "a"); p.Set(ctx, "b", "v", 0); return nil }); err != redis.Nil {
-		t.Fatalf("前提：Exec 在有 nil 时返回 redis.Nil，got=%v", err)
+		t.Fatalf("precondition: Exec returns redis.Nil when one is present, got=%v", err)
 	}
 	if got := cmdLines(lines(), "redis pipeline"); len(got) != 1 || got[0]["level"] != "INFO" {
-		t.Errorf("只有 nil 的 pipeline 不算失败，got=%v", lines())
+		t.Errorf("a pipeline with nothing but a nil is not a failure, got=%v", lines())
 	}
 
 	f2 := newFakeRedis(t)
@@ -450,7 +450,7 @@ func TestLog_PipelineNilIsNotFailureButLaterErrorIs(t *testing.T) {
 	client2.Pipelined(ctx, func(p redis.Pipeliner) error { p.Get(ctx, "a"); p.Incr(ctx, "b"); return nil })
 	got := cmdLines(lines2(), "redis pipeline failed")
 	if len(got) != 1 || got[0]["level"] != "WARN" || got[0]["error_code"] != "ERR" {
-		t.Errorf("nil 之后的真错误要认出来，got=%v", lines2())
+		t.Errorf("a real error after a nil must be recognized, got=%v", lines2())
 	}
 }
 
@@ -462,12 +462,12 @@ func TestLog_SlowPipeline(t *testing.T) {
 	ctx := context.Background()
 	client.Pipelined(ctx, func(p redis.Pipeliner) error { p.Set(ctx, "a", "v", 0); return nil })
 	if got := cmdLines(lines(), "slow redis pipeline"); len(got) != 1 || got[0]["threshold_ms"] != float64(10) {
-		t.Errorf("慢 pipeline 该有一行 slow redis pipeline，got=%v", lines())
+		t.Errorf("a slow pipeline must have one slow redis pipeline line, got=%v", lines())
 	}
 }
 
-// idTracer 给每个 Span 发一个新的 span_id，trace_id 沿用父的：
-// 测试据此分得清日志的 ctx 里是调用方的 Span 还是 redis 命令的 Span
+// idTracer gives every Span a new span_id while keeping the parent's trace_id:
+// the test uses that to tell whether the log's ctx holds the caller's Span or the redis command's.
 type idTracer struct {
 	noop.Tracer
 	mu    *sync.Mutex
@@ -497,7 +497,7 @@ type idTP struct {
 func (p idTP) Tracer(string, ...trace.TracerOption) trace.Tracer { return p.t }
 
 func TestLog_CarriesRedisSpanOfCallerTrace(t *testing.T) {
-	// 日志钩子挂在链路钩子里面：命令 ctx 里是 redis Span，trace_id 与调用方相同
+	// The log hook runs inside the tracing hook: the command ctx holds the redis Span, with the same trace_id as the caller.
 	var n byte
 	tp := idTP{t: idTracer{mu: &sync.Mutex{}, spans: map[string]trace.SpanContext{}, next: &n}}
 	old := otel.GetTracerProvider()
@@ -524,17 +524,17 @@ func TestLog_CarriesRedisSpanOfCallerTrace(t *testing.T) {
 	cmdSpan, ok := tp.t.spans["get"]
 	tp.t.mu.Unlock()
 	if !ok || len(recs) != 1 {
-		t.Fatalf("前提：该有一个 get Span 和一行命令日志，spans=%v logs=%v", tp.t.spans, recs)
+		t.Fatalf("precondition: there must be one get Span and one command log line, spans=%v logs=%v", tp.t.spans, recs)
 	}
 	if recs[0].TraceID() != caller.TraceID() {
-		t.Errorf("日志该带调用方的 trace_id %s，got=%s", caller.TraceID(), recs[0].TraceID())
+		t.Errorf("the log must carry the caller's trace_id %s, got=%s", caller.TraceID(), recs[0].TraceID())
 	}
 	if recs[0].SpanID() != cmdSpan.SpanID() {
-		t.Errorf("日志的 span_id 该是这条命令的 redis Span %s（调用方是 %s），got=%s", cmdSpan.SpanID(), caller.SpanID(), recs[0].SpanID())
+		t.Errorf("the log's span_id must be this command's redis Span %s (the caller's is %s), got=%s", cmdSpan.SpanID(), caller.SpanID(), recs[0].SpanID())
 	}
 }
 
-// scRecorder 记下每条 redis command 日志的 ctx 里的 SpanContext
+// scRecorder records the SpanContext in the ctx of every redis command log line.
 type scRecorder struct {
 	mu   *sync.Mutex
 	recs *[]trace.SpanContext
@@ -553,8 +553,8 @@ func (h scRecorder) Handle(ctx context.Context, r slog.Record) error {
 }
 
 func TestLog_InvalidCmdNameReplaced(t *testing.T) {
-	// cmd 字段是 go-redis 的 cmd.Name()：第 1 个参数原样小写，不截断。
-	// Do(ctx, "SET k1 <值>") 把整条命令塞进了第 1 个参数，值就跟着进了 cmd
+	// The cmd field is go-redis's cmd.Name(): the first argument lowercased as it is, untruncated.
+	// Do(ctx, "SET k1 <value>") puts the whole command into the first argument, so the value travels into cmd with it.
 	val := secret(t, "val")
 	f := newFakeRedis(t)
 	lines := capture(t)
@@ -570,20 +570,20 @@ func TestLog_InvalidCmdNameReplaced(t *testing.T) {
 		cmds = append(cmds, l["cmd"])
 	}
 	if fmt.Sprint(cmds) != "[<invalid> json.set <invalid>]" {
-		t.Errorf("不像命令名的 cmd 该换成 <invalid>，模块命令（json.set）照记，got=%v", cmds)
+		t.Errorf("a cmd that does not look like a command name must become <invalid>, while a module command (json.set) is recorded, got=%v", cmds)
 	}
 	p := cmdLines(lines(), "redis pipeline")
 	if len(p) != 1 || fmt.Sprint(p[0]["cmds"]) != "[<invalid> get]" {
-		t.Errorf("pipeline 的 cmds 同样换成 <invalid>，got=%v", p)
+		t.Errorf("a pipeline's cmds likewise become <invalid>, got=%v", p)
 	}
 	if strings.Contains(strings.ToLower(fmt.Sprint(lines())), strings.ToLower(val)) {
-		t.Errorf("值从命令名进了日志：%v", lines())
+		t.Errorf("a value reached the log through the command name: %v", lines())
 	}
 }
 
 func TestLog_WatchConflictIsNotAFailure(t *testing.T) {
-	// WATCH 的 key 被别人改了，EXEC 回空数组，go-redis 返回 redis.TxFailedErr。
-	// 它是 proto.RedisError（和服务端的错误同一个类型），但它是乐观锁的正常结果，不是故障
+	// A WATCHed key changed by somebody else makes EXEC answer an empty array and go-redis return redis.TxFailedErr.
+	// It is a proto.RedisError (the same type as a server error), but it is the normal outcome of optimistic locking, not a failure.
 	f := newFakeRedis(t)
 	f.setReply("exec", "*-1\r\n")
 	lines := capture(t)
@@ -591,14 +591,14 @@ func TestLog_WatchConflictIsNotAFailure(t *testing.T) {
 	ctx := context.Background()
 	_, err := client.TxPipelined(ctx, func(p redis.Pipeliner) error { p.Set(ctx, "w", "v", 0); return nil })
 	if !errors.Is(err, redis.TxFailedErr) {
-		t.Fatalf("前提：EXEC 回空数组时返回 redis.TxFailedErr，got=%v", err)
+		t.Fatalf("precondition: an empty array from EXEC returns redis.TxFailedErr, got=%v", err)
 	}
 	got := cmdLines(lines(), "redis pipeline", "redis pipeline failed", "slow redis pipeline")
 	if len(got) != 1 || got[0]["msg"] != "redis pipeline" || got[0]["level"] != "INFO" || got[0]["tx_failed"] != true {
-		t.Fatalf("WATCH 冲突该记 INFO 的 redis pipeline、带 tx_failed=true，got=%v", lines())
+		t.Fatalf("a WATCH conflict must be an INFO redis pipeline carrying tx_failed=true, got=%v", lines())
 	}
 	if _, ok := got[0]["error"]; ok {
-		t.Errorf("WATCH 冲突不带 error，got=%v", got[0])
+		t.Errorf("a WATCH conflict carries no error, got=%v", got[0])
 	}
 }
 
@@ -611,20 +611,20 @@ func TestLog_WatchConflictSlowStillMarked(t *testing.T) {
 	ctx := context.Background()
 	client.TxPipelined(ctx, func(p redis.Pipeliner) error { p.Set(ctx, "w", "v", 0); return nil })
 	if got := cmdLines(lines(), "slow redis pipeline"); len(got) != 1 || got[0]["tx_failed"] != true {
-		t.Errorf("慢的 WATCH 冲突记 slow redis pipeline、也带 tx_failed=true，got=%v", lines())
+		t.Errorf("a slow WATCH conflict is a slow redis pipeline and carries tx_failed=true too, got=%v", lines())
 	}
 }
 
 func TestKeyAttrs_InvalidUTF8NotTruncatedToEmpty(t *testing.T) {
-	// 一串 0x80：每个字节都不是字符的起点，一路往回找会退到 0
+	// A run of 0x80: no byte is a character boundary, and walking back forever would reach 0.
 	got := keyAttrs(strings.Repeat("\x80", 300))
 	if k := got[1].(string); len(k) != maxLoggedKey || got[3] != true {
-		t.Errorf("不是 UTF-8 的 key 截到 %d 字节，不该截成空串，got 长度 %d", maxLoggedKey, len(k))
+		t.Errorf("a non-UTF-8 key is cut to %d bytes and must not become an empty string, got length %d", maxLoggedKey, len(k))
 	}
 }
 
 func TestLog_WarnLevelHandlerStillGetsProblems(t *testing.T) {
-	// slog 只收 WARN 时跳过拼字段的捷径，不能把失败、慢、pipeline 失败也跳过
+	// With slog accepting WARN only, the shortcut that skips assembling the fields must not skip failures, slow commands and failed pipelines too.
 	f := newFakeRedis(t)
 	f.setReply("incr", "-ERR value is not an integer or out of range\r\n")
 	f.setDelay("get", 40*time.Millisecond)
@@ -642,12 +642,12 @@ func TestLog_WarnLevelHandlerStillGetsProblems(t *testing.T) {
 		msgs = append(msgs, l["msg"])
 	}
 	if fmt.Sprint(msgs) != "[redis command failed slow redis command redis pipeline failed slow redis pipeline]" {
-		t.Errorf("只收 WARN 的 handler 照样该拿到失败、慢、pipeline 失败的行，got=%v", msgs)
+		t.Errorf("a WARN-only handler must still get the failure, slow and pipeline-failure lines, got=%v", msgs)
 	}
 }
 
 func TestLog_PipelineReportsFirstError(t *testing.T) {
-	// 头一条是 nil：Exec 返回 redis.Nil，真错误要自己往后找，找到的是第一个
+	// The first one is a nil: Exec returns redis.Nil, so the real error has to be looked for after it, and what is found is the first one.
 	f := newFakeRedis(t)
 	f.setReply("get", "$-1\r\n")
 	f.setReply("incr", "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n")
@@ -658,7 +658,7 @@ func TestLog_PipelineReportsFirstError(t *testing.T) {
 	client.Pipelined(ctx, func(p redis.Pipeliner) error { p.Get(ctx, "a"); p.Incr(ctx, "b"); p.Decr(ctx, "c"); return nil })
 	got := cmdLines(lines(), "redis pipeline failed")
 	if len(got) != 1 || got[0]["error_code"] != "WRONGTYPE" {
-		t.Errorf("pipeline 记第一个错误（WRONGTYPE），不是最后一个，got=%v", lines())
+		t.Errorf("a pipeline records the first error (WRONGTYPE), not the last, got=%v", lines())
 	}
 }
 
@@ -674,13 +674,13 @@ func TestLog_SlowAndFailedLogsFailed(t *testing.T) {
 	client.Get(ctx, "k")
 	client.Pipelined(ctx, func(p redis.Pipeliner) error { p.Incr(ctx, "n"); return nil })
 	if got := cmdLines(lines(), "redis command failed"); len(got) != 1 || got[0]["error_code"] != "ERR" {
-		t.Errorf("又慢又失败的命令记 redis command failed、带错误，got=%v", lines())
+		t.Errorf("a slow and failed command is a redis command failed carrying the error, got=%v", lines())
 	}
 	if got := cmdLines(lines(), "redis pipeline failed"); len(got) != 1 || got[0]["error_code"] != "ERR" {
-		t.Errorf("又慢又失败的 pipeline 记 redis pipeline failed、带错误，got=%v", lines())
+		t.Errorf("a slow and failed pipeline is a redis pipeline failed carrying the error, got=%v", lines())
 	}
 	if got := cmdLines(lines(), "slow redis command", "slow redis pipeline"); len(got) != 0 {
-		t.Errorf("失败优先，不再另记慢，got=%v", got)
+		t.Errorf("failure wins and nothing is additionally recorded as slow, got=%v", got)
 	}
 }
 
@@ -693,15 +693,15 @@ func TestLog_ContextCanceledKeepsText(t *testing.T) {
 	client.Get(ctx, "k")
 	got := cmdLines(lines(), "redis command failed")
 	if len(got) != 1 || got[0]["error"] != "context canceled" {
-		t.Errorf("ctx 取消照原文记，got=%v", lines())
+		t.Errorf("a cancelled ctx is recorded verbatim, got=%v", lines())
 	}
 }
 
 func TestMs_KeepsSubMillisecond(t *testing.T) {
 	if got := ms(1500 * time.Microsecond); got != 1.5 {
-		t.Errorf("ms(1.5ms) = %v，want 1.5", got)
+		t.Errorf("ms(1.5ms) = %v, want 1.5", got)
 	}
 	if got := ms(250 * time.Microsecond); got != 0.25 {
-		t.Errorf("ms(250µs) = %v，want 0.25", got)
+		t.Errorf("ms(250µs) = %v, want 0.25", got)
 	}
 }

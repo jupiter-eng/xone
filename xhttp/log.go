@@ -12,20 +12,20 @@ import (
 	"github.com/go-resty/resty/v2"
 )
 
-// installLog 每个逻辑请求记一条日志（Config.Log）。
+// installLog records one log line per logical request (Config.Log).
 //
-// 挂在 OnSuccess / OnError 上，理由同指标：它们在所有重试结束之后只调一次
-// （实测 resty v2.17.2，RetryCount=2、连接被掐断：发了 3 次，OnError 调 1 次，Attempt=3）。
-// 记的是方法、host、路径、状态码、耗时、尝试次数；查询串、片段、userinfo、Header、body 都不记——
-// 查询串里常有令牌和签名，与出站 Span 的 url.full 去掉查询串是同一条原则。
+// It hangs on OnSuccess / OnError for the same reason as the metrics: they are called once after every retry has
+// finished (measured on resty v2.17.2 with RetryCount=2 and the connection cut: 3 attempts sent, OnError called once, Attempt=3).
+// What is recorded is the method, host, path, status code, duration and attempt count; the query string, the fragment,
+// the userinfo, the headers and the body are not -- a query string often holds a token or a signature, the same principle that keeps the query string out of the outbound Span's url.full.
 //
-// resty 自己在重试路径上也打日志：每次失败的尝试一行 WARN（…, Attempt N），用完再一行 ERROR，
-// 内容就是这里那一行的 error。Log 开着时这两种不再打（restyLogger 的 quiet，New 里设在 client 上），
-// 一个逻辑请求只有这里的一行；每次尝试的细节在出站 Span 里（一次尝试一个 Span）。
-// 使用者自己 SetLogger 换掉它的话，resty 的日志照 resty 的规矩全交给他，这里不插手。
+// resty logs on the retry path itself too: one WARN per failed attempt (..., Attempt N) and one ERROR once they are used up,
+// whose content is the error on the line here. With Log on, neither is printed any more (restyLogger's quiet, set on the client in New),
+// so one logical request is one line here; the per-attempt detail is in the outbound Spans (one Span per attempt).
+// When the caller replaces it with their own SetLogger, resty's logs follow resty's rules and this does not interfere.
 //
-// 不记的（实测 resty v2.17.2）：发出去之前就被 resty 拒掉的请求（比如 GET 带 multipart）
-// 走 OnInvalid，不调这里的两个回调。
+// What is not recorded (measured on resty v2.17.2): a request resty rejects before sending it (a GET with multipart, say)
+// goes through OnInvalid and calls neither of these two callbacks.
 func installLog(client *resty.Client, slow time.Duration) {
 	markStart(client)
 	client.OnSuccess(func(_ *resty.Client, resp *resty.Response) {
@@ -37,7 +37,7 @@ func installLog(client *resty.Client, slow time.Duration) {
 		if req == nil {
 			return
 		}
-		// 拿到了响应之后才出的错（比如 SetResult 解析失败），resty 包成 ResponseError
+		// An error after a response was received (a failing SetResult, say) is wrapped by resty in a ResponseError.
 		var resp *resty.Response
 		var re *resty.ResponseError
 		if errors.As(err, &re) {
@@ -47,12 +47,12 @@ func installLog(client *resty.Client, slow time.Duration) {
 	})
 }
 
-// logRequest 记一个逻辑请求。
+// logRequest records one logical request.
 //
-// 失败 = 没拿到能用的响应（err 不为 nil），或者下游回了 5xx；4xx 是业务上的回答，照常记 INFO。
-// err 不为 nil 也包括拿到了响应的：200 但 SetResult 解不开、NoRedirectPolicy 下的 3xx。
-// 又慢又失败的记失败（带 error）。
-// ctx 是调用方的：出站 Span 开在 transport 里，这时已经结束，所以 span_id 是调用方的那个。
+// A failure is no usable response (err is non-nil) or a 5xx from the downstream; a 4xx is a business answer and is recorded at INFO as usual.
+// A non-nil err includes cases where a response did arrive: a 200 whose SetResult cannot be parsed, a 3xx under NoRedirectPolicy.
+// One that is both slow and failed is recorded as a failure (carrying the error).
+// The ctx is the caller's: the outbound Span opens inside the transport and has ended by now, so the span_id is the caller's.
 func logRequest(req *resty.Request, resp *resty.Response, err error, slow time.Duration) {
 	ctx := req.Context()
 	status, fallback := 0, sinceAttempt(req)
@@ -83,8 +83,8 @@ func logRequest(req *resty.Request, resp *resty.Response, err error, slow time.D
 	}
 }
 
-// sinceAttempt 这一次尝试到现在的耗时。一次都没发出去就失败的（SRV 查不到）Request.Time 是零值，
-// time.Since 会是 292 年、日志里是 elapsed_ms 9223372036854.775，这时记 0
+// sinceAttempt is how long this attempt has taken. For one that failed before anything went out (an SRV lookup that found nothing) Request.Time is the zero value,
+// and time.Since would be 292 years, logged as elapsed_ms 9223372036854.775, so 0 is recorded instead.
 func sinceAttempt(req *resty.Request) time.Duration {
 	if req.Time.IsZero() {
 		return 0
@@ -92,22 +92,22 @@ func sinceAttempt(req *resty.Request) time.Duration {
 	return time.Since(req.Time)
 }
 
-// ---- 日志里的 URL ----
+// ---- URLs in the logs ----
 //
-// 凡是 xhttp 写出去的 URL（请求日志的 error、resty 自己的日志、出站 Span 的 url.full）
-// 都只留 scheme、host、路径：查询串、片段、userinfo 一律去掉。查询串里常有令牌和签名。
+// Every URL xhttp writes out (the error in a request log, resty's own logs, the outbound Span's url.full)
+// keeps only the scheme, the host and the path: the query string, the fragment and the userinfo are always removed. A query string often holds a token or a signature.
 
-// scrubError 错误原文，里面的 URL 去掉查询串、片段和 userinfo。
+// scrubError is the error text with the query string, the fragment and the userinfo removed from the URLs inside it.
 //
-// 先按结构来：错误链上（%w 包的、errors.Join 的都算）每个 *url.Error 的 URL 换成干净的再渲染。
-// 标准库的原文是 Get "http://user:***@host/x?token=…": …（实测 Go 1.25：只把密码换成 ***，用户名照留），
-// 而且那个 URL 不一定是绝对的：重定向策略拒绝时（NoRedirectPolicy、FlexibleRedirectPolicy 用完）
-// 放进去的是 Location 原样，/b?token=… 这种相对的也有；查询串里还可能有没转义的空格。
-// 这两种按文本找 URL 都认不全，所以文本只是兜底（scrubText），管错误链之外的自由文本。
+// Structure comes first: every *url.Error on the error chain (wrapped with %w or joined with errors.Join alike) has its URL replaced by a clean one before rendering.
+// The standard library's text is Get "http://user:***@host/x?token=…": … (measured on Go 1.25: only the password becomes ***, the user name stays),
+// and that URL is not necessarily absolute: when a redirect policy refuses (NoRedirectPolicy, or FlexibleRedirectPolicy used up)
+// what goes in is the Location as it is, which may be a relative /b?token=…; a query string may also hold unescaped spaces.
+// Neither of those is reliably found by text, so text is only a fallback (scrubText) for the free text outside the error chain.
 func scrubError(err error) string {
 	s := err.Error()
 	for _, ue := range urlErrors(err) {
-		// *url.Error 用 %q 渲染 URL，与 strconv.Quote 一致
+		// A *url.Error renders its URL with %q, the same as strconv.Quote.
 		if clean := cleanURL(ue.URL); clean != ue.URL {
 			s = strings.ReplaceAll(s, strconv.Quote(ue.URL), strconv.Quote(clean))
 		}
@@ -115,7 +115,7 @@ func scrubError(err error) string {
 	return scrubText(s)
 }
 
-// urlErrors 错误链上所有的 *url.Error，包括 errors.Join 的每一支
+// urlErrors are every *url.Error on the error chain, including each branch of an errors.Join.
 func urlErrors(err error) []*url.Error {
 	var out []*url.Error
 	var walk func(error)
@@ -139,8 +139,8 @@ func urlErrors(err error) []*url.Error {
 	return out
 }
 
-// cleanURL 去掉 URL 串的查询串、片段和 userinfo，相对的也一样。
-// 解析不了的（比如路径里有不合法的 % 转义）切在第一个 ? 或 # 上，再按 scheme://…@ 的样子去掉 userinfo
+// cleanURL removes the query string, the fragment and the userinfo from a URL string, relative ones included.
+// One that cannot be parsed (an invalid % escape in the path, say) is cut at the first ? or #, and the userinfo is then removed by the scheme://…@ shape.
 func cleanURL(raw string) string {
 	if u, err := url.Parse(raw); err == nil {
 		return bareURL(u)
@@ -162,7 +162,7 @@ func cleanURL(raw string) string {
 	return raw
 }
 
-// bareURL u 去掉 userinfo、查询串、片段之后的样子，不改 u
+// bareURL is u with the userinfo, the query string and the fragment removed, leaving u itself untouched.
 func bareURL(u *url.URL) string {
 	c := *u
 	c.User, c.RawQuery, c.ForceQuery, c.Fragment, c.RawFragment = nil, "", false, "", ""
@@ -170,26 +170,26 @@ func bareURL(u *url.URL) string {
 }
 
 var (
-	// quotedQuery 引号里的 URL（绝对的、相对的都算）的查询串和片段：到右引号为止，中间有空格也不停。
-	// 问号前面不许有空白，免得把 "what is this?" 这种话也切掉
+	// quotedQuery is the query string and fragment of a quoted URL (absolute or relative alike): up to the closing quote, not stopping at a space inside.
+	// No whitespace is allowed before the question mark, so that a sentence such as "what is this?" is not cut.
 	quotedQuery = regexp.MustCompile(`"([^"\s?#]*)[?#][^"]*"`)
-	// urlQuery 没在引号里的 http(s) URL 的查询串和片段，到空白为止
+	// urlQuery is the query string and fragment of an unquoted http(s) URL, up to whitespace.
 	urlQuery = regexp.MustCompile(`(https?://[^\s"?#]*)[?#][^\s"]*`)
-	// urlUserinfo http(s) URL 的 userinfo（user@ 或 user:***@）
+	// urlUserinfo is the userinfo of an http(s) URL (user@ or user:***@).
 	urlUserinfo = regexp.MustCompile(`(https?://)[^\s"/?#@]*@`)
 )
 
-// scrubText 按文本去掉每个 URL 的查询串、片段和 userinfo。兜底用：认得出结构的先按结构来（scrubError）。
-// 认不出来的：没有引号、也不以 http(s):// 开头的 URL（比如 resty 调试模式里的请求行 GET /x?token=…）
+// scrubText removes each URL's query string, fragment and userinfo by text. It is the fallback: whatever has a recognizable structure goes through scrubError first.
+// What it does not recognize: a URL with no quotes that does not start with http(s):// (the request line in resty's debug mode, GET /x?token=…, for example).
 func scrubText(s string) string {
 	s = quotedQuery.ReplaceAllString(s, `"$1"`)
 	s = urlQuery.ReplaceAllString(s, "$1")
 	return urlUserinfo.ReplaceAllString(s, "$1")
 }
 
-// target 最后一次尝试发出去的 host 和路径。还没拼出原生请求就失败的（请求前的中间件出错），
-// 退回 resty 请求上的 URL 串。只取 Host 和路径：userinfo、查询串、片段都不要。
-// 路径用转义过的形式（EscapedPath）：/a%2Fb 不记成 /a/b，路径里的换行、引号这类也不原样落进日志
+// target is the host and path of the last attempt actually sent. For one that failed before a native request was assembled (a middleware before the request failed),
+// it falls back to the URL string on the resty request. Only the Host and the path are taken: the userinfo, the query string and the fragment are all dropped.
+// The path is taken in its escaped form (EscapedPath): /a%2Fb is not recorded as /a/b, and a newline or a quote in the path does not reach the log as it is.
 func target(req *resty.Request) (host, path string) {
 	u := (*url.URL)(nil)
 	if req.RawRequest != nil {
@@ -203,5 +203,5 @@ func target(req *resty.Request) (host, path string) {
 	return u.Host, u.EscapedPath()
 }
 
-// ms 耗时换成毫秒，保留到微秒。字段名带单位，与 xgorm、xredis 的 elapsed_ms 一致
+// ms converts an elapsed time to milliseconds, keeping microseconds. The field name carries the unit, matching xgorm's and xredis's elapsed_ms.
 func ms(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }

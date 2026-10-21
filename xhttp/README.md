@@ -1,245 +1,284 @@
 # xhttp
 
-出站 HTTP 客户端：拿到的是原生 `*resty.Client`（resty v2），任何时候都有一个可用的实例，不配也能用。
+The outbound HTTP client: what you get is a native `*resty.Client` (resty v2), and a usable instance exists at any time, configured or not.
 
-- 链路已装好：`traceparent` 自动带给下游，Span 名只用方法（`Run` 起来之后的实例；之前、之后的兜底实例没有）
-- 出站耗时指标 `http_client_request_duration_seconds`，一次逻辑请求记一次
-- 只重试传输层的错，默认只重试幂等方法
-- 可选的请求日志（`Log: true`）：一个逻辑请求一行，方法、host、路径、状态码、耗时、尝试次数，不记查询串
-- 日志和 Span 里的 URL 去掉查询串；没有 cookie jar
-- 要第二套参数（比如调公网、关指标）就用 `xhttp.New` 另建一个
+- Tracing is already set up: `traceparent` travels downstream automatically and the Span name is the method alone (on the instance built by `Run`; the fallback instance before and after it has neither)
+- The outbound duration metric `http_client_request_duration_seconds`, recorded once per logical request
+- Only transport-layer errors are retried, and by default only for idempotent methods
+- An optional request log (`Log: true`): one line per logical request with the method, host, path, status code, duration and attempt count, and no query string
+- URLs in the logs and on the Spans have their query string removed; there is no cookie jar
+- For a second set of parameters (calling the public internet, metrics off) build another one with `xhttp.New`
 
-## 快速上手
+## Quick start
 
 ```yaml
-# conf/application.yml（可选，不写就全用默认值）
+# conf/application.yml (optional; without it everything uses the defaults)
 XHttp:
-  Timeout: 1s              # 一次尝试的超时
-  RetryCount: 2            # 只重试传输层的错，且只重试幂等方法
+  Timeout: 1s              # the timeout of one attempt
+  RetryCount: 2            # only transport-layer errors, and only idempotent methods
 ```
 
 ```go
-// Now 是下游返回的 JSON 对应的结构体
+// Now is the struct the downstream's JSON maps to
 func Current(ctx context.Context, city string) (*Now, error) {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Second) // 给整次请求封顶：重试和退避都算在里面
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second) // caps the whole request: retries and backoff are inside it
 	defer cancel()
 
 	var out Now
 	resp, err := xhttp.R(ctx).
 		SetQueryParam("city", city).
-		SetResult(&out). // 2xx 时把 JSON 解进 out
+		SetResult(&out). // on a 2xx the JSON is decoded into out
 		Get("https://weather.internal/api/v1/now")
 	if err != nil {
 		return nil, err
 	}
-	if resp.IsError() { // 4xx / 5xx 不是 err，要自己判断
+	if resp.IsError() { // a 4xx / 5xx is not an err and has to be checked
 		return nil, fmt.Errorf("weather api returned %s", resp.Status())
 	}
 	return &out, nil
 }
 ```
 
-## 配置
+## Configuration
 
-不配也能用：`xhttp.R(ctx)` 任何时候都有一个可用的客户端。`Run` 之前和之后拿到的是兜底实例：只有 30s 超时，
-没有下面这些配置，也没有重试、链路和指标。只有单实例。
+It works unconfigured: `xhttp.R(ctx)` gives a usable client at any time. Before and after `Run` what comes back is the
+fallback instance: a 30s timeout and nothing else below, with no retries, no tracing and no metrics. There is only one
+instance.
 
 ```yaml
 XHttp:
-  Timeout: 60s               # 一次尝试的超时，不是整次逻辑请求；0 = 永不超时
+  Timeout: 60s               # the timeout of one attempt, not of the whole logical request; 0 = never time out
   DialTimeout: 30s
-  DialKeepAlive: 30s         # 负数 = 不发 keep-alive 探测
+  DialKeepAlive: 30s         # a negative value = send no keep-alive probes
   MaxIdleConns: 100
-  MaxIdleConnsPerHost: 10    # 标准库默认只有 2
-  MaxConnsPerHost: 0         # 每 host 连接数上限，0 = 不限
-  IdleConnTimeout: 90s       # 要小于下游的 keep-alive 超时
-  RetryCount: 0              # 默认不重试
-  RetryWaitTime: 100ms       # 重试的起始等待
-  RetryMaxWaitTime: 2s       # 重试等待的上限
-  RetryOnlyIdempotent: true  # 只重试幂等方法
-  Trace: true                # 出站 Span；关掉后 traceparent、baggage、透传 Header 照样带给下游
-  Metric: true               # 出站耗时指标
-  Log: false                 # 每个逻辑请求一行日志（重试完记一次）；不记查询串、Header、body
-  SlowThreshold: 1s          # 整次请求超过它记 WARN；需 Log 开启，0 = 不记
-  TLS:                       # 规则见 xtls；管这个客户端发出的每一个 https 请求，http:// 不受影响
+  MaxIdleConnsPerHost: 10    # the standard library's default is only 2
+  MaxConnsPerHost: 0         # the per-host connection limit, 0 = unlimited
+  IdleConnTimeout: 90s       # has to be shorter than the downstream's keep-alive timeout
+  RetryCount: 0              # no retry by default
+  RetryWaitTime: 100ms       # the initial retry wait
+  RetryMaxWaitTime: 2s       # the upper bound on the retry wait
+  RetryOnlyIdempotent: true  # retry idempotent methods only
+  Trace: true                # outbound Spans; with it off, traceparent, baggage and the forwarded headers still travel downstream
+  Metric: true               # the outbound duration metric
+  Log: false                 # one log line per logical request (once, after the retries); no query string, headers or body
+  SlowThreshold: 1s          # a WARN when the whole request takes longer than this; requires Log, 0 = not recorded
+  TLS:                       # the rules are in xtls; it governs every https request this client sends, and http:// is unaffected
     Enable: false
-    CAFile: ""               # 填了就只认它：公网的 https 下游从此校验不过
+    CAFile: ""               # once set, only this CA is accepted: an https downstream on the public internet no longer verifies
     CertFile: ""
     KeyFile: ""
-    ServerName: ""           # 填了就拿它比对每一个下游的证书
+    ServerName: ""           # once set, every downstream's certificate is verified against it
 ```
 
-TLS 块适合「只调一类内部下游」的客户端；要同时调公网的，另用 `xhttp.New` 建一个。
+The TLS block suits a client that calls one kind of internal downstream; to call the public internet as well, build
+another one with `xhttp.New`.
 
 ## API
 
-| 函数 | 说明 |
+| Function | Description |
 |---|---|
-| `R(ctx) *resty.Request` | 开一个绑定了 ctx 的请求，链路和超时才传得到下游。常用的就是它 |
-| `C() *resty.Client` | 取 resty client。不会 panic：初始化前、关闭后拿到的是带 30s 超时的兜底实例 |
-| `RawClient() *http.Client` | 底层的原生 `*http.Client`，给 SSE 这类要自己读响应体的流式请求 |
-| `New(cfg) (*resty.Client, io.Closer, error)` | 纯构造器：不碰本包的全局实例；`Metric` 开着时直方图注册到 xmetric 的全局 Registry |
+| `R(ctx) *resty.Request` | Opens a request bound to a ctx, which is what carries the trace and the timeout downstream. This is the usual one |
+| `C() *resty.Client` | Fetches the resty client. It never panics: before initialization and after shutdown it gives the fallback instance with its 30s timeout |
+| `RawClient() *http.Client` | The underlying native `*http.Client`, for a streaming request such as SSE that reads the response body itself |
+| `New(cfg) (*resty.Client, io.Closer, error)` | The pure constructor: it does not touch this package's global instance; with `Metric` on, the histogram is registered on xmetric's global Registry |
 
-## 注意事项
+## Notes
 
-- **`Timeout` 管一次尝试，不是整次请求**：`Timeout: 300ms` 配 `RetryCount: 3` 实测跑满 1.24s。要封顶就像上面那样用 ctx。
-  见[「行为与实测」](#行为与实测)。
-- **只重试传输层的错**（建连失败、超时、连接被重置），拿到了响应就不重试，5xx 也不重试；`RetryOnlyIdempotent` 默认开着，POST 不重发，
-  自己 `AddRetryCondition` 挂的条件也放不回来——按状态码重试的条件除外，见[「行为与实测」](#行为与实测)。
-- **body 是 `io.Reader` 的请求不重试**：第一次尝试就把它读完了，重发的是空 body。要重试就传 `[]byte` / `string`。
-- **设了 `HTTP_PROXY` / `HTTPS_PROXY` 就全部出站都走代理**；跨 host 重定向时自定义的凭证头（如 `X-Api-Key`）照样带给新 host。
-  见[「行为与实测」](#行为与实测)的表。
-- **TLS 块管这个客户端的每一个 https 请求**：填了 `CAFile` 公网的 https 下游就校验不过了。
-- **指标的 `host` 标签是 URL 的 `host[:port]` 原样**：目标来自用户输入或直连一批 IP 时基数会失控，那种调用另建一个
-  `Metric: false` 的客户端。见[「指标」](#指标)。
-- **`SetDebug(true)` 会把整个请求原样写进日志**（查询串、`Authorization` 都在），只在本机排查时开。见[「日志」](#日志)。
+- **`Timeout` governs one attempt, not the whole request**: `Timeout: 300ms` with `RetryCount: 3` was measured at a full
+  1.24s. To cap it, use the ctx as shown above. See ["Behavior (measured)"](#behavior-measured).
+- **Only transport-layer errors are retried** (a failed connection, a timeout, a reset connection); with a response in
+  hand there is no retry, a 5xx included. `RetryOnlyIdempotent` is on by default, so a POST is not resent and a
+  condition you attach with `AddRetryCondition` cannot put it back -- except a condition retrying on status codes, see
+  ["Behavior (measured)"](#behavior-measured).
+- **A request whose body is an `io.Reader` is not retried**: the first attempt read it to the end and a resend would
+  have an empty body. To be retried, pass a `[]byte` or a `string`.
+- **With `HTTP_PROXY` / `HTTPS_PROXY` set, every outbound request goes through the proxy**; across a host redirect a
+  custom credential header (such as `X-Api-Key`) is still carried to the new host.
+  See the table in ["Behavior (measured)"](#behavior-measured).
+- **The TLS block governs every https request this client sends**: with `CAFile` set, an https downstream on the public
+  internet no longer verifies.
+- **The metric's `host` label is the URL's `host[:port]` as it is**: with targets coming from user input, or with a
+  batch of IPs called directly, the cardinality runs away; build a separate client with `Metric: false` for those calls.
+  See ["Metrics"](#metrics).
+- **`SetDebug(true)` writes the whole request into the log** (the query string and `Authorization` included); use it
+  only when investigating locally. See ["Logs"](#logs).
 
-## 可观测
+## Observability
 
-### 日志
+### Logs
 
-| 消息 | 级别 | 字段 |
+| Message | Level | Fields |
 |---|---|---|
-| `xhttp ready` | INFO | `timeout`、`max_idle_conns_per_host`、`retries` |
-| `http request` / `slow http request` / `http request failed` | INFO / WARN / WARN | 见下表（需 `XHttp.Log: true`） |
-| `xhttp resty log` | resty 的原级别 | `detail`：resty 自己的日志原文，URL 去掉查询串、片段和 userinfo（`SetDebug(true)` 的请求转储例外，见下） |
-| `xhttp skipped retrying a non-idempotent method` | DEBUG | `method`、`to_allow_set` |
-| `xhttp cannot tune the connection pool` | WARN | `default_transport_type`：`http.DefaultTransport` 被换成了别的类型，连接池参数没生效 |
+| `xhttp ready` | INFO | `timeout`, `max_idle_conns_per_host`, `retries` |
+| `http request` / `slow http request` / `http request failed` | INFO / WARN / WARN | the table below (requires `XHttp.Log: true`) |
+| `xhttp resty log` | resty's own level | `detail`: resty's own log text, with the URL's query string, fragment and userinfo removed (a request dump from `SetDebug(true)` is the exception, below) |
+| `xhttp skipped retrying a non-idempotent method` | DEBUG | `method`, `to_allow_set` |
+| `xhttp cannot tune the connection pool` | WARN | `default_transport_type`: `http.DefaultTransport` was replaced by another type and the pool parameters had no effect |
 
-请求日志的字段：
+The request log's fields:
 
-| 字段 | 说明 |
+| Field | Description |
 |---|---|
-| `method` | 请求方法 |
+| `method` | The request method |
 | `host` | `host[:port]` |
-| `path` | 转义过的形式（如 `/a%2Fb`），不带查询串 |
-| `status` | 状态码，没拿到响应时 `0` |
-| `elapsed_ms` | 整次逻辑请求，含重试和退避；一次都没发出去时 `0` |
-| `attempts` | resty 的尝试次数 |
-| `threshold_ms` | 慢请求才有 |
-| `error` | 有错误时；URL 去掉查询串、片段和 userinfo |
+| `path` | In its escaped form (such as `/a%2Fb`), without the query string |
+| `status` | The status code, or `0` when no response arrived |
+| `elapsed_ms` | The whole logical request, retries and backoff included; `0` when nothing went out |
+| `attempts` | resty's attempt count |
+| `threshold_ms` | On a slow request only |
+| `error` | When there is one; the URL has its query string, fragment and userinfo removed |
 
-- **失败**是 resty 返回了错误，或者下游回了 5xx；4xx 是下游的业务回答，记 INFO。返回错误的不只是没拿到响应（传输层错误、ctx 到期）：
-  200 但 `SetResult` 解不开（`status: 200`、`error: invalid character …`）、`NoRedirectPolicy` 下的 3xx 和 `FlexibleRedirectPolicy`
-  用完（`status: 302`、`error: Get "/b": auto redirect is disabled`）也记 `http request failed`。又慢又失败的记失败，不另记慢。
-- **一个逻辑请求一行**，所有重试结束后才记。`Log: true` 时 resty 自己在重试路径上的那几行 `xhttp resty log`
-  （每次失败的尝试一行 WARN、用完一行 ERROR）不再打，内容就是这一行的 `error`；resty 别的提醒（比如明文 HTTP 上用 Basic Auth）、
-  配置调用被忽略时的 ERROR 照旧。自己 `client.SetLogger(…)` 或 `R().SetLogger(…)` 的，resty 的日志照 resty 的规矩全交给你的 logger（含重试路径那两种）。
-- **没有日志行的**：发出去之前就被 resty 拒掉的请求（比如 GET 带 multipart，报 `multipart content is not allowed in HTTP verb [GET]`），
-  resty 只调 `OnInvalid`，不调 `OnSuccess` / `OnError`。
-- **`SetDoNotParseResponse(true)` 时 `elapsed_ms` 是到响应头的时间**：body 交给你自己读，resty 拿到响应头就算完。
-  实测下游先回头、150ms 后才写完 body：这样记 `0.25`，照常读 body 记 `151`。
-- 查询串、片段、userinfo、Header、body 一律不记。日志用调用方的 ctx，`trace_id` / `span_id` 是调用方的（出站 Span 这时已经结束）。
-- **警告：`SetDebug(true)` 会把整个请求原样写进日志**。resty 把请求行（带查询串）、全部 Header（`Authorization` 也在）、body 和响应拼成一段文本，
-  经 `xhttp resty log`（DEBUG）写出去；请求行里的路径不带 `http://` 也不在引号里，xhttp 认不出来，实测 `GET  /ok?token=…`、
-  `Authorization: Bearer …` 原样出现。只在本机排查时开，不要在线上开。
+- **A failure** is an error returned by resty, or a 5xx from the downstream; a 4xx is the downstream's business answer
+  and is recorded at INFO. An error is not only "no response arrived" (a transport error, an expired ctx): a 200 whose
+  `SetResult` cannot be parsed (`status: 200`, `error: invalid character …`), a 3xx under `NoRedirectPolicy` and a
+  `FlexibleRedirectPolicy` used up (`status: 302`, `error: Get "/b": auto redirect is disabled`) are recorded as
+  `http request failed` too. One that is both slow and failed is recorded as a failure, not additionally as slow.
+- **One line per logical request**, recorded only after every retry has finished. With `Log: true`, resty's own
+  `xhttp resty log` lines on the retry path (one WARN per failed attempt, one ERROR once used up) are no longer printed
+  and their content is exactly this line's `error`; resty's other warnings (Basic Auth over plaintext HTTP, say) and the
+  ERROR for an ignored configuration call are unchanged. With your own `client.SetLogger(…)` or `R().SetLogger(…)`,
+  resty's logs follow resty's rules and all go to your logger (the two retry-path kinds included).
+- **What has no log line**: a request resty rejects before sending it (a GET with multipart, reported as
+  `multipart content is not allowed in HTTP verb [GET]`), for which resty calls only `OnInvalid` and neither
+  `OnSuccess` nor `OnError`.
+- **With `SetDoNotParseResponse(true)`, `elapsed_ms` is the time to the response headers**: the body is yours to read
+  and resty is done once it has the headers. Measured against a downstream answering the headers first and finishing
+  the body 150ms later: recorded as `0.25` this way, and as `151` when the body is read as usual.
+- The query string, the fragment, the userinfo, the headers and the body are never recorded. The log uses the caller's
+  ctx, so `trace_id` / `span_id` are the caller's (the outbound Span has ended by then).
+- **Warning: `SetDebug(true)` writes the whole request into the log.** resty assembles the request line (with its query
+  string), every header (`Authorization` included), the body and the response into one piece of text and writes it
+  through `xhttp resty log` (DEBUG); the path in the request line carries no `http://` and is not quoted, so xhttp does
+  not recognize it, and measured, `GET  /ok?token=…` and `Authorization: Bearer …` appeared as they are. Use it only
+  when investigating locally, never in production.
 
-日志的全局约定（`trace_id` 注入、`xlog.AddKV`、框架的启停日志）见 [`docs/observability.md`](../docs/observability.md#logs)。
+The global logging conventions (`trace_id` injection, `xlog.AddKV`, the framework's start and stop logs) are in
+[`docs/observability.md`](../docs/observability.md#logs).
 
-### 指标
+### Metrics
 
-| 指标 | 类型 | 标签 | 来源 |
+| Metric | Type | Labels | Source |
 |---|---|---|---|
-| `http_client_request_duration_seconds` | histogram | `method`、`host`、`status` | xhttp，`XHttp.Metric`；一次逻辑请求记一次（含重试和退避） |
+| `http_client_request_duration_seconds` | histogram | `method`, `host`, `status` | xhttp, `XHttp.Metric`; recorded once per logical request (retries and backoff included) |
 
-- **`method`** 收敛到 RFC 9110 的方法加 `PATCH`，其余记 `OTHER`。**`status`** 没拿到响应时是 `0`。
-- **`host`** 是出站请求 URL 的 `host[:port]`，原样照抄，基数等于你调过的目标数。每个新值乘上 `method` × `status`，
-  每个组合 15 条时间序列（默认 12 个桶加 `+Inf`、`_sum`、`_count`）。目标来自用户输入或直连一批 IP 的调用另建一个
-  `Metric: false` 的客户端。
+- **`method`** is collapsed to RFC 9110's methods plus `PATCH`, with everything else recorded as `OTHER`.
+  **`status`** is `0` when no response arrived.
+- **`host`** is the outbound request URL's `host[:port]`, copied as it is, so the cardinality equals the number of
+  targets called. Each new value multiplies by `method` x `status`, and each combination is 15 time series (12 default
+  buckets plus `+Inf`, `_sum` and `_count`). For calls whose target comes from user input, or that go to a batch of IPs
+  directly, build a separate client with `Metric: false`.
 
-指标名的前缀、常量标签和几条通用规则见 [`docs/observability.md`「指标」](../docs/observability.md#metrics)。
+The metric name prefix, the constant labels and a few general rules are in
+[`docs/observability.md` "Metrics"](../docs/observability.md#metrics).
 
-### 链路
+### Tracing
 
-| 来源 | Span 名 | 关键属性 |
+| Source | Span name | Key attributes |
 |---|---|---|
-| xhttp（出站） | 只用方法，如 `GET` | otelhttp 的标准属性；`url.full` **去掉了查询串、片段和 userinfo** |
+| xhttp (outbound) | The method alone, such as `GET` | otelhttp's standard attributes; `url.full` **has its query string, fragment and userinfo removed** |
 
-链路的全貌、传播与信任边界见 [`docs/observability.md`「链路」](../docs/observability.md#tracing)。
+The whole tracing picture, propagation and the trust boundary are in
+[`docs/observability.md` "Tracing"](../docs/observability.md#tracing).
 
-## 行为与实测
+## Behavior (measured)
 
-实测环境和跨模块的总表见 [`docs/behavior.md`](../docs/behavior.md)。
+The measurement environment and the cross-module summary table are in [`docs/behavior.md`](../docs/behavior.md).
 
-resty v2.17.2、otelhttp v0.71.0、Go 1.25。
+resty v2.17.2, otelhttp v0.71.0, Go 1.25.
 
-**`Timeout` 管一次尝试，不是一次逻辑请求。** 开了 `RetryCount` 之后最坏是 `(RetryCount+1) × Timeout` 加上几次退避：
-`Timeout: 300ms` 配 `RetryCount: 3`，实测跑了 1.24s。要给整次逻辑请求封顶，用调用方的 ctx（`xhttp.R(ctx)`），
-每次尝试和中间的退避都听它的。
+**`Timeout` governs one attempt, not one logical request.** With `RetryCount` on, the worst case is
+`(RetryCount+1) x Timeout` plus the backoff waits: `Timeout: 300ms` with `RetryCount: 3` was measured at 1.24s. To cap
+the whole logical request, use the caller's ctx (`xhttp.R(ctx)`), which every attempt and every backoff in between
+honors.
 
-**重试什么**：和 resty 自己的默认一致，只重试传输层的错（建连失败、超时、连接被重置、响应体没收全），
-拿到了响应就不重试——5xx 也不重试。挂上重试条件会让 resty 自己的判断整个作废，所以这条是 xhttp 自己守着的：
-不守的话实测 200 + 坏 JSON、`RetryCount: 3` 时同一个 GET 发了 4 次。`RetryOnlyIdempotent` 默认开着：
-传输层超时分不出「请求没到服务端」和「处理完了但响应丢了」，重发一个 POST 就可能重复下单。
+**What is retried**: the same as resty's own default, only transport-layer errors (a failed connection, a timeout, a
+reset connection, an incomplete response body); with a response in hand there is no retry -- a 5xx included.
+Attaching a retry condition voids resty's own judgment entirely, which is why xhttp guards this itself: without that,
+a 200 with broken JSON and `RetryCount: 3` was measured sending the same GET 4 times. `RetryOnlyIdempotent` is on by
+default: a transport-layer timeout cannot tell "the request never reached the server" from "it was processed and the
+response was lost", so resending a POST may mean a duplicate order.
 
-**使用者自己挂的重试条件。** resty v2.17.2 的条件是「或」：请求级的排在前面、client 级的按挂上的顺序，
-一个返回 true 就不看后面的（`retry.go` `Backoff`），xhttp 的「POST 不重试」只是其中一个 false。所以另有一道关挂在
-`RetryAfter` 上（决定重试之后、等待之前调，返回错误就不再重试）：没拿到响应的 POST / PATCH 不重试，调用方拿到的仍是
-第一次的传输层错误（resty 只在这一次没有错误时才把 `RetryAfter` 的错误交出去）。实测 `RetryCount: 2`、
-挂一个 `err != nil` 就重试的条件、连接被掐断：不加这道关时 POST 发了 2 次，加了之后 1 次。
+**A retry condition you attach yourself.** resty v2.17.2's conditions are an "or": request-level ones come first and
+client-level ones in the order they were attached, and one returning true means the rest are not consulted
+(`retry.go` `Backoff`), so xhttp's "do not retry a POST" is just one of the falses. Hence a second gate on
+`RetryAfter` (called after the decision to retry and before the wait, where returning an error stops the retry): a POST
+or PATCH with no response is not retried, and the caller still gets the first transport error (resty only hands over
+`RetryAfter`'s error when that attempt had none). Measured with `RetryCount: 2`, a condition retrying on any
+`err != nil` and a cut connection: without this gate the POST went out twice, with it once.
 
-- **挡不住的一种**：拿到了响应之后按状态码重试的条件（比如 `StatusCode() >= 500`）。那时没有原来的错误可交，
-  否决就得把那个 503 换成一个编出来的错误，所以不否决：POST 照你的条件重试（实测发 3 次，最后拿到 503、错误为 nil），
-  方法要你自己在条件里判断。
-- 自己 `SetRetryAfter` 会把这道关换掉。`OnRetry` 钩子在这道关之前调，被否决的那次也会调一次。
+- **What it cannot block**: a condition retrying on a status code after a response arrived (`StatusCode() >= 500`, say).
+  There is no original error to hand over then, and vetoing would mean replacing that 503 with an error we invented, so
+  it does not: the POST is retried by your condition (measured at 3 attempts, ending with a 503 and a nil error) and
+  the method is yours to check in the condition.
+- Your own `SetRetryAfter` replaces this gate. The `OnRetry` hook is called before it, including for the attempt that is
+  then vetoed.
 
-**body 是 `io.Reader` 的请求不重试。** resty v2.17.2 每次尝试都拿 `Request.Body` 重建请求（`middleware.go`
-`createHTTPRequest`），`[]byte`、`string`、结构体每次重新序列化，`io.Reader` 第一次就读到了头、也不替你倒回去
-（`RetryResetReaders` 只管 multipart）。实测 `PUT` 一个 `strings.NewReader(…)`、第一次连接被掐断：第二次发出去 0 字节，
-服务端回 200，调用方看到的是成功。所以这种请求不重试（`RetryOnlyIdempotent` 关着也一样），调用方拿到第一次的错误；
-按状态码重试的条件要重发它时，调用方拿到 `not retrying: the request body is an io.Reader that the first attempt already consumed`
-和那个响应。例外：`SetContentLength(true)` 的，resty 把 `io.Reader` 读进缓冲、之后每次发那份缓冲（实测两次都是完整的 body）；
-没有 body 的 PUT / DELETE 照旧重试。
+**A request whose body is an `io.Reader` is not retried.** resty v2.17.2 rebuilds the request from `Request.Body` on
+every attempt (`middleware.go` `createHTTPRequest`); a `[]byte`, a `string` and a struct are re-serialized each time,
+while an `io.Reader` was read to the end on the first attempt and is not rewound for you (`RetryResetReaders` only
+covers multipart). Measured with a `PUT` of a `strings.NewReader(…)` whose first connection was cut: the second attempt
+sent 0 bytes, the server answered 200 and the caller saw success. So such a request is not retried (with
+`RetryOnlyIdempotent` off alike) and the caller gets the first error; when a status-code condition wants to resend it,
+the caller gets `not retrying: the request body is an io.Reader that the first attempt already consumed` together with
+that response. The exception is `SetContentLength(true)`, where resty reads the `io.Reader` into a buffer and sends that
+buffer every time (measured complete both times); a PUT / DELETE with no body is retried as usual.
 
-**连接池没配的那些是标准库的默认**（从 `http.DefaultTransport` 克隆）：
+**Whatever the connection pool does not configure is the standard library's default** (cloned from
+`http.DefaultTransport`):
 
-| 项 | 默认 | 实测的行为 |
+| Item | Default | Measured behavior |
 |---|---|---|
-| 代理 | `ProxyFromEnvironment` | 设了 `HTTP_PROXY` / `HTTPS_PROXY` 就全部出站都走代理，`http://` 的请求连同查询串原样交给代理；回环地址不走，`NO_PROXY` 可以排除。环境变量第一次用到时读一次就缓存，之后再改不生效 |
-| TLS 握手超时 | 10s | 对端收下 TCP 连接不回握手，10.0s 报 `TLS handshake timeout` |
-| 等响应头 | 不限 | 由 `Timeout` 管住整次尝试；`Timeout` 也配 0 的话会永远挂着 |
-| `MaxConnsPerHost` | 0，不限 | 对一个 300ms 才回的下游并发 200 个请求，它收到 200 条新连接；紧接着再来 200 个，只有 `MaxIdleConnsPerHost` 那 10 条复用得上 |
-| 重定向 | 标准库：最多跟 10 次 | 第 11 次报 `stopped after 10 redirects`。跨 host 跳转时只去掉 `Authorization`、`Cookie` 这几个，**自定义的凭证头（如 `X-Api-Key`）照样带给新 host**；302 把 POST 变成不带 body 的 GET，307 保留方法和 body |
-| HTTP/2 | `ForceAttemptHTTP2: true` | 换了 `TLSClientConfig`（TLS 块）之后照旧协商出 `HTTP/2.0` |
+| Proxy | `ProxyFromEnvironment` | With `HTTP_PROXY` / `HTTPS_PROXY` set, every outbound request goes through the proxy, and an `http://` request is handed to it with its query string as it is; loopback does not, and `NO_PROXY` can exclude more. The environment variables are read once on first use and cached, so changing them later has no effect |
+| TLS handshake timeout | 10s | With the peer accepting the TCP connection and never handshaking, `TLS handshake timeout` after 10.0s |
+| Waiting for response headers | unlimited | Bounded by `Timeout` over the whole attempt; with `Timeout` at 0 as well it hangs forever |
+| `MaxConnsPerHost` | 0, unlimited | Against a downstream answering after 300ms with 200 concurrent requests it received 200 new connections; another 200 right after reused only the 10 of `MaxIdleConnsPerHost` |
+| Redirects | the standard library: at most 10 | The 11th reports `stopped after 10 redirects`. Across hosts only `Authorization` and `Cookie` are dropped, and **a custom credential header (such as `X-Api-Key`) is still carried to the new host**; a 302 turns a POST into a GET with no body, and a 307 keeps the method and the body |
+| HTTP/2 | `ForceAttemptHTTP2: true` | `HTTP/2.0` is still negotiated after replacing `TLSClientConfig` (the TLS block) |
 
-不想跟随重定向：`xhttp.C().SetRedirectPolicy(resty.NoRedirectPolicy())`。
+To stop following redirects: `xhttp.C().SetRedirectPolicy(resty.NoRedirectPolicy())`.
 
-**`IdleConnTimeout` 要小于下游的 keep-alive 超时**：对端先关掉空闲连接时，恰好在那一刻复用它的请求会失败。
-实测服务端空闲超时 200ms、请求间隔在 200ms 上下：300 个 POST 失败 27 个（`connection reset by peer`），
-GET 由标准库自动在新连接上重发，200 个一个没失败。
+**`IdleConnTimeout` has to be shorter than the downstream's keep-alive timeout**: when the peer closes an idle
+connection first, a request reusing it at exactly that moment fails. Measured with a 200ms server-side idle timeout and
+request intervals around 200ms: 27 of 300 POSTs failed (`connection reset by peer`), while GETs are resent
+automatically by the standard library on a new connection and none of 200 failed.
 
-**请求日志（`Log: true`）**。实测 resty v2.17.2：`OnSuccess` / `OnError` 在所有重试结束之后只调一次，
-`Request.Attempt` 是用掉的尝试次数；拿到响应就走 `OnSuccess`，**5xx 也是**（resty 只在有 error 时调 `OnError`），
-所以 5xx 算不算失败是这里判的。`RetryCount: 2`、`RetryWaitTime` / `RetryMaxWaitTime: 5ms` 时量出来的：
+**The request log (`Log: true`)**. Measured on resty v2.17.2: `OnSuccess` / `OnError` are called once after every retry
+has finished, and `Request.Attempt` is the number of attempts used; with a response in hand it goes to `OnSuccess`,
+**a 5xx included** (resty only calls `OnError` when there is an error), so whether a 5xx counts as a failure is decided
+here. Measured with `RetryCount: 2` and `RetryWaitTime` / `RetryMaxWaitTime: 5ms`:
 
-| 下游 | 下游收到 | 回调 | 日志 |
+| Downstream | What it received | Callback | Log |
 |---|---|---|---|
-| 200 | 1 次 | `OnSuccess` 1 次 | `http request`，`status: 200`、`attempts: 1` |
-| 500 | 1 次（拿到响应不重试） | `OnSuccess` 1 次 | `http request failed`，`status: 500`、`attempts: 1` |
-| 每次都掐断连接 | 3 次；池子里有这个下游的空闲连接时 4 次 | `OnError` 1 次，`Attempt` 3 | `http request failed`，`status: 0`、`attempts: 3`、`elapsed_ms` 约 12（含两次退避）、`error: Get "http://127.0.0.1:…/cut": EOF` |
-| 端口没人监听 | — | `OnError` 1 次，`Attempt` 3 | `http request failed`，`attempts: 3`、`error: Get "http://127.0.0.1:1/x/y": dial tcp …: connection refused` |
+| 200 | once | `OnSuccess` once | `http request`, `status: 200`, `attempts: 1` |
+| 500 | once (no retry with a response in hand) | `OnSuccess` once | `http request failed`, `status: 500`, `attempts: 1` |
+| cutting the connection every time | 3 times; 4 with an idle connection to that downstream in the pool | `OnError` once, `Attempt` 3 | `http request failed`, `status: 0`, `attempts: 3`, `elapsed_ms` about 12 (the two backoffs included), `error: Get "http://127.0.0.1:…/cut": EOF` |
+| nothing listening on the port | — | `OnError` once, `Attempt` 3 | `http request failed`, `attempts: 3`, `error: Get "http://127.0.0.1:1/x/y": dial tcp …: connection refused` |
 
-掐断连接那一行收到 4 次的情形：第一次尝试用的是池里复用的空闲连接，标准库在它被对端关掉时自己在新连接上重发了一次 GET
-（同上面 `IdleConnTimeout` 那一条），这一次 resty 看不见，所以 `attempts` 仍是 3。
+The 4-times case on the cut-connection row: the first attempt used an idle connection from the pool, and the standard
+library resent that GET once on a new connection when the peer closed it (the same as the `IdleConnTimeout` row above);
+resty does not see that one, so `attempts` is still 3.
 
-**错误里的 URL。** 错误原文是 `*url.Error`：`Get "http://someone:***@host/x?token=…": …`——整条 URL 连查询串都在，
-标准库只把密码换成 `***`、用户名照留。那个 URL 还不一定是绝对的：重定向策略拒绝时放进去的是 `Location` 原样，
-实测 `Location: /b?token=…` 时原文是 `Get "/b?token=…": auto redirect is disabled`；查询串里也可能有没转义的空格
-（`?q=hello world&token=…`）。所以日志里的 `error` 按结构去：
+**URLs inside errors.** The error text is a `*url.Error`: `Get "http://someone:***@host/x?token=…": …` -- the whole URL
+including the query string, with the standard library replacing only the password with `***` and keeping the user name.
+That URL is not necessarily absolute either: when a redirect policy refuses, what goes in is the `Location` as it is,
+and measured with `Location: /b?token=…` the text was `Get "/b?token=…": auto redirect is disabled`; a query string may
+also hold unescaped spaces (`?q=hello world&token=…`). So the `error` in the log is handled by structure:
 
-- 错误链上（`%w` 包的、`errors.Join` 的都算）每个 `*url.Error` 的 URL 解析后去掉查询串、片段和 userinfo 再渲染；
-  解析不了的切在第一个 `?` / `#` 上。
-- 链外的自由文本再按文本兜一遍（引号里的到右引号为止）。`Location` 转义不合法时它在错误文本里：
-  `failed to parse Location header "/b%zz": …`。
+- Every `*url.Error` on the error chain (wrapped with `%w` or joined with `errors.Join` alike) has its URL parsed and
+  its query string, fragment and userinfo removed before rendering; one that cannot be parsed is cut at the first `?`
+  or `#`.
+- The free text outside the chain gets a text pass as a fallback (a quoted one up to the closing quote). An invalid
+  escape in `Location` puts it in the error text: `failed to parse Location header "/b%zz": …`.
 
-resty 自己的日志、出站 Span 的 `url.full` 用的是同一套。返回给调用方的错误不变。
+resty's own logs and the outbound Span's `url.full` use the same treatment. The error returned to the caller is
+unchanged.
 
-**跟 resty / otelhttp 默认不一样的地方：**
+**Where this differs from resty's / otelhttp's defaults:**
 
-| | 库自己的默认 | 这里 |
+| | The library's own default | Here |
 |---|---|---|
-| resty 的日志 | 写 `os.Stderr`；开了重试后每次失败打一行 `WARN RESTY Get "http://…?token=…": …, Attempt 1`，用完再打一行 ERROR | 接到 slog（`xhttp resty log`，内容在 `detail`），级别照搬，URL 去掉查询串；`Log: true` 时重试路径上的那几行不打，由 `http request failed` 一行代替 |
-| cookie jar | `resty.New()` 自带一个，同一 client 的所有请求共享会话 cookie | 没有（用 `NewWithClient`）。初始化前 / 关闭后的兜底实例也没有 |
-| 出站 Span 名 | 常见写法是 `GET /users/42`，基数随 id 增长 | 只用方法 `GET`（OTel 语义约定在没有路由模板时的写法） |
-| `url.full` | otelhttp 只去掉 `user:password`，查询串原样写进去 | 查询串、片段和 userinfo 一并去掉 |
-| `CloseIdleConnections` | otelhttp 的 Transport 没实现，`http.Client.CloseIdleConnections()` 断在它那一层，整条调用变成空操作 | 关闭时 xhttp 直接关它自己持有的连接池 |
+| resty's logs | Written to `os.Stderr`; with retries on, one `WARN RESTY Get "http://…?token=…": …, Attempt 1` per failure and one ERROR once used up | Routed into slog (`xhttp resty log`, with the content in `detail`), keeping the level and removing the query string from the URL; with `Log: true` the retry-path lines are not printed and one `http request failed` line takes their place |
+| cookie jar | `resty.New()` brings one, and every request of that client shares the session cookie | None (`NewWithClient` is used). The fallback instance before initialization and after shutdown has none either |
+| outbound Span name | The common form is `GET /users/42`, whose cardinality grows with the id | The method alone, `GET` (OTel's semantic conventions without a route template) |
+| `url.full` | otelhttp removes only `user:password` and writes the query string in as it is | The query string, the fragment and the userinfo are all removed |
+| `CloseIdleConnections` | otelhttp's Transport does not implement it, so `http.Client.CloseIdleConnections()` stops at that layer and the whole call becomes a no-op | On close, xhttp closes the connection pool it holds directly |

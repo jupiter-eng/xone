@@ -13,10 +13,11 @@ import (
 	"github.com/jupiter-eng/xone/internal/hook"
 )
 
-// bannerText 启动 banner（ANSI Shadow 字体）。
+// bannerText is the startup banner (the ANSI Shadow font).
 //
-// 只在 stderr 是终端时打：在容器里、被重定向到文件或者接在日志采集器后面时，
-// 一段带颜色的多行字符画就是日志平台里几行解析失败的垃圾——框架写出的每一行都该是 JSON。
+// It is printed only while stderr is a terminal: in a container, redirected into a file or piped
+// into a log collector, a coloured multi-line piece of ASCII art is a few lines of unparsable
+// garbage in the logging platform -- every line the framework writes should be JSON.
 var bannerText = []string{
 	`██╗  ██╗ ██████╗ ███╗   ██╗███████╗`,
 	`╚██╗██╔╝██╔═══██╗████╗  ██║██╔════╝`,
@@ -26,16 +27,19 @@ var bannerText = []string{
 	`╚═╝  ╚═╝ ╚═════╝ ╚═╝  ╚═══╝╚══════╝`,
 }
 
-// 从左到右的渐变（24 位 ANSI）：青蓝到淡紫。底下那行的名字用两端的中间色
+// The gradient from left to right (24-bit ANSI): cyan-blue to light purple. The name on the line
+// below takes the colour halfway between the two ends
 var (
 	bannerFrom = [3]int{80, 190, 230}
 	bannerTo   = [3]int{176, 132, 236}
 )
 
-// stderr banner 写到哪里。测试换成管道，看 Run 是不是只在终端里才打
+// stderr is where the banner is written. The tests swap in a pipe to see whether Run really prints
+// it only in a terminal
 var stderr = os.Stderr
 
-// printBanner stderr 是终端时往 w 写 banner：字符画，下面一行名字和右对齐的版本号
+// printBanner writes the banner to w while stderr is a terminal: the ASCII art, and below it the
+// name with the version right-aligned
 func printBanner(w io.Writer, terminal bool) {
 	if !terminal {
 		return
@@ -50,7 +54,7 @@ func printBanner(w io.Writer, terminal bool) {
 				continue
 			}
 			c := blend(float64(i) / float64(width-1))
-			if r != '█' { // 描边的线条压暗，字才立得起来
+			if r != '█' { // the outline strokes are darkened so that the letters stand out
 				c = [3]int{c[0] * 11 / 20, c[1] * 11 / 20, c[2] * 11 / 20}
 			}
 			b.WriteString(fg(c) + string(r))
@@ -58,7 +62,7 @@ func printBanner(w io.Writer, terminal bool) {
 		b.WriteString("\x1b[0m\n")
 	}
 	ver := version()
-	if !strings.HasPrefix(ver, "(") { // (devel) 自带括号
+	if !strings.HasPrefix(ver, "(") { // (devel) brings its own brackets
 		ver = "(" + ver + ")"
 	}
 	pad := strings.Repeat(" ", max(1, width-len(" :: xone ::")-len(ver)))
@@ -66,7 +70,7 @@ func printBanner(w io.Writer, terminal bool) {
 	fmt.Fprint(w, b.String())
 }
 
-// blend 渐变上 t（0 到 1）处的颜色
+// blend is the colour at t (0 to 1) along the gradient
 func blend(t float64) [3]int {
 	var c [3]int
 	for i := range c {
@@ -77,17 +81,19 @@ func blend(t float64) [3]int {
 
 func fg(c [3]int) string { return fmt.Sprintf("\x1b[38;2;%d;%d;%dm", c[0], c[1], c[2]) }
 
-// isTerminal f 是不是终端（字符设备）。不引第三方库：核心只依赖 yaml
+// isTerminal reports whether f is a terminal (a character device). No third-party library is
+// pulled in for it: the core depends on yaml alone
 func isTerminal(f *os.File) bool {
 	st, err := f.Stat()
 	return err == nil && st.Mode()&os.ModeCharDevice != 0
 }
 
-// modulePath 核心模块的路径，从二进制的构建信息里找它的版本
+// modulePath is the core module's path, used to find its version in the binary's build info
 const modulePath = "github.com/jupiter-eng/xone"
 
-// version 编进这个二进制的 xone 版本：取自构建信息，发布时不用改任何常量。
-// 用 replace 指向本地目录时构建信息里没有真实版本，显示 (devel)
+// version is the xone version compiled into this binary: taken from the build info, so a release
+// changes no constant. With a replace pointing at a local directory the build info holds no real
+// version and (devel) is shown
 func version() string {
 	bi, ok := debug.ReadBuildInfo()
 	if !ok {
@@ -118,7 +124,7 @@ func orDevel(v string) string {
 	return v
 }
 
-// stageNames 调试输出里档位的名字
+// stageNames are the stage names in the debug output
 var stageNames = map[hook.Stage]string{
 	hook.StageLog:       "Log",
 	hook.StageTelemetry: "Telemetry",
@@ -127,7 +133,8 @@ var stageNames = map[hook.Stage]string{
 	hook.StageServer:    "Server",
 }
 
-// debugHooks XONE_DEBUG 开着时列出启动钩子的执行顺序；停止钩子按它倒过来
+// debugHooks lists the start hooks in the order they run while XONE_DEBUG is on; the stop hooks
+// run in reverse
 func debugHooks(entries []hook.Entry) {
 	if !config.Debug() {
 		return

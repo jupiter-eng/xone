@@ -13,9 +13,9 @@ import (
 	"github.com/jupiter-eng/xone/xmetric"
 )
 
-// newDurationHistogram 出站请求耗时直方图
+// newDurationHistogram is the outbound request duration histogram.
 //
-// 桶边界取 xmetric 配的那一份，好让出站和入站的耗时在同一把刻度上看。
+// The bucket boundaries come from xmetric's configuration, so outbound and inbound durations are read on the same scale.
 func newDurationHistogram() *prometheus.HistogramVec {
 	return prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace:   xmetric.Namespace(),
@@ -26,16 +26,16 @@ func newDurationHistogram() *prometheus.HistogramVec {
 	}, []string{"method", "host", "status"})
 }
 
-// startKey 整次逻辑请求的起点在 context 里的 key
+// startKey is the context key for the start of a whole logical request.
 type startKey struct{}
 
-// markStart 在第一次尝试之前记下整次逻辑请求的起点，指标和日志的耗时都从这里算。
-// 指标和日志各挂一次也没关系：起点已经在 ctx 里了，后挂的那个什么都不做。
+// markStart records the start of the whole logical request before the first attempt; both the metric and the log compute their duration from it.
+// Attaching it once each for the metric and the log is harmless: the start is already in the ctx, and the later one does nothing.
 //
-// 不能用 resp.Time()：resty 每次尝试都会重置 Request.Time，于是 resp.Time() 只是最后一次
-// 尝试的耗时——前面几次失败的尝试和它们之间的退避等待全都不算。
-// 计数是按「一次逻辑请求」记的，耗时也必须是，否则故障时
-// 请求数照涨、耗时却纹丝不动，监控看上去异常地健康。
+// resp.Time() cannot be used: resty resets Request.Time on every attempt, so resp.Time() is only the last attempt's
+// duration -- the earlier failed attempts and the backoff waits between them are all left out.
+// The count is kept per "one logical request", so the duration has to be as well; otherwise, during an incident,
+// the request count rises while the duration does not move at all and the monitoring looks unusually healthy.
 func markStart(client *resty.Client) {
 	client.OnBeforeRequest(func(_ *resty.Client, req *resty.Request) error {
 		if _, ok := req.Context().Value(startKey{}).(time.Time); !ok {
@@ -45,10 +45,10 @@ func markStart(client *resty.Client) {
 	})
 }
 
-// installMetrics 挂上记录指标的钩子
+// installMetrics attaches the hooks that record the metrics.
 //
-// 用 OnSuccess / OnError 而不是中间件：它们在所有重试结束后只调用一次，
-// 挂在中间件上会把每次重试都记一遍，请求量和耗时分布都虚高。
+// It uses OnSuccess / OnError rather than middleware: they are called once after every retry has finished,
+// while middleware would record every retry and inflate both the request count and the duration distribution.
 func installMetrics(client *resty.Client, hist *prometheus.HistogramVec) {
 	markStart(client)
 	client.OnSuccess(func(_ *resty.Client, resp *resty.Response) {
@@ -65,8 +65,8 @@ func installMetrics(client *resty.Client, hist *prometheus.HistogramVec) {
 			return
 		}
 		raw := req.RawRequest
-		// 没拿到响应时状态码记 0：把它和真实状态码混在一起会让
-		// 「5xx 比例」这类告警在网络故障时反而看不出问题
+		// The status code is recorded as 0 when there is no response: mixing it in with the real status codes would
+		// make an alert such as "the 5xx ratio" show nothing during a network failure.
 		status, dur := "0", time.Since(req.Time)
 		var re *resty.ResponseError
 		if errors.As(err, &re) && re.Response != nil {
@@ -76,22 +76,22 @@ func installMetrics(client *resty.Client, hist *prometheus.HistogramVec) {
 	})
 }
 
-// knownMethods RFC 9110 定的那几个方法，加上 PATCH。与 xgin/middleware 的那份一致
+// knownMethods are the methods RFC 9110 defines, plus PATCH. The same list as in xgin/middleware.
 var knownMethods = map[string]struct{}{
 	http.MethodGet: {}, http.MethodHead: {}, http.MethodPost: {}, http.MethodPut: {},
 	http.MethodPatch: {}, http.MethodDelete: {}, http.MethodConnect: {},
 	http.MethodOptions: {}, http.MethodTrace: {},
 }
 
-// methodOther 不认识的方法统一记成这个
+// methodOther is what an unrecognized method is recorded as.
 const methodOther = "OTHER"
 
-// normalizeMethod 把方法收敛到一个固定集合。
+// normalizeMethod collapses the method into a fixed set.
 //
-// 方法是一个自由 token，出站这边它来自业务代码，常常是从上游请求、配置、
-// 消息里转手来的——照抄进标签的话，每来一个新值就多一组时间序列，没有淘汰机制。
-// 与 xgin/middleware 的 normalizeMethod 同一个道理；那边是另一个 module 的
-// 内部包，这几行宁可重复，也不为它新开一个公共包。
+// A method is a free token, and on the outbound side it comes from business code, often passed on from an upstream
+// request, a configuration or a message -- copying it into a label would add a set of time series for every new value,
+// with nothing to evict them. Same reasoning as xgin/middleware's normalizeMethod; that one is an internal package of
+// another module, and these few lines are better duplicated than turned into a public package.
 func normalizeMethod(m string) string {
 	if _, ok := knownMethods[m]; ok {
 		return m
@@ -99,7 +99,7 @@ func normalizeMethod(m string) string {
 	return methodOther
 }
 
-// elapsed 取整次逻辑请求的耗时，拿不到起点时退回这一次尝试的耗时
+// elapsed takes the duration of the whole logical request, falling back to this attempt's when the start cannot be found.
 func elapsed(req *resty.Request, fallback time.Duration) time.Duration {
 	if req == nil {
 		return fallback

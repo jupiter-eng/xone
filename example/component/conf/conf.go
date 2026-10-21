@@ -1,32 +1,34 @@
-// Package conf 是「业务自己的配置块」的样例。
+// Package conf is the example of "the business's own configuration block".
 //
-// 它没有任何东西要初始化，所以整个包只做一件事：把 MyApp 那一块读进一个
-// 包级变量。读只要一行 xconfig.Unmarshal，在 Start 之前任何时候调都行——这个例子在 main 里调。
+// It has nothing to initialize, so the whole package does one thing: reads the MyApp block into a
+// package-level variable. Reading is one line of xconfig.Unmarshal, called at any time before Start
+// -- this example calls it in main.
 //
-// 单独一个包而不是写在 main 里：别的包也要取配置，放在这里谁都能 import。
+// A package of its own rather than part of main: other packages want the configuration too, and here
+// anybody can import it.
 package conf
 
 import "github.com/jupiter-eng/xone/xconfig"
 
-// Config 业务自己的配置
+// Config is the business's own configuration
 type Config struct {
-	// Greeting 每轮打印的问候语
+	// Greeting is the greeting printed each round
 	Greeting string `yaml:"Greeting"`
 
-	// Rounds 跑几轮就收工。默认 3
+	// Rounds is how many rounds to run before finishing. It defaults to 3
 	Rounds int `yaml:"Rounds"`
 }
 
-// DefaultConfig 默认值预填在结构体里，文件里没写的字段保持不变
+// DefaultConfig pre-fills the defaults in the struct; a field the file does not set stays as it is
 func DefaultConfig() Config {
 	return Config{Greeting: "hello", Rounds: 3}
 }
 
-// conf 生效中的配置
+// conf is the configuration in effect
 var conf = DefaultConfig()
 
-// Load 读出 MyApp 这一块。main 里调一次，之后 C() 处处可用
+// Load reads the MyApp block. Called once in main, after which C() works everywhere
 func Load() error { return xconfig.Unmarshal("MyApp", &conf) }
 
-// C 返回最终配置
+// C returns the final configuration
 func C() Config { return conf }

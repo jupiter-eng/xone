@@ -1,10 +1,11 @@
-// Package hook 是生命周期钩子的存储与执行。
+// Package hook stores and runs the lifecycle hooks.
 //
-// 单独拆出来只为一件事：让 xhook 的 godoc 里只剩使用者真正要认识的东西。
-// 这里的类型是框架装配时用的，第三方集成 import 不到（internal 规则按路径生效，
-// 只有 github.com/jupiter-eng/xone/... 下的包能进来），也不需要。
+// It is split out for one reason only: to leave xhook's godoc holding nothing but what the caller
+// really has to know. The types here are what the framework wires itself up with; a third-party
+// integration cannot import them (the internal rule goes by path, and only packages under
+// github.com/jupiter-eng/xone/... get in) and does not need to.
 //
-// 本包零第三方依赖。
+// This package has no third-party dependencies.
 package hook
 
 import (
@@ -14,44 +15,49 @@ import (
 	"sync"
 )
 
-// Stage 资源层级：值越小越底层——启动越早、关闭越晚。
+// Stage is a resource's layer: the lower the value the deeper it sits -- started earlier and
+// closed later.
 //
-// 用固定几档而不是任意数字：数字需要全局协调（谁该填 30、谁该填 50），
-// 档位不需要——同一档内的东西本来就互不依赖，顺序无所谓。
+// A handful of fixed stages rather than arbitrary numbers: numbers need coordinating globally (who
+// gets 30 and who gets 50), stages do not -- whatever shares one stage does not depend on the rest
+// of it to begin with, so the order within it does not matter.
 type Stage int
 
 const (
-	// StageLog 日志：最先起、最后关，这样其余组件的启停日志都写得出去
+	// StageLog is logging: up first and closed last, so that every other component's start and stop
+	// logs still get written
 	StageLog Stage = iota
 
-	// StageTelemetry 链路与指标：要在任何客户端之前就绪，
-	// 客户端发出的 Span 才挂得上、打的指标才收得到
+	// StageTelemetry is tracing and metrics: they have to be ready before any client, or the Spans a
+	// client emits attach to nothing and the metrics it records are never collected
 	StageTelemetry
 
-	// StageClient 数据库、缓存、HTTP 客户端等基础设施：业务要用它们
+	// StageClient is the infrastructure -- databases, caches, HTTP clients -- that the business uses
 	StageClient
 
-	// StageBusiness 使用者自己的业务资源：本地缓存预热、定时任务、消息消费者……
-	// 它们用得上客户端，又被服务依赖。默认档
+	// StageBusiness is the caller's own business resources: warming a local cache, scheduled jobs,
+	// message consumers and so on. They use the clients and the servers depend on them. The default
+	// stage
 	StageBusiness
 
-	// StageServer 对外服务：最后起、最先关
+	// StageServer is what serves the outside: up last and closed first
 	StageServer
 )
 
-// Func 一个钩子。ctx 是进程的启停生命期。
+// Func is one hook. The ctx is the process's start and stop lifetime.
 type Func func(ctx context.Context) error
 
-// Entry 一个登记项
+// Entry is one registration
 type Entry struct {
-	Name  string // 出现在日志和错误里，取的是钩子函数自己的名字
-	Pkg   string // 登记它的包（调用栈上的 init 所在的包），用来把启动和停止配成对
+	Name  string // appears in the logs and the errors; it is the hook function's own name
+	Pkg   string // the package registering it (the one whose init is on the call stack), used to pair start with stop
 	Stage Stage
 	Run   Func
-	Seq   int // 启动钩子的登记序号，从 1 编起
-	Pair  int // 停止钩子配对的那个启动钩子的 Seq，0 表示没有，见 AddStop
+	Seq   int // a start hook's registration number, counted from 1
+	Pair  int // the Seq of the start hook a stop hook is paired with, 0 for none, see AddStop
 
-	// Inherit 停止钩子没有显式指定档位：AddStop 配上对之后改用那个启动钩子的档位
+	// Inherit means the stop hook was given no stage explicitly: once AddStop has found its pair, it
+	// takes that start hook's stage instead
 	Inherit bool
 }
 
@@ -61,7 +67,7 @@ var (
 	stop  []Entry
 )
 
-// AddStart 登记一个启动钩子
+// AddStart registers a start hook
 func AddStart(e Entry) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -69,20 +75,21 @@ func AddStart(e Entry) {
 	start = append(start, e)
 }
 
-// AddStop 登记一个停止钩子，并在这时就配好对：同一个包里、在它之前最近登记的
-// 那个启动钩子。
+// AddStop registers a stop hook and pairs it right away: with the start hook of the same package
+// registered most recently before it.
 //
-// 一起登记的就是一对：
+// Registered together makes a pair:
 //
 //	BeforeStart(openA); BeforeStop(closeA)
 //	BeforeStart(openB); BeforeStop(closeB)
 //
-// closeA 配 openA，closeB 配 openB。openB 失败时 closeA 照常执行、closeB 不执行——
-// 各关各的，谁都不用处理「还没建起来」。之前没有同包的启动钩子时 Pair 为 0：
-// 这样的停止钩子不依赖任何启动，总会执行。
+// closeA pairs with openA and closeB with openB. When openB fails, closeA runs as usual and closeB
+// does not -- each closes its own and none has to handle "not built yet". With no start hook of the
+// same package before it, Pair stays 0: such a stop hook depends on no startup and always runs.
 //
-// Inherit 的停止钩子同时继承配对的那个启动钩子的档位：一对钩子管的是同一个资源，
-// 档位本来就该一样。没配上对的保持原来的档位。
+// A stop hook with Inherit also takes the stage of the start hook it is paired with: one pair of
+// hooks minds one resource, and their stage should be the same to begin with. One that found no
+// pair keeps the stage it had.
 func AddStop(e Entry) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -98,53 +105,56 @@ func AddStop(e Entry) {
 	stop = append(stop, e)
 }
 
-// Start 取出启动钩子，按档位升序；同档内保持登记顺序。
+// Start takes the start hooks in ascending stage order, keeping the registration order within one
+// stage.
 func Start() []Entry {
 	mu.Lock()
 	defer mu.Unlock()
 	return startOrder(start)
 }
 
-// startOrder 按启动顺序排：档位升序，同档内保持登记顺序。
+// startOrder sorts into start order: ascending stages, keeping the registration order within one
+// stage.
 func startOrder(in []Entry) []Entry {
 	out := slices.Clone(in)
 	slices.SortStableFunc(out, func(a, b Entry) int { return cmp.Compare(a.Stage, b.Stage) })
 	return out
 }
 
-// Stop 取出停止钩子，是 Start 顺序的整体镜像：档位降序，同档内按登记顺序逆序。
+// Stop takes the stop hooks as the mirror image of Start's order: descending stages, and the
+// registration order reversed within one stage.
 //
-// 这样一个资源只要声明一个档位，就同时做到了「先启动、后关闭」。
+// This way one resource declaring one stage gets both "started earlier" and "closed later".
 func Stop() []Entry {
 	mu.Lock()
 	defer mu.Unlock()
 	return stopOrder(stop)
 }
 
-// stopOrder 按停止顺序排：Start 顺序的整体镜像。
+// stopOrder sorts into stop order: the mirror image of Start's order.
 func stopOrder(in []Entry) []Entry {
 	out := startOrder(in)
 	slices.Reverse(out)
 	return out
 }
 
-// StopAfter 取出该执行的停止钩子，顺序同 Stop：跳过那些配对的启动钩子没成功的——
-// 它们管的资源根本没建起来。started 是成功了的启动钩子的 Seq；
-// 没有配对（Pair 为 0）的总会留下。
+// StopAfter takes the stop hooks that are to run, in Stop's order: the ones whose paired start
+// hook did not succeed are skipped -- the resource they mind was never built. started holds the
+// Seqs of the start hooks that succeeded; the unpaired ones (Pair 0) are always kept.
 func StopAfter(started map[int]bool) []Entry {
 	mu.Lock()
 	defer mu.Unlock()
 	var out []Entry
 	for _, e := range stopOrder(stop) {
 		if e.Pair != 0 && !started[e.Pair] {
-			continue // 和它配对的启动钩子没跑成功，资源不存在
+			continue // the start hook it is paired with did not succeed, so the resource does not exist
 		}
 		out = append(out, e)
 	}
 	return out
 }
 
-// Reset 清空登记板。只给测试用。
+// Reset clears the registration board. For the tests alone.
 func Reset() {
 	mu.Lock()
 	defer mu.Unlock()

@@ -10,8 +10,8 @@ import (
 	"github.com/jupiter-eng/xone/xonetest"
 )
 
-// 用了 xredis 就有链路，使用者不用另外 import xtrace：xredis.go 替他 import 了。
-// 先把全局的 TracerProvider 换回 noop，免得别的测试装过的 provider 让这里白白通过
+// Using xredis brings tracing and the caller does not have to import xtrace: xredis.go imports it for them.
+// The global TracerProvider is reset to a noop first, so that a provider installed by another test cannot make this pass for nothing.
 func TestTracingWorksWithoutImportingXtrace(t *testing.T) {
 	prev := otel.GetTracerProvider()
 	otel.SetTracerProvider(noop.NewTracerProvider())
@@ -23,6 +23,6 @@ func TestTracingWorksWithoutImportingXtrace(t *testing.T) {
 	_, span := otel.Tracer("test").Start(context.Background(), "op")
 	defer span.End()
 	if !span.SpanContext().IsValid() {
-		t.Fatal("用了 xredis 就该有链路，拿到的却是 noop 的 Span：xredis 没把 xtrace 带进来")
+		t.Fatal("using xredis must bring tracing, but the Span is a noop one: xredis did not pull xtrace in")
 	}
 }

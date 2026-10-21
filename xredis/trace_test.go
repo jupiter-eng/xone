@@ -20,18 +20,18 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// recordingTP 只记下每个 Span 开始时带的属性。
+// recordingTP only records the attributes each Span was started with.
 //
-// 不用 otel 的 sdk + tracetest：测试依赖会被 go mod tidy 记成直接依赖，
-// 跟着进每个使用者的模块图（理由同 fakeRedis）。redisotel 的属性都是在
-// Start 时一次给齐的，记这一处就够了。
+// otel's sdk + tracetest is not used: a test dependency is recorded as a direct dependency by go mod tidy
+// and travels into every caller's module graph (the same reason as fakeRedis). redisotel gives every attribute
+// at Start in one go, so recording that one place is enough.
 type recordingTP struct {
 	noop.TracerProvider
 	mu    sync.Mutex
 	attrs []attribute.KeyValue
 	names []string
-	// errs 每个 Span 上 RecordError 记下的原文（exception.message）、SetAttributes 补上的属性、
-	// SetStatus 的状态描述，按调用顺序拼成的文本
+	// errs is the text assembled in call order from each Span's RecordError (exception.message), the attributes
+	// SetAttributes added afterwards, and SetStatus's status description.
 	errs []string
 }
 
@@ -67,7 +67,7 @@ func (t recordingTracer) Start(ctx context.Context, name string, opts ...trace.S
 	return ctx, recordingSpan{Span: span, p: t.p}
 }
 
-// recordingSpan 记下落在 Span 上的错误文本：exception.message、状态描述和后补的属性
+// recordingSpan records the error text landing on a Span: exception.message, the status description and the attributes added later.
 type recordingSpan struct {
 	trace.Span
 	p *recordingTP
@@ -100,9 +100,9 @@ func (p *recordingTP) errors() []string {
 }
 
 func TestTrace_CommandArgsNotInSpan(t *testing.T) {
-	// redisotel v9.22.0 默认 dbStmtEnabled=true，把整条命令连同参数写进
-	// db.statement：SET 的值、AUTH 的密码，统统进了链路后端。
-	// 与 xgorm 的「不记 Statement.Vars」是同一条原则
+	// redisotel v9.22.0 defaults to dbStmtEnabled=true and writes the whole command with its arguments into
+	// db.statement: a SET's value and an AUTH's password all reach the tracing backend.
+	// The same principle as xgorm's "do not record Statement.Vars".
 	tp := &recordingTP{}
 	old := otel.GetTracerProvider()
 	otel.SetTracerProvider(tp)
@@ -123,18 +123,18 @@ func TestTrace_CommandArgsNotInSpan(t *testing.T) {
 	var instrumented bool
 	for _, a := range tp.all() {
 		if strings.Contains(a.Value.Emit(), secret) {
-			t.Errorf("命令参数进了 Span：%s=%s", a.Key, a.Value.Emit())
+			t.Errorf("a command argument reached the Span: %s=%s", a.Key, a.Value.Emit())
 		}
 		if a.Key == "db.system" {
 			instrumented = true
 		}
 	}
 	if !instrumented {
-		t.Fatal("前提：链路钩子该挂上，否则这条测试什么都没验")
+		t.Fatal("precondition: the tracing hook must be attached, or this test verifies nothing")
 	}
 }
 
-// useTP 换上记录用的 TracerProvider，测试结束还原
+// useTP installs the recording TracerProvider and restores the previous one when the test ends.
 func useTP(t *testing.T) *recordingTP {
 	tp := &recordingTP{}
 	old := otel.GetTracerProvider()
@@ -144,16 +144,16 @@ func useTP(t *testing.T) *recordingTP {
 }
 
 func TestTrace_StartupConnectCheckOpensNoSpan(t *testing.T) {
-	// 钩子挂在建连验证之前的话，每一次 Ping 尝试都是一个没有父 Span 的 ping，
-	// 连不上时一轮重试就是一串报错的根 Span——那是一次启动，不是业务请求
+	// Attached before the connection check, every Ping attempt would be a parentless ping Span,
+	// and a failure would make one round of retries a string of failing root Spans -- for a startup, not a business request.
 	tp := useTP(t)
 	f := newFakeRedis(t)
 	f.setFailPing(true)
 	if _, _, err := New(context.Background(), liveCfg(f)); err == nil {
-		t.Fatal("前提：Ping 失败时 New 该失败")
+		t.Fatal("precondition: New must fail when Ping fails")
 	}
 	if got := tp.spans(); len(got) != 0 {
-		t.Errorf("连不上时的建连验证不该留下 Span，got=%v", got)
+		t.Errorf("a failed connection check must leave no Span, got=%v", got)
 	}
 
 	f.setFailPing(false)
@@ -163,41 +163,41 @@ func TestTrace_StartupConnectCheckOpensNoSpan(t *testing.T) {
 	}
 	defer closer.Close()
 	if got := tp.spans(); slices.Contains(got, "ping") {
-		t.Errorf("连得上时的那次建连验证也不该留下 ping Span，got=%v", got)
+		t.Errorf("a successful connection check must leave no ping Span either, got=%v", got)
 	}
 	if err := client.Ping(context.Background()).Err(); err != nil {
 		t.Fatal(err)
 	}
 	if got := tp.spans(); !slices.Contains(got, "ping") {
-		t.Errorf("建好之后业务发的命令该有 Span（钩子得挂上），got=%v", got)
+		t.Errorf("a business command after it is built must have a Span (the hook has to be attached), got=%v", got)
 	}
 }
 
-// 服务端的错误原文带着参数，实测 Redis 7.0.15（见 errorAttrs）。redisotel v9.22.0 把它原样写进
-// exception.message 和状态描述（tracing.go recordError）；Span 上的规则要和命令日志的一样。
-// 假服务端回的是真 Redis 的原话；XONE_E2E=1 时另对真的 Redis 跑一遍（地址同 scripts/e2e.sh 的 XONE_E2E_REDIS_ADDR）
+// A server's error text carries the arguments, measured on Redis 7.0.15 (see errorAttrs). redisotel v9.22.0 writes it as it is into
+// exception.message and the status description (tracing.go recordError); the rule on a Span has to match the command log's.
+// The fake server answers with a real Redis's own words; with XONE_E2E=1 it runs against a real Redis too (the same address as scripts/e2e.sh's XONE_E2E_REDIS_ADDR).
 func TestTrace_ServerErrorTextNotInSpan(t *testing.T) {
 	const secret = "secretarg1"
 	const coded = "status=Error:redis server error ERR (message omitted, it may contain argument values)"
 	cases := []struct {
 		name  string
-		reply string // 假服务端对这条命令的回复，真 Redis 自己会回同样的话
+		reply string // the fake server's answer to this command, which a real Redis would answer the same way
 		do    func(context.Context, *redis.Client) error
 		want  string
 	}{
-		{"未知命令引出参数", "-ERR unknown command 'foo', with args beginning with: '" + secret + "' \r\n",
+		{"an unknown command carrying the arguments out", "-ERR unknown command 'foo', with args beginning with: '" + secret + "' \r\n",
 			func(ctx context.Context, c *redis.Client) error { return c.Do(ctx, "foo", secret).Err() }, coded},
-		{"EVAL 里 error_reply(ARGV[1])", "-ERR " + secret + "\r\n",
+		{"error_reply(ARGV[1]) inside an EVAL", "-ERR " + secret + "\r\n",
 			func(ctx context.Context, c *redis.Client) error {
 				return c.Eval(ctx, "return redis.error_reply('ERR ' .. ARGV[1])", nil, secret).Err()
 			}, coded},
-		{"EVAL 里 {err=ARGV[1]}，错误码的位置都是值", "-" + secret + "\r\n",
+		{"{err=ARGV[1]} inside an EVAL, where even the error code position is a value", "-" + secret + "\r\n",
 			func(ctx context.Context, c *redis.Client) error {
 				return c.Eval(ctx, "return {err=ARGV[1]}", nil, secret).Err()
 			}, "status=Error:redis server error (message omitted, it may contain argument values)"},
 	}
 	backends := map[string]func(t *testing.T, reply string) ClientConfig{
-		"假服务端": func(t *testing.T, reply string) ClientConfig {
+		"the fake server": func(t *testing.T, reply string) ClientConfig {
 			f := newFakeRedis(t)
 			f.setReply("foo", reply)
 			f.setReply("eval", reply)
@@ -205,7 +205,7 @@ func TestTrace_ServerErrorTextNotInSpan(t *testing.T) {
 		},
 	}
 	if os.Getenv("XONE_E2E") == "1" {
-		backends["真 Redis"] = func(*testing.T, string) ClientConfig {
+		backends["a real Redis"] = func(*testing.T, string) ClientConfig {
 			c := DefaultClientConfig()
 			c.Addr = cmp.Or(os.Getenv("XONE_E2E_REDIS_ADDR"), "127.0.0.1:6379")
 			return c
@@ -223,21 +223,21 @@ func TestTrace_ServerErrorTextNotInSpan(t *testing.T) {
 
 				err = c.do(context.Background(), client)
 				if err == nil || !strings.Contains(err.Error(), secret) {
-					t.Fatalf("前提：返回给调用方的错误原样带着服务端的原文，got=%v", err)
+					t.Fatalf("precondition: the error returned to the caller carries the server's text as it is, got=%v", err)
 				}
 				got := strings.Join(tp.errors(), "\n")
 				if strings.Contains(got, secret) {
-					t.Errorf("参数值进了 Span：\n%s", got)
+					t.Errorf("a parameter value reached the Span:\n%s", got)
 				}
 				if !strings.Contains(got, c.want) {
-					t.Errorf("Span 上该有 %q，got：\n%s", c.want, got)
+					t.Errorf("the Span must carry %q, got:\n%s", c.want, got)
 				}
 			})
 		}
 	}
 }
 
-// 客户端这一侧认得出的错照原文记：地址、超时正是排查要看的
+// A client-side error that is recognized is recorded verbatim: the address and the timeout are exactly what an investigation needs.
 func TestTrace_ClientSafeErrorKeptInSpan(t *testing.T) {
 	tp := useTP(t)
 	f := newFakeRedis(t)
@@ -250,24 +250,24 @@ func TestTrace_ClientSafeErrorKeptInSpan(t *testing.T) {
 	err = client.Get(context.Background(), "k").Err()
 	var ne net.Error
 	if !errors.As(err, &ne) || !ne.Timeout() {
-		t.Fatalf("前提：读超时，got=%v", err)
+		t.Fatalf("precondition: a read timeout, got=%v", err)
 	}
 	got := strings.Join(tp.errors(), "\n")
 	if !strings.Contains(got, "exception.message="+err.Error()) || !strings.Contains(got, "status=Error:"+err.Error()) {
-		t.Errorf("网络错误该原样记下，got：\n%s", got)
+		t.Errorf("a network error must be recorded as it is, got:\n%s", got)
 	}
 }
 
-// redisotel v9.22.0 的 Span 名是 cmd.FullName()：第 1 个参数原样转小写，不校验（tracing.go ProcessHook）；
-// pipeline 是 "redis.pipeline " 加各条命令的 FullName（rediscmd.CmdsString）。
-// 实测 Do(ctx, "SET k1 hunter2") 的 Span 名是 "set k1 hunter2"，整条命令连同值进了链路后端。
-// 规则同命令日志的 cmd 字段（cmdName）。XONE_E2E=1 时另对真的 Redis 跑一遍
+// redisotel v9.22.0 names a Span cmd.FullName(): the first argument lowercased as it is, unvalidated (tracing.go ProcessHook);
+// a pipeline is "redis.pipeline " plus each command's FullName (rediscmd.CmdsString).
+// Measured, Do(ctx, "SET k1 hunter2") produced the Span name "set k1 hunter2", putting the whole command and its value into the tracing backend.
+// The rule follows the command log's cmd field (cmdName). With XONE_E2E=1 it runs against a real Redis too.
 func TestTrace_SpanNameCarriesNoArgs(t *testing.T) {
 	backends := map[string]func(t *testing.T) ClientConfig{
-		"假服务端": func(t *testing.T) ClientConfig { return liveCfg(newFakeRedis(t)) },
+		"the fake server": func(t *testing.T) ClientConfig { return liveCfg(newFakeRedis(t)) },
 	}
 	if os.Getenv("XONE_E2E") == "1" {
-		backends["真 Redis"] = func(*testing.T) ClientConfig {
+		backends["a real Redis"] = func(*testing.T) ClientConfig {
 			c := DefaultClientConfig()
 			c.Addr = cmp.Or(os.Getenv("XONE_E2E_REDIS_ADDR"), "127.0.0.1:6379")
 			return c
@@ -284,14 +284,14 @@ func TestTrace_SpanNameCarriesNoArgs(t *testing.T) {
 			defer closer.Close()
 			ctx := context.Background()
 
-			// 命令名里带着整条命令：真 Redis 回 unknown command，错误不是这里要验的
+			// The command name holds the whole command: a real Redis answers unknown command, and the error is not what is checked here
 			_ = client.Do(ctx, "SET k1 hunter2").Err()
 			_, _ = client.Pipelined(ctx, func(p redis.Pipeliner) error {
 				p.Do(ctx, "SET k2 pipesecret")
 				p.Get(ctx, "k2")
 				return nil
 			})
-			// 合规的命令名照旧
+			// A conforming command name is unchanged
 			_ = client.Set(ctx, "k3", "v", 0).Err()
 			_, _ = client.Pipelined(ctx, func(p redis.Pipeliner) error {
 				p.Set(ctx, "k3", "v", 0)
@@ -299,7 +299,7 @@ func TestTrace_SpanNameCarriesNoArgs(t *testing.T) {
 				return nil
 			})
 			_ = client.Do(ctx, "command", "count").Err()
-			// 占住池里那条空闲连接，下一条命令就得新拨一条：redis.dial 照旧
+			// Occupy the idle connection in the pool so the next command has to dial a new one: redis.dial is unchanged
 			held := client.Conn()
 			_ = held.Ping(ctx).Err()
 			_ = client.Get(ctx, "k3").Err()
@@ -308,7 +308,7 @@ func TestTrace_SpanNameCarriesNoArgs(t *testing.T) {
 			got := tp.spans()
 			for _, name := range got {
 				if strings.Contains(name, "hunter2") || strings.Contains(name, "pipesecret") || strings.Contains(name, "k1") {
-					t.Errorf("命令参数进了 Span 名：%q", name)
+					t.Errorf("a command argument reached the Span name: %q", name)
 				}
 			}
 			for _, want := range []string{
@@ -316,7 +316,7 @@ func TestTrace_SpanNameCarriesNoArgs(t *testing.T) {
 				"set", "redis.pipeline set get", "command count", "redis.dial",
 			} {
 				if !slices.Contains(got, want) {
-					t.Errorf("该有 Span %q，got=%q", want, got)
+					t.Errorf("there must be a Span %q, got=%q", want, got)
 				}
 			}
 		})

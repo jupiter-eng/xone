@@ -1,21 +1,24 @@
 name: e2e
 
-# 真实 Web 服务测试（scripts/e2e.sh，不含压测）。比 CI 慢得多，不是每个 PR 都跑：
-#   - 改了任何 go.mod / go.sum 的 PR：升级依赖正是「默认值变了没人知道」的时候；
-#   - 每晚一次，外加全量变异测试；
-#   - 手动触发（同样带变异测试）。
+# Tests against real services (scripts/e2e.sh, no load test). Far slower than CI, so not every PR
+# runs it:
+#   - a PR touching any go.mod / go.sum: upgrading a dependency is exactly when "a default changed
+#     and nobody knew";
+#   - once a night, along with the full mutation testing;
+#   - triggered by hand (with the mutation testing as well).
 on:
   pull_request:
     paths: ['**/go.mod', '**/go.sum']
   schedule:
-    - cron: '0 18 * * *' # UTC 18:00，北京时间 02:00
+    - cron: '0 18 * * *' # 18:00 UTC
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# 只读代码：这里没有一步要写仓库，token 给多了，被测代码或依赖里有什么就能拿它写
+# Read-only: not one step here writes to the repository, and a token with more than that lets
+# whatever is in the code under test or in a dependency write with it
 permissions:
   contents: read
 
@@ -23,9 +26,11 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # 账号、密码、库名和 e2e/compose.yml、e2e/harness 的默认值一致。
-    # 镜像走 mirror.gcr.io（Docker Hub 的公开镜像缓存）；ClickHouse 的 TLS 用例还会用同一个镜像再起一个容器。
-    # Kafka 的参数和 e2e/compose.yml 一致（KRaft 单节点）
+    # The accounts, passwords and database names match the defaults of e2e/compose.yml and
+    # e2e/harness.
+    # The images come from mirror.gcr.io (Docker Hub's public image cache); the ClickHouse TLS cases
+    # start another container from the same image.
+    # The Kafka settings match e2e/compose.yml (a single KRaft node)
     services:
       postgres:
         image: mirror.gcr.io/library/postgres:16
@@ -84,7 +89,8 @@ jobs:
           --health-cmd "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server 127.0.0.1:9092"
           --health-interval 3s --health-retries 40
     env:
-      # 服务由上面的容器管着：e2e.sh 只等它们就绪，不去 pg_ctlcluster / service mysql start
+      # The services are taken care of by the containers above: e2e.sh only waits for them to be
+      # ready and never runs pg_ctlcluster / service mysql start
       XONE_E2E_EXTERNAL: '1'
       XONE_E2E_PG_ADDR: 127.0.0.1:5432
       XONE_E2E_MYSQL_ADDR: 127.0.0.1:3306
@@ -100,17 +106,22 @@ jobs:
           cache: true
           cache-dependency-path: '**/go.sum'
 
-      # PG / MySQL / Redis 的 TLS 用例跳过：它们用本机的 initdb / mysqld / redis-server
-      # 在临时目录里自己起一个只收 TLS 的实例，文件要 chown 给 postgres / mysql 系统账号，
-      # 得是 root；runner 不是 root，mysqld 还被 AppArmor 限在 /var/lib/mysql。
-      # 这三条在本机跑 scripts/e2e.sh 时照跑；xgin / xhttp / ClickHouse 的 TLS 用例在这里照跑
-      # shell: bash 写明了才带 pipefail：默认的 bash -e 只看 tee 的退出码，测试红了这一步照样绿
+      # The PG / MySQL / Redis TLS cases are skipped: they use the host's initdb / mysqld /
+      # redis-server to start an instance of their own in a temporary directory that accepts TLS
+      # only, whose files have to be chowned to the postgres / mysql system accounts, which requires
+      # root; the runner is not root, and mysqld is additionally confined to /var/lib/mysql by
+      # AppArmor.
+      # Those three do run when scripts/e2e.sh is run locally; the xgin / xhttp / ClickHouse TLS
+      # cases run here as usual.
+      # pipefail comes only with shell: bash spelled out: the default bash -e goes by tee's exit code
+      # alone, so this step stays green even when the tests go red
       - name: scripts/e2e.sh
         shell: bash
         run: scripts/e2e.sh -skip 'TestTLS_(PostgreSQL|MySQL|Redis)$' 2>&1 | tee e2e.log
 
-      # KNOWN BUG：测试揭示出来、还没修的框架 bug，打印原因并跳过（见 e2e/doc.go）。
-      # 跳过不会让任务变红，所以数目放进任务摘要，一眼看得见
+      # KNOWN BUG: a framework bug the tests revealed and nobody has fixed yet, printed with its
+      # reason and skipped (see e2e/doc.go). A skip does not turn the job red, so the count goes into
+      # the job summary where it is visible at a glance
       - name: summary
         if: always()
         run: |
@@ -128,16 +139,17 @@ jobs:
             fi
             if grep -q 'ClickHouse is unavailable' e2e.log; then
               echo
-              echo "⚠ ClickHouse 不可用，CH 的用例都跳过了"
+              echo "⚠ ClickHouse was unavailable and every CH case was skipped"
             fi
             if grep -q 'Kafka is unavailable' e2e.log; then
               echo
-              echo "⚠ Kafka 不可用，Kafka 的用例都跳过了"
+              echo "⚠ Kafka was unavailable and every Kafka case was skipped"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # 全量变异测试：把每条承诺改坏，看有没有测试会失败（scripts/mutate.py）。
-  # 不需要数据库，只跑单元测试；每晚和手动触发时跑，PR 上不跑
+  # The full mutation testing: break every promise and see whether a test fails (scripts/mutate.py).
+  # It needs no database and runs the unit tests alone; it runs nightly and when triggered by hand,
+  # never on a PR
   mutate:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest

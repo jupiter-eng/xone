@@ -11,13 +11,13 @@ import (
 	"github.com/jupiter-eng/xone/internal/testkit"
 )
 
-// capture 把 slog 默认 logger 换成写进 buffer 的，返回取解析结果的函数
+// capture swaps the slog default logger for one writing into a buffer and returns a function that parses what was written.
 func capture(t *testing.T) func() []map[string]any {
 	t.Helper()
 	return captureAt(t, slog.LevelDebug)
 }
 
-// captureAt 同 capture，handler 只收 level 及以上
+// captureAt is capture with the handler accepting level and above only.
 func captureAt(t *testing.T, level slog.Level) func() []map[string]any {
 	t.Helper()
 	var buf strings.Builder
@@ -33,7 +33,7 @@ func captureAt(t *testing.T, level slog.Level) func() []map[string]any {
 			}
 			m := map[string]any{}
 			if err := json.Unmarshal([]byte(line), &m); err != nil {
-				t.Fatalf("日志不是 JSON：%v，内容=%q", err, line)
+				t.Fatalf("the log line is not JSON: %v, content=%q", err, line)
 			}
 			out = append(out, m)
 		}
@@ -42,8 +42,8 @@ func captureAt(t *testing.T, level slog.Level) func() []map[string]any {
 }
 
 func TestSettle_DetectsLeakedGoroutines(t *testing.T) {
-	// 先验证这把尺子是准的——一条永远不会失败的测试比没有测试更糟，
-	// 它让人以为查过了
+	// First prove the measuring stick is accurate -- a test that can never fail is worse than no test,
+	// because it makes people believe the thing was checked.
 	const leak = 5
 	before := testkit.Stabilize()
 
@@ -52,25 +52,25 @@ func TestSettle_DetectsLeakedGoroutines(t *testing.T) {
 		go func() { <-stop }()
 	}
 
-	// 用 ClimbTo 而不是 SettleTo 来判断「涨了没有」。
-	// SettleTo 的判据是「回落到 target 以内」，拿它判断增长有两个毛病：
-	// 打乱顺序跑时，上一个用例的协程正在退场，它会当场判定「已回落」而误报；
-	// 没误报的时候又必然烧满整个 10 秒预算才肯返回。
+	// ClimbTo is used to decide "did it rise", not SettleTo.
+	// SettleTo waits for a fall back to within target, which has two problems when used to detect growth:
+	// under shuffled ordering, the previous case's goroutines are still leaving and it declares "already fallen back" and misreports;
+	// and when it does not misreport, it necessarily burns the full 10-second budget before returning.
 	if during := testkit.ClimbTo(before+leak, 3*time.Second); during < before+leak {
-		t.Fatalf("漏了 %d 个协程却没看出增长（%d -> %d），这把尺子是坏的", leak, before, during)
+		t.Fatalf("%d leaked goroutines produced no visible growth (%d -> %d), so this measuring stick is broken", leak, before, during)
 	}
 
 	close(stop)
 	if after := testkit.SettleTo(before); after > before+1 {
-		t.Errorf("协程退出后应当回落，got %d -> %d", before, after)
+		t.Errorf("it must fall back once the goroutines have exited, got %d -> %d", before, after)
 	}
 }
 
-// TestMain 调短重试间隔，并把 slog 默认 logger 接到丢弃里。
-// 连不上的用例本来就会刷一屏「failed to dial」，那是预期内的噪声。
+// TestMain shortens the retry interval and routes the slog default logger into a discard.
+// The cases that cannot connect fill a screen with "failed to dial" by design, which is expected noise.
 //
-// 丢的是 slog 这一头，不是调 redis.SetLogger 换掉 go-redis 的 logger：
-// 那样会盖掉 init 里接好的那个，「go-redis 的日志进 slog」就再也测不到了
+// What is discarded is the slog end, not go-redis's logger through redis.SetLogger:
+// that would overwrite the one wired up in init, and "go-redis's logs reach slog" could never be tested again.
 func TestMain(m *testing.M) {
 	pingInterval = 10 * time.Millisecond
 	slog.SetDefault(slog.New(slog.DiscardHandler))

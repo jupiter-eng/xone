@@ -11,7 +11,7 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
-// stubPool 代替连接池：不走网络，直接回一个 200，量出来的只剩出站这一路包装的开销
+// stubPool stands in for the connection pool: no network, a plain 200 back, so what is measured is only the wrapping on the outbound path.
 type stubPool struct{}
 
 func (stubPool) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -23,7 +23,7 @@ func (stubPool) RoundTrip(r *http.Request) (*http.Response, error) {
 	}, nil
 }
 
-// benchCall 按 New 的装配方式建 client，只把连接池换成桩，然后反复发同一个 GET
+// benchCall builds a client the way New assembles one, with only the pool replaced by the stub, and then sends the same GET repeatedly.
 func benchCall(b *testing.B, cfg Config) {
 	client := newResty(&http.Client{Transport: traced(cfg, stubPool{}), Timeout: cfg.Timeout}, cfg.Log)
 	if cfg.Metric {
@@ -40,7 +40,7 @@ func benchCall(b *testing.B, cfg Config) {
 	}
 }
 
-// withTracer 换上一个真实的 SDK TracerProvider，采样器由调用方给
+// withTracer installs a real SDK TracerProvider, with the sampler given by the caller.
 func withTracer(b *testing.B, s sdktrace.Sampler) {
 	old := otel.GetTracerProvider()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSampler(s))

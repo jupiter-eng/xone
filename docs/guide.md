@@ -2,7 +2,7 @@
 
 What to know between "it runs" and "it is in production", in the order it comes up. How to use
 each module, and all of its configuration fields, live in the README in its own directory (see
-[Modules](../README.md#模块)); where config files go and how they layer is in
+[Modules](../README.md#modules)); where config files go and how they layer is in
 [`config.md`](config.md), errors are in [`troubleshooting.md`](troubleshooting.md), and why it is
 designed this way is in [`architecture.md`](architecture.md).
 
@@ -229,7 +229,7 @@ The `Consumer` above needs no type of its own either: the body of `Start` fits i
 jobs-only process. Every execution carries a root span and a `job` log field, and shutdown waits
 for in-flight runs before closing the database. With several replicas every replica runs them, and
 running exactly one means taking a lock yourself (xcron's README has a `SetNX` spelling under
-"多副本").
+["Multiple replicas"](../xcron/README.md#multiple-replicas)).
 
 ## Several instances
 

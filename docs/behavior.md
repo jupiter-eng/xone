@@ -41,11 +41,11 @@ MySQL 8.0.46, Redis 7.0.15, ClickHouse 24.8.14).
 | [`XGorm` MySQL `parseTime`](../xgorm/README.md#behavior-measured) | `false` | `true` is added when the DSN does not say | Otherwise a `DATETIME` cannot be scanned into a `time.Time` |
 | [`XGorm` server error text](../xgorm/README.md#behavior-measured) | Logged and put on the span as is | Only the error code is recorded | The text carries parameter values |
 | [go-sql-driver's log](../xgorm/README.md#behavior-measured) | The standard library's log to `os.Stderr` | Routed into slog as WARN | Plain text bypassing slog never reaches the logging platform |
-| [`XRedis` command timeout](../xredis/README.md#行为与实测) | Honors `ReadTimeout` only | Honors the caller's ctx deadline | Otherwise a request with a 200ms budget waits out the whole `ReadTimeout` |
-| [`XRedis` connecting](../xredis/README.md#行为与实测) | Redials 5 times internally per connection | Dials once | Otherwise one command takes 11.7s when the host is down |
-| [`XRedis` handshake on a new connection](../xredis/README.md#行为与实测) | `CLIENT SETINFO` and maintenance notifications both on | Both off | A server older than 7.2 leaves one failing span per connection |
-| [`XRedis.Trace`](../xredis/README.md#行为与实测) | The whole command with its arguments goes into `db.statement` | The command name only | Otherwise the value of a `SET` reaches the tracing backend verbatim |
-| [go-redis's log](../xredis/README.md#行为与实测) | The standard library's log to `os.Stderr` | Routed into slog as WARN | Same as go-sql-driver |
+| [`XRedis` command timeout](../xredis/README.md#behavior-measured) | Honors `ReadTimeout` only | Honors the caller's ctx deadline | Otherwise a request with a 200ms budget waits out the whole `ReadTimeout` |
+| [`XRedis` connecting](../xredis/README.md#behavior-measured) | Redials 5 times internally per connection | Dials once | Otherwise one command takes 11.7s when the host is down |
+| [`XRedis` handshake on a new connection](../xredis/README.md#behavior-measured) | `CLIENT SETINFO` and maintenance notifications both on | Both off | A server older than 7.2 leaves one failing span per connection |
+| [`XRedis.Trace`](../xredis/README.md#behavior-measured) | The whole command with its arguments goes into `db.statement` | The command name only | Otherwise the value of a `SET` reaches the tracing backend verbatim |
+| [go-redis's log](../xredis/README.md#behavior-measured) | The standard library's log to `os.Stderr` | Routed into slog as WARN | Same as go-sql-driver |
 | [`XKafka` consumer commits](../xkafka/README.md#behavior-measured) | Automatically commits "whatever the last poll returned", processed or not | Commits only what was processed (`AutoCommitMarks`) | With one goroutine per partition, messages still queued and unprocessed get committed first and are lost the moment the process dies |
 | [`XKafka.Consumer.ResetOffset`](../xkafka/README.md#behavior-measured) | earliest | latest | Otherwise a newly deployed consumer group reprocesses the topic's entire history |
 | [`XKafka` stopping](../xkafka/README.md#behavior-measured) | `Close` fails every buffered message | `Flush` first, then `Close` | Otherwise messages handed to `Produce` at the moment of exit are dropped silently |
@@ -54,10 +54,10 @@ MySQL 8.0.46, Redis 7.0.15, ClickHouse 24.8.14).
 | [`XKafka.Trace`](../xkafka/README.md#observability) | kotel writes the message key onto the span | kotel is not used, and the span holds no key | Keys often hold a user id or a phone number |
 | [`XCache.MaxCost`](../xcache/README.md#behavior-measured) | 56 bytes of internal overhead are counted per entry | Only the cost you give is counted | Otherwise `MaxCost: 2000` really holds 35 entries |
 | [`XCache` stopping](../xcache/README.md#behavior-measured) | `Close` | `Clear` | `Close` running alongside concurrent reads and writes panics |
-| [`XHttp`'s resty log](../xhttp/README.md#行为与实测) | Writes to `os.Stderr` with the URL's query string | Routed into slog with the query string removed | Tokens do not reach disk |
-| [`XHttp` cookies](../xhttp/README.md#行为与实测) | `resty.New()` comes with a cookie jar | None | Unrelated calls would share a session cookie somebody else was given |
-| [`XHttp` outbound spans](../xhttp/README.md#行为与实测) | `url.full` carries the query string | The query string is removed and the span name is the method alone | Tokens stay out of the tracing backend and the span name cardinality stays bounded |
-| [`XHttp` retry conditions](../xhttp/README.md#行为与实测) | Adding a condition voids resty's own judgment | Only transport errors are retried | Otherwise a 200 with broken JSON is retried as well |
+| [`XHttp`'s resty log](../xhttp/README.md#behavior-measured) | Writes to `os.Stderr` with the URL's query string | Routed into slog with the query string removed | Tokens do not reach disk |
+| [`XHttp` cookies](../xhttp/README.md#behavior-measured) | `resty.New()` comes with a cookie jar | None | Unrelated calls would share a session cookie somebody else was given |
+| [`XHttp` outbound spans](../xhttp/README.md#behavior-measured) | `url.full` carries the query string | The query string is removed and the span name is the method alone | Tokens stay out of the tracing backend and the span name cardinality stays bounded |
+| [`XHttp` retry conditions](../xhttp/README.md#behavior-measured) | Adding a condition voids resty's own judgment | Only transport errors are retried | Otherwise a 200 with broken JSON is retried as well |
 | [`XTrace` forwarding and baggage](../xtrace/README.md#behavior-measured) | Inbound values accepted from anyone | Accepted only when the direct peer is in `XGin.TrustedProxies` (`XEcho.TrustedProxies`) | Otherwise a public client can forge `X-Tenant-Id` and carry it into the internal network |
 | [`XTrace` sampling](../xtrace/README.md#behavior-measured) | `AlwaysSample`, ignoring upstream | `ParentBased`, honoring upstream when there is one | Otherwise an upstream `sampled=00` is rewritten to `-01` on the way down |
 | [`XMetric.Namespace`](../xmetric/README.md#behavior-measured) | A non-conforming name is escaped on export | Fails while the config is read | Otherwise the dashboard cannot find the name you wrote |
@@ -92,10 +92,10 @@ XGorm, XRedis and XKafka each probe once at startup through one shared implement
 | [xtls](../xtls/README.md#behavior-measured) | Client-side TLS: each driver's errors and timings, and the driver defaults without a TLS block |
 | [xgorm](../xgorm/README.md#behavior-measured) | GORM in general, MySQL, PostgreSQL |
 | [xgorm/clickhouse](../xgorm/clickhouse/README.md#behavior-measured) | ClickHouse: timeouts and cancellation, resends, authentication, TLS |
-| [xredis](../xredis/README.md#行为与实测) | go-redis: timeouts, connection retries, the handshake on a new connection, memory |
+| [xredis](../xredis/README.md#behavior-measured) | go-redis: timeouts, connection retries, the handshake on a new connection, memory |
 | [xcache](../xcache/README.md#behavior-measured) | ristretto: internal overhead, stopping, the cost of metrics, TTL |
 | [xkafka](../xkafka/README.md#behavior-measured) | franz-go: automatic commits, offset reset, `Close` and `Flush`, `Ping`, a missing topic, rebalancing and session timeouts |
-| [xhttp](../xhttp/README.md#行为与实测) | The defaults of resty / otelhttp / the standard library's Transport |
+| [xhttp](../xhttp/README.md#behavior-measured) | The defaults of resty / otelhttp / the standard library's Transport |
 | [xcron](../xcron/README.md#behavior-measured) | cronexpr: field counts, timezone prefixes, DST, specs that never fire; the drift of `@every` |
 | [xgin](../xgin/README.md#behavior-measured) | gin / net/http: proxies, uploads, timeouts, h2c, TLS, graceful shutdown |
 | [xecho](../xecho/README.md#behavior-measured) | echo: client_ip, error rendering, route templates, group fallback routes, `e.Pre`, timeout middleware, panics, gommon logs, compression, the multipart threshold, strict route matching |

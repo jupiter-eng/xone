@@ -1,8 +1,11 @@
-// Package logext 放 xlog 的三个扩展点：链路标识提取器、日志观察者、ctx 里的日志字段作用域（scope.go）。
+// Package logext holds xlog's three extension points: the trace identifier extractor, the log
+// observers, and the scope of log fields inside a ctx (scope.go).
 //
-// 它们原来就在 xlog 里。挪到这里，注入的一方（xtrace、xmetric、xkafka）就不必 import xlog：
-// 只用 xgorm、xredis、xkafka 这类集成的程序不会因为它们顺带装上 xlog、被换掉 slog.Default。
-// xlog 读这里的值，公开的 xlog.SetTraceExtractor / xlog.AddObserver / xlog.TraceIDs / xlog.CtxWithKV 转发到这里。
+// They used to live in xlog. Moved here, whoever installs one (xtrace, xmetric, xkafka) need not
+// import xlog: a program using only integrations such as xgorm, xredis or xkafka does not get xlog
+// installed along with them and have slog.Default replaced. xlog reads the values here, and the
+// public xlog.SetTraceExtractor / xlog.AddObserver / xlog.TraceIDs / xlog.CtxWithKV forward to
+// here.
 package logext
 
 import (
@@ -12,12 +15,13 @@ import (
 	"sync/atomic"
 )
 
-// TraceExtractor 从 context 里取出链路标识，契约见 xlog.TraceExtractor
+// TraceExtractor takes the trace identifiers out of a context; the contract is in
+// xlog.TraceExtractor
 type TraceExtractor func(ctx context.Context) (traceID, spanID string)
 
 var traceExtractor atomic.Pointer[TraceExtractor]
 
-// SetTraceExtractor 注入链路标识提取器，传 nil 表示取消注入
+// SetTraceExtractor installs the trace identifier extractor; nil removes it
 func SetTraceExtractor(f TraceExtractor) {
 	if f == nil {
 		traceExtractor.Store(nil)
@@ -26,7 +30,8 @@ func SetTraceExtractor(f TraceExtractor) {
 	traceExtractor.Store(&f)
 }
 
-// TraceIDs 用注入的提取器取链路标识；没有注入、或 ctx 为 nil 时返回两个空串
+// TraceIDs takes the trace identifiers through the installed extractor; with none installed, or a
+// nil ctx, it returns two empty strings
 func TraceIDs(ctx context.Context) (traceID, spanID string) {
 	f := traceExtractor.Load()
 	if f == nil || ctx == nil {
@@ -35,12 +40,12 @@ func TraceIDs(ctx context.Context) (traceID, spanID string) {
 	return (*f)(ctx)
 }
 
-// Observer 观察每一条实际写出的日志，契约见 xlog.Observer
+// Observer watches every log that is really written; the contract is in xlog.Observer
 type Observer func(ctx context.Context, r slog.Record)
 
 var observers atomic.Pointer[[]Observer]
 
-// AddObserver 注入一个日志观察者，nil 忽略。只增不减
+// AddObserver installs one log observer and ignores nil. They are only ever added
 func AddObserver(o Observer) {
 	if o == nil {
 		return
@@ -51,7 +56,7 @@ func AddObserver(o Observer) {
 		if old != nil {
 			cur = *old
 		}
-		// Clip 之后 append 一定另起一个底层数组：别的协程可能正在读 *old
+		// After Clip, append always starts a new backing array: another goroutine may be reading *old
 		next := append(slices.Clip(cur), o)
 		if observers.CompareAndSwap(old, &next) {
 			return
@@ -59,7 +64,8 @@ func AddObserver(o Observer) {
 	}
 }
 
-// Observers 返回当前全部观察者。返回的切片不会再被改写，可以放心遍历
+// Observers returns every observer there is now. The slice returned is never rewritten and is
+// safe to range over
 func Observers() []Observer {
 	if p := observers.Load(); p != nil {
 		return *p
@@ -67,7 +73,8 @@ func Observers() []Observer {
 	return nil
 }
 
-// ResetObservers 清空观察者，返回的函数把原来的装回去。只给测试用
+// ResetObservers clears the observers and returns a function putting the previous ones back. For
+// the tests alone
 func ResetObservers() (restore func()) {
 	old := observers.Swap(nil)
 	return func() { observers.Store(old) }

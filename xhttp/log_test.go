@@ -22,7 +22,7 @@ import (
 	"github.com/go-resty/resty/v2"
 )
 
-// secret 一个长随机串：「日志里不该出现」的检查用它，短的数字会和时间戳、耗时撞上
+// secret is a long random string: the "must not appear in the log" checks use it, since a short number would collide with a timestamp or a duration.
 func secret(t *testing.T, prefix string) string {
 	t.Helper()
 	b := make([]byte, 16)
@@ -32,7 +32,7 @@ func secret(t *testing.T, prefix string) string {
 	return prefix + "-" + hex.EncodeToString(b)
 }
 
-// captureLogs 把 slog 默认 logger 换成写 JSON 进 buffer 的，返回取「全部原文」和「解析后的各行」的函数
+// captureLogs swaps the slog default logger for one writing JSON into a buffer and returns functions for "the whole text" and "each parsed line".
 func captureLogs(t *testing.T) (raw func() string, parsed func() []map[string]any) {
 	t.Helper()
 	var buf strings.Builder
@@ -53,7 +53,7 @@ func captureLogs(t *testing.T) (raw func() string, parsed func() []map[string]an
 			}
 			m := map[string]any{}
 			if err := json.Unmarshal([]byte(line), &m); err != nil {
-				t.Fatalf("日志不是 JSON：%v，内容=%q", err, line)
+				t.Fatalf("the log line is not JSON: %v, content=%q", err, line)
 			}
 			out = append(out, m)
 		}
@@ -62,7 +62,7 @@ func captureLogs(t *testing.T) (raw func() string, parsed func() []map[string]an
 	return raw, parsed
 }
 
-// requestLines 取这几种消息的日志
+// requestLines picks out the logs with these messages.
 func requestLines(all []map[string]any, msgs ...string) []map[string]any {
 	var out []map[string]any
 	for _, l := range all {
@@ -77,7 +77,7 @@ func requestLines(all []map[string]any, msgs ...string) []map[string]any {
 
 var allRequestMsgs = []string{"http request", "http request failed", "slow http request"}
 
-// logClient Log 开着、链路和指标关着的客户端；不装 newQuiet 的 discardLogger，resty 的日志照样进 slog
+// logClient is a client with Log on and tracing and metrics off; newQuiet's discardLogger is not installed, so resty's logs still reach slog.
 func logClient(t *testing.T, mutate ...func(*Config)) *resty.Client {
 	t.Helper()
 	c := DefaultConfig()
@@ -94,7 +94,7 @@ func logClient(t *testing.T, mutate ...func(*Config)) *resty.Client {
 	return client
 }
 
-// cutServer 每个请求都把连接掐断：传输层错误，resty 会重试
+// cutServer cuts the connection on every request: a transport-layer error, which resty retries.
 func cutServer(t *testing.T, hits *atomic.Int32) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -118,27 +118,27 @@ func TestLog_SuccessOneInfoLineWithoutQuery(t *testing.T) {
 
 	got := requestLines(lines(), allRequestMsgs...)
 	if len(got) != 1 {
-		t.Fatalf("一个请求一行，got=%v", lines())
+		t.Fatalf("one line per request, got=%v", lines())
 	}
 	l := got[0]
 	host := strings.TrimPrefix(srv.URL, "http://")
 	if l["msg"] != "http request" || l["level"] != "INFO" || l["method"] != "POST" || l["host"] != host ||
 		l["path"] != "/api/items" || l["status"] != float64(200) || l["attempts"] != float64(1) {
-		t.Errorf("字段不对，got=%v", l)
+		t.Errorf("the fields are wrong, got=%v", l)
 	}
 	if _, ok := l["elapsed_ms"].(float64); !ok {
-		t.Errorf("该带 elapsed_ms，got=%v", l)
+		t.Errorf("elapsed_ms must be carried, got=%v", l)
 	}
 	if _, ok := l["error"]; ok {
-		t.Errorf("成功的请求不带 error，got=%v", l)
+		t.Errorf("a successful request carries no error, got=%v", l)
 	}
 	if strings.Contains(raw(), token) {
-		t.Errorf("查询串、Header、body 里的令牌进了日志：%s", raw())
+		t.Errorf("a token from the query string, a header or the body reached the log: %s", raw())
 	}
 }
 
 func TestLog_5xxWithRetriesConfiguredIsOneWarnLine(t *testing.T) {
-	// 拿到了响应就不重试，5xx 也不重试：一次尝试，一行 WARN
+	// With a response in hand there is no retry, and a 5xx is not retried either: one attempt, one WARN line.
 	token := secret(t, "token")
 	var hits atomic.Int32
 	srv, _ := echo(t, func(w http.ResponseWriter, r *http.Request) { hits.Add(1); w.WriteHeader(500) })
@@ -146,17 +146,17 @@ func TestLog_5xxWithRetriesConfiguredIsOneWarnLine(t *testing.T) {
 	client := logClient(t, func(c *Config) { c.RetryCount = 2 })
 	resp, err := client.R().Get(srv.URL + "/x?token=" + token)
 	if err != nil || resp.StatusCode() != 500 {
-		t.Fatalf("前提：该拿到 500，got=%v %v", resp, err)
+		t.Fatalf("precondition: a 500 must come back, got=%v %v", resp, err)
 	}
 	got := requestLines(lines(), allRequestMsgs...)
 	if len(got) != 1 {
-		t.Fatalf("一个请求一行，got=%v", lines())
+		t.Fatalf("one line per request, got=%v", lines())
 	}
 	if l := got[0]; l["msg"] != "http request failed" || l["level"] != "WARN" || l["status"] != float64(500) || l["attempts"] != float64(hits.Load()) {
-		t.Errorf("5xx 该记 WARN 的 http request failed、带状态码和尝试次数（下游收到 %d 次），got=%v", hits.Load(), l)
+		t.Errorf("a 5xx must be a WARN http request failed carrying the status and the attempt count (the downstream saw %d), got=%v", hits.Load(), l)
 	}
 	if strings.Contains(raw(), token) {
-		t.Errorf("令牌进了日志：%s", raw())
+		t.Errorf("a token reached the log: %s", raw())
 	}
 }
 
@@ -167,12 +167,12 @@ func TestLog_4xxIsInfo(t *testing.T) {
 	client.R().Get(srv.URL + "/missing")
 	got := requestLines(lines(), allRequestMsgs...)
 	if len(got) != 1 || got[0]["msg"] != "http request" || got[0]["status"] != float64(404) {
-		t.Errorf("4xx 是下游的业务回答，记 INFO，got=%v", lines())
+		t.Errorf("a 4xx is the downstream's business answer and is recorded at INFO, got=%v", lines())
 	}
 }
 
 func TestLog_TransportErrorAfterRetriesOneLineNoQuery(t *testing.T) {
-	// resty v2.17.2 在所有重试结束之后只调一次 OnError，Attempt 是用掉的尝试次数
+	// resty v2.17.2 calls OnError once after every retry has finished, with Attempt being the number of attempts used.
 	token := secret(t, "token")
 	var hits atomic.Int32
 	srv := cutServer(t, &hits)
@@ -180,28 +180,28 @@ func TestLog_TransportErrorAfterRetriesOneLineNoQuery(t *testing.T) {
 	client := logClient(t, func(c *Config) { c.RetryCount = 2 })
 	u := strings.Replace(srv.URL, "http://", "http://someone:"+token+"@", 1) + "/cut?token=" + token
 	if _, err := client.R().Get(u); err == nil {
-		t.Fatal("前提：连接被掐断，该失败")
+		t.Fatal("precondition: the connection was cut, so it must fail")
 	}
 
 	all := lines()
 	got := requestLines(all, allRequestMsgs...)
 	if len(got) != 1 {
-		t.Fatalf("重试 2 次也只记一行，got=%v", all)
+		t.Fatalf("2 retries must still record one line, got=%v", all)
 	}
 	l := got[0]
 	if l["msg"] != "http request failed" || l["level"] != "WARN" || l["status"] != float64(0) || l["attempts"] != float64(3) || l["path"] != "/cut" {
-		t.Errorf("传输层错误：WARN、status 0、attempts 3，got=%v", l)
+		t.Errorf("a transport error: WARN, status 0, attempts 3, got=%v", l)
 	}
 	e, _ := l["error"].(string)
 	if !strings.Contains(e, "/cut") || !strings.Contains(e, "EOF") {
-		t.Errorf("error 该留着去掉查询串的 URL 和原因，got=%q", e)
+		t.Errorf("error must keep the URL without its query string and the reason, got=%q", e)
 	}
 	if strings.Contains(raw(), token) || strings.Contains(raw(), "someone") {
-		t.Errorf("查询串或 userinfo 从错误原文进了日志：%s", raw())
+		t.Errorf("a query string or userinfo reached the log through the error text: %s", raw())
 	}
-	// 同一件事不说两遍：resty 自己重试路径上的 WARN（Attempt N）和 ERROR 不再打
+	// The same thing is not said twice: resty's own WARN (Attempt N) and ERROR on the retry path are no longer printed.
 	if n := len(requestLines(all, "xhttp resty log")); n != 0 {
-		t.Errorf("Log 开着时 resty 的重试日志不该再打，got %d 行：%v", n, all)
+		t.Errorf("with Log on, resty's retry logs must not be printed, got %d lines: %v", n, all)
 	}
 }
 
@@ -219,10 +219,10 @@ func TestLog_TransportErrorRefusedNoQuery(t *testing.T) {
 	client.R().Get("http://" + addr + "/x?token=" + token)
 	got := requestLines(lines(), "http request failed")
 	if len(got) != 1 || !strings.Contains(fmt.Sprint(got[0]["error"]), "connection refused") {
-		t.Fatalf("连不上该记一行 http request failed、带原因，got=%v", lines())
+		t.Fatalf("a failed connection must record one http request failed line with the reason, got=%v", lines())
 	}
 	if strings.Contains(raw(), token) {
-		t.Errorf("令牌进了日志：%s", raw())
+		t.Errorf("a token reached the log: %s", raw())
 	}
 }
 
@@ -234,16 +234,16 @@ func TestLog_OffMeansNoRequestLinesAndRestyLogsUnchanged(t *testing.T) {
 	client.R().Get(srv.URL)
 	all := lines()
 	if got := requestLines(all, allRequestMsgs...); len(got) != 0 {
-		t.Errorf("Log 默认关着，不该有请求日志，got=%v", got)
+		t.Errorf("Log is off by default, so there must be no request log, got=%v", got)
 	}
-	// 关着时 resty 自己的重试日志照旧（每次尝试一行 WARN，用完一行 ERROR）
+	// With it off, resty's own retry logs are unchanged (one WARN per attempt, one ERROR once used up).
 	if n := len(requestLines(all, "xhttp resty log")); n != 3 {
-		t.Errorf("Log 关着时 resty 的重试日志照旧 3 行，got=%v", all)
+		t.Errorf("with Log off resty's retry logs are still 3 lines, got=%v", all)
 	}
 }
 
 func TestLog_OtherRestyWarningsStillLogged(t *testing.T) {
-	// 只挑掉重试路径那两种，resty 别的提醒照旧：比如明文 HTTP 上用 Basic Auth
+	// Only the two retry-path kinds are dropped; resty's other warnings are unchanged, such as Basic Auth over plaintext HTTP.
 	srv, _ := echo(t, nil)
 	_, lines := captureLogs(t)
 	client := logClient(t)
@@ -253,7 +253,7 @@ func TestLog_OtherRestyWarningsStillLogged(t *testing.T) {
 			return
 		}
 	}
-	t.Errorf("resty 的其余提醒不该被吞掉，got=%v", lines())
+	t.Errorf("resty's other warnings must not be swallowed, got=%v", lines())
 }
 
 func TestLog_SlowThreshold(t *testing.T) {
@@ -273,17 +273,17 @@ func TestLog_SlowThreshold(t *testing.T) {
 			client.R().Get(srv.URL)
 			got := requestLines(lines(), allRequestMsgs...)
 			if len(got) != 1 || got[0]["msg"] != c.wantMsg {
-				t.Fatalf("该是一行 %s，got=%v", c.wantMsg, lines())
+				t.Fatalf("it must be one %s line, got=%v", c.wantMsg, lines())
 			}
 			if c.wantMsg == "slow http request" && (got[0]["level"] != "WARN" || got[0]["threshold_ms"] != float64(20)) {
-				t.Errorf("慢请求该是 WARN、带 threshold_ms，got=%v", got[0])
+				t.Errorf("a slow request must be a WARN carrying threshold_ms, got=%v", got[0])
 			}
 		})
 	}
 }
 
 func TestLog_ElapsedCoversRetriesWithMetricOff(t *testing.T) {
-	// 起点要在 Metric 关着时照样记下，否则耗时只是最后一次尝试
+	// The start has to be recorded even with Metric off, or the duration is only the last attempt's.
 	var hits atomic.Int32
 	srv := cutServer(t, &hits)
 	_, lines := captureLogs(t)
@@ -296,14 +296,14 @@ func TestLog_ElapsedCoversRetriesWithMetricOff(t *testing.T) {
 	if len(got) != 1 {
 		t.Fatalf("got=%v", lines())
 	}
-	// 两次退避，每次 resty 在 [wait, maxWait] 里取值，这里上下界相同
+	// Two backoffs, each picked by resty in [wait, maxWait]; the two bounds are equal here.
 	if e, _ := got[0]["elapsed_ms"].(float64); e < float64(2*backoff/time.Millisecond)*0.9 {
-		t.Errorf("耗时该算整次逻辑请求（含两次 %v 的退避），got %vms", backoff, e)
+		t.Errorf("the duration must cover the whole logical request (the two %v backoffs included), got %vms", backoff, e)
 	}
 }
 
 func TestLog_UsesCallerCtx(t *testing.T) {
-	// ctx 原样交给 slog：xlog 从这里取 trace_id / span_id
+	// The ctx is handed to slog as it is: xlog takes trace_id / span_id from it.
 	type key struct{}
 	srv, _ := echo(t, nil)
 	var mu sync.Mutex
@@ -322,7 +322,7 @@ func TestLog_UsesCallerCtx(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if len(seen) != 1 || seen[0] != "caller" {
-		t.Errorf("日志该用调用方的 ctx，got=%v", seen)
+		t.Errorf("the log must use the caller's ctx, got=%v", seen)
 	}
 }
 
@@ -353,17 +353,17 @@ func TestScrubText(t *testing.T) {
 func TestConfig_LogDefaults(t *testing.T) {
 	c := DefaultConfig()
 	if c.Log || c.SlowThreshold != time.Second {
-		t.Errorf("默认 Log=false、SlowThreshold=1s，got %v %v", c.Log, c.SlowThreshold)
+		t.Errorf("the defaults are Log=false and SlowThreshold=1s, got %v %v", c.Log, c.SlowThreshold)
 	}
 	c.SlowThreshold = -time.Millisecond
 	if err := c.Validate(); err == nil {
-		t.Error("SlowThreshold 为负应当报错")
+		t.Error("a negative SlowThreshold must be an error")
 	}
 }
 
 func TestLog_RedirectPolicyErrorsScrubbed(t *testing.T) {
-	// 重定向策略拒绝时，标准库把 Location 原样放进 *url.Error 的 URL：相对的 Location
-	// 没有 http://，按文本找 URL 的办法认不出来
+	// When a redirect policy refuses, the standard library puts the Location into the *url.Error's URL as it is: a relative Location
+	// has no http:// and is not found by searching the text for a URL.
 	token := secret(t, "token")
 	mux := http.NewServeMux()
 	mux.HandleFunc("/redir", func(w http.ResponseWriter, r *http.Request) {
@@ -388,9 +388,9 @@ func TestLog_RedirectPolicyErrorsScrubbed(t *testing.T) {
 		status           float64
 	}{
 		{"NoRedirectPolicy", "/redir", `Get "/b": auto redirect is disabled`, resty.NoRedirectPolicy(), 302},
-		{"Location 里问号前有空格", "/space", `Get "/a%20b": auto redirect is disabled`, resty.NoRedirectPolicy(), 302},
-		{"FlexibleRedirectPolicy 用完", "/loop", `Get "/loop": stopped after 2 redirects`, resty.FlexibleRedirectPolicy(2), 302},
-		{"Location 转义不合法", "/badloc", `failed to parse Location header "/b%zz"`, nil, 0},
+		{"a space before the question mark in Location", "/space", `Get "/a%20b": auto redirect is disabled`, resty.NoRedirectPolicy(), 302},
+		{"FlexibleRedirectPolicy used up", "/loop", `Get "/loop": stopped after 2 redirects`, resty.FlexibleRedirectPolicy(2), 302},
+		{"an invalid escape in Location", "/badloc", `failed to parse Location header "/b%zz"`, nil, 0},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			raw, lines := captureLogs(t)
@@ -399,34 +399,34 @@ func TestLog_RedirectPolicyErrorsScrubbed(t *testing.T) {
 				client.SetRedirectPolicy(c.policy)
 			}
 			if _, err := client.R().Get(srv.URL + c.path); err == nil {
-				t.Fatal("前提：该失败")
+				t.Fatal("precondition: it must fail")
 			}
 			got := requestLines(lines(), allRequestMsgs...)
 			if len(got) != 1 || got[0]["msg"] != "http request failed" || got[0]["status"] != c.status {
-				t.Fatalf("该是一行 http request failed、status %v，got=%v", c.status, lines())
+				t.Fatalf("it must be one http request failed line with status %v, got=%v", c.status, lines())
 			}
 			if e, _ := got[0]["error"].(string); !strings.Contains(e, c.want) {
-				t.Errorf("error 该留着去掉查询串的 Location 和原因\n got=%q\nwant 含 %q", e, c.want)
+				t.Errorf("error must keep the Location without its query string and the reason\n got=%q\nwant to contain %q", e, c.want)
 			}
 			if strings.Contains(raw(), token) {
-				t.Errorf("Location 里的令牌进了日志：%s", raw())
+				t.Errorf("a token from Location reached the log: %s", raw())
 			}
 		})
 	}
 }
 
 func TestLog_QueryWithRawSpaceScrubbed(t *testing.T) {
-	// 查询串里有未转义的空格：按文本找的话到空格就停了，空格后面的令牌留在日志里
+	// An unescaped space in the query string: searching by text would stop at the space and leave the token after it in the log.
 	token := secret(t, "token")
 	raw, lines := captureLogs(t)
 	client := logClient(t)
 	client.R().Get("http://" + deadAddr(t) + "/x?q=hello world&token=" + token)
 	got := requestLines(lines(), "http request failed")
 	if len(got) != 1 || !strings.Contains(fmt.Sprint(got[0]["error"]), `/x": dial tcp`) {
-		t.Fatalf("该是一行 http request failed、error 里的 URL 只到路径，got=%v", lines())
+		t.Fatalf("it must be one http request failed line whose error URL stops at the path, got=%v", lines())
 	}
 	if strings.Contains(raw(), token) || strings.Contains(raw(), "world") {
-		t.Errorf("空格后面的查询串进了日志：%s", raw())
+		t.Errorf("the query string after the space reached the log: %s", raw())
 	}
 }
 
@@ -440,9 +440,9 @@ func TestScrubError(t *testing.T) {
 		{ue("/b?token=a"), `Get "/b": EOF`},
 		{ue("b?token=a"), `Get "b": EOF`},
 		{ue("http://h/x?q=hello world&token=a"), `Get "http://h/x": EOF`},
-		{ue("/a b?token=a"), `Get "/a%20b": EOF`},                   // 问号前有空格：按文本认不出来，只能按结构
-		{ue("http://h/%zz x?token=a"), `Get "http://h/%zz x": EOF`}, // 解析不了：切在第一个 ? 上
-		{ue("ws://u:p@h/%zz#token=a"), `Get "ws://h/%zz": EOF`},     // 解析不了也去掉 userinfo
+		{ue("/a b?token=a"), `Get "/a%20b": EOF`},                   // a space before the question mark: not found by text, only by structure
+		{ue("http://h/%zz x?token=a"), `Get "http://h/%zz x": EOF`}, // unparseable: cut at the first ?
+		{ue("ws://u:p@h/%zz#token=a"), `Get "ws://h/%zz": EOF`},     // unparseable, and the userinfo is removed too
 		{fmt.Errorf("wrapped: %w", ue("/w x?token=a")), `wrapped: Get "/w%20x": EOF`},
 		{errors.Join(ue("/a b?token=a"), ue("/c d?token=b")), "Get \"/a%20b\": EOF\nGet \"/c%20d\": EOF"},
 		{errors.New(`free text "/c?token=a" and http://h/d?token=a`), `free text "/c" and http://h/d`},
@@ -452,13 +452,13 @@ func TestScrubError(t *testing.T) {
 			t.Errorf("scrubError(%q)\n got=%q\nwant=%q", c.err, got, c.want)
 		}
 		if strings.Contains(got, "token") {
-			t.Errorf("scrubError(%q) 留下了查询串：%q", c.err, got)
+			t.Errorf("scrubError(%q) left a query string: %q", c.err, got)
 		}
 	}
 }
 
 func TestLog_UserLoggerStillGetsRestyWarnings(t *testing.T) {
-	// Log 开着也不能替使用者换掉他自己设的 logger：明文 HTTP 上用 Basic Auth 这类提醒要到他那里
+	// Log being on must not replace a logger the caller set: a warning such as Basic Auth over plaintext HTTP has to reach them.
 	srv, _ := echo(t, nil)
 	for _, c := range []struct {
 		name string
@@ -474,15 +474,15 @@ func TestLog_UserLoggerStillGetsRestyWarnings(t *testing.T) {
 				t.Fatal(err)
 			}
 			if !strings.Contains(my.String(), "Basic Auth") {
-				t.Errorf("使用者自己的 logger 该收到 resty 的 Basic Auth 提醒，got=%q", my.String())
+				t.Errorf("the caller's own logger must receive resty's Basic Auth warning, got=%q", my.String())
 			}
 		})
 	}
 }
 
 func TestLog_RestyConfigErrorsStillLogged(t *testing.T) {
-	// 配置调用被忽略时 resty 只打一行 ERROR（格式也是 "%v"），Log 开着不能把它当成重试用完的那行吞掉。
-	// transport 外面包着链路那几层，不是 *http.Transport，SetProxy 就只打这一行、什么也不做
+	// When a configuration call is ignored, resty logs one ERROR (whose format is "%v" too), and Log being on must not swallow it as the used-up-retries line.
+	// The transport is wrapped in the tracing layers and is not an *http.Transport, so SetProxy only logs this line and does nothing.
 	_, lines := captureLogs(t)
 	client := logClient(t)
 	client.SetProxy("http://proxy.internal:8080")
@@ -491,10 +491,10 @@ func TestLog_RestyConfigErrorsStillLogged(t *testing.T) {
 			return
 		}
 	}
-	t.Errorf("SetProxy 被忽略的那行 ERROR 不该被吞掉，got=%v", lines())
+	t.Errorf("the ERROR for an ignored SetProxy must not be swallowed, got=%v", lines())
 }
 
-// recLogger 记下收到的每一行
+// recLogger records every line it receives.
 type recLogger struct {
 	mu sync.Mutex
 	b  strings.Builder
@@ -515,13 +515,13 @@ func (l *recLogger) String() string {
 }
 
 func TestLog_FailureBeforeAnyAttemptElapsedZero(t *testing.T) {
-	// SRV 查不到时 resty 还没开始第一次尝试就调 OnError：起点没记下，Request.Time 也是零值
+	// With an SRV lookup finding nothing, resty calls OnError before the first attempt even starts: no start was recorded and Request.Time is the zero value.
 	_, lines := captureLogs(t)
 	client := logClient(t)
 	client.R().SetSRV(&resty.SRVRecord{Service: "nope", Domain: "invalid.invalid"}).Get("/x")
 	got := requestLines(lines(), "http request failed")
 	if len(got) != 1 || got[0]["elapsed_ms"] != float64(0) || got[0]["attempts"] != float64(0) {
-		t.Errorf("一次都没发出去：elapsed_ms 0、attempts 0，got=%v", lines())
+		t.Errorf("nothing went out: elapsed_ms 0, attempts 0, got=%v", lines())
 	}
 }
 
@@ -534,12 +534,12 @@ func TestLog_DecodeErrorOn200IsFailed(t *testing.T) {
 	client := logClient(t)
 	var out struct{ A int }
 	if _, err := client.R().SetResult(&out).Get(srv.URL); err == nil {
-		t.Fatal("前提：SetResult 解析失败该返回错误")
+		t.Fatal("precondition: a failing SetResult must return an error")
 	}
 	got := requestLines(lines(), allRequestMsgs...)
 	if len(got) != 1 || got[0]["msg"] != "http request failed" || got[0]["status"] != float64(200) ||
 		!strings.Contains(fmt.Sprint(got[0]["error"]), "invalid character") {
-		t.Errorf("200 但解不开 SetResult：记 http request failed、status 200、带解析错误，got=%v", lines())
+		t.Errorf("a 200 whose SetResult cannot be parsed: http request failed, status 200, carrying the parse error, got=%v", lines())
 	}
 }
 
@@ -550,12 +550,12 @@ func TestLog_SlowAndFailedLogsFailed(t *testing.T) {
 	client.R().Get(srv.URL)
 	got := requestLines(lines(), allRequestMsgs...)
 	if len(got) != 1 || got[0]["msg"] != "http request failed" || got[0]["status"] != float64(503) {
-		t.Errorf("又慢又失败记 http request failed，不记成慢请求，got=%v", lines())
+		t.Errorf("slow and failed is recorded as http request failed, not as a slow request, got=%v", lines())
 	}
 }
 
 func TestLog_WarnLevelHandlerStillGetsProblems(t *testing.T) {
-	// slog 只收 WARN 时跳过拼字段的捷径，不能把失败和慢请求也跳过
+	// With slog accepting WARN only, the shortcut that skips assembling the fields must not skip failures and slow requests too.
 	srv, _ := echo(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/slow" {
 			time.Sleep(40 * time.Millisecond)
@@ -578,12 +578,12 @@ func TestLog_WarnLevelHandlerStillGetsProblems(t *testing.T) {
 	w.mu.Unlock()
 	if strings.Count(out, `"msg":"http request failed"`) != 1 || strings.Count(out, `"msg":"slow http request"`) != 1 ||
 		strings.Contains(out, `"msg":"http request"`) {
-		t.Errorf("只收 WARN 的 handler 该拿到失败和慢请求各一行、不拿成功的，got=%s", out)
+		t.Errorf("a WARN-only handler must get one failure line and one slow line and no successful one, got=%s", out)
 	}
 }
 
 func TestLog_DoNotParseResponseElapsedIsTimeToHeaders(t *testing.T) {
-	// 响应体交给调用方自己读：resty 拿到响应头就算完，耗时里不含读 body
+	// The response body is left to the caller: resty is done once it has the response headers, so the duration excludes reading the body.
 	srv, _ := echo(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 		w.(http.Flusher).Flush()
@@ -598,33 +598,33 @@ func TestLog_DoNotParseResponseElapsedIsTimeToHeaders(t *testing.T) {
 	defer resp.RawBody().Close()
 	got := requestLines(lines(), allRequestMsgs...)
 	if e, _ := got[0]["elapsed_ms"].(float64); len(got) != 1 || e >= 100 {
-		t.Errorf("SetDoNotParseResponse 时 elapsed_ms 是到响应头的时间，got=%v", lines())
+		t.Errorf("with SetDoNotParseResponse, elapsed_ms is the time to the response headers, got=%v", lines())
 	}
 }
 
 func TestLog_RejectedBeforeSendingNoLine(t *testing.T) {
-	// resty 在发出去之前就拒掉的（GET 带 multipart）走 OnInvalid，不走 OnError
+	// One resty rejects before sending it (a GET with multipart) goes through OnInvalid, not OnError.
 	srv, _ := echo(t, nil)
 	_, lines := captureLogs(t)
 	client := logClient(t)
 	if _, err := client.R().SetMultipartField("f", "a.txt", "text/plain", strings.NewReader("x")).Get(srv.URL); err == nil {
-		t.Fatal("前提：GET 带 multipart 该被 resty 拒掉")
+		t.Fatal("precondition: a GET with multipart must be rejected by resty")
 	}
 	if got := requestLines(lines(), allRequestMsgs...); len(got) != 0 {
-		t.Errorf("没发出去的请求没有请求日志，got=%v", got)
+		t.Errorf("a request that never went out has no request log, got=%v", got)
 	}
 }
 
 func TestMs_KeepsSubMillisecond(t *testing.T) {
 	if got := ms(1500 * time.Microsecond); got != 1.5 {
-		t.Errorf("ms(1.5ms) = %v，want 1.5", got)
+		t.Errorf("ms(1.5ms) = %v, want 1.5", got)
 	}
 	if got := ms(250 * time.Microsecond); got != 0.25 {
-		t.Errorf("ms(250µs) = %v，want 0.25", got)
+		t.Errorf("ms(250µs) = %v, want 0.25", got)
 	}
 }
 
-// deadAddr 一个没人监听的地址
+// deadAddr is an address nobody is listening on.
 func deadAddr(t *testing.T) string {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -637,13 +637,13 @@ func deadAddr(t *testing.T) string {
 }
 
 func TestLog_PathIsEscaped(t *testing.T) {
-	// 路径记转义过的形式：/a%2Fb 不记成 /a/b
+	// The path is recorded in its escaped form: /a%2Fb is not recorded as /a/b.
 	srv, _ := echo(t, nil)
 	_, lines := captureLogs(t)
 	client := logClient(t)
 	client.R().Get(srv.URL + "/a%2Fb/c%20d")
 	got := requestLines(lines(), allRequestMsgs...)
 	if len(got) != 1 || got[0]["path"] != "/a%2Fb/c%20d" {
-		t.Errorf("path 该是转义过的 /a%%2Fb/c%%20d，got=%v", lines())
+		t.Errorf("path must be the escaped /a%%2Fb/c%%20d, got=%v", lines())
 	}
 }

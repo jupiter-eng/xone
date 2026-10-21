@@ -25,7 +25,7 @@ import (
 	"github.com/jupiter-eng/xone/xtls"
 )
 
-// testPKI 现造的一个 CA，和它签的服务端证书（127.0.0.1 / api.internal）、客户端证书
+// testPKI is a freshly built CA together with the server certificate it signs (127.0.0.1 / api.internal) and a client certificate.
 type testPKI struct {
 	caFile, certFile, keyFile string
 	server                    tls.Certificate
@@ -81,8 +81,8 @@ func newPKI(t *testing.T) testPKI {
 	}
 }
 
-// tlsServer 起一个 https 的服务端，开着 HTTP/2；回的 body 是协议版本，
-// clientCrt 记下是否见过客户端证书
+// tlsServer starts an https server with HTTP/2 on; the body it answers is the protocol version,
+// and clientCrt records whether a client certificate was seen.
 func tlsServer(t *testing.T, cfg *tls.Config) (*httptest.Server, *atomic.Bool) {
 	t.Helper()
 	var clientCrt atomic.Bool
@@ -107,13 +107,13 @@ func TestNew_TLSBlockApplied(t *testing.T) {
 		tls  xtls.Config
 		ok   bool
 	}{
-		{"CAFile 认得服务端证书", xtls.Config{Enable: true, CAFile: p.caFile}, true},
-		{"ServerName 按证书上的域名填", xtls.Config{Enable: true, CAFile: p.caFile, ServerName: "api.internal"}, true},
-		{"没配 TLS 块用系统根证书，自签的过不了", xtls.Config{}, false},
-		{"ServerName 对不上证书", xtls.Config{Enable: true, CAFile: p.caFile, ServerName: "other.internal"}, false},
+		{"CAFile recognizes the server certificate", xtls.Config{Enable: true, CAFile: p.caFile}, true},
+		{"ServerName set to the domain on the certificate", xtls.Config{Enable: true, CAFile: p.caFile, ServerName: "api.internal"}, true},
+		{"without a TLS block the system roots are used and a self-signed certificate fails", xtls.Config{}, false},
+		{"ServerName does not match the certificate", xtls.Config{Enable: true, CAFile: p.caFile, ServerName: "other.internal"}, false},
 	}
 	for _, c := range cases {
-		// 链路开着和关着是两条不同的 transport 链，TLS 都得落到连接池上
+		// Tracing on and off are two different transport chains, and the TLS has to reach the connection pool in both
 		for _, trace := range []bool{true, false} {
 			t.Run(c.name+"/Trace="+strconv.FormatBool(trace), func(t *testing.T) {
 				cfg := DefaultConfig()
@@ -125,13 +125,13 @@ func TestNew_TLSBlockApplied(t *testing.T) {
 				}
 				if err != nil {
 					if !strings.Contains(err.Error(), "certificate") {
-						t.Errorf("错误该说是证书的问题，got=%v", err)
+						t.Errorf("the error must say it is a certificate problem, got=%v", err)
 					}
 					return
 				}
-				// 自定义的 TLSClientConfig 上 HTTP/2 照旧（ForceAttemptHTTP2）
+				// HTTP/2 still works on a custom TLSClientConfig (ForceAttemptHTTP2)
 				if got := resp.String(); got != "HTTP/2.0" {
-					t.Errorf("换了 TLSClientConfig 之后应仍协商出 HTTP/2.0，got=%s", got)
+					t.Errorf("HTTP/2.0 must still be negotiated after replacing TLSClientConfig, got=%s", got)
 				}
 			})
 		}
@@ -149,17 +149,17 @@ func TestNew_TLSMutualAuth(t *testing.T) {
 	cfg.TLS = xtls.Config{Enable: true, CAFile: p.caFile}
 	client, _ := newQuiet(t, cfg)
 	if _, err := client.R().SetContext(context.Background()).Get(srv.URL); err == nil {
-		t.Fatal("服务端要客户端证书时，不带证书该失败")
+		t.Fatal("when the server requires a client certificate, sending none must fail")
 	}
 
 	cfg.TLS.CertFile, cfg.TLS.KeyFile = p.certFile, p.keyFile
 	client, _ = newQuiet(t, cfg)
 	resp, err := client.R().SetContext(context.Background()).Get(srv.URL)
 	if err != nil || resp.StatusCode() != 200 {
-		t.Fatalf("带上客户端证书该成功：%v %v", resp, err)
+		t.Fatalf("with a client certificate it must succeed: %v %v", resp, err)
 	}
 	if !clientCrt.Load() {
-		t.Error("服务端应看到客户端证书")
+		t.Error("the server must have seen the client certificate")
 	}
 }
 
@@ -171,22 +171,22 @@ func TestNew_TLSBlockDoesNotAffectPlaintext(t *testing.T) {
 	client, _ := newQuiet(t, cfg)
 	resp, err := client.R().SetContext(context.Background()).Get(srv.URL)
 	if err != nil || resp.StatusCode() != 204 {
-		t.Fatalf("http:// 的请求不走 TLS，照常成功：%v %v", resp, err)
+		t.Fatalf("an http:// request uses no TLS and succeeds as usual: %v %v", resp, err)
 	}
 }
 
 func TestNew_TLSMisconfigIsConfigError(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "nope.pem")
 	for name, tc := range map[string]xtls.Config{
-		"没开却写了 CAFile": {CAFile: missing},
-		"CAFile 不存在":   {Enable: true, CAFile: missing},
-		"只配了 CertFile": {Enable: true, CertFile: missing},
+		"CAFile set without Enable": {CAFile: missing},
+		"CAFile does not exist":     {Enable: true, CAFile: missing},
+		"only CertFile":             {Enable: true, CertFile: missing},
 	} {
 		cfg := DefaultConfig()
 		cfg.TLS = tc
 		_, _, err := New(cfg)
 		if err == nil || !strings.Contains(err.Error(), "config") || !strings.Contains(err.Error(), "TLS") {
-			t.Errorf("%s：该报配置错误，got=%v", name, err)
+			t.Errorf("%s: it must be a configuration error, got=%v", name, err)
 		}
 	}
 }
@@ -203,20 +203,20 @@ func TestInit_TLSBlockReadFromConfigFile(t *testing.T) {
 	C().SetLogger(discardLogger{})
 	resp, err := R(context.Background()).Get(srv.URL)
 	if err != nil || resp.StatusCode() != 200 {
-		t.Fatalf("按配置文件的 CA 该连得上：%v %v", resp, err)
+		t.Fatalf("it must connect with the CA from the config file: %v %v", resp, err)
 	}
 }
 
 func TestValidate_TLSBlock(t *testing.T) {
-	// 读配置时就要拦住：xconfig.Unmarshal 调的是 Validate，不是 New
+	// It has to be caught while the config is read: xconfig.Unmarshal calls Validate, not New.
 	for name, tc := range map[string]xtls.Config{
-		"没开却写了 CAFile": {CAFile: "/etc/ca.pem"},
-		"只配了 CertFile": {Enable: true, CertFile: "c.pem"},
+		"CAFile set without Enable": {CAFile: "/etc/ca.pem"},
+		"only CertFile":             {Enable: true, CertFile: "c.pem"},
 	} {
 		cfg := DefaultConfig()
 		cfg.TLS = tc
 		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "TLS.") {
-			t.Errorf("%s：Validate 该报 TLS 的错，got=%v", name, err)
+			t.Errorf("%s: Validate must report the TLS error, got=%v", name, err)
 		}
 	}
 }
