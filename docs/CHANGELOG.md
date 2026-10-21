@@ -10,6 +10,15 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
 
 ## [Unreleased]
 
+## [v1.0.4] - 2026-10-21
+
+### Other
+
+- No behavior change in this version. The repository is English throughout: the comments, the
+  documentation a caller reads (every module's README and everything under `docs/`), the two
+  diagrams, the test names and the failure messages. `scripts/check.sh` now fails on any file that
+  holds Chinese, so this stays the case.
+
 ## [v1.0.3] - 2026-10-20
 
 ### Added
