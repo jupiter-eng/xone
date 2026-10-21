@@ -7,17 +7,17 @@ import (
 	"time"
 )
 
-// Option Consume 的可选设置，用法见各个 With*
+// Option is an optional setting for Consume; the uses are on each With*.
 type Option func(*options)
 
-// dlqSuffix 默认死信 topic 是原 topic 加上这个后缀
+// dlqSuffix is what the default dead-letter topic adds to the original topic name.
 const dlqSuffix = ".dlq"
 
 const (
-	// defaultTimeout 每一次调用处理函数的默认超时
+	// defaultTimeout is the default timeout of one call to the handler
 	defaultTimeout = 30 * time.Second
 
-	// defaultRetries 处理函数失败后默认再试几次（不算第一次）
+	// defaultRetries is how many more times a failed handler is called by default (not counting the first)
 	defaultRetries = 3
 )
 
@@ -28,40 +28,40 @@ type options struct {
 	dlq     string
 }
 
-// WithClient 从哪个集群消费，名字是 XKafka.Clients 下的那个。默认 default。
+// WithClient is which cluster to consume from, by the name under XKafka.Clients. It defaults to default.
 //
-// 每个 Consume 用这个集群的配置另建一个自己的客户端（带着消费组），不和 C() 返回的那个共用。
+// Every Consume builds its own client from that cluster's configuration (carrying the consumer group) and does not share the one C() returns.
 func WithClient(name string) Option {
 	return func(o *options) { o.client = name }
 }
 
-// WithTimeout 每一次调用处理函数的超时：到点取消 fn 收到的 ctx。默认 30s，必须大于 0。
+// WithTimeout is the timeout of one call to the handler: the ctx fn receives is cancelled when it is reached. It defaults to 30s and must be greater than 0.
 //
-// 只是取消 ctx：fn 不看 ctx 的话照样跑完，Go 没有从外面停下一个协程的办法。
-// 每次重试各算各的。再均衡时要等在途的那一次跑完（见 README「再均衡」），
-// 所以别配得比 franz-go 的再均衡超时（60s，v1.21.7 默认）还长。
+// It only cancels the ctx: an fn that does not look at the ctx runs to completion anyway, since Go has no way to stop a goroutine from the outside.
+// Each retry is counted separately. A rebalance waits for the call in flight to finish (see the README's "Rebalancing"),
+// so do not configure it longer than franz-go's rebalance timeout (60s, the v1.21.7 default).
 func WithTimeout(d time.Duration) Option {
 	return func(o *options) { o.timeout = d }
 }
 
-// WithRetry 处理函数返回错误（或 panic）之后再试几次，不算第一次。默认 3，即最多调 4 次；配 0 不重试。
+// WithRetry is how many more times the handler is called after it returns an error (or panics), not counting the first. It defaults to 3, that is at most 4 calls; 0 means no retry.
 //
-// 两次之间的等待从 1s 起逐次翻倍、带抖动（同 xutil.Retry：实际等待是 [0, 上界] 里的随机值），
-// 上界依次是 1s、2s、4s……最多 30s。返回 xutil.Permanent(err) 的不再重试，直接进死信。
-// 退出或者分区被收回时不再发起下一次，这条消息不提交，之后重新投递。
+// The wait between two calls starts at 1s and doubles each time with jitter (as in xutil.Retry: the actual wait is a random value in [0, the upper bound]),
+// with upper bounds of 1s, 2s, 4s and so on, capped at 30s. A xutil.Permanent(err) is not retried and goes straight to the dead letter.
+// On shutdown or when the partition is revoked no further call is started, the message is not committed, and it is redelivered later.
 func WithRetry(n int) Option {
 	return func(o *options) { o.retries = n }
 }
 
-// WithDeadLetter 重试用完之后把消息写进哪个 topic（死信）。默认是原 topic 加 .dlq（orders → orders.dlq）。
+// WithDeadLetter is which topic a message goes to once its retries are used up (the dead letter). It defaults to the original topic plus .dlq (orders -> orders.dlq).
 //
-// 传 "" 关掉死信：重试用完的消息记一条 ERROR（kafka message skipped）就跳过，提交 offset，不再处理。
-// 死信写不进去时一直重试、不提交，见 README「死信」。
+// Passing "" turns the dead letter off: a message whose retries are used up is recorded once at ERROR (kafka message skipped), skipped, and its offset committed, with no further processing.
+// When the dead-letter write fails it is retried forever and nothing is committed, see the README's "Dead letters".
 func WithDeadLetter(topic string) Option {
 	return func(o *options) { o.dlq = topic }
 }
 
-// buildOptions 套上默认值和全部 Option
+// buildOptions applies the defaults and every Option.
 func buildOptions(topic string, opts []Option) options {
 	o := options{client: DefaultName, timeout: defaultTimeout, retries: defaultRetries, dlq: topic + dlqSuffix}
 	for _, opt := range opts {
@@ -70,7 +70,7 @@ func buildOptions(topic string, opts []Option) options {
 	return o
 }
 
-// validate Consume 收到的设置是否成立。返回普通 error，由 Consume 在边界上包成 xerror
+// validate reports whether the settings Consume received hold. It returns a plain error, which Consume wraps in an xerror at the boundary.
 func (o options) validate(topic string) error {
 	var errs []error
 	if strings.TrimSpace(o.client) == "" {
@@ -85,7 +85,7 @@ func (o options) validate(topic string) error {
 	if o.dlq != "" && strings.TrimSpace(o.dlq) == "" {
 		errs = append(errs, errors.New("dead letter topic is blank, pass \"\" to disable dead lettering"))
 	}
-	// 死信写回自己消费的 topic：处理不了的消息转一圈又回来，永远处理不完
+	// A dead letter written back to the topic being consumed: a message that cannot be processed comes round again and is never done with.
 	if o.dlq == topic {
 		errs = append(errs, fmt.Errorf("dead letter topic must differ from the consumed topic %q", topic))
 	}

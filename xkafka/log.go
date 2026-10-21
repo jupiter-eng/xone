@@ -6,15 +6,15 @@ import (
 	"unicode/utf8"
 )
 
-// maxLoggedKey key 最多记这么多字节，超出的截掉并带上 key_truncated。规则同 xredis
+// maxLoggedKey is how many bytes of a key are recorded at most; anything beyond is cut and key_truncated is added. Same rule as in xredis.
 const maxLoggedKey = 256
 
-// keyAttrs 日志里的消息 key。
+// keyAttrs is the message key in the logs.
 //
-// 规则同 xredis 的 key：整条记，超过 maxLoggedKey 字节截断（不切断 UTF-8 字符），带上 key_truncated。
-// Kafka 的 key 是任意字节，常常是二进制（Avro、protobuf、大端整数）：不是可打印的 UTF-8 的不记原文，
-// 只记 key_len——写进 JSON 的话是一串转义乱码，还可能把控制字符带进日志平台。
-// 没有 key（nil）的一个字段都不加。从不记 value。
+// Same rule as xredis's key: recorded whole, truncated beyond maxLoggedKey bytes (without cutting a UTF-8 character) with key_truncated added.
+// A Kafka key is arbitrary bytes and often binary (Avro, protobuf, a big-endian integer): one that is not printable UTF-8 is not recorded verbatim,
+// only its key_len -- in JSON it would be a string of escaped noise and might carry control characters into the logging platform.
+// A message with no key (nil) adds no field at all. The value is never recorded.
 func keyAttrs(key []byte) []any {
 	if key == nil {
 		return nil
@@ -32,7 +32,7 @@ func keyAttrs(key []byte) []any {
 	return []any{"key", string(key[:cut]), "key_truncated", true}
 }
 
-// printable 合法的 UTF-8，且每个字符都可打印（空格算，换行、制表符这类控制字符不算）
+// printable reports whether the text is valid UTF-8 and every character is printable (a space counts; a newline, a tab and other control characters do not).
 func printable(b []byte) bool {
 	for len(b) > 0 {
 		r, size := utf8.DecodeRune(b)
@@ -47,7 +47,7 @@ func printable(b []byte) bool {
 	return true
 }
 
-// truncate 截到最多 n 字节，不切断 UTF-8 字符。只用在已经是合法 UTF-8 的文本上
+// truncate cuts to at most n bytes without cutting a UTF-8 character. It is only used on text already known to be valid UTF-8.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
@@ -59,5 +59,5 @@ func truncate(s string, n int) string {
 	return s[:cut]
 }
 
-// ms 耗时换成毫秒，保留到微秒。字段名带单位：slog 的 JSON 把 Duration 写成纳秒整数
+// ms converts an elapsed time to milliseconds, keeping microseconds. The field name carries the unit: slog's JSON writes a Duration as an integer number of nanoseconds.
 func ms(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }

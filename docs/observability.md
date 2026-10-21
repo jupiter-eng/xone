@@ -12,7 +12,7 @@ README (the index is in [`config.md`](config.md#config-blocks--module-documentat
 | The access log fields and the masking rules | [xgin "Access log"](../xgin/README.md#access-log) (xecho's fields and rules are identical, see [xecho "Access log"](../xecho/README.md#access-log)) |
 | Building a dashboard: which metrics the framework ships | [Metrics](#metrics) |
 | How tracing propagates and whose headers are accepted | [Propagation and the trust boundary](#propagation-and-the-trust-boundary) |
-| Exporting spans | [xtrace "快速上手"](../xtrace/README.md#快速上手): `xtrace.AddSpanProcessor(...)` |
+| Exporting spans | [xtrace "Quick start"](../xtrace/README.md#quick-start): `xtrace.AddSpanProcessor(...)` |
 
 - [Logs](#logs)
   - [The framework's own logs](#the-frameworks-own-logs)
@@ -29,7 +29,7 @@ the framework write to. It comes along with xgin / xecho / xcron; a program with
 `github.com/jupiter-eng/xone/xlog` anonymously, since otherwise `slog.Default()` stays as it was
 and none of the below exists. To write to your own logging backend (zap, a company logging SDK),
 call `xlog.UseHandler(h)` before `xone.Run`; everything below still applies, see
-[xlog "用自己的日志后端"](../xlog/README.md#用自己的日志后端).
+[xlog "Using your own logging backend"](../xlog/README.md#using-your-own-logging-backend).
 
 - **`trace_id` / `span_id`**: with tracing on (see [Tracing](#tracing)), every line written through
   a ctx-aware method (`slog.InfoContext(ctx, …)`) carries them automatically (xtrace wires it up;
@@ -61,16 +61,16 @@ Each module's own logs are under "Observability" in its README:
 [xgin](../xgin/README.md#observability) (the access log, `xgin listening`,
 `xgin http server error`) · [xecho](../xecho/README.md#observability) (the access log,
 `xecho listening`, `echo internal log`, `xecho http server error`) ·
-[xgorm](../xgorm/README.md#日志) (`xgorm connected`, SQL logs) ·
+[xgorm](../xgorm/README.md#logs) (`xgorm connected`, SQL logs) ·
 [xredis](../xredis/README.md#日志) (`xredis connected`, `redis command`, `redis pipeline`) ·
 [xhttp](../xhttp/README.md#日志) (`xhttp ready`, `http request`) ·
-[xcache](../xcache/README.md#日志) · [xkafka](../xkafka/README.md#日志)
+[xcache](../xcache/README.md#logs) · [xkafka](../xkafka/README.md#logs)
 (`kafka produce failed`, `kafka message failed` / `kafka message dead-lettered` /
 `kafka message skipped, …` / `kafka handler panicked`, with the handler's logs carrying `topic` /
-`partition` / `offset` / `group`) · [xcron](../xcron/README.md#日志) (`cron job finished` /
+`partition` / `offset` / `group`) · [xcron](../xcron/README.md#logs) (`cron job finished` /
 `cron job failed` / `cron job panicked`, `cron job skipped, previous run still running`) ·
-[xflow](../xflow/README.md#日志) (`xflow flow done` / `xflow flow failed`; the per-step
-`xflow step … done` is INFO and `… failed` is WARN) · [xtrace](../xtrace/README.md#日志).
+[xflow](../xflow/README.md#logs) (`xflow flow done` / `xflow flow failed`; the per-step
+`xflow step … done` is INFO and `… failed` is WARN) · [xtrace](../xtrace/README.md#logs).
 
 ## Metrics
 
@@ -81,11 +81,11 @@ Every metric the framework ships carries `XMetric.ConstLabels`; apart from clien
 |---|---|
 | [xgin](../xgin/README.md#metrics) · [xecho](../xecho/README.md#metrics) | `http_requests_total`, `http_request_duration_seconds` (identical names and labels on both sides, so one dashboard serves both) |
 | [xhttp](../xhttp/README.md#指标) | `http_client_request_duration_seconds` |
-| [xgorm](../xgorm/README.md#指标) | `db_pool_*` |
+| [xgorm](../xgorm/README.md#metrics) | `db_pool_*` |
 | [xredis](../xredis/README.md#指标) | `redis_pool_*` |
-| [xkafka](../xkafka/README.md#指标) | `kafka_consume_duration_seconds` |
-| [xcache](../xcache/README.md#指标) | `cache_*` |
-| [xmetric](../xmetric/README.md#指标) | `log_errors_total`, `go_*` / `process_*`, and the business's own instrumentation |
+| [xkafka](../xkafka/README.md#metrics) | `kafka_consume_duration_seconds` |
+| [xcache](../xcache/README.md#metrics) | `cache_*` |
+| [xmetric](../xmetric/README.md#metrics) | `log_errors_total`, `go_*` / `process_*`, and the business's own instrumentation |
 
 A few things worth knowing:
 
@@ -117,11 +117,11 @@ Each module's span names and key attributes are under "Observability · Tracing"
 | [xgin](../xgin/README.md#tracing) | Inbound, one per request; see also [the X-Trace-Id response header](../xgin/README.md#the-x-trace-id-response-header) and [499](../xgin/README.md#499-aborted-requests) |
 | [xecho](../xecho/README.md#tracing) | Inbound, with span names and attributes identical to xgin's and the error attribute called `echo.errors` |
 | [xhttp](../xhttp/README.md#链路) | Outbound |
-| [xgorm](../xgorm/README.md#链路) | One per SQL statement, with attributes following OTel's database semantic conventions |
+| [xgorm](../xgorm/README.md#tracing) | One per SQL statement, with attributes following OTel's database semantic conventions |
 | [xredis](../xredis/README.md#链路) | One per command |
-| [xcron](../xcron/README.md#链路) | One root span `cron <name>` per execution |
-| [xkafka](../xkafka/README.md#链路) | `<topic> publish` when producing and `<topic> process` when consuming, with consumption joining the trace from the message headers |
-| [xflow](../xflow/README.md#链路) | Opens no spans |
+| [xcron](../xcron/README.md#tracing) | One root span `cron <name>` per execution |
+| [xkafka](../xkafka/README.md#tracing) | `<topic> publish` when producing and `<topic> process` when consuming, with consumption joining the trace from the message headers |
+| [xflow](../xflow/README.md#tracing) | Opens no spans |
 
 The status is marked as an error only for a server-side 5xx (xgin, xecho), a failing SQL statement
 (xgorm) or a failed scheduled job (xcron); a 4xx is not. For a server-side error the status
@@ -139,7 +139,7 @@ Three things are accepted inbound and sent outbound, under different trust rules
 | Forwarded headers | whatever `XTrace.ForwardHeaders` / `ForwardHeaderRules` list | **trusted peers only** | `ForwardHeaders` goes to every downstream, `ForwardHeaderRules` only to matching hosts |
 
 - **Trace identifiers are accepted from anyone, and so is the sampling decision**: the sampler is
-  `ParentBased` (see [xtrace "行为与实测"](../xtrace/README.md#行为与实测)), so a request arriving
+  `ParentBased` (see [xtrace "Behavior (measured)"](../xtrace/README.md#behavior-measured)), so a request arriving
   with `sampled=01` is always sampled and exported, beyond the reach of `SampleRatio`. A public
   client sending `traceparent: 00-…-01` on every request fills this hop and every hop below it with
   spans — the cost lands on the tracing backend's storage and export bandwidth. To limit it, strip
@@ -160,6 +160,6 @@ Three things are accepted inbound and sent outbound, under different trust rules
   treated as trusted; otherwise baggage and forwarded headers are not accepted at all. xkafka
   treats Kafka message headers as trusted when consuming (whoever can write to a topic holds the
   cluster's credentials); the reasoning and the exceptions are in
-  [xkafka "链路"](../xkafka/README.md#链路).
+  [xkafka "链路"](../xkafka/README.md#tracing).
 - To read a forwarded value in business code:
   `xtrace.ForwardHeaderFromContext(ctx, "X-Request-Id")`.

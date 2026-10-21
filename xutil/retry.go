@@ -8,36 +8,36 @@ import (
 	"time"
 )
 
-// maxBackoff 两次尝试之间最多等这么久。
+// maxBackoff is the longest wait between two attempts.
 //
-// 做成常量而不是第六个参数：几乎没有调用方需要改它，而多一个参数是每个
-// 调用方都要付的理解成本。30s 比任何合理的建连等待都长，又比任何合理的
-// 启动预算都短，所以它只在「翻倍翻到离谱」时才起作用。
+// It is a constant rather than a sixth parameter: almost no caller needs to change it, and one more parameter
+// is a cost every caller pays in understanding. 30s is longer than any reasonable wait for a connection and
+// shorter than any reasonable startup budget, so it only comes into play when doubling has run away.
 const maxBackoff = 30 * time.Second
 
-// Retry 反复调用 fn 直到成功，每次单独限时。
+// Retry calls fn repeatedly until it succeeds, with a separate time limit on each attempt.
 //
-// 两次之间的等待从 interval 开始、每次翻倍，上限 maxBackoff，并且带抖动：
-// 实际等待是 [0, 当前退避] 之间的一个随机值。
+// The wait between two attempts starts at interval and doubles each time, capped at maxBackoff, with jitter:
+// the actual wait is a random value in [0, the current backoff].
 //
-// 翻倍是为了不把一个正在恢复的下游一直按同一个节奏敲；抖动是为了一群副本
-// 同时重启时不要在同一个瞬间一起敲过去——没有抖动的话，退避只是把
-// 惊群从一个时刻挪到了另一个时刻。
+// Doubling keeps a recovering downstream from being hit at the same rate forever; jitter keeps a group of
+// replicas restarting at once from hitting it all in the same instant -- without jitter, backoff only moves
+// the thundering herd from one moment to another.
 //
-// 整轮有一个总预算（attempts × timeout + 各次退避的上界之和），到了就不再重试。
-// 预算按退避的上界算而不是按抖动后的实际值：预算是个天花板，
-// 它得在最坏情况下也成立。
+// A whole round has one budget (attempts x timeout plus the sum of the backoff upper bounds), and once it is
+// reached nothing is retried. The budget uses the backoff upper bounds rather than the jittered values:
+// a budget is a ceiling, so it has to hold in the worst case.
 //
-// parent 被取消时整轮立即中止，剩下的尝试和等待都不再进行。
-// 启动期的建连重试靠这一条：收到退出信号时进程不必等满整轮才肯退出。
-// 传 nil 等同于 context.Background()。
+// Cancelling parent aborts the whole round immediately, with no further attempts and no further waiting.
+// The connection retries at startup rely on this: a stop signal must not make the process wait out a whole
+// round. Passing nil is the same as context.Background().
 //
-// fn 返回 Permanent(err) 时不再重试，立即返回 err 本身（去掉 Permanent 那一层）：
-// 密码错、库不存在这类错误，重试多少次都是同一个结果，只会白白拖长启动。
+// When fn returns Permanent(err) nothing is retried and err itself is returned (with the Permanent layer removed):
+// a wrong password or a missing database gives the same result however often it is retried, only later.
 //
-// 返回最后一次的错误；一次都没成功且预算先耗尽时，返回的是耗尽前那次的错误。
-// parent 在两次尝试之间被取消时，返回的错误同时满足 errors.Is(err, parent.Err())
-// 和 errors.Is(err, 最后一次的错误)：取消是这一轮停下来的原因，前面那些失败是背景。
+// It returns the last error; when nothing ever succeeded and the budget ran out first, that is the error from the
+// attempt before it ran out. When parent is cancelled between two attempts, the error returned satisfies both
+// errors.Is(err, parent.Err()) and errors.Is(err, the last error): the cancellation is why this round stopped, and the earlier failures are the background.
 func Retry(parent context.Context, attempts int, timeout, interval time.Duration, fn func(context.Context) error) error {
 	if attempts < 1 {
 		attempts = 1
@@ -45,8 +45,8 @@ func Retry(parent context.Context, attempts int, timeout, interval time.Duration
 	if parent == nil {
 		parent = context.Background()
 	}
-	// 进来时就已经取消的话，一次都不用试。少了这一句，
-	// 启动到一半收到退出信号时，每个连不上的实例还要再发一次注定失败的网络请求
+	// Already cancelled on entry means not even one attempt. Without this line, a stop signal arriving halfway
+	// through startup would still make every unreachable instance send one more doomed network request.
 	if err := parent.Err(); err != nil {
 		return err
 	}
@@ -55,14 +55,14 @@ func Retry(parent context.Context, attempts int, timeout, interval time.Duration
 	defer cancel()
 
 	var last error
-	backoff := min(interval, maxBackoff) // 第一次也封顶：interval 配得比上限还大时，文档说的「最多等 maxBackoff」照样成立
+	backoff := min(interval, maxBackoff) // the first one is capped too: with interval configured above the cap, the documented "at most maxBackoff" still holds
 	for i := range attempts {
 		if i > 0 {
 			select {
 			case <-ctx.Done():
-				// 两种原因走到这里，要分开报：调用方叫停了，就得如实说是取消——
-				// 只报上一次的「连不上」，启动路径会把按要求退出当成故障；
-				// 只是整轮预算耗尽，那就没有取消可言，报最后一次的错误
+				// Two reasons lead here and they must be reported apart: the caller calling a halt has to be reported
+				// as cancellation -- reporting only the previous "cannot reach" would make the startup path take an
+				// orderly exit for a failure; a round budget that merely ran out is no cancellation, and the last error is what is reported
 				if err := parent.Err(); err != nil {
 					return fmt.Errorf("%w, last attempt failed: %w", err, last)
 				}
@@ -84,8 +84,8 @@ func Retry(parent context.Context, attempts int, timeout, interval time.Duration
 	return last
 }
 
-// Permanent 把 err 标记为「重试也没用」：Retry 遇到它立即返回 err，不再尝试。
-// 标记只给 Retry 看，Retry 返回的是去掉标记之后的 err；err 为 nil 时返回 nil。
+// Permanent marks err as "retrying will not help": Retry returns err immediately and attempts nothing further.
+// The mark is only for Retry to see, and Retry returns the err with the mark removed; a nil err gives nil.
 func Permanent(err error) error {
 	if err == nil {
 		return nil
@@ -93,17 +93,17 @@ func Permanent(err error) error {
 	return &permanentError{err}
 }
 
-// permanentError Permanent 的标记。Error 和 Unwrap 都透传，
-// 标记本身不改变错误的文本，也不挡 errors.Is / errors.As
+// permanentError is Permanent's mark. Error and Unwrap both pass through, so the mark changes neither the
+// error text nor errors.Is / errors.As.
 type permanentError struct{ err error }
 
 func (p *permanentError) Error() string { return p.err.Error() }
 func (p *permanentError) Unwrap() error { return p.err }
 
-// retryBudget 整轮的上限：每次尝试的超时，加上各次退避的上界
+// retryBudget is the ceiling for a whole round: the timeout of each attempt plus the backoff upper bounds.
 func retryBudget(attempts int, timeout, interval time.Duration) time.Duration {
 	budget := timeout * time.Duration(attempts)
-	backoff := min(interval, maxBackoff) // 与 Retry 一致：第一次也封顶
+	backoff := min(interval, maxBackoff) // same as Retry: the first one is capped too
 	for i := 1; i < attempts; i++ {
 		budget += backoff
 		backoff = nextBackoff(backoff)
@@ -111,7 +111,7 @@ func retryBudget(attempts int, timeout, interval time.Duration) time.Duration {
 	return budget
 }
 
-// nextBackoff 翻倍，封顶 maxBackoff
+// nextBackoff doubles, capped at maxBackoff.
 func nextBackoff(d time.Duration) time.Duration {
 	if d <= 0 {
 		return 0
@@ -122,13 +122,13 @@ func nextBackoff(d time.Duration) time.Duration {
 	return d * 2
 }
 
-// jitter 在 [0, d] 之间取一个随机值。
+// jitter takes a random value in [0, d].
 //
-// 取「0 到 d」而不是「d 的正负一点」：前者才真的把一群同时重启的副本摊开，
-// 后者只是让它们在同一个时刻附近抖一下。
+// It is "0 to d" rather than "a little either side of d": only the former really spreads out a group of
+// replicas restarting at once, while the latter just makes them twitch around the same moment.
 //
-// 是变量而不是函数，只为让测试能换成恒等映射，好把「退避确实在翻倍」
-// 这件事测准——随机数一掺进来，等待时长就只能做统计断言了
+// It is a variable rather than a function only so tests can replace it with the identity map and measure
+// "the backoff really does double" exactly -- with randomness in the mix, a wait can only be asserted statistically.
 var jitter = func(d time.Duration) time.Duration {
 	if d <= 0 {
 		return 0

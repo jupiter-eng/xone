@@ -15,7 +15,7 @@ import (
 	"gorm.io/gorm/schema"
 )
 
-// withDialect 临时注册一个方言，测试结束后摘掉
+// withDialect registers a dialect for the duration of the test and removes it afterwards.
 func withDialect(t *testing.T, d Dialect) {
 	t.Helper()
 	RegisterDialect(d)
@@ -29,10 +29,10 @@ func withDialect(t *testing.T, d Dialect) {
 func TestDrivers_TwoBuiltIn(t *testing.T) {
 	got := Drivers()
 	if !slices.Contains(got, DriverMySQL) || !slices.Contains(got, DriverPostgres) {
-		t.Errorf("mysql 和 postgres 应当内置，got=%v", got)
+		t.Errorf("mysql and postgres must be built in, got=%v", got)
 	}
 	if !slices.IsSorted(got) {
-		t.Errorf("应按字母序返回，否则错误信息每次都不一样，got=%v", got)
+		t.Errorf("must come back in alphabetical order, otherwise the error message differs every time, got=%v", got)
 	}
 }
 
@@ -48,7 +48,7 @@ func TestRegisterDialect_DriverUsableAfterRegister(t *testing.T) {
 	c := DefaultClientConfig()
 	c.Driver, c.DSN = "demo", "demo://h:1/d"
 	if err := c.Validate(); err != nil {
-		t.Fatalf("注册过的驱动应当通过校验：%v", err)
+		t.Fatalf("a registered driver must pass validation: %v", err)
 	}
 
 	dsn, info, err := resolveDSN(c)
@@ -56,15 +56,15 @@ func TestRegisterDialect_DriverUsableAfterRegister(t *testing.T) {
 		t.Fatal(err)
 	}
 	if dsn != "demo://h:1/d?tuned=1" {
-		t.Errorf("该走方言自己的 Resolve，got=%q", dsn)
+		t.Errorf("the dialect's own Resolve must be used, got=%q", dsn)
 	}
 	if info.Driver != "demo" {
-		t.Errorf("连接信息该来自方言，got=%+v", info)
+		t.Errorf("connection info must come from the dialect, got=%+v", info)
 	}
 }
 
 func TestRegisterDialect_DSNUsedAsIsWithoutResolve(t *testing.T) {
-	// 对一个只想先跑起来的驱动，超时写进 DSN 里一样有效
+	// For a driver someone just wants to get running, writing the timeout into the DSN works just as well.
 	withDialect(t, Dialect{Name: "bare", Open: func(string) gorm.Dialector { return nil }})
 
 	c := DefaultClientConfig()
@@ -74,19 +74,19 @@ func TestRegisterDialect_DSNUsedAsIsWithoutResolve(t *testing.T) {
 		t.Fatal(err)
 	}
 	if dsn != c.DSN {
-		t.Errorf("该原样用，got=%q", dsn)
+		t.Errorf("must be used as is, got=%q", dsn)
 	}
 	if info.Driver != "bare" || info.Addr != "" {
-		t.Errorf("解不出来就只写驱动名，got=%+v", info)
+		t.Errorf("when it cannot be parsed, only the driver name is recorded, got=%+v", info)
 	}
 }
 
 func TestRegisterDialect_PanicsOnDuplicateName(t *testing.T) {
-	// 两个 Dialect 抢同一个名字时，选哪个都可能让服务连到一个
-	// 它以为自己没在连的地方。这是 import 期的问题，不该留到运行时
+	// When two Dialects claim the same name, either choice may make the service connect to a place
+	// it believes it is not connecting to. That is an import-time problem; it must not survive into runtime.
 	defer func() {
 		if recover() == nil {
-			t.Error("重名注册应当 panic")
+			t.Error("registering a duplicate name must panic")
 		}
 	}()
 	RegisterDialect(Dialect{Name: DriverMySQL, Open: func(string) gorm.Dialector { return nil }})
@@ -97,13 +97,13 @@ func TestRegisterDialect_PanicsOnMissingField(t *testing.T) {
 		name string
 		d    Dialect
 	}{
-		{"没名字", Dialect{Open: func(string) gorm.Dialector { return nil }}},
-		{"没 Open", Dialect{Name: "noopen"}},
+		{"no name", Dialect{Open: func(string) gorm.Dialector { return nil }}},
+		{"no Open", Dialect{Name: "noopen"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			defer func() {
 				if recover() == nil {
-					t.Error("应当 panic")
+					t.Error("must panic")
 				}
 			}()
 			RegisterDialect(c.d)
@@ -112,23 +112,23 @@ func TestRegisterDialect_PanicsOnMissingField(t *testing.T) {
 }
 
 func TestValidate_UnknownDriverListsRegistered(t *testing.T) {
-	// 只说「不认识」帮助有限：名字拼错和忘了 import 对应的 module
-	// 是两个不同的问题，把实际注册了哪些列出来，两者一眼可分
+	// Saying only "unknown" helps little: a typo in the name and a forgotten import of the matching
+	// module are two different problems. Listing what is actually registered tells them apart at a glance.
 	c := DefaultClientConfig()
 	c.Driver, c.DSN = "clickhouse", "clickhouse://h:9000/db"
 	err := c.Validate()
 	if err == nil {
-		t.Fatal("没注册的驱动应当报错")
+		t.Fatal("an unregistered driver must be rejected")
 	}
 	for _, want := range []string{"clickhouse", "mysql", "postgres", "import"} {
 		if !strings.Contains(err.Error(), want) {
-			t.Errorf("错误里该出现 %q，got=%v", want, err)
+			t.Errorf("the error must mention %q, got=%v", want, err)
 		}
 	}
 }
 
-// stubDialector 一个只会在 Initialize 里失败的 Dialector，
-// 用来确认 New 真的用了注册进来的那个 Open
+// stubDialector is a Dialector that only fails in Initialize,
+// used to confirm that New really uses the registered Open.
 type stubDialector struct{ err error }
 
 func (d stubDialector) Name() string                    { return "stub" }
@@ -143,9 +143,9 @@ func (d stubDialector) QuoteTo(clause.Writer, string)                 {}
 func (d stubDialector) Explain(sql string, _ ...any) string           { return sql }
 
 func TestNew_UsesRegisteredOpen(t *testing.T) {
-	// 回归用例。曾经 New 里还留着一个写死 mysql / postgres 的旧函数，
-	// 于是注册表看着是对的（Drivers() 里有它、校验也过了），
-	// 建连却悄悄走了 postgres —— 连到了一个使用者以为自己没在连的地方
+	// Regression case. New once still held an old function with mysql / postgres hard-coded,
+	// so the registry looked right (Drivers() listed it, validation passed) while the connection
+	// quietly went to postgres -- a place the caller believed it was not connecting to.
 	sentinel := errors.New("stub dialector was used")
 	withDialect(t, Dialect{
 		Name: "stub",
@@ -156,14 +156,14 @@ func TestNew_UsesRegisteredOpen(t *testing.T) {
 	c.Driver, c.DSN = "stub", "stub://h:1/d"
 	_, _, err := New(context.Background(), c)
 	if !errors.Is(err, sentinel) {
-		t.Fatalf("New 该用注册进来的 Open，got=%v", err)
+		t.Fatalf("New must use the registered Open, got=%v", err)
 	}
 }
 
 func TestNew_ReadyRunsInProbeAndRetries(t *testing.T) {
-	// 有的驱动在 Initialize 里用 context.Background() 查版本：退出信号管不到，
-	// 失败了也轮不到重试。Ready 是给它们挪过来的地方，所以必须真的被调到、
-	// 失败时跟 Ping 一起重试，并且报成 connect
+	// Some drivers query the version in Initialize with context.Background(): the shutdown signal cannot
+	// reach it and a failure never gets retried. Ready is where that work moves to, so it must really be
+	// called, be retried together with Ping on failure, and be reported as connect.
 	var calls int
 	boom := errors.New("version query failed")
 	withDialect(t, Dialect{
@@ -172,7 +172,7 @@ func TestNew_ReadyRunsInProbeAndRetries(t *testing.T) {
 		Ready: func(ctx context.Context, db *gorm.DB) error {
 			calls++
 			if ctx == nil || db == nil {
-				t.Error("Ready 要拿到 ctx 和这个实例")
+				t.Error("Ready must receive the ctx and this instance")
 			}
 			return boom
 		},
@@ -182,27 +182,27 @@ func TestNew_ReadyRunsInProbeAndRetries(t *testing.T) {
 	c.Driver, c.DSN = "readyprobe", "readyprobe://h/d"
 	_, _, err := New(context.Background(), c)
 	if !errors.Is(err, boom) {
-		t.Fatalf("Ready 的错误要传出来，got=%v", err)
+		t.Fatalf("the Ready error must be propagated, got=%v", err)
 	}
 	assertOneFrame(t, err, "xgorm", "connect")
 	if calls != pingAttempts {
-		t.Errorf("Ready 失败要跟着重试 %d 次，实际 %d 次", pingAttempts, calls)
+		t.Errorf("a Ready failure must be retried %d times, got %d", pingAttempts, calls)
 	}
 }
 
 func TestNew_NoRetryOnAuthFailureAndSaysSo(t *testing.T) {
-	// 密码错了重试也是错：再试两次只是多等两轮退避才报出来。
-	// 报成 cannot reach 的话，排查的人会先去查网络。
-	// 错误的形状照 pgx 的来：*pgconn.PgError 包在建连错误里（实测 PG 16 密码错是 28P01）
+	// A wrong password stays wrong on retry: two more attempts only add two backoff rounds before it is reported.
+	// Reporting it as cannot reach would send whoever investigates to the network first.
+	// The error shape follows pgx: *pgconn.PgError wrapped in the connection error (measured: PG 16 reports 28P01 for a wrong password).
 	for _, c := range []struct {
 		name     string
 		code     string
 		attempts int
 		want     string
 	}{
-		{"密码错误", "28P01", 1, "authentication to "},
-		{"认证方式不允许", "28000", 1, "authentication to "},
-		{"库不存在不算认证失败", "3D000", pingAttempts, "cannot reach "},
+		{"wrong password", "28P01", 1, "authentication to "},
+		{"authentication method not allowed", "28000", 1, "authentication to "},
+		{"missing database is not an auth failure", "3D000", pingAttempts, "cannot reach "},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var calls int
@@ -222,53 +222,53 @@ func TestNew_NoRetryOnAuthFailureAndSaysSo(t *testing.T) {
 			cfg.Driver, cfg.DSN = "authprobe", "authprobe://h/d"
 			_, _, err := New(context.Background(), cfg)
 			if !errors.Is(err, rejected) {
-				t.Fatalf("服务端的原始错误要传出来，got=%v", err)
+				t.Fatalf("the server's original error must be propagated, got=%v", err)
 			}
 			assertOneFrame(t, err, "xgorm", "connect")
 			if !strings.Contains(err.Error(), c.want) {
-				t.Errorf("错误应说 %q，got=%v", c.want, err)
+				t.Errorf("the error must say %q, got=%v", c.want, err)
 			}
 			if calls != c.attempts {
-				t.Errorf("应试 %d 次，实际 %d 次", c.attempts, calls)
+				t.Errorf("expected %d attempts, got %d", c.attempts, calls)
 			}
 		})
 	}
 }
 
 func TestNew_MySQLNoRetryOnAuthFailureAndSaysSo(t *testing.T) {
-	// 错误的形状照 go-sql-driver 的来：*mysql.MySQLError 原样返回。实测 MySQL 8.0.46：
-	// 密码错、用户不存在是 1045；没有这个库的权限（包括没有全局权限的账号连一个不存在的库）是 1044。
-	// 1049（库不存在，有全局权限的账号才看得到）不算认证失败。
+	// The error shape follows go-sql-driver: *mysql.MySQLError returned as is. Measured on MySQL 8.0.46:
+	// a wrong password or a missing user is 1045; no permission on the database (including an account without global
+	// privileges connecting to a database that does not exist) is 1044. 1049 (database missing, visible only to an account with global privileges) is not an auth failure.
 	//
-	// 两条路都要认得出来：内置的 MySQL 方言关掉了 Initialize 里的查版本，认证失败出在探测里；
-	// 注册进来的方言要是在 Initialize 里建连，就出在 gorm.Open 里
+	// Both paths must be recognized: the built-in MySQL dialect turns off the version query in Initialize, so the auth failure
+	// surfaces in the probe; a registered dialect that connects in Initialize surfaces it in gorm.Open instead.
 	for _, c := range []struct {
 		name     string
 		number   uint16
-		attempts int    // 走 ping 那条路时试几次
-		want     string // 走 gorm.Open 那条路时错误里说什么
+		attempts int    // how many attempts on the ping path
+		want     string // what the error says on the gorm.Open path
 	}{
-		{"密码错误", 1045, 1, "authentication to "},
-		{"没有库的权限", 1044, 1, "authentication to "},
-		{"库不存在不算认证失败", 1049, pingAttempts, "open "},
+		{"wrong password", 1045, 1, "authentication to "},
+		{"no permission on the database", 1044, 1, "authentication to "},
+		{"missing database is not an auth failure", 1049, pingAttempts, "open "},
 	} {
 		rejected := &mysqldriver.MySQLError{Number: c.number, Message: "Access denied"}
 
-		t.Run(c.name+"_在gorm.Open里", func(t *testing.T) {
+		t.Run(c.name+"_in_gorm.Open", func(t *testing.T) {
 			withDialect(t, Dialect{Name: "myauthopen", Open: func(string) gorm.Dialector { return stubDialector{err: rejected} }, AuthFailed: mysqlAuthFailed})
 			cfg := DefaultClientConfig()
 			cfg.Driver, cfg.DSN = "myauthopen", "myauthopen://h/d"
 			_, _, err := New(context.Background(), cfg)
 			if !errors.Is(err, rejected) {
-				t.Fatalf("服务端的原始错误要传出来，got=%v", err)
+				t.Fatalf("the server's original error must be propagated, got=%v", err)
 			}
 			assertOneFrame(t, err, "xgorm", "connect")
 			if !strings.Contains(err.Error(), c.want) {
-				t.Errorf("错误应说 %q，got=%v", c.want, err)
+				t.Errorf("the error must say %q, got=%v", c.want, err)
 			}
 		})
 
-		t.Run(c.name+"_在探测里", func(t *testing.T) {
+		t.Run(c.name+"_in_the_probe", func(t *testing.T) {
 			var calls int
 			withDialect(t, Dialect{
 				Name:       "myauthping",
@@ -283,16 +283,16 @@ func TestNew_MySQLNoRetryOnAuthFailureAndSaysSo(t *testing.T) {
 			cfg.Driver, cfg.DSN = "myauthping", "myauthping://h/d"
 			_, _, err := New(context.Background(), cfg)
 			if !errors.Is(err, rejected) {
-				t.Fatalf("服务端的原始错误要传出来，got=%v", err)
+				t.Fatalf("the server's original error must be propagated, got=%v", err)
 			}
 			if calls != c.attempts {
-				t.Errorf("应试 %d 次，实际 %d 次", c.attempts, calls)
+				t.Errorf("expected %d attempts, got %d", c.attempts, calls)
 			}
 		})
 	}
 }
 
-// pgDialect / mysqlDialect 内置的两个方言，测试里要单独拿出来用
+// pgDialect / mysqlDialect expose the two built-in dialects for use in tests.
 func pgDialect() Dialect {
 	d, _ := lookupDialect(DriverPostgres)
 	return d
@@ -304,8 +304,8 @@ func mysqlDialect() Dialect {
 }
 
 func TestDialect_BuiltInsRecognizeAuthFailureAndErrorCode(t *testing.T) {
-	// 实测 PG 16 密码错是 28P01、MySQL 8.0.46 密码错是 1045、没有库权限是 1044。
-	// 库不存在（3D000 / 1049）不算认证失败
+	// Measured: PG 16 reports 28P01 for a wrong password, MySQL 8.0.46 reports 1045 for a wrong password
+	// and 1044 for no permission on the database. A missing database (3D000 / 1049) is not an auth failure.
 	pgErr := func(code string) error {
 		return fmt.Errorf("failed to connect: %w", &pgconn.PgError{Code: code})
 	}
@@ -317,20 +317,20 @@ func TestDialect_BuiltInsRecognizeAuthFailureAndErrorCode(t *testing.T) {
 		auth bool
 		code string
 	}{
-		{"PG 密码错", pgDialect(), pgErr("28P01"), true, "28P01"},
-		{"PG 认证方式不允许", pgDialect(), pgErr("28000"), true, "28000"},
-		{"PG 库不存在", pgDialect(), pgErr("3D000"), false, "3D000"},
-		{"MySQL 密码错", mysqlDialect(), myErr(1045), true, "1045"},
-		{"MySQL 没有库权限", mysqlDialect(), myErr(1044), true, "1044"},
-		{"MySQL 库不存在", mysqlDialect(), myErr(1049), false, "1049"},
-		{"PG 方言不认 MySQL 的错", pgDialect(), myErr(1045), false, ""},
-		{"不是服务端的错", mysqlDialect(), errors.New("i/o timeout"), false, ""},
+		{"PG wrong password", pgDialect(), pgErr("28P01"), true, "28P01"},
+		{"PG auth method not allowed", pgDialect(), pgErr("28000"), true, "28000"},
+		{"PG missing database", pgDialect(), pgErr("3D000"), false, "3D000"},
+		{"MySQL wrong password", mysqlDialect(), myErr(1045), true, "1045"},
+		{"MySQL no permission on the database", mysqlDialect(), myErr(1044), true, "1044"},
+		{"MySQL missing database", mysqlDialect(), myErr(1049), false, "1049"},
+		{"PG dialect does not claim a MySQL error", pgDialect(), myErr(1045), false, ""},
+		{"not a server error", mysqlDialect(), errors.New("i/o timeout"), false, ""},
 	} {
 		if got := c.d.authFailed(c.err); got != c.auth {
-			t.Errorf("%s：authFailed=%v，want %v", c.name, got, c.auth)
+			t.Errorf("%s: authFailed=%v, want %v", c.name, got, c.auth)
 		}
 		if got := c.d.errorCode(c.err); got != c.code {
-			t.Errorf("%s：errorCode=%q，want %q", c.name, got, c.code)
+			t.Errorf("%s: errorCode=%q, want %q", c.name, got, c.code)
 		}
 	}
 }

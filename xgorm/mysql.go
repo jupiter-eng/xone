@@ -18,28 +18,32 @@ import (
 	"gorm.io/gorm/callbacks"
 )
 
-// openMySQL 造 MySQL 的 Dialector，并关掉它在 Initialize 里那次查版本。
+// openMySQL builds MySQL's Dialector and turns off the version query it runs inside Initialize.
 //
-// 那次 SELECT VERSION() 用的是写死的 context.Background()
-// （gorm.io/driver/mysql v1.6.0 mysql.go:130），而且就在 gorm.Open 里、
-// 在 xgorm 带重试的建连验证之前——它才是第一次建连。实测（MySQL 8.0.46，
-// 对端收下连接却不回话）：只建了 1 个连接，3.0s（= 握手那一读等满 ReadTimeout）
-// 后 gorm.Open 直接报 invalid connection，三次重试一次都没轮上；启动期间的
-// 退出信号也管不到它，信号之后 2.95s 进程才退。
+// That SELECT VERSION() uses a hard-coded context.Background() (gorm.io/driver/mysql v1.6.0
+// mysql.go:130), and it runs inside gorm.Open, before xgorm's connection check with its retries —
+// which makes it the real first connection. Measured (MySQL 8.0.46, with the peer accepting the
+// connection and never answering): one connection was opened and gorm.Open reported
+// invalid connection after 3.0s (the handshake read waiting out ReadTimeout), with none of the
+// three retries ever reached; a stop signal during startup could not reach it either, and the
+// process exited 2.95s after the signal.
 //
-// 版本号本身还要：驱动靠它决定 MariaDB / MySQL 5.x 上改不改得了索引名和列名、
-// 支不支持 FOR SHARE、DROP CONSTRAINT，以及 MariaDB 10.5+ 上用不用 RETURNING。
-// 所以这次查询挪到 probeMySQLVersion，由建连验证来做：受 ctx 管，跟着重试。
-// 关掉之后 gorm.Open 只做 sql.Open 和装配，不碰网络。
+// The version itself is still needed: the driver uses it to decide whether index and column names
+// can be renamed on MariaDB / MySQL 5.x, whether FOR SHARE and DROP CONSTRAINT are supported, and
+// whether to use RETURNING on MariaDB 10.5+. So that query moves into probeMySQLVersion and is
+// done by the connection check: governed by the ctx and retried along with it. With it off,
+// gorm.Open does sql.Open and assembly alone and touches no network.
 func openMySQL(dsn string) gorm.Dialector {
 	return mysql.New(mysql.Config{DSN: dsn, SkipInitializeWithVersion: true})
 }
 
-// resolveMySQL 用驱动自己的解析器处理 DSN，DSN 里已写的超时不会被覆盖
+// resolveMySQL handles the DSN with the driver's own parser, leaving timeouts already written in
+// the DSN untouched.
 func resolveMySQL(c ClientConfig) (string, ConnInfo, error) {
 	cfg, err := mysqldriver.ParseDSN(c.DSN)
 	if err != nil {
-		// 不回传驱动的错误：它会把 DSN 片段带在错误信息里，而错误信息会被记下来
+		// The driver's error is not passed on: it carries fragments of the DSN in its message, and
+		// messages get recorded
 		return "", ConnInfo{}, errMalformedDSN
 	}
 	if c.TLS.Enable {
@@ -58,42 +62,47 @@ func resolveMySQL(c ClientConfig) (string, ConnInfo, error) {
 		cfg.WriteTimeout = c.MySQL.WriteTimeout
 	}
 
-	// parseTime 驱动默认 false：DATETIME / TIMESTAMP 读出来是 []byte，
-	// 扫不进 time.Time——实测 go-sql-driver v1.10.1 连 MySQL 8.0.46，
-	// 带 CreatedAt 的模型 First 一次就是 unsupported Scan, storing driver.Value
-	// type []uint8 into type *time.Time，写进去倒是没问题。GORM 的模型几乎都有
-	// 时间字段，所以 DSN 里没写 parseTime 的，这里补成 true；写了（哪怕是 false）
-	// 以 DSN 为准。时区跟着驱动的 loc（默认 UTC）：写入时驱动先转成 loc 再格式化，
-	// 读出来按 loc 解释，同一个时刻来回不变（实测写 03:04:05+08:00，库里存的是
-	// 19:04:05，读回来是 19:04:05 UTC，Equal 为 true）
+	// parseTime defaults to false in the driver: DATETIME / TIMESTAMP come back as []byte and cannot
+	// be scanned into a time.Time — measured with go-sql-driver v1.10.1 against MySQL 8.0.46, one
+	// First on a model with CreatedAt gives unsupported Scan, storing driver.Value type []uint8 into
+	// type *time.Time, while writing works fine. Almost every GORM model has a time field, so when
+	// the DSN does not write parseTime it is filled in as true; when it does (false included) the
+	// DSN wins. The timezone follows the driver's loc (UTC by default): on write the driver converts
+	// to loc before formatting and on read it interprets by loc, so the same instant survives a round
+	// trip (measured, writing 03:04:05+08:00 stores 19:04:05 and reads back 19:04:05 UTC, with Equal
+	// true).
 	if !mysqlParamSet(c.DSN, "parseTime") {
 		cfg.ParseTime = true
 	}
 
-	// 预算读的是注入之后的值：DSN 里写了的以 DSN 为准。
-	// timeout 管建连（拨号），readTimeout 管之后的每一读：握手、认证、探测的那个往返
-	// （go-sql-driver v1.10.1 connector.go / connection.go）
+	// The budget is read after the injection: a value written in the DSN wins.
+	// timeout covers connecting (dialing) and readTimeout covers every read after it: the handshake,
+	// the authentication, and the probe's round trip.
+	// (go-sql-driver v1.10.1 connector.go / connection.go)
 	return cfg.FormatDSN(), ConnInfo{
 		Driver: "mysql", Addr: cfg.Addr, DB: cfg.DBName,
 		ProbeTimeout: mysqlProbeTimeout(cfg.Timeout, cfg.ReadTimeout),
 	}, nil
 }
 
-// mysqlProbeTimeout 建连加一个往返的预算。
+// mysqlProbeTimeout is the budget for connecting plus one round trip.
 //
-// 哪一段配成 0（驱动不限时）就按另一段的量级给：0 说的是「驱动不管」，不是「这一段不花时间」，
-// 只拿建连超时当整体预算的话，ReadTimeout: 0 时连接刚建成、登录包还没回来就被判超时。
-// 两段都是 0 返回 0，由 probeTimeout 用兜底值
+// When either part is 0 (no limit in the driver), it is given the magnitude of the other: 0 says
+// "the driver does not govern this", not "this part costs no time", and taking the connect timeout
+// as the whole budget would, with ReadTimeout: 0, declare a timeout the moment the connection is
+// up and the login packet has not come back yet. With both at 0 it returns 0 and probeTimeout
+// falls back to its default.
 func mysqlProbeTimeout(dial, read time.Duration) time.Duration {
 	return cmp.Or(dial, read) + cmp.Or(read, dial)
 }
 
-// mysqlParamSet DSN 里有没有写 key 这个参数，写成什么值都算。
+// mysqlParamSet reports whether the DSN writes the parameter key at all, whatever its value.
 //
-// 驱动解析完的 Config 分不清「没写」和「写成了默认值」，所以直接看原串，
-// 找法照抄驱动的 ParseDSN（go-sql-driver v1.10.1 dsn.go）：最后一个 / 之后、
-// 第一个 ? 之后的那段按 & 切开，每项按第一个 = 切成 key 和值。
-// 密码里带着 ?parseTime=false 也骗不过它：密码在最后一个 / 之前
+// The Config the driver parsed cannot tell "not written" from "written as the default", so the raw
+// string is inspected instead, the way the driver's ParseDSN does it (go-sql-driver v1.10.1
+// dsn.go): the part after the last / and after the first ? is split on &, and each item is split on
+// its first = into a key and a value. A password containing ?parseTime=false does not fool it:
+// the password sits before the last /.
 func mysqlParamSet(dsn, key string) bool {
 	i := strings.LastIndexByte(dsn, '/')
 	if i < 0 {
@@ -111,28 +120,30 @@ func mysqlParamSet(dsn, key string) bool {
 	return false
 }
 
-// mysqlAuthFailed 错误号 1045 和 1044，错误链上是 *mysql.MySQLError。
+// mysqlAuthFailed matches error numbers 1045 and 1044, with a *mysql.MySQLError in the error chain.
 //
-// 实测 go-sql-driver v1.10.1 连 MySQL 8.0.46：密码错、用户不存在都是 1045（Access denied for user …）；
-// 账号对、但没有这个库的权限是 1044（Access denied … to database …）——
-// 库不存在时，没有全局权限的账号拿到的也是 1044 而不是 1049，服务端不告诉它库在不在。
-// 不看 SQLSTATE：1045 的是 28000，1044 的却是 42000（语法错误、权限错误共用的那一类）。
+// Measured with go-sql-driver v1.10.1 against MySQL 8.0.46: a wrong password and a missing user are
+// both 1045 (Access denied for user …); a valid account without permission on that database is 1044
+// (Access denied … to database …) — and when the database does not exist, an account without global
+// permissions also receives 1044 rather than 1049, since the server does not tell it whether the
+// database is there. SQLSTATE is not used: 1045's is 28000 while 1044's is 42000 (the class shared
+// by syntax errors and permission errors).
 func mysqlAuthFailed(err error) bool {
 	var myErr *mysqldriver.MySQLError
 	return errors.As(err, &myErr) && (myErr.Number == mysqlAccessDenied || myErr.Number == mysqlDBAccessDenied)
 }
 
-// MySQL 的两个认证错误号（ER_ACCESS_DENIED_ERROR、ER_DBACCESS_DENIED_ERROR）
+// MySQL's two authentication error numbers (ER_ACCESS_DENIED_ERROR, ER_DBACCESS_DENIED_ERROR)
 const (
 	mysqlAccessDenied   = 1045
 	mysqlDBAccessDenied = 1044
 )
 
-// mysqlErrorCode 服务端报的错误号。
+// mysqlErrorCode is the error number the server reported.
 //
-// 实测 MySQL 8.0.46：错误原文把参数值原样带出来——1062 是
-// Duplicate entry 'a@b.com' for key 'm_err.email'，1366 是
-// Incorrect integer value: 'notanint' for column 'n' at row 1，1292 同理。
+// Measured on MySQL 8.0.46: the error text carries the parameter values out with it — 1062 is
+// Duplicate entry 'a@b.com' for key 'm_err.email', 1366 is
+// Incorrect integer value: 'notanint' for column 'n' at row 1, and 1292 is the same story.
 func mysqlErrorCode(err error) string {
 	var myErr *mysqldriver.MySQLError
 	if errors.As(err, &myErr) {
@@ -141,13 +152,14 @@ func mysqlErrorCode(err error) string {
 	return ""
 }
 
-// probeMySQLVersion 查服务端版本，按驱动自己的规则设好版本相关的开关。
+// probeMySQLVersion queries the server's version and sets the version-dependent switches by the
+// driver's own rules.
 //
-// 作为 MySQL 方言的 Ready，在每次 Ping 成功之后执行，见 Dialect.Ready。
+// It is the MySQL dialect's Ready and runs after every successful Ping, see Dialect.Ready.
 func probeMySQLVersion(ctx context.Context, db *gorm.DB) error {
 	d, ok := db.Dialector.(*mysql.Dialector)
 	if !ok {
-		return nil // 不是我们造的 Dialector，没有开关可设
+		return nil // not a Dialector we built, so there is no switch to set
 	}
 	var v string
 	if err := db.ConnPool.QueryRowContext(ctx, "SELECT VERSION()").Scan(&v); err != nil {
@@ -156,9 +168,10 @@ func probeMySQLVersion(ctx context.Context, db *gorm.DB) error {
 	return applyMySQLVersion(db, d.Config, v)
 }
 
-// applyMySQLVersion 按版本号设老版本不支持的那几项。
+// applyMySQLVersion sets the few options older versions do not support, by version.
 //
-// 规则抄自 gorm.io/driver/mysql v1.6.0 的 Initialize，升级驱动时要对一遍。
+// The rules are copied from Initialize in gorm.io/driver/mysql v1.6.0 and have to be checked
+// against it when upgrading the driver.
 func applyMySQLVersion(db *gorm.DB, c *mysql.Config, v string) error {
 	c.ServerVersion = v
 	withReturning := false
@@ -194,12 +207,13 @@ func applyMySQLVersion(db *gorm.DB, c *mysql.Config, v string) error {
 	return nil
 }
 
-// enableReturning 让增删改带上 RETURNING。
+// enableReturning makes inserts, updates and deletes carry RETURNING.
 //
-// 驱动在 Initialize 里注册回调时就把「支不支持 RETURNING」闭包进了
-// gorm:create / gorm:update / gorm:delete（gorm v1.31.2 callbacks/create.go:38），
-// 那时版本还没查，注册的是不支持的那一份。这里按支持的配置换掉那三个回调，
-// 子句列表与驱动在 Initialize 里拼的一致。
+// When the driver registers its callbacks inside Initialize it has already closed over "whether
+// RETURNING is supported", and at that point the version has not been queried, so what it
+// registered is the unsupported variant. Here those three callbacks are replaced with the
+// supported configuration -- gorm:create / gorm:update / gorm:delete (gorm v1.31.2
+// callbacks/create.go:38) -- with the clause list matching what the driver assembles in Initialize.
 func enableReturning(db *gorm.DB) error {
 	cfg := &callbacks.Config{
 		CreateClauses: append(slices.Clone(mysql.CreateClauses), "RETURNING"),
@@ -222,7 +236,8 @@ func enableReturning(db *gorm.DB) error {
 	return nil
 }
 
-// versionAtLeast v 是否不低于 floor，逐段比较数字部分。抄自驱动的 checkVersion
+// versionAtLeast reports whether v is at least floor, comparing the numeric parts segment by
+// segment. Copied from the driver's checkVersion.
 func versionAtLeast(v, floor string) bool {
 	if v == floor {
 		return true
@@ -247,13 +262,15 @@ func leadingInt(s string) int {
 	return n
 }
 
-// mysqlDriverLogger 把 go-sql-driver 自己的日志接到 slog 上。
+// mysqlDriverLogger routes go-sql-driver's own log into slog.
 //
-// go-sql-driver v1.10.1 的默认 logger 是 log.New(os.Stderr, "[mysql] ", …)，
-// 往 stderr 写纯文本（`[mysql] 2026/09/24 10:00:00 packets.go:58 read tcp …: i/o timeout`），
-// 不进 slog 就不是 JSON，进不了日志平台。它的日志没有级别，写出来的都是出错时的补充
-// （读包失败、关掉坏连接、认证插件回退），调用方同时也拿到了错误，所以一律记成 WARN。
-// 驱动不给 ctx，这些日志不带 trace_id。
+// go-sql-driver v1.10.1's default logger is log.New(os.Stderr, "[mysql] ", …), writing plain text
+// to stderr (`[mysql] 2026/09/24 10:00:00 packets.go:58 read tcp …: i/o timeout`), which is not
+// JSON unless it goes through slog and therefore never reaches the logging platform. Its lines
+// carry no level and are all supplementary information about a failure (a failed packet read, a
+// bad connection being dropped, an authentication plugin falling back) that the caller received as
+// an error anyway, so they are all recorded as WARN. The driver passes no ctx, so these lines
+// carry no trace_id.
 type mysqlDriverLogger struct{}
 
 func (mysqlDriverLogger) Print(v ...any) {

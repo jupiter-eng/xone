@@ -12,23 +12,25 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-// gormLogger 把 GORM 的日志接到标准库 slog 上
+// gormLogger routes GORM's logging into the standard library's slog.
 //
-// 字段是结构化的而不是拼进消息里：SQL 里带引号和换行，塞进消息文本
-// 会把一行日志撑成好几行，也没法按耗时或错误筛。
+// The fields are structured rather than formatted into the message: SQL carries quotes and
+// newlines, and putting it into the message text turns one log line into several and leaves no way
+// to filter by duration or by error.
 type gormLogger struct {
 	slowThreshold  time.Duration
 	ignoreNotFound bool
 	level          logger.LogLevel
 
-	// numbered 方言的 Explain 会把 $N 改写成 $N$，记下来之前要改回去，见 statement
+	// numbered: the Explain of that dialect rewrites $N into $N$, which has to be undone before
+	// recording, see statement
 	numbered bool
 
-	// dialect 认服务端错误码用，见 Dialect.ErrorCode
+	// dialect is used to recognize server error codes, see Dialect.ErrorCode
 	dialect Dialect
 }
 
-// newGormLogger d 是这个实例的 Dialector，只用来判断它的占位符长什么样
+// newGormLogger takes d, this instance's Dialector, only to tell what its placeholders look like.
 func newGormLogger(c ClientConfig, dialect Dialect, d gorm.Dialector) *gormLogger {
 	return &gormLogger{
 		slowThreshold:  c.SlowThreshold,
@@ -39,7 +41,7 @@ func newGormLogger(c ClientConfig, dialect Dialect, d gorm.Dialector) *gormLogge
 	}
 }
 
-// LogMode 返回副本，不改共享实例（GORM 的约定）
+// LogMode returns a copy and does not modify the shared instance (GORM's contract).
 func (l *gormLogger) LogMode(level logger.LogLevel) logger.Interface {
 	cp := *l
 	cp.level = level
@@ -64,7 +66,7 @@ func (l *gormLogger) Error(ctx context.Context, msg string, args ...any) {
 	}
 }
 
-// Trace 每条 SQL 执行完都会被调用
+// Trace is called after every SQL statement.
 func (l *gormLogger) Trace(ctx context.Context, begin time.Time, fc func() (string, int64), err error) {
 	if l.level <= logger.Silent {
 		return
@@ -80,51 +82,58 @@ func (l *gormLogger) Trace(ctx context.Context, begin time.Time, fc func() (stri
 		sql, rows := l.statement(fc)
 		slog.WarnContext(ctx, "slow SQL", attrs(sql, rows, elapsed, "threshold_ms", ms(l.slowThreshold))...)
 
-	// 每条 SQL 都走这一支。slog 不收 info 就在这里停下：fc 要把 SQL 重新拼一遍
-	// （PG 方言即使没有参数也要过两遍正则），拼完再交给 slog 丢掉全是白干
+		// Every SQL statement comes through here. Stop as soon as slog refuses info: fc rebuilds the
+		// SQL (the PG dialect runs two regexes over it even without parameters), and building it only
+		// for slog to drop it is wasted work.
 	case l.level >= logger.Info && slog.Default().Enabled(ctx, slog.LevelInfo):
 		sql, rows := l.statement(fc)
 		slog.InfoContext(ctx, "SQL", attrs(sql, rows, elapsed)...)
 	}
 }
 
-// ParamsFilter 让 GORM 交给 Trace 的是带占位符的 SQL，不把参数值代进去。
+// ParamsFilter makes GORM hand Trace the SQL with its placeholders rather than interpolating the
+// parameter values.
 //
-// GORM 只在 Logger 实现了这个接口时才调它（v1.31.2 callbacks.go:142），
-// 否则把 Statement.Vars 逐个代进 SQL 再交给我们：实测 Log: true 时
-// WHERE password = ? 记下来的是 password = '<真实的值>'。参数里可能有
-// 个人信息或凭证，与 trace.go 不记 Statement.Vars 是同一条原则。
+// GORM only calls it when the Logger implements this interface (v1.31.2 callbacks.go:142);
+// otherwise it interpolates Statement.Vars into the SQL one by one before handing it over:
+// measured with Log: true, WHERE password = ? was recorded as password = '<the real value>'.
+// The parameters may hold personal information or credentials, which is the same principle that
+// keeps trace.go from recording Statement.Vars.
 func (l *gormLogger) ParamsFilter(ctx context.Context, sql string, params ...any) (string, []any) {
 	return withoutParams(ctx, sql, params...)
 }
 
-// withoutParams 只留带占位符的 SQL，参数一个都不交出去。
+// withoutParams keeps the SQL with its placeholders and hands out no parameter at all.
 //
-// 除了 gormLogger.ParamsFilter，它还是进程级的 logger.RecorderParamsFilter（见 xgorm.go 的 init）：
-// GORM 的 Scan 执行期间把实例的 Logger 换成 logger.Recorder（v1.31.2 finisher_api.go:539），
-// 执行完再把 Recorder 记下的 SQL 交给原来的 Logger。Recorder 不问我们的 ParamsFilter，
-// 只认这个包级变量，而它的默认值原样返回参数——于是 Raw(...).Scan(...)、
-// Table(...).Select(...).Scan(...) 交过来的是参数已经代进去的 SQL，每个驱动都是。
-// 实测（ClickHouse 24.8，改之前）：WHERE name = ? 记成了 WHERE name = 'sql-3fa9c1d2b7e4'
+// Beyond gormLogger.ParamsFilter it is also the process-wide logger.RecorderParamsFilter (see the
+// init in xgorm.go): during GORM's Scan the instance's Logger is swapped for logger.Recorder
+// (v1.31.2 finisher_api.go:539), and afterwards the SQL the Recorder captured is handed to the
+// original Logger. The Recorder never asks our ParamsFilter and honors only that package-level
+// variable, whose default returns the parameters as they are — so Raw(...).Scan(...) and
+// Table(...).Select(...).Scan(...) used to hand over SQL with the parameters already interpolated,
+// on every driver. Measured (ClickHouse 24.8, before the fix): WHERE name = ? was recorded as
+// WHERE name = 'sql-3fa9c1d2b7e4'.
 func withoutParams(_ context.Context, sql string, _ ...any) (string, []any) {
 	return sql, nil
 }
 
-// explainedNumbered PG 方言的 Explain 在没有参数可代时留下的记号
+// explainedNumbered is the marker the PG dialect's Explain leaves behind when there is no
+// parameter to interpolate.
 var explainedNumbered = regexp.MustCompile(`\$(\d+)\$`)
 
-// statement 取出要记的 SQL：就是发给数据库的那条，占位符原样、不含参数值。
+// statement extracts the SQL to record: exactly the one sent to the database, with its
+// placeholders intact and no parameter values.
 //
-// fc 交出来的 SQL 已经过了方言的 Explain，哪怕 ParamsFilter 返回的参数是空的。
-// MySQL、ClickHouse 的 Explain 这时原样返回；PG 的不会：它先把每个 $N 改写成 $N$
-// 等着代参数（gorm.io/driver/postgres v1.6.3 Explain → gorm v1.31.2
-// logger.ExplainSQL），没有参数可代，记号就留在了日志里——实测
-// INSERT ... VALUES ($1,$2) 记成了 VALUES ($1$,$2$)，和 Span 里的 db.statement、
-// 和 pg_stat_statements 里的都对不上。
+// What fc hands over has already been through the dialect's Explain, even when the parameters
+// ParamsFilter returned are empty. MySQL's and ClickHouse's Explain return it unchanged at that
+// point; PG's does not: it first rewrites every $N into $N$ in preparation for interpolation
+// (gorm.io/driver/postgres v1.6.3 Explain → gorm v1.31.2 logger.ExplainSQL), and with no
+// parameters to interpolate the marker stays in the log — measured, INSERT ... VALUES ($1,$2) was
+// recorded as VALUES ($1$,$2$), matching neither db.statement on the span nor pg_stat_statements.
 //
-// 改回去是精确的逆运算：Explain 只在每个最长匹配的 $数字 后面补一个 $，
-// 所以把每个 $数字$ 去掉末尾那个 $ 就还原了原文，原文里本来就有的 $1$ 也一样
-// （Explain 把它变成 $1$$，改回来还是 $1$）。
+// Undoing it is an exact inverse: Explain only appends one $ after each longest-matching $number,
+// so dropping the trailing $ of every $number$ restores the original — including a $1$ that was
+// there to begin with (Explain turns it into $1$$, and undoing gives $1$ back).
 func (l *gormLogger) statement(fc func() (string, int64)) (string, int64) {
 	sql, rows := fc()
 	if l.numbered {
@@ -133,11 +142,12 @@ func (l *gormLogger) statement(fc func() (string, int64)) (string, int64) {
 	return sql, rows
 }
 
-// errorAttrs 错误的字段：服务端报的错只记错误码，不记原文。
+// errorAttrs are the error's fields: a server-side error records its code alone, never its text.
 //
-// 与只记占位符 SQL、不记参数是同一条原则：服务端的错误原文会把参数值带出来
-// （实测 MySQL 8.0 的 1062 是 Duplicate entry 'a@b.com' for key …），
-// 不收掉的话 Log: true 时参数值换一条路照样进了日志。见 Dialect.ErrorCode
+// This is the same principle as recording placeholder SQL without parameters: a server's error
+// text carries the parameter values out with it (measured, MySQL 8.0's 1062 reads
+// Duplicate entry 'a@b.com' for key …), and without stripping it the parameter values would reach
+// the log by another route whenever Log: true. See Dialect.ErrorCode.
 func (l *gormLogger) errorAttrs(err error) []any {
 	text, code := l.dialect.redactedError(err)
 	if code == "" {
@@ -146,7 +156,7 @@ func (l *gormLogger) errorAttrs(err error) []any {
 	return []any{"error", text, "error_code", code}
 }
 
-// skipErr「没查到记录」通常是正常的业务分支，不是故障
+// skipErr: "no record found" is usually an ordinary business branch rather than a failure.
 func (l *gormLogger) skipErr(err error) bool {
 	return l.ignoreNotFound && errors.Is(err, gorm.ErrRecordNotFound)
 }
@@ -155,19 +165,21 @@ func attrs(sql string, rows int64, elapsed time.Duration, extra ...any) []any {
 	out := make([]any, 0, 6+len(extra))
 	out = append(out, "sql", sql, "elapsed_ms", ms(elapsed))
 	if rows >= 0 {
-		// -1 是 GORM 表示「行数未知」的约定，写成 -1 会被误读成真有 -1 行
+		// -1 is GORM's convention for "the row count is unknown", and recording -1 would read as a
+		// genuine -1 rows
 		out = append(out, "rows_affected", rows)
 	}
 	return append(out, extra...)
 }
 
-// message 组装 GORM 传来的日志消息。
+// message assembles the log message GORM passed in.
 //
-// GORM 的接口是 printf 风格的，但它也会传不带参数的纯文本，
-// 那时候不能走 Sprintf——消息里的 % 会被当成占位符。
+// GORM's interface is printf-style, but it also passes plain text with no arguments, and Sprintf
+// must not be used then — a % in the message would be taken for a placeholder.
 //
-// 收切片而不是变参：变参会被 go vet 认成 printf 包装函数，
-// 于是每个调用点都要求格式串是常量，而这里恰恰相反。
+// It takes a slice rather than variadic arguments: variadic ones make go vet treat this as a
+// printf wrapper, which then demands a constant format string at every call site, and here the
+// opposite is true.
 func message(msg string, args []any) string {
 	if len(args) == 0 {
 		return msg
@@ -175,5 +187,6 @@ func message(msg string, args []any) string {
 	return fmt.Sprintf(msg, args...)
 }
 
-// ms 耗时换成毫秒，保留到微秒。字段名带单位：slog 的 JSON 把 Duration 写成纳秒整数
+// ms converts a duration to milliseconds, down to the microsecond. The field name carries the
+// unit: slog's JSON writes a Duration as an integer of nanoseconds.
 func ms(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }

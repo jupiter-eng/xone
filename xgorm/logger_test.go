@@ -20,7 +20,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-// capture 把 slog 默认 logger 换成写进 buffer 的，返回取解析结果的函数
+// capture swaps the slog default logger for one writing into a buffer and returns a function that parses what was written.
 func capture(t *testing.T) func() []map[string]any {
 	t.Helper()
 	var buf strings.Builder
@@ -36,7 +36,7 @@ func capture(t *testing.T) func() []map[string]any {
 			}
 			m := map[string]any{}
 			if err := json.Unmarshal([]byte(line), &m); err != nil {
-				t.Fatalf("日志不是 JSON：%v，内容=%q", err, line)
+				t.Fatalf("log line is not JSON: %v, content=%q", err, line)
 			}
 			out = append(out, m)
 		}
@@ -52,20 +52,20 @@ func traceOnce(l logger.Interface, err error, elapsed time.Duration) {
 }
 
 func TestLogger_SQLAsStructuredFields(t *testing.T) {
-	// SQL 里带引号和换行，塞进消息文本会把一行日志撑成好几行，也没法按耗时筛
+	// SQL carries quotes and newlines; folding it into the message text turns one log line into several and makes filtering by latency impossible.
 	lines := capture(t)
 	c := DefaultClientConfig()
 	traceOnce(newGormLogger(c, pgDialect(), postgres.Dialector{}), nil, time.Millisecond)
 
 	got := lines()
 	if len(got) != 1 {
-		t.Fatalf("应记一条，got=%v", got)
+		t.Fatalf("expected one record, got=%v", got)
 	}
 	if got[0]["sql"] != "SELECT * FROM users WHERE id = ?" {
-		t.Errorf("SQL 应是独立字段，got=%v", got[0])
+		t.Errorf("SQL must be its own field, got=%v", got[0])
 	}
 	if got[0]["elapsed_ms"] == nil || got[0]["rows_affected"] != float64(1) {
-		t.Errorf("耗时和行数也该是字段，got=%v", got[0])
+		t.Errorf("elapsed time and row count must be fields too, got=%v", got[0])
 	}
 }
 
@@ -77,36 +77,36 @@ func TestLogger_SlowQueryLogsWarn(t *testing.T) {
 
 	got := lines()
 	if len(got) != 1 || got[0]["level"] != "WARN" {
-		t.Fatalf("超过阈值应记 warn，got=%v", got)
+		t.Fatalf("crossing the threshold must be logged at warn, got=%v", got)
 	}
-	// 两个都是毫秒：慢了 1s、阈值 10ms
+	// Both are milliseconds: 1s elapsed against a 10ms threshold.
 	if got[0]["threshold_ms"] != float64(10) {
-		t.Errorf("该带上毫秒的阈值，否则看不出为什么算慢，got=%v", got[0])
+		t.Errorf("the threshold in milliseconds must be included, otherwise it is unclear why this counts as slow, got=%v", got[0])
 	}
 	if ms, _ := got[0]["elapsed_ms"].(float64); ms < 1000 || ms > 2000 {
-		t.Errorf("elapsed_ms 该是毫秒（约 1000），got=%v", got[0]["elapsed_ms"])
+		t.Errorf("elapsed_ms must be milliseconds (about 1000), got=%v", got[0]["elapsed_ms"])
 	}
 }
 
 func TestLogger_ErrorLogsError(t *testing.T) {
 	lines := capture(t)
-	// 客户端的错只有认得出是安全的才记原文（见 TestRedactedError_ClientErrors），坏连接是其中之一
+	// A client error is logged verbatim only when it is recognized as safe (see TestRedactedError_ClientErrors); a bad connection is one of those.
 	traceOnce(newGormLogger(DefaultClientConfig(), pgDialect(), postgres.Dialector{}), fmt.Errorf("exec: %w", driver.ErrBadConn), time.Millisecond)
 
 	got := lines()
 	if len(got) != 1 || got[0]["level"] != "ERROR" {
-		t.Fatalf("出错应记 error，got=%v", got)
+		t.Fatalf("a failure must be logged at error, got=%v", got)
 	}
 	if got[0]["error"] != driver.ErrBadConn.Error() {
-		t.Errorf("该带上错误，got=%v", got[0])
+		t.Errorf("the error must be included, got=%v", got[0])
 	}
 }
 
 func TestLogger_ServerErrorLogsCodeNotMessage(t *testing.T) {
-	// 服务端的错误原文会把参数值带出来：实测 MySQL 8.0 的 1062 是
-	// Duplicate entry 'a@b.com' for key …，PG 16 的 22P02 是
-	// invalid input syntax for type integer: "notanint"。
-	// SQL 本身只记占位符，参数值不能从 error 字段绕进日志
+	// The server's error text carries parameter values out with it: measured, MySQL 8.0 reports 1062 as
+	// Duplicate entry 'a@b.com' for key ..., and PG 16 reports 22P02 as
+	// invalid input syntax for type integer: "notanint".
+	// The SQL itself only records placeholders, so parameter values must not slip into the log through the error field.
 	for _, c := range []struct {
 		name string
 		d    Dialect
@@ -121,26 +121,26 @@ func TestLogger_ServerErrorLogsCodeNotMessage(t *testing.T) {
 			traceOnce(newGormLogger(DefaultClientConfig(), c.d, postgres.Dialector{}), c.err, time.Millisecond)
 			got := lines()
 			if len(got) != 1 || got[0]["level"] != "ERROR" {
-				t.Fatalf("出错应记 error，got=%v", got)
+				t.Fatalf("a failure must be logged at error, got=%v", got)
 			}
 			if fmt.Sprint(got[0]) != strings.ReplaceAll(fmt.Sprint(got[0]), secret, "") {
-				t.Errorf("服务端错误原文里的参数值进了日志：%v", got[0])
+				t.Errorf("a parameter value from the server error text reached the log: %v", got[0])
 			}
 			if got[0]["error_code"] != c.code || !strings.Contains(fmt.Sprint(got[0]["error"]), c.code) {
-				t.Errorf("该记下错误码 %s，got=%v", c.code, got[0])
+				t.Errorf("the error code %s must be recorded, got=%v", c.code, got[0])
 			}
 		})
 	}
 }
 
 func TestLogger_RecordNotFoundCanBeNonError(t *testing.T) {
-	// 「没查到」通常是正常的业务分支，默认还是记下来，配了才忽略
+	// "not found" is usually a normal business branch; it is still recorded by default and ignored only when configured.
 	for _, c := range []struct {
 		ignore    bool
 		wantLevel any
 	}{
 		{false, "ERROR"},
-		{true, "INFO"}, // 不当错误，退回普通 SQL 日志
+		{true, "INFO"}, // not treated as an error, falls back to a plain SQL log
 	} {
 		lines := capture(t)
 		cfg := DefaultClientConfig()
@@ -149,81 +149,81 @@ func TestLogger_RecordNotFoundCanBeNonError(t *testing.T) {
 
 		got := lines()
 		if len(got) != 1 || got[0]["level"] != c.wantLevel {
-			t.Errorf("IgnoreNotFound=%v 时应记 %v，got=%v", c.ignore, c.wantLevel, got)
+			t.Errorf("with IgnoreNotFound=%v the level must be %v, got=%v", c.ignore, c.wantLevel, got)
 		}
 	}
 }
 
 func TestLogger_OmitsRowsWhenUnknown(t *testing.T) {
-	// GORM 用 -1 表示「行数未知」，写成 -1 会被误读成真有 -1 行
+	// GORM uses -1 for "row count unknown"; writing -1 would read as if there really were -1 rows.
 	lines := capture(t)
 	l := newGormLogger(DefaultClientConfig(), pgDialect(), postgres.Dialector{})
 	l.Trace(context.Background(), time.Now(), func() (string, int64) { return "SELECT 1", -1 }, nil)
 
 	got := lines()
 	if len(got) != 1 {
-		t.Fatalf("应记一条，got=%v", got)
+		t.Fatalf("expected one record, got=%v", got)
 	}
 	if _, has := got[0]["rows_affected"]; has {
-		t.Errorf("行数未知时不该写这个字段，got=%v", got[0])
+		t.Errorf("the field must be omitted when the row count is unknown, got=%v", got[0])
 	}
 }
 
 func TestLogger_SilentLogsNothing(t *testing.T) {
 	lines := capture(t)
 	l := newGormLogger(DefaultClientConfig(), pgDialect(), postgres.Dialector{}).LogMode(logger.Silent)
-	traceOnce(l, errors.New("出错了"), time.Second)
+	traceOnce(l, errors.New("boom"), time.Second)
 
 	if got := lines(); len(got) != 0 {
-		t.Errorf("Silent 时不该有任何日志，got=%v", got)
+		t.Errorf("Silent must produce no logs at all, got=%v", got)
 	}
 }
 
 func TestLogger_LogModeReturnsCopy(t *testing.T) {
-	// GORM 的约定：LogMode 返回新实例，不能改共享的那个
+	// GORM's contract: LogMode returns a new instance and must not mutate the shared one.
 	l := newGormLogger(DefaultClientConfig(), pgDialect(), postgres.Dialector{})
 	other := l.LogMode(logger.Silent).(*gormLogger)
 	if l.level == logger.Silent {
-		t.Error("不该改动原实例")
+		t.Error("the original instance must not be modified")
 	}
 	if other.level != logger.Silent {
-		t.Error("副本应带上新级别")
+		t.Error("the copy must carry the new level")
 	}
 }
 
 func TestLogger_InfoWarnError(t *testing.T) {
 	lines := capture(t)
 	l := newGormLogger(DefaultClientConfig(), pgDialect(), postgres.Dialector{})
-	l.Info(context.Background(), "普通消息")
-	l.Warn(context.Background(), "警告 %d", 1)
+	l.Info(context.Background(), "plain message")
+	l.Warn(context.Background(), "warning %d", 1)
 	l.Error(context.Background(), "error")
 
 	got := lines()
 	if len(got) != 3 {
-		t.Fatalf("应记三条，got=%v", got)
+		t.Fatalf("expected three records, got=%v", got)
 	}
-	if got[1]["msg"] != "警告 1" {
-		t.Errorf("有参数时才格式化，got=%v", got[1])
+	if got[1]["msg"] != "warning 1" {
+		t.Errorf("formatting only happens when there are arguments, got=%v", got[1])
 	}
 }
 
 func TestMessage_NotFormatStringWithoutArgs(t *testing.T) {
-	// GORM 也会传不带参数的纯文本，消息里的 % 不该被当成占位符
-	if got := message("100% 命中", nil); got != "100% 命中" {
-		t.Errorf("没有参数时应原样返回，got=%q", got)
+	// GORM also passes plain text without arguments; a % in the message must not be treated as a verb.
+	if got := message("100% hit", nil); got != "100% hit" {
+		t.Errorf("without arguments it must be returned as is, got=%q", got)
 	}
-	if got := message("命中 %d%%", []any{50}); got != "命中 50%" {
-		t.Errorf("有参数时才格式化，got=%q", got)
+	if got := message("hit %d%%", []any{50}); got != "hit 50%" {
+		t.Errorf("formatting only happens when there are arguments, got=%q", got)
 	}
 }
 
 func TestLogger_SQLLogHasNoParamValuesAndMatchesSent(t *testing.T) {
-	// GORM 只在 Logger 实现了 ParamsFilter 时才不把参数代进 SQL
-	// （v1.31.2 callbacks.go:142）。没实现的话 Log: true 时每条
-	// WHERE password = ? 都带着真实的值进了日志。
+	// GORM leaves parameters out of the SQL only when the Logger implements ParamsFilter
+	// (v1.31.2 callbacks.go:142). Without it, with Log: true every
+	// WHERE password = ? reaches the log carrying the real value.
 	//
-	// 记下的也必须就是发给数据库的那条：PG 方言的 Explain 没有参数可代时
-	// 把 $1 留成 $1$，日志里的语句和 Span、和 pg_stat_statements 都对不上
+	// What is recorded must also be exactly what was sent to the database: when the PG dialect's Explain has no
+	// parameters to substitute it leaves $1 as $1$, and the logged statement then matches neither the Span nor pg_stat_statements.
 	const secret = "hunter2-in-a-where"
 	for _, c := range []struct {
 		name        string
@@ -249,22 +249,22 @@ func TestLogger_SQLLogHasNoParamValuesAndMatchesSent(t *testing.T) {
 				tx = tx.Where("name = ?", secret)
 			}
 			tx = tx.Find(&rows)
-			sent := tx.Statement.SQL.String() // DryRun 留着它：这就是会发给数据库的那条
+			sent := tx.Statement.SQL.String() // DryRun keeps it: this is the statement that would go to the database
 
 			got := lines()
 			if len(got) == 0 {
-				t.Fatal("前提：该记下这条 SQL")
+				t.Fatal("precondition: this SQL must be recorded")
 			}
 			if !strings.Contains(sent, c.placeholder) {
-				t.Fatalf("前提：发出去的语句该带 %q，实际 %q", c.placeholder, sent)
+				t.Fatalf("precondition: the sent statement must carry %q, got %q", c.placeholder, sent)
 			}
 			for _, l := range got {
 				sql, _ := l["sql"].(string)
 				if strings.Contains(sql, secret) {
-					t.Errorf("参数值进了日志：%v", sql)
+					t.Errorf("a parameter value reached the log: %v", sql)
 				}
 				if sql != sent {
-					t.Errorf("日志里的 SQL 应就是发出去的那条：\n日志 %q\n发出 %q", sql, sent)
+					t.Errorf("the logged SQL must be exactly what was sent:\nlogged %q\nsent   %q", sql, sent)
 				}
 			}
 		})
@@ -272,10 +272,10 @@ func TestLogger_SQLLogHasNoParamValuesAndMatchesSent(t *testing.T) {
 }
 
 func TestLogger_ScanSQLLogHasNoParamValues(t *testing.T) {
-	// Scan 执行期间 GORM 把 Logger 换成 logger.Recorder（v1.31.2 finisher_api.go:539），
-	// Recorder 不问实例 Logger 的 ParamsFilter，只认进程级的 logger.RecorderParamsFilter，
-	// 它的默认值把参数代进 SQL。xgorm 的 init 把它换成 withoutParams，这里验的是换上了：
-	// 两条 Scan 的写法，记下的都是发出去的那条带占位符的语句
+	// During Scan, GORM swaps the Logger for logger.Recorder (v1.31.2 finisher_api.go:539), and
+	// Recorder does not consult the instance Logger's ParamsFilter, only the process-wide logger.RecorderParamsFilter,
+	// whose default substitutes parameters into the SQL. xgorm's init replaces it with withoutParams; what is checked here is that it took:
+	// both ways of writing a Scan record the statement that was sent, with placeholders.
 	const secret = "hunter2-in-a-scan"
 	for _, c := range []struct {
 		name      string
@@ -309,14 +309,14 @@ func TestLogger_ScanSQLLogHasNoParamValues(t *testing.T) {
 				tx := scan.run(&dest)
 				sent := tx.Statement.SQL.String()
 				if sent == "" || strings.Contains(sent, secret) {
-					t.Fatalf("前提：发出去的语句该带占位符，实际 %q", sent)
+					t.Fatalf("precondition: the sent statement must carry placeholders, got %q", sent)
 				}
 				got := lines()
 				if len(got) != 1 {
-					t.Fatalf("Scan 应记 1 条 SQL 日志，实际 %v", got)
+					t.Fatalf("Scan must produce 1 SQL log record, got %v", got)
 				}
 				if sql, _ := got[0]["sql"].(string); sql != sent {
-					t.Errorf("Scan 记下的 SQL 应就是发出去的那条：\n日志 %q\n发出 %q", sql, sent)
+					t.Errorf("the SQL recorded for Scan must be exactly what was sent:\nlogged %q\nsent   %q", sql, sent)
 				}
 			})
 		}
@@ -324,8 +324,8 @@ func TestLogger_ScanSQLLogHasNoParamValues(t *testing.T) {
 }
 
 func TestLogger_PGPlaceholderRestoreIsExactInverseOfExplain(t *testing.T) {
-	// 原文里本来就有 $1$ 这种写法（字符串字面量里）也要原样还原，
-	// 不能只是「把 $N$ 都换成 $N」碰巧对上了常见的语句
+	// A $1$ that was in the original statement (inside a string literal) must be restored as is;
+	// it must not be a "replace every $N$ with $N" that happens to match the common statements.
 	l := newGormLogger(DefaultClientConfig(), pgDialect(), postgres.Dialector{})
 	for _, sql := range []string{
 		"SELECT * FROM users WHERE id = $1 LIMIT $2",
@@ -337,19 +337,19 @@ func TestLogger_PGPlaceholderRestoreIsExactInverseOfExplain(t *testing.T) {
 	} {
 		got, _ := l.statement(func() (string, int64) { return postgres.Dialector{}.Explain(sql), 0 })
 		if got != sql {
-			t.Errorf("还原后应是原文：\n原文 %q\n得到 %q", sql, got)
+			t.Errorf("the restored statement must equal the original:\noriginal %q\ngot      %q", sql, got)
 		}
 	}
-	// ? 占位符的方言不动：原文里恰好有 $1$ 也不能被改掉
+	// Dialects with ? placeholders are left alone: a $1$ that happens to appear in the original must not be touched.
 	my := mysql.New(mysql.Config{DSN: "u:p@tcp(127.0.0.1:1)/app"})
 	m := newGormLogger(DefaultClientConfig(), pgDialect(), my)
 	const raw = "SELECT '$1$' FROM t WHERE id = ?"
 	if got, _ := m.statement(func() (string, int64) { return my.Explain(raw), 0 }); got != raw {
-		t.Errorf("MySQL 的语句应原样记，得到 %q", got)
+		t.Errorf("a MySQL statement must be recorded as is, got %q", got)
 	}
 }
 
-// benchTrace 开了 Log 的实例，每条 SQL 执行完 GORM 都调一次 Trace
+// benchTrace runs an instance with Log on; GORM calls Trace once after every SQL statement.
 func benchTrace(b *testing.B, level slog.Level) {
 	old := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(io.Discard, &slog.HandlerOptions{Level: level})))
@@ -357,7 +357,7 @@ func benchTrace(b *testing.B, level slog.Level) {
 
 	l := newGormLogger(DefaultClientConfig(), pgDialect(), postgres.Dialector{})
 	ctx := context.Background()
-	// 照 GORM 的样子取 SQL：PG 方言的 Explain 即使没有参数也要过两遍正则
+	// Take the SQL the way GORM does: the PG dialect's Explain runs two regexp passes even with no parameters.
 	fc := func() (string, int64) {
 		return postgres.Dialector{}.Explain("SELECT * FROM users WHERE id = $1 LIMIT $2"), 1
 	}

@@ -1,119 +1,129 @@
 # xtrace
 
-链路：装好 OpenTelemetry 的全局 TracerProvider 和 Propagator，业务代码用原生的 `otel.Tracer("...")`。
+Tracing: sets up OpenTelemetry's global TracerProvider and Propagator, with business code using the native `otel.Tracer("...")`.
 
-- xgin / xecho / xgorm / xredis / xhttp 自带它，用了其中任何一个就不用另外 import
-- 有上游时听上游的采样决定，没有上游时按 `SampleRatio` 采样
-- 按配置透传自定义 Header（如 `X-Request-Id`），可以只发给指定域名
-- 透传的 Header 和 `baggage` 只收可信对端的
-- 不内置 exporter：要上报就自己 `xtrace.AddSpanProcessor(...)`，退出时由框架 Shutdown
+- xgin / xecho / xgorm / xredis / xhttp carry it, so using any one of them needs no separate import
+- With an upstream, the upstream's sampling decision is followed; without one, `SampleRatio` decides
+- Custom headers (such as `X-Request-Id`) are forwarded from the configuration, optionally only to named domains
+- Forwarded headers and `baggage` are accepted only from a trusted peer
+- No exporter is bundled: to report, call `xtrace.AddSpanProcessor(...)` and the framework Shuts it down on exit
 
-## 快速上手
+## Quick start
 
 ```yaml
 # conf/application.yml
 XApp:
-  Name: shop.order.api     # 就是 service.name
+  Name: shop.order.api     # this is service.name
 XTrace:
-  SampleRatio: 0.1         # 只管根 Span；有上游时听上游的
+  SampleRatio: 0.1         # root Spans only; with an upstream the upstream decides
   ForwardHeaders: [X-Request-Id]
 ```
 
 ```go
 func main() {
-	// 框架不内置上报：要上报就自己挂一个 exporter，在 xone.Run 之前
+	// The framework bundles no reporting: attach an exporter yourself, before xone.Run
 	exp, err := otlptracegrpc.New(context.Background(),
 		otlptracegrpc.WithEndpoint(os.Getenv("OTLP_ENDPOINT")), otlptracegrpc.WithInsecure())
 	if err != nil {
 		log.Fatal(err)
 	}
-	xtrace.AddSpanProcessor(sdktrace.NewBatchSpanProcessor(exp)) // 退出时由框架 Shutdown
+	xtrace.AddSpanProcessor(sdktrace.NewBatchSpanProcessor(exp)) // Shut down by the framework on exit
 
 	xone.MustRun(xgin.New().WithRoutes(routes))
 }
 
 func riskCheck(ctx context.Context, orderID string) {
-	// 入站 Span 由 xgin 开好了；要再细分一段，就用原生的 OpenTelemetry API
+	// The inbound Span is already open thanks to xgin; to break out a further step, use the native OpenTelemetry API
 	ctx, span := otel.Tracer("order").Start(ctx, "risk_check")
 	defer span.End()
 	span.SetAttributes(attribute.String("order.id", orderID))
-	_, _ = xhttp.R(ctx).Get("http://risk.internal/api/v1/check") // traceparent 自动带给下游
+	_, _ = xhttp.R(ctx).Get("http://risk.internal/api/v1/check") // traceparent is carried downstream automatically
 }
 ```
 
-## 配置
+## Configuration
 
 ```yaml
 XTrace:
-  Enable: true             # 默认开。关掉后没有 Span，traceparent / baggage 也不再透传，ForwardHeaders 照常
-  Console: false           # 把 Span 打到标准输出，本地调试用，默认关
-  SampleRatio: 1           # 根 Span 的采样率 [0, 1]，默认 1；有上游时一律听上游的 sampled 位
-  ShutdownTimeout: 5s      # 退出时等导出完成的上限，默认 5s，必须 > 0，同时不超过框架的停止预算
-  ForwardHeaders:          # 向所有下游透传的 Header，默认无
+  Enable: true             # on by default. With it off there are no Spans and traceparent / baggage are no longer forwarded, while ForwardHeaders keeps working
+  Console: false           # print Spans to standard output, for local debugging; off by default
+  SampleRatio: 1           # the sampling ratio of root Spans, [0, 1], 1 by default; with an upstream its sampled bit always decides
+  ShutdownTimeout: 5s      # the upper bound on waiting for the export to finish on exit, 5s by default, must be > 0, and never exceeds the framework's stop budget
+  ForwardHeaders:          # headers forwarded to every downstream, none by default
     - X-Request-Id
-  ForwardHeaderRules:      # 只发给匹配域名的 Header，默认无
+  ForwardHeaderRules:      # headers sent only to matching domains, none by default
     - Domains: ["api.internal.com", "*.trusted.com"]
       Headers: ["X-Internal-Token"]
 ```
 
-- `Domains` 只认 `api.internal.com` 和 `*.trusted.com` 两种写法；`*.trusted.com` 匹配任意层级子域、**不匹配裸域**。
-  其余带 `*` 的写法、同一个 header 同时出现在 `ForwardHeaders` 和 `ForwardHeaderRules` 里，都在读配置时失败。
-- `XGin.Trace` / `XHttp.Trace` 只管开不开 Span，关掉之后透传照常。
-- `AddSpanProcessor` 登记的处理器在 `Enable: false` 时收不到 Span，退出时照样被 Shutdown。
+- `Domains` accepts only the two spellings `api.internal.com` and `*.trusted.com`; `*.trusted.com` matches a subdomain
+  at any depth and **does not match the bare domain**. Every other spelling with a `*`, and the same header appearing in
+  both `ForwardHeaders` and `ForwardHeaderRules`, fails while the configuration is read.
+- `XGin.Trace` / `XHttp.Trace` only decide whether Spans are opened; forwarding keeps working with them off.
+- Processors registered with `AddSpanProcessor` receive no Span while `Enable: false`, and are Shut down on exit all the same.
 
 ## API
 
-| 函数 | 说明 |
+| Function | Description |
 |---|---|
-| `AddSpanProcessor(sp sdktrace.SpanProcessor)` | 挂一个上报用的处理器，在 `xone.Run` 之前调；初始化之后调的立即挂上。传 nil 直接 panic |
-| `ForwardHeaderFromContext(ctx, key) string` | 取一个透传的 Header 值，大小写不敏感 |
-| `ForwardHeadersFromContext(ctx) map[string]string` | 取全部透传的 Header（拷贝） |
-| `Transport{Next}` | `http.RoundTripper`：把目标 Host 写进 ctx，`ForwardHeaderRules` 才能按域名生效。它自己不注入 Header，`Next` 要是会调全局 Propagator 的那一层（如 `otelhttp.NewTransport(...)`）。xhttp 已经包好，自己的 `http.Client` 才要用 |
-| `WithTargetHost(ctx, host)` / `TargetHostFromContext(ctx)` | 不经 HTTP 时自己写 / 读目标 Host，作用同 `Transport` |
-| `New(ctx, cfg, procs...) (*Tracing, io.Closer, error)` | 纯构造器：不碰全局，`(*Tracing).Install()` 才装成进程级的 |
+| `AddSpanProcessor(sp sdktrace.SpanProcessor)` | Attaches a processor for reporting, called before `xone.Run`; one called after initialization is attached immediately. Passing nil panics outright |
+| `ForwardHeaderFromContext(ctx, key) string` | Takes one forwarded header value, case-insensitively |
+| `ForwardHeadersFromContext(ctx) map[string]string` | Takes every forwarded header (a copy) |
+| `Transport{Next}` | An `http.RoundTripper` writing the target Host into the ctx, which is what lets `ForwardHeaderRules` match by domain. It injects no header itself, so `Next` has to be the layer calling the global Propagator (such as `otelhttp.NewTransport(...)`). xhttp already wraps it; this is for an `http.Client` of your own |
+| `WithTargetHost(ctx, host)` / `TargetHostFromContext(ctx)` | Writes / reads the target Host yourself outside HTTP, with the same effect as `Transport` |
+| `New(ctx, cfg, procs...) (*Tracing, io.Closer, error)` | The pure constructor: touches no globals, and `(*Tracing).Install()` makes it process-wide |
 
-## 注意事项
+## Notes
 
-- **框架不内置任何 exporter**：不 `AddSpanProcessor` 的话 Span 照样生成、`trace_id` 照样进日志，只是不上报。本地调试开 `Console: true`。
-- **透传 Header 和 `baggage` 只收可信对端的**：直连对端在 `XGin.TrustedProxies` / `XEcho.TrustedProxies` 里才收，默认只信私有网段
-  （负载均衡、K8s 的 Ingress 和 Pod）。`traceparent` / `b3` 谁发来的都接。见
-  [observability.md「传播与信任边界」](../docs/observability.md#propagation-and-the-trust-boundary)。
-- **有上游时一律听上游的 sampled 位**，`SampleRatio: 1` 也不例外（`ParentBased`，见[「行为与实测」](#行为与实测)）。
-  `SampleRatio: 0` 是不采样但照常生成、透传 TraceID；连 Span 都不要用 `Enable: false`。
-- **`service.name`** 取 `XApp.Name`，环境变量 `OTEL_RESOURCE_ATTRIBUTES` / `OTEL_SERVICE_NAME` 压过它。见[「行为与实测」](#行为与实测)。
+- **The framework bundles no exporter**: without `AddSpanProcessor`, Spans are still generated and `trace_id` still
+  reaches the logs, they are simply not reported. For local debugging, set `Console: true`.
+- **Forwarded headers and `baggage` are accepted only from a trusted peer**: they are taken only when the directly
+  connected peer is in `XGin.TrustedProxies` / `XEcho.TrustedProxies`, which by default trusts only the private ranges
+  (load balancers, a K8s Ingress and Pods). `traceparent` / `b3` are accepted from anybody. See
+  [observability.md "Propagation and the trust boundary"](../docs/observability.md#propagation-and-the-trust-boundary).
+- **With an upstream its sampled bit always decides**, `SampleRatio: 1` included (`ParentBased`, see
+  ["Behavior (measured)"](#behavior-measured)). `SampleRatio: 0` means nothing is sampled while TraceIDs are still
+  generated and forwarded; to have no Spans at all, use `Enable: false`.
+- **`service.name`** comes from `XApp.Name`, with the environment variables `OTEL_RESOURCE_ATTRIBUTES` /
+  `OTEL_SERVICE_NAME` overriding it. See ["Behavior (measured)"](#behavior-measured).
 
-## 可观测
+## Observability
 
-### 日志
+### Logs
 
-| 消息 | 级别 | 字段 |
+| Message | Level | Fields |
 |---|---|---|
-| `xtrace ignored forward headers from an untrusted peer, …` | WARN | `header`；整个进程只打一次 |
-| `xtrace ignored baggage from an untrusted peer, …` | WARN | 整个进程只打一次 |
-| `xtrace is disabled, the registered SpanProcessors will receive no spans` | WARN | `count`、`switch`；`Enable: false` 却登记了处理器时 |
-| `xtrace some resource attributes could not be detected, continuing without them` | WARN | `error`；照常启动 |
+| `xtrace ignored forward headers from an untrusted peer, ...` | WARN | `header`; once per process |
+| `xtrace ignored baggage from an untrusted peer, ...` | WARN | once per process |
+| `xtrace is disabled, the registered SpanProcessors will receive no spans` | WARN | `count`, `switch`; when processors are registered while `Enable: false` |
+| `xtrace some resource attributes could not be detected, continuing without them` | WARN | `error`; startup continues |
 
-日志的全局约定（`trace_id` 注入、`xlog.AddKV`、框架的启停日志）见 [`docs/observability.md`](../docs/observability.md#logs)。
+The global logging conventions (`trace_id` injection, `xlog.AddKV`, the framework's start and stop logs) are in
+[`docs/observability.md`](../docs/observability.md#logs).
 
-## 行为与实测
+## Behavior (measured)
 
-实测环境和跨模块的总表见 [`docs/behavior.md`](../docs/behavior.md)。
+The measurement environment and the cross-module summary table are in [`docs/behavior.md`](../docs/behavior.md).
 
-OTel SDK v1.46.0、otelhttp v0.71.0。
+OTel SDK v1.46.0, otelhttp v0.71.0.
 
-**采样**：SDK 的 `AlwaysSample` 无视上游的 `sampled=00`，还把 `-01` 往下游传。这里一律用
-`ParentBased(TraceIDRatioBased(SampleRatio))`：只有根 Span 按比例抽，有上游时照上游的 sampled 位。
+**Sampling**: the SDK's `AlwaysSample` ignores an upstream's `sampled=00` and propagates `-01` downstream.
+`ParentBased(TraceIDRatioBased(SampleRatio))` is always used here: only root Spans are sampled by ratio, and with an
+upstream its sampled bit decides.
 
-**`service.name` 的优先级**，后面的压过前面的：OTel 自己的兜底名 `unknown_service:<可执行文件名>` →
-`XApp.Name` / `XApp.Version` → `OTEL_RESOURCE_ATTRIBUTES` → `OTEL_SERVICE_NAME`。没配的那一项不写，
-不会写进一个空的 `service.name=""` 把兜底名盖掉。
+**`service.name`'s precedence**, each overriding the one before: OTel's own fallback name
+`unknown_service:<executable name>` → `XApp.Name` / `XApp.Version` → `OTEL_RESOURCE_ATTRIBUTES` → `OTEL_SERVICE_NAME`.
+Whichever is not configured is not written, so no empty `service.name=""` is written to cover the fallback name.
 
-**resource 采集出错时只打一条告警、用采到的那部分继续**：`OTEL_RESOURCE_ATTRIBUTES` 写错一项、
-或容器里以随机 UID 运行查不到当前用户，都不让服务起不来。
+**A resource collection error is one warning and startup continues with whatever was collected**: one wrong entry in
+`OTEL_RESOURCE_ATTRIBUTES`, or a container running under a random UID where the current user cannot be found, does not
+keep the service from starting.
 
-**透传只收可信对端的值。** OTel 自带的 `propagation.Baggage` 谁发来的都收：公网客户端发一个 `X-Tenant-Id`，
-或者改写成 `baggage: tenant=…`，就被当成自己人给的、带进内网的每一次调用。规则见
-[`observability.md`](../docs/observability.md#propagation-and-the-trust-boundary)。
+**Forwarding accepts values only from a trusted peer.** OTel's own `propagation.Baggage` accepts them from anybody: an
+internet client sending an `X-Tenant-Id`, or rewriting it as `baggage: tenant=...`, would have it treated as coming from
+our own side and carried into every call inside the network. The rules are in
+[`observability.md`](../docs/observability.md#propagation-and-the-trust-boundary).
 
-**`*trusted.com` 这类通配**：照字面后缀匹配的话会匹配 `eviltrusted.com`，一个谁都能注册的域名就拿到了内部令牌。
-所以 `Domains` 只认 `api.internal.com` 和 `*.trusted.com` 两种写法。
+**A wildcard such as `*trusted.com`**: matched as a literal suffix it would match `eviltrusted.com`, giving an internal
+token to a domain anybody can register. So `Domains` accepts only the two spellings `api.internal.com` and
+`*.trusted.com`.

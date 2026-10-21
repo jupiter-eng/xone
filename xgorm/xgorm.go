@@ -18,43 +18,47 @@ import (
 	"github.com/jupiter-eng/xone/xhook"
 	"github.com/jupiter-eng/xone/xmetric"
 
-	// 用了 xgorm 就有链路：xtrace 装好全局的 TracerProvider，SQL 的 Span 经 otel 的全局 API 记下来。
-	// 不要链路配 XTrace.Enable: false，只关某个实例的配它自己的 Trace: false
+	// Using xgorm means tracing is there: xtrace installs the global TracerProvider, and SQL spans
+	// are recorded through otel's global API. To go without tracing set XTrace.Enable: false, and to
+	// turn it off for one instance set that instance's own Trace: false.
 	_ "github.com/jupiter-eng/xone/xtrace"
 )
 
 const (
-	// pingAttempts 建连验证的尝试次数
+	// pingAttempts is how many times the connection check tries
 	pingAttempts = 3
 
-	// fallbackPingTimeout 配置里推算不出预算时，单次探测的兜底超时
+	// fallbackPingTimeout is the per-probe timeout when no budget can be worked out from the config
 	fallbackPingTimeout = time.Second
 )
 
-// pingInterval 第一次退避的上界，之后逐次翻倍（xutil.Retry），3 次尝试之间的两次
-// 退避上界是 1s、2s。这个数写在 docs/behavior.md「启动期建连探测」里，启动预算靠它推算。
+// pingInterval is the ceiling of the first backoff, doubling each time (xutil.Retry), so the two
+// backoff ceilings between 3 attempts are 1s and 2s. This number is written in
+// docs/behavior.md under "The startup connection probe", where the startup budget is derived from it.
 //
-// 是变量而不是常量，只为让测试能调短——连不上的用例要跑满整轮重试，
-// 按一秒算一次就是几十秒。
+// It is a variable rather than a constant only so tests can shorten it — a test for an unreachable
+// address runs a whole round of retries, which at one second a piece is tens of seconds.
 var pingInterval = time.Second
 
-// New 按配置建一个 GORM 实例，不触碰任何全局变量。
+// New builds one GORM instance from the configuration, touching no global variable.
 //
-// ctx 限定建连验证的生命期：地址不通时这里要走满一轮探测重试，
-// 收到退出信号就该当场放弃，而不是让进程卡在一个注定连不上的库上。
+// ctx bounds the lifetime of the connection check: against an unreachable address this runs a full
+// round of probes and retries, and a stop signal should make it give up on the spot rather than
+// leaving the process stuck on a database it will never reach.
 //
-// 返回的 io.Closer 关闭底层连接池。建连失败时不会留下连接池。
+// The io.Closer returned closes the underlying pool. A failed connection leaves no pool behind.
 func New(ctx context.Context, cfg ClientConfig) (*gorm.DB, io.Closer, error) {
 	return open(ctx, "", cfg)
 }
 
-// open 就是 New，多一个实例名：框架按名字建实例时，建连日志里要写上是哪一个
+// open is New with one more argument, the instance name: when the framework builds instances by
+// name, the connection log has to say which one it is.
 func open(ctx context.Context, name string, cfg ClientConfig) (*gorm.DB, io.Closer, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, nil, xerror.Newf("xgorm", "config", "invalid config: %w", err)
 	}
 
-	dialect, _ := lookupDialect(cfg.Driver) // Validate 已经确认它注册过
+	dialect, _ := lookupDialect(cfg.Driver) // Validate already confirmed it is registered
 	dsn, info, err := dialect.resolve(cfg)
 	if err != nil {
 		return nil, nil, xerror.New("xgorm", "config", err)
@@ -65,24 +69,25 @@ func open(ctx context.Context, name string, cfg ClientConfig) (*gorm.DB, io.Clos
 		return nil, nil, xerror.Newf("xgorm", "config", "invalid TLS config: %w", err)
 	}
 
-	// Logger 要看它的占位符长什么样，所以先造出来
+	// The Logger needs to know what its placeholders look like, so it is built first
 	dialector, err := dialect.dialector(dsn, tlsCfg)
 	if err != nil {
 		return nil, nil, xerror.New("xgorm", "config", err)
 	}
 
-	// 关掉 GORM 自带的那次 ping：它用的是自己的 context，我们的退出信号
-	// 和重试都管不到它。开着的话，连一个不可达的地址时 New 会先在里面
-	// 干等满 DSN 的 connect_timeout，哪怕 ctx 早就被取消了（实测 3 秒）。
-	// 关掉之后 gorm.Open 只做装配、立刻返回，全部建连都走下面那次
-	// ctx-aware 的探测 —— 取消得了、也重试得了。
+	// Turn off GORM's own ping: it uses its own context, beyond the reach of our stop signal and our
+	// retries. With it on, connecting to an unreachable address makes New wait inside it for the
+	// DSN's full connect_timeout even when the ctx was cancelled long before (measured at 3 seconds).
+	// With it off, gorm.Open only assembles and returns immediately, and every connection goes
+	// through the ctx-aware probe below — cancellable and retryable.
 	//
-	// 内置的 MySQL 和 ClickHouse 方言在 Initialize 里各有一次查版本，也会建连，
-	// 两者都在 Open 里关掉、挪进了 Dialect.Ready（见 openMySQL）。
+	// The built-in MySQL and ClickHouse dialects each query the version inside Initialize, which
+	// connects as well; both are turned off in Open and moved into Dialect.Ready (see openMySQL).
 	//
-	// SkipDefaultTransaction、PrepareStmt、CreateBatchSize 交给配置（默认值和 GORM 一样），
-	// 其余几项 GORM 的默认值原样保留，量过，理由见 xgorm/README.md「通用」：
-	// NowFunc 用本地时间、TranslateError=false。
+	// SkipDefaultTransaction, PrepareStmt and CreateBatchSize come from the configuration (with
+	// GORM's own values as the defaults), and the rest of GORM's defaults are kept as they are,
+	// measured, for the reasons in xgorm/README.md under "General": NowFunc uses local time and
+	// TranslateError is false.
 	gormCfg := &gorm.Config{
 		DisableAutomaticPing:                     true,
 		DisableForeignKeyConstraintWhenMigrating: cfg.DisableForeignKeyConstraintWhenMigrating,
@@ -93,20 +98,21 @@ func open(ctx context.Context, name string, cfg ClientConfig) (*gorm.DB, io.Clos
 	if cfg.Log {
 		gormCfg.Logger = newGormLogger(cfg, dialect, dialector)
 	} else {
-		// 不给 Logger 的话 GORM 会补上自己的默认实现，而那个默认实现
-		// 是「带 ANSI 颜色地往 os.Stdout 写」：慢 SQL 和执行错误照样打，
-		// 只是绕开了 slog——没有级别、没有 TraceID、不是 JSON，
-		// 一行彩色文本直接插进日志流里。Log=false 要的是不打，不是换个地方打
+		// Without a Logger, GORM fills in its own default implementation, and that default writes to
+		// os.Stdout with ANSI colors: slow queries and execution errors are still printed, only
+		// bypassing slog — no level, no TraceID, not JSON, one line of colored text injected straight
+		// into the log stream. Log=false asks for nothing printed, not for it printed elsewhere
 		gormCfg.Logger = logger.Discard
 	}
 
 	db, err := gorm.Open(dialector, gormCfg)
 	if err != nil {
-		// 不用替它收拾：gorm.Open 自己失败时会把它建的池子关掉
-		// （gorm v1.31.2 gorm.go 的 Open，Initialize 失败与自动 ping 失败两条路都关）
+		// Nothing to clean up here: when gorm.Open itself fails it closes the pool it built
+		// (gorm v1.31.2 gorm.go Open closes it on both the failed Initialize and the failed auto ping)
 		//
-		// 内置方言走不到这里的认证失败：它们的 Open 不碰网络。注册进来的方言要是
-		// 在 Initialize 里建连，密码错就出在这里，照样要说清是认证失败
+		// The built-in dialects never reach an authentication failure here: their Open touches no
+		// network. A registered dialect that connects inside Initialize fails here on a wrong
+		// password, and that still has to be reported as an authentication failure
 		return nil, nil, connectError(dialect, "open %s failed: %w", info.Addr, err)
 	}
 	pool, err := db.DB()
@@ -114,8 +120,8 @@ func open(ctx context.Context, name string, cfg ClientConfig) (*gorm.DB, io.Clos
 		return nil, nil, xerror.Newf("xgorm", "connect", "get underlying pool: %w", err)
 	}
 
-	// 从这里往后的每一步都是我们自己的，失败了没人替我们收拾：
-	// 连接池已经活着，不关就漏一个常驻协程
+	// From here on every step is ours, and a failure leaves nobody to clean up after us: the pool is
+	// alive already, and not closing it leaks a permanent goroutine
 	ok := false
 	defer func() {
 		if !ok {
@@ -146,8 +152,9 @@ func open(ctx context.Context, name string, cfg ClientConfig) (*gorm.DB, io.Clos
 	return db, &poolCloser{pool: pool, info: info}, nil
 }
 
-// connectError 建连失败时报的错。方言认得出是服务端拒绝了凭证的，报认证失败；
-// 其余按 format 报（format 里依次是地址和底层错误）
+// connectError is the error reported for a failed connection. When the dialect recognizes the
+// server rejecting the credentials it reports an authentication failure; everything else follows
+// format (whose arguments are the address and then the underlying error).
 func connectError(d Dialect, format, addr string, err error) error {
 	if d.authFailed(err) {
 		return xerror.Newf("xgorm", "connect", "authentication to %s failed: %w", addr, err)
@@ -155,13 +162,13 @@ func connectError(d Dialect, format, addr string, err error) error {
 	return xerror.Newf("xgorm", "connect", format, addr, err)
 }
 
-// probe 一次建连验证：Ping，通过之后接着执行方言的 Ready（见 Dialect.Ready），
-// 后者失败同样算这一次没通过、同样重试。
+// probe is one connection check: a Ping, followed by the dialect's Ready once it passes (see
+// Dialect.Ready), whose failure counts as this attempt failing and is retried the same way.
 //
-// 直接在当前协程里等，不丢给别的协程：sql.DB 的 Close 会等在途的查询，
-// 丢下的那个协程并不会因为连接池关了就返回。驱动都认 ctx——
-// pgx 和 go-sql-driver 取消时当场断开这条连接，ClickHouse 的 Ping 认截止时间
-// ——所以一次尝试最多卡到它自己的截止时间。
+// It waits on the current goroutine rather than handing the work to another one: sql.DB's Close
+// waits for in-flight queries, and the abandoned goroutine would not return just because the pool
+// closed. Every driver honors the ctx — pgx and go-sql-driver drop the connection on cancellation,
+// and ClickHouse's Ping honors the deadline — so one attempt is stuck for at most its own deadline.
 func probe(pool *sql.DB, ready func(context.Context) error) func(context.Context) error {
 	return func(ctx context.Context) error {
 		err := pool.PingContext(ctx)
@@ -172,9 +179,10 @@ func probe(pool *sql.DB, ready func(context.Context) error) func(context.Context
 	}
 }
 
-// probePolicy 建连验证怎么试。认证失败不重试：服务端已经明确拒绝了这组凭证，
-// 再试两次只是把同一个错误多等两轮退避（默认最多 3s）才报出来，
-// 还会在服务端多留两条认证失败的记录。认不认得出由方言决定（Dialect.AuthFailed）
+// probePolicy is how the connection check retries. An authentication failure is not retried: the
+// server already rejected these credentials outright, and two more attempts only delay the same
+// error by two more backoffs (3s at most by default) while leaving two more authentication failures
+// in the server's records. Whether it is recognized is the dialect's business (Dialect.AuthFailed).
 func probePolicy(cfg ClientConfig, info ConnInfo, d Dialect) xclient.ProbePolicy {
 	return xclient.ProbePolicy{
 		Attempts:   pingAttempts,
@@ -184,7 +192,7 @@ func probePolicy(cfg ClientConfig, info ConnInfo, d Dialect) xclient.ProbePolicy
 	}
 }
 
-// readyOf 把方言的 Ready 绑到这个实例上，方言没提供就是 nil
+// readyOf binds the dialect's Ready to this instance, and is nil when the dialect provides none
 func readyOf(d Dialect, db *gorm.DB) func(context.Context) error {
 	if d.Ready == nil {
 		return nil
@@ -192,19 +200,21 @@ func readyOf(d Dialect, db *gorm.DB) func(context.Context) error {
 	return func(ctx context.Context) error { return d.Ready(ctx, db) }
 }
 
-// probeTimeout 单次探测的超时。
+// probeTimeout is the timeout of one probe.
 //
-// 由方言推算（ConnInfo.ProbeTimeout）：它知道驱动拿哪个超时管建连、哪个管往返，
-// 也知道 DSN 里最终生效的是多少。方言推算不出来时按建连加一个同量级的往返
-// 给 2 × DialTimeout——不能只给建连超时：探测的耗时是建连加一个往返，
-// 拿建连预算当整体预算，连接刚建成就会被判超时。
+// It comes from the dialect (ConnInfo.ProbeTimeout), which knows which timeout the driver uses for
+// connecting and which for a round trip, and what the DSN finally settles on. When the dialect
+// cannot work it out, connecting plus a round trip of the same magnitude gives 2 × DialTimeout —
+// the connect timeout alone will not do: a probe costs connecting plus a round trip, and taking the
+// connect budget as the whole budget declares a timeout the moment the connection is up.
 func probeTimeout(cfg ClientConfig, info ConnInfo) time.Duration {
 	return cmp.Or(info.ProbeTimeout, 2*cfg.DialTimeout, fallbackPingTimeout)
 }
 
-// logConn 记一条建连日志，只写确定不含凭证的字段。
+// logConn writes one connection log line, with only the fields that definitely hold no credentials.
 //
-// name 是实例名，框架按配置建的才有；直接调 New 的没有名字，这个字段就不写
+// name is the instance name, which exists only for instances the framework built from
+// configuration; a direct call to New has no name and the field is left out
 func logConn(name string, info ConnInfo, c ClientConfig) {
 	attrs := make([]any, 0, 14)
 	if name != "" {
@@ -227,67 +237,76 @@ func (c *poolCloser) Close() error {
 	return nil
 }
 
-// ---- 全局实例 ----
+// ---- The global instances ----
 
-// C 取一个 GORM 实例，不带参数时取名为 default 的那个。
+// C takes a GORM instance, the one named default without arguments.
 //
-// 取不到直接 panic，理由见 xclient.Registry.Get：返回 nil 只会把同一个 panic
-// 推迟到调用方第一次用它的时候，而那里看不出根因是配置没配。
+// A failed lookup panics outright, for the reason given under xclient.Registry.Get: returning nil
+// only defers the same panic to the caller's first use, where the root cause — an unconfigured
+// block — is no longer visible.
 //
-// 可选依赖（配了就用、没配就跳过）用 Has 先判断。
+// An optional dependency (used when configured, skipped otherwise) checks with Has first.
 func C(name ...string) *gorm.DB { return reg.Get(name...).db }
 
-// CWithCtx 取实例并绑定 ctx，链路和超时才能传到下游。
+// CWithCtx takes an instance and binds a ctx, which is what carries tracing and timeouts downstream.
 //
-// GORM 必须这样传 ctx（不像 go-redis 每个方法都收 ctx），所以这个方法是必要的。
+// GORM requires the ctx to be passed this way (unlike go-redis, whose every method takes one),
+// which is why this method exists.
 func CWithCtx(ctx context.Context, name ...string) *gorm.DB {
 	return C(name...).WithContext(ctx)
 }
 
-// Has 报告指定实例是否已配置，供可选依赖判断
+// Has reports whether the given instance is configured, for an optional dependency to check
 func Has(name ...string) bool { return reg.Has(name...) }
 
-// Names 返回已配置的实例名
+// Names returns the configured instance names
 func Names() []string { return reg.Names() }
 
-// ---- 登记 ----
+// ---- Registration ----
 
-// instance 一个实例连同它自己的 Metric 开关。
+// instance is one instance together with its own Metric switch.
 //
-// 开关跟着实例走：连接池 collector 是进程级的一个，抓取时遍历全部实例，
-// 不带着这一位的话它分不出哪个实例配了 Metric: false，只能全导或全不导。
+// The switch travels with the instance: the pool collector is one per process and walks every
+// instance when scraped, and without this bit it could not tell which instance configured
+// Metric: false and would have to export all or none.
 type instance struct {
 	db     *gorm.DB
 	metric bool
 }
 
-// reg 具名实例注册表。取实例、找不到时的报错、关闭时摘干净，
-// 这些语义在 xgorm / xredis / xcache 之间必须一致，所以共用一份实现。
+// reg is the named-instance registry. Taking an instance, the error when one is not found, and
+// detaching cleanly on close all have to behave identically across xgorm / xredis / xcache, which
+// is why they share one implementation.
 var reg = xclient.NewRegistry[instance]("xgorm", ConfigKey)
 
 func init() {
 	xhook.BeforeStart(initXGorm, xhook.At(xhook.StageClient))
-	xhook.BeforeStop(closeXGorm) // 档位跟着上面那个启动钩子
+	xhook.BeforeStop(closeXGorm) // the stage follows the start hook above
 
-	// go-sql-driver 的日志是进程级的一个，只能在这里接，理由同 xredis：New 不碰全局，
-	// 启动钩子里接又会盖掉使用者在 main 里自己调的 mysql.SetLogger。
-	// 它不读配置、不做 IO，写的是一个包级变量，和登记钩子是同一类事。
-	// 驱动在解析 DSN 时把当时的 logger 抄进连接配置，之后再调 SetLogger 只对新解析的 DSN 生效
-	// ——xgorm 在启动钩子里才解析，所以 main 里、xone 启动之前调的那次照样生效
-	_ = mysqldriver.SetLogger(mysqlDriverLogger{}) // 只在参数为 nil 时报错
+	// go-sql-driver's logger is one per process and can only be wired up here, for the reason xredis
+	// gives: New touches no globals, and wiring it in a start hook would overwrite a
+	// mysql.SetLogger the caller made in main themselves.
+	// It reads no configuration, does no IO and writes a package-level variable, which makes it the
+	// same kind of thing as registering a hook.
+	// The driver copies the logger of the moment into its connection configuration while parsing a
+	// DSN, so a later SetLogger only affects DSNs parsed afterwards — and since xgorm parses inside
+	// a start hook, the call made in main before xone starts still takes effect.
+	_ = mysqldriver.SetLogger(mysqlDriverLogger{}) // it only errors when the argument is nil
 
-	// GORM 的 Scan 借用的 Recorder 只认这个进程级的变量，默认把参数值代进 SQL，
-	// 绕开了实例 Logger 的 ParamsFilter，见 withoutParams。道理同上：只能在这里接，
-	// 使用者要换（比如只在本地调试时看参数）就在 main 里重新赋值，main 在所有 init 之后才跑。
-	// 进程里使用者自己 gorm.Open 的实例也吃这一条：Scan 的 SQL 日志一样不带参数值
+	// The Recorder GORM's Scan borrows honors this process-wide variable alone and interpolates the
+	// parameter values into the SQL by default, bypassing the instance Logger's ParamsFilter, see
+	// withoutParams. Same reasoning as above: it can only be wired up here, and a caller who wants to
+	// change it (to see parameters while debugging locally, say) reassigns it in main, which runs
+	// after every init. Instances the caller opened with gorm.Open themselves are covered too: their
+	// Scan SQL logs carry no parameter values either.
 	logger.RecorderParamsFilter = withoutParams
 }
 
-// initXGorm 读配置，按名字把实例挨个建出来。
+// initXGorm reads the configuration and builds the instances one by one, by name.
 //
-// 没配这一块就一个都不建：xgorm 是可选依赖，没配不该让服务起不来。
-// 但 Build 照样走一遍，注册表由此知道启动钩子跑过了——之后 C() 取不到时
-// 报的是「没配」，而不是「调早了」。
+// Without the block nothing is built at all: xgorm is an optional dependency and its absence
+// should not keep a service from starting. Build still runs, which is how the registry knows the
+// start hooks ran — so a later failed C() reports "not configured" rather than "called too early".
 func initXGorm(ctx context.Context) error {
 	if !xconfig.Has(ConfigKey) {
 		return xclient.Build(ctx, reg, nil, build)
@@ -299,24 +318,24 @@ func initXGorm(ctx context.Context) error {
 	return install(ctx, c)
 }
 
-// install 按配置把实例挨个建出来
+// install builds the instances one by one from the configuration
 func install(ctx context.Context, c Config) error {
 	if err := xclient.Build(ctx, reg, c.Clients, build); err != nil {
 		return err
 	}
-	installPoolMetrics() // 一个实例都没开 Metric 时它什么都不导出，不必特判
+	installPoolMetrics() // with no instance enabling Metric it exports nothing, so there is no special case
 	slog.Info("xgorm ready", "instances", reg.Names())
 	return nil
 }
 
-// closeXGorm 摘掉全部实例并逆序关闭。
+// closeXGorm detaches every instance and closes them in reverse order.
 //
-// 启动钩子失败时它不会被调到——停止钩子只在和它配对的启动钩子成功之后才执行，
-// 所以这里不必处理「还没建起来」。
+// It is never reached when a start hook fails — a stop hook only runs after the start hook it
+// pairs with succeeded — so it never has to handle "it was never built".
 func closeXGorm(context.Context) error { return reg.Close() }
 
-// build 建一个实例。包一层 New 而不是直接把 New 交出去，
-// 是为了把这个实例的 Metric 开关一起带进注册表，并让建连日志写上实例名
+// build builds one instance. It wraps New rather than handing New over directly, so that this
+// instance's Metric switch travels into the registry and the connection log carries the instance name
 func build(ctx context.Context, name string, c ClientConfig) (instance, io.Closer, error) {
 	db, closer, err := open(ctx, name, c)
 	if err != nil {
@@ -325,23 +344,24 @@ func build(ctx context.Context, name string, c ClientConfig) (instance, io.Close
 	return instance{db: db, metric: c.Metric}, closer, nil
 }
 
-// installPoolMetrics 把连接池 collector 挂到当前的 Registry 上。
+// installPoolMetrics attaches the pool collector to the current Registry.
 //
-// 每次 install 都挂，不用 sync.Once：xmetric 重新装一次（同一进程里走第二轮
-// 生命周期）就是一个新的 Registry，Once 挡住的正是这第二次，连接池指标
-// 从此一个都导不出去。同一个 Registry 上重复挂由 xmetric.Register 认出来、
-// 复用已有的那个，不会报重复注册。
+// It attaches on every install, with no sync.Once: a reinstalled xmetric (a second lifecycle round
+// in one process) is a new Registry, and a Once would block exactly that second attachment, after
+// which not one pool metric is ever exported. Attaching twice to the same Registry is recognized by
+// xmetric.Register, which reuses the existing one rather than reporting a duplicate registration.
 //
-// xmetric 在 StageTelemetry 就绪，早于这里；collector 抓取时才遍历实例。
+// xmetric is ready at StageTelemetry, before this; the collector walks the instances when scraped.
 //
-// 不让启动失败：指标导不出去是可观测性问题，不该拦住服务起来。
+// It does not fail startup: metrics that cannot be exported are an observability problem and should
+// not keep the service from coming up.
 func installPoolMetrics() {
 	if _, err := xmetric.RegisterAs(newPoolCollector(xmetric.Namespace(), xmetric.ConstLabels(), poolStats)); err != nil {
 		slog.Error("xgorm failed to register pool metrics", "error", err)
 	}
 }
 
-// poolStats 读开了 Metric 的各实例连接池的实时状态
+// poolStats reads the live state of the pools of every instance with Metric on
 func poolStats() map[string]sql.DBStats {
 	out := map[string]sql.DBStats{}
 	for name, inst := range reg.All() {

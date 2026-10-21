@@ -1,4 +1,4 @@
-// Package xerror 提供统一的错误类型：带模块名和操作名，并正确支持 errors.Is / As
+// Package xerror provides the one error type: it carries a module name and an operation name, and supports errors.Is / As correctly.
 package xerror
 
 import (
@@ -8,21 +8,21 @@ import (
 	"strings"
 )
 
-// Error 统一错误类型，包含模块名、操作名和原始错误
+// Error is that type, holding the module name, the operation name and the original error.
 type Error struct {
-	Module string // 模块名，如 "xconfig", "xgorm"
-	Op     string // 操作名，如 "config", "close"
-	Err    error  // 原始错误
+	Module string // the module name, such as "xconfig" or "xgorm"
+	Op     string // the operation name, such as "config" or "close"
+	Err    error  // the original error
 }
 
-// Error 渲染为 "xone {module} {op} failed, err=[...]"
+// Error renders as "xone {module} {op} failed, err=[...]".
 func (e *Error) Error() string { return e.render(true) }
 
-// render prefix 表示要不要带开头那个 "xone "。
+// render's prefix says whether to include the leading "xone ".
 //
-// 框架自己报的错模块名就是 xone，再加一次前缀就成了「xone xone init failed」。
-// 前缀的作用是让这条错误落进别人的日志时看得出是谁报的：最外层说一次就够了，
-// 被包在里面的那几层再说一遍只是噪声，见 nested
+// Errors the framework reports itself already have xone as their module name, and the prefix would make that
+// read "xone xone init failed". The prefix exists so an error landing in somebody else's log says who reported
+// it: once, at the outermost layer, is enough, and repeating it in the nested layers is only noise. See nested.
 func (e *Error) render(prefix bool) string {
 	var b strings.Builder
 	b.Grow(32 + len(e.Module) + len(e.Op))
@@ -41,19 +41,19 @@ func (e *Error) render(prefix bool) string {
 	return b.String()
 }
 
-// Unwrap 支持 errors.Is / errors.As 链式判断
+// Unwrap makes errors.Is / errors.As walk the chain.
 func (e *Error) Unwrap() error {
 	return e.Err
 }
 
-// New 创建一个 Error。
+// New creates an Error.
 //
-// err 已经是同一个模块的 Error 时原样返回：一个模块边界只该有一层框，
-// 再包一层的话文本就成了 xone xgorm init failed, err=[xone xgorm connect failed, ...]，
-// 信息没多，噪声翻倍，更具体的那个 op 还被压进了里层。
+// When err is already an Error from the same module it is returned as it is: one module boundary should hold one
+// frame only. Wrapping again reads xone xgorm init failed, err=[xone xgorm connect failed, ...] -- no more
+// information, twice the noise, and the more specific op buried in the inner layer.
 //
-// 带类型的 nil（var e *Error; New(m, op, e)）当成没有原因：它什么都没报，
-// 而把它原样存进 Err 的话，渲染和判断时都会在它身上解引用。
+// A typed nil (var e *Error; New(m, op, e)) counts as no cause: it reports nothing, and storing it in Err as it
+// is would dereference it while rendering and while comparing.
 func New(module, op string, err error) *Error {
 	if xe, ok := err.(*Error); ok {
 		if xe == nil {
@@ -66,12 +66,12 @@ func New(module, op string, err error) *Error {
 	return &Error{Module: module, Op: op, Err: nest(module, err)}
 }
 
-// Newf 创建一个带格式化消息的 Error。
+// Newf creates an Error with a formatted message.
 //
-// 参数里的 Error 渲染时去掉重复的部分，见 nested；errors.Is / As 照常穿透。
-// 带类型的 nil 不折叠，交给 fmt 渲染成 <nil>。
+// An Error among the arguments has its duplicated parts removed while rendering, see nested; errors.Is / As
+// still see through it. A typed nil is not folded and is left for fmt to render as <nil>.
 func Newf(module, op, format string, args ...any) *Error {
-	var own []any // 不改调用方的切片：args... 展开传进来的话它就是调用方那一个
+	var own []any // the caller's slice is not modified: passing args... hands over the caller's own slice
 	for i, a := range args {
 		if xe, ok := a.(*Error); ok && xe != nil {
 			if own == nil {
@@ -86,7 +86,7 @@ func Newf(module, op, format string, args ...any) *Error {
 	return &Error{Module: module, Op: op, Err: fmt.Errorf(format, args...)}
 }
 
-// nest 把要包进 module 那一层的 Error 换成 nested，别的错误原样返回
+// nest replaces an Error that is about to be wrapped in a module layer with a nested; other errors are returned as they are.
 func nest(module string, err error) error {
 	if xe, ok := err.(*Error); ok {
 		return nested{e: xe, same: xe.Module == module}
@@ -94,12 +94,12 @@ func nest(module string, err error) error {
 	return err
 }
 
-// nested 被包在另一个 Error 里的 Error，渲染时去掉重复的部分：
-// 同一个模块的只留「op: 原因」，别的模块的去掉开头那个 "xone "。
+// nested is an Error wrapped inside another Error, rendered with the duplicated parts removed:
+// one from the same module keeps only "op: cause", and one from another module drops the leading "xone ".
 //
-// 一条错误落进使用者的日志时，只该有一处告诉他「这是 xone 报的」。每层都带
-// 完整的框，就是 xone start failed, err=[... xone xconfig config failed, err=[...]]
-// ——使用者要找的根因被埋在最里面的括号里。
+// When an error lands in a caller's log, only one place should tell them "this came from xone". A full frame
+// at every layer reads xone start failed, err=[... xone xconfig config failed, err=[...]] -- and the root
+// cause they are looking for is buried in the innermost brackets.
 type nested struct {
 	e    *Error
 	same bool
@@ -117,19 +117,19 @@ func (n nested) Error() string {
 
 func (n nested) Unwrap() error { return n.e }
 
-// Is 判断 err 的错误树里是否有指定模块产生的错误
+// Is reports whether the error tree of err holds an error produced by the given module.
 //
-// 遍历整棵树而不是只看最外层：模块之间会互相包装错误
-// （xgorm 初始化失败里裹着 xconfig 的错误），只比对第一个 Error
-// 会让 Is(err, "xconfig") 在这种链上返回 false，与本函数的语义不符。
+// It walks the whole tree rather than looking only at the outermost layer: modules wrap each other's errors
+// (an xgorm initialization failure holds an xconfig error inside), and comparing only the first Error would
+// make Is(err, "xconfig") return false on such a chain, which is not what this function means.
 //
-// 「树」是因为 errors.Join：xone.Run 把启动错误和关闭错误 Join 在一起返回。
-// 用 errors.As 找第一个 *Error 再顺着它的 .Err 往里走的话，Join 里排在
-// 后面的兄弟从来不会被看到。所以这里和 errors.Is 一样，两种 Unwrap 都认
+// It is a "tree" because of errors.Join: xone.Run returns the start error and the stop error joined together.
+// Using errors.As to find the first *Error and then following its .Err inward would never see the siblings
+// that come later in the Join. So, like errors.Is, this accepts both kinds of Unwrap.
 func Is(err error, module string) bool {
 	if xe, ok := err.(*Error); ok {
 		if xe == nil {
-			return false // 带类型的 nil：什么都没报，也没有里层可走
+			return false // a typed nil: it reports nothing, and there is no inner layer to walk
 		}
 		if xe.Module == module {
 			return true
@@ -148,14 +148,14 @@ func Is(err error, module string) bool {
 	return false
 }
 
-// Module 提取最外层错误的模块名，若不是本包的错误则返回空字符串
+// Module returns the module name of the outermost error, or an empty string when it is not an error from this package.
 //
-// 取最外层而非遍历整条链：错误一路向上包装，最外层代表「谁最终报出了这个错误」，
-// 这正是调用方要分流处理的依据。要判断链中是否涉及某个模块，用 Is。
+// It takes the outermost rather than walking the chain: an error is wrapped on its way up, so the outermost layer
+// says who finally reported it, which is what the caller branches on. To ask whether a module is involved anywhere in the chain, use Is.
 //
-// 遇到 errors.Join 时取深度优先遇到的第一个本包错误（与 errors.As 的顺序一致），
-// 排在它前面的非本包错误跳过。xone.Run 总是把主因放在 Join 的最前面，
-// 所以取到的就是主因那一个
+// Across an errors.Join it takes the first error from this package in depth-first order (the same order as
+// errors.As), skipping errors from other packages before it. xone.Run always puts the main cause first in the
+// Join, so what comes back is that main cause.
 func Module(err error) string {
 	var xe *Error
 	if errors.As(err, &xe) && xe != nil {

@@ -6,15 +6,6 @@
 # instead of quietly staying forever. Nothing is ever added except during this migration.
 #
 # Generated once from the state of the repository at the time the rule landed.
-# xecho/README.md is translated; what is left are anchors into files that are still
-# Chinese (../xgin/README.md#..., ../docs/...#...). Changing them would break the links,
-# so this line goes when those files are translated.
-# xecho/README.md and xgin/README.md are translated; what is left are anchors into files that
-# are still Chinese (../docs/...#..., ../xtls/README.md#...). Changing them would break the
-# links, so these lines go when those files are translated.
-# xecho/README.md and xgin/README.md are translated; what is left are anchors into files that
-# are still Chinese (../docs/...#..., ../xtls/README.md#...). Changing them would break the
-# links, so these lines go when those files are translated.
 .claude/skills/release/SKILL.md
 .claude/skills/ship/SKILL.md
 .github/workflows/ci.yml
@@ -34,7 +25,6 @@ docs/guide.md
 docs/images/architecture.svg
 docs/images/lifecycle.svg
 docs/observability.md
-docs/troubleshooting.md
 e2e/.gitignore
 e2e/baseline/main.go
 e2e/clickhouse_auth_test.go
@@ -195,14 +185,12 @@ scripts/e2e.sh
 scripts/lib.sh
 scripts/mutate.py
 scripts/mutations/__init__.py
-scripts/mutations/clickhouse.py
 scripts/mutations/core.py
 scripts/mutations/example.py
 scripts/mutations/schemagen.py
 scripts/mutations/xcache.py
 scripts/mutations/xcron.py
 scripts/mutations/xginswagger.py
-scripts/mutations/xgorm.py
 scripts/mutations/xhttp.py
 scripts/mutations/xkafka.py
 scripts/mutations/xmetric.py
@@ -210,77 +198,6 @@ scripts/mutations/xredis.py
 scripts/mutations/xtrace.py
 scripts/release.sh
 scripts/test.sh
-xapp/README.md
-xapp/xapp.go
-xapp/xapp_test.go
-xcache/README.md
-xcache/config.go
-xcache/go.mod
-xcache/metric.go
-xcache/xcache.go
-xcache/xcache_test.go
-xconfig/README.md
-xconfig/xconfig.go
-xconfig/xconfig_test.go
-xcron/README.md
-xcron/go.mod
-xcron/helpers_test.go
-xcron/option.go
-xcron/run.go
-xcron/schedule.go
-xcron/schedule_test.go
-xcron/scheduler.go
-xcron/xcron.go
-xcron/xcron_test.go
-xerror/xerror.go
-xerror/xerror_test.go
-xflow/README.md
-xflow/bench_test.go
-xflow/config.go
-xflow/monitor.go
-xflow/monitor_test.go
-xflow/optional_test.go
-xflow/xflow.go
-xflow/xflow_test.go
-# xgin/README.md is translated; what is left is one anchor into xtls/README.md, which is still
-# Chinese. This line goes when xtls is translated.
-xgin/README.md
-xginswagger/README.md
-xginswagger/go.mod
-xginswagger/swagger.go
-xginswagger/swagger_test.go
-xgorm/README.md
-xgorm/clickhouse/README.md
-xgorm/clickhouse/clickhouse.go
-xgorm/clickhouse/clickhouse_test.go
-xgorm/clickhouse/go.mod
-xgorm/clickhouse/tls.go
-xgorm/clickhouse/tls_test.go
-xgorm/config.go
-xgorm/config_test.go
-xgorm/dialect.go
-xgorm/dialect_test.go
-xgorm/dsn.go
-xgorm/dsn_test.go
-xgorm/go.mod
-xgorm/logger.go
-xgorm/logger_test.go
-xgorm/metric.go
-xgorm/metric_test.go
-xgorm/mysql.go
-xgorm/mysql_test.go
-xgorm/redact_test.go
-xgorm/tls.go
-xgorm/tls_test.go
-xgorm/trace.go
-xgorm/trace_test.go
-xgorm/tracing_test.go
-xgorm/xgorm.go
-xgorm/xgorm_test.go
-xhook/internal/viahelper/viahelper.go
-xhook/registrant_test.go
-xhook/xhook.go
-xhook/xhook_test.go
 xhttp/README.md
 xhttp/bench_test.go
 xhttp/config.go
@@ -293,44 +210,8 @@ xhttp/retry_test.go
 xhttp/tls_test.go
 xhttp/xhttp.go
 xhttp/xhttp_test.go
-xkafka/README.md
-xkafka/config.go
-xkafka/consume.go
-xkafka/consume_test.go
-xkafka/franz_test.go
-xkafka/go.mod
-xkafka/helpers_test.go
-xkafka/hook.go
-xkafka/log.go
-xkafka/metric.go
-xkafka/option.go
-xkafka/worker.go
-xkafka/xkafka.go
-xkafka/xkafka_test.go
-xlog/README.md
-xlog/bench_test.go
-xlog/config.go
-xlog/ctx.go
-xlog/handler.go
-xlog/rotate.go
-xlog/rotate_test.go
-xlog/xlog.go
-xlog/xlog_test.go
-xmetric/README.md
-xmetric/bench_test.go
-xmetric/config.go
-xmetric/config_test.go
-xmetric/duration.go
-xmetric/duration_test.go
-xmetric/go.mod
-xmetric/log_counter.go
-xmetric/shortcut.go
-xmetric/xmetric.go
-xmetric/xmetric_test.go
 xone.go
 xone_test.go
-xonetest/xonetest.go
-xonetest/xonetest_test.go
 xredis/README.md
 xredis/config.go
 xredis/config_test.go
@@ -347,17 +228,3 @@ xredis/trace_test.go
 xredis/tracing_test.go
 xredis/xredis.go
 xredis/xredis_test.go
-xtls/README.md
-xtls/xtls.go
-xtls/xtls_test.go
-xtrace/README.md
-xtrace/config.go
-xtrace/go.mod
-xtrace/propagator.go
-xtrace/propagator_test.go
-xtrace/xtrace.go
-xtrace/xtrace_test.go
-xutil/file.go
-xutil/file_test.go
-xutil/retry.go
-xutil/retry_test.go

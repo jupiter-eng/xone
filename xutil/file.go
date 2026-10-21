@@ -1,19 +1,19 @@
-// Package xutil 放通用的小工具。
+// Package xutil holds the small general-purpose helpers.
 //
-// 收录标准只有一条：它必须是**与框架无关**的纯函数或纯数据结构——
-// 换个项目照样能用。任何「为了绕开某个设计问题」而存在的辅助函数
-// 都不属于这里，那说明该修的是那个设计。
+// There is one rule for admission: it has to be a pure function or a pure data structure that is **independent
+// of the framework** -- usable unchanged in another project. A helper that exists to work around some design
+// problem does not belong here; that means the design is what needs fixing.
 package xutil
 
 import "os"
 
-// FileExist 路径存在且是一个文件
+// FileExist reports whether the path exists and is a file.
 func FileExist(path string) bool {
 	stat, err := os.Stat(path)
 	return err == nil && !stat.IsDir()
 }
 
-// DirExist 路径存在且是一个目录
+// DirExist reports whether the path exists and is a directory.
 func DirExist(path string) bool {
 	stat, err := os.Stat(path)
 	return err == nil && stat.IsDir()

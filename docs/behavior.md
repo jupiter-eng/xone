@@ -34,33 +34,33 @@ MySQL 8.0.46, Redis 7.0.15, ClickHouse 24.8.14).
 | [`XEcho` group fallback routes](../xecho/README.md#behavior-measured) | A group with middleware quietly registers `RouteNotFound` and `c.Path()` becomes `/api/v1/*` | Anything landing on a fallback is recorded as `unmatched` | Otherwise a 404 shows up on the dashboard as `/api/v1/*` and does not match xgin |
 | [`XEcho`'s `e.Pre`](../xecho/README.md#behavior-measured) | Middleware on `e.Use` cannot see requests that ended inside Pre and cannot catch panics there | The built-in middleware sits on `e.Pre`, touches no request there, keeps the ctx on `echo.Context` and swaps it onto the request after routing | Auth, rate limiting and 301s in Pre reach neither the log nor the metrics; replacing the request in Pre breaks `MethodOverride` |
 | [`http.Server.ErrorLog`](../xgin/README.md#logs) | nil: writes through the standard library's log (INFO through slog, with a different message per line) | Routed into slog as WARN, with the message `<module> http server error` | Errors such as a failed TLS handshake cannot be searched or alerted on by message |
-| [`XGorm.Log: false`](../xgorm/README.md#行为与实测) | Replaced by GORM's own stdout logger | Really prints nothing | That default implementation writes ANSI colors straight to `os.Stdout` |
-| [`XGorm.Log: true`](../xgorm/README.md#行为与实测) | Parameter values are interpolated into the SQL before logging | Only the SQL with its placeholders is logged | Otherwise `WHERE password = ?` is logged with the real password |
-| [`XGorm` connecting](../xgorm/README.md#行为与实测) | `gorm.Open` pings once on its own | Turned off, in favor of the framework's ctx-aware probe | It uses its own context, beyond the reach of the stop signal and the retries |
-| [`XGorm` MySQL / ClickHouse version query](../xgorm/README.md#行为与实测) | Queried inside `Initialize` with `context.Background()` | Moved into the connection probe | That is the first connection, and it neither retries nor honors the stop signal |
-| [`XGorm` MySQL `parseTime`](../xgorm/README.md#行为与实测) | `false` | `true` is added when the DSN does not say | Otherwise a `DATETIME` cannot be scanned into a `time.Time` |
-| [`XGorm` server error text](../xgorm/README.md#行为与实测) | Logged and put on the span as is | Only the error code is recorded | The text carries parameter values |
-| [go-sql-driver's log](../xgorm/README.md#行为与实测) | The standard library's log to `os.Stderr` | Routed into slog as WARN | Plain text bypassing slog never reaches the logging platform |
+| [`XGorm.Log: false`](../xgorm/README.md#behavior-measured) | Replaced by GORM's own stdout logger | Really prints nothing | That default implementation writes ANSI colors straight to `os.Stdout` |
+| [`XGorm.Log: true`](../xgorm/README.md#behavior-measured) | Parameter values are interpolated into the SQL before logging | Only the SQL with its placeholders is logged | Otherwise `WHERE password = ?` is logged with the real password |
+| [`XGorm` connecting](../xgorm/README.md#behavior-measured) | `gorm.Open` pings once on its own | Turned off, in favor of the framework's ctx-aware probe | It uses its own context, beyond the reach of the stop signal and the retries |
+| [`XGorm` MySQL / ClickHouse version query](../xgorm/README.md#behavior-measured) | Queried inside `Initialize` with `context.Background()` | Moved into the connection probe | That is the first connection, and it neither retries nor honors the stop signal |
+| [`XGorm` MySQL `parseTime`](../xgorm/README.md#behavior-measured) | `false` | `true` is added when the DSN does not say | Otherwise a `DATETIME` cannot be scanned into a `time.Time` |
+| [`XGorm` server error text](../xgorm/README.md#behavior-measured) | Logged and put on the span as is | Only the error code is recorded | The text carries parameter values |
+| [go-sql-driver's log](../xgorm/README.md#behavior-measured) | The standard library's log to `os.Stderr` | Routed into slog as WARN | Plain text bypassing slog never reaches the logging platform |
 | [`XRedis` command timeout](../xredis/README.md#行为与实测) | Honors `ReadTimeout` only | Honors the caller's ctx deadline | Otherwise a request with a 200ms budget waits out the whole `ReadTimeout` |
 | [`XRedis` connecting](../xredis/README.md#行为与实测) | Redials 5 times internally per connection | Dials once | Otherwise one command takes 11.7s when the host is down |
 | [`XRedis` handshake on a new connection](../xredis/README.md#行为与实测) | `CLIENT SETINFO` and maintenance notifications both on | Both off | A server older than 7.2 leaves one failing span per connection |
 | [`XRedis.Trace`](../xredis/README.md#行为与实测) | The whole command with its arguments goes into `db.statement` | The command name only | Otherwise the value of a `SET` reaches the tracing backend verbatim |
 | [go-redis's log](../xredis/README.md#行为与实测) | The standard library's log to `os.Stderr` | Routed into slog as WARN | Same as go-sql-driver |
-| [`XKafka` consumer commits](../xkafka/README.md#行为与实测) | Automatically commits "whatever the last poll returned", processed or not | Commits only what was processed (`AutoCommitMarks`) | With one goroutine per partition, messages still queued and unprocessed get committed first and are lost the moment the process dies |
-| [`XKafka.Consumer.ResetOffset`](../xkafka/README.md#行为与实测) | earliest | latest | Otherwise a newly deployed consumer group reprocesses the topic's entire history |
-| [`XKafka` stopping](../xkafka/README.md#行为与实测) | `Close` fails every buffered message | `Flush` first, then `Close` | Otherwise messages handed to `Produce` at the moment of exit are dropped silently |
-| [`XKafka` startup probe](../xkafka/README.md#行为与实测) | `Ping` ignores the ctx for an unresponsive broker and waits the full 10s | Moved into a goroutine that watches the ctx | Otherwise a stop signal during startup waits 10s |
-| [`XKafka`'s franz-go log](../xkafka/README.md#行为与实测) | Not recorded | Routed into slog at WARN and above | Connection failures and rebalance errors would pass in silence |
-| [`XKafka.Trace`](../xkafka/README.md#可观测) | kotel writes the message key onto the span | kotel is not used, and the span holds no key | Keys often hold a user id or a phone number |
-| [`XCache.MaxCost`](../xcache/README.md#行为与实测) | 56 bytes of internal overhead are counted per entry | Only the cost you give is counted | Otherwise `MaxCost: 2000` really holds 35 entries |
-| [`XCache` stopping](../xcache/README.md#行为与实测) | `Close` | `Clear` | `Close` running alongside concurrent reads and writes panics |
+| [`XKafka` consumer commits](../xkafka/README.md#behavior-measured) | Automatically commits "whatever the last poll returned", processed or not | Commits only what was processed (`AutoCommitMarks`) | With one goroutine per partition, messages still queued and unprocessed get committed first and are lost the moment the process dies |
+| [`XKafka.Consumer.ResetOffset`](../xkafka/README.md#behavior-measured) | earliest | latest | Otherwise a newly deployed consumer group reprocesses the topic's entire history |
+| [`XKafka` stopping](../xkafka/README.md#behavior-measured) | `Close` fails every buffered message | `Flush` first, then `Close` | Otherwise messages handed to `Produce` at the moment of exit are dropped silently |
+| [`XKafka` startup probe](../xkafka/README.md#behavior-measured) | `Ping` ignores the ctx for an unresponsive broker and waits the full 10s | Moved into a goroutine that watches the ctx | Otherwise a stop signal during startup waits 10s |
+| [`XKafka`'s franz-go log](../xkafka/README.md#behavior-measured) | Not recorded | Routed into slog at WARN and above | Connection failures and rebalance errors would pass in silence |
+| [`XKafka.Trace`](../xkafka/README.md#observability) | kotel writes the message key onto the span | kotel is not used, and the span holds no key | Keys often hold a user id or a phone number |
+| [`XCache.MaxCost`](../xcache/README.md#behavior-measured) | 56 bytes of internal overhead are counted per entry | Only the cost you give is counted | Otherwise `MaxCost: 2000` really holds 35 entries |
+| [`XCache` stopping](../xcache/README.md#behavior-measured) | `Close` | `Clear` | `Close` running alongside concurrent reads and writes panics |
 | [`XHttp`'s resty log](../xhttp/README.md#行为与实测) | Writes to `os.Stderr` with the URL's query string | Routed into slog with the query string removed | Tokens do not reach disk |
 | [`XHttp` cookies](../xhttp/README.md#行为与实测) | `resty.New()` comes with a cookie jar | None | Unrelated calls would share a session cookie somebody else was given |
 | [`XHttp` outbound spans](../xhttp/README.md#行为与实测) | `url.full` carries the query string | The query string is removed and the span name is the method alone | Tokens stay out of the tracing backend and the span name cardinality stays bounded |
 | [`XHttp` retry conditions](../xhttp/README.md#行为与实测) | Adding a condition voids resty's own judgment | Only transport errors are retried | Otherwise a 200 with broken JSON is retried as well |
-| [`XTrace` forwarding and baggage](../xtrace/README.md#行为与实测) | Inbound values accepted from anyone | Accepted only when the direct peer is in `XGin.TrustedProxies` (`XEcho.TrustedProxies`) | Otherwise a public client can forge `X-Tenant-Id` and carry it into the internal network |
-| [`XTrace` sampling](../xtrace/README.md#行为与实测) | `AlwaysSample`, ignoring upstream | `ParentBased`, honoring upstream when there is one | Otherwise an upstream `sampled=00` is rewritten to `-01` on the way down |
-| [`XMetric.Namespace`](../xmetric/README.md#行为与实测) | A non-conforming name is escaped on export | Fails while the config is read | Otherwise the dashboard cannot find the name you wrote |
+| [`XTrace` forwarding and baggage](../xtrace/README.md#behavior-measured) | Inbound values accepted from anyone | Accepted only when the direct peer is in `XGin.TrustedProxies` (`XEcho.TrustedProxies`) | Otherwise a public client can forge `X-Tenant-Id` and carry it into the internal network |
+| [`XTrace` sampling](../xtrace/README.md#behavior-measured) | `AlwaysSample`, ignoring upstream | `ParentBased`, honoring upstream when there is one | Otherwise an upstream `sampled=00` is rewritten to `-01` on the way down |
+| [`XMetric.Namespace`](../xmetric/README.md#behavior-measured) | A non-conforming name is escaped on export | Fails while the config is read | Otherwise the dashboard cannot find the name you wrote |
 
 ## The startup connection probe
 
@@ -89,16 +89,16 @@ XGorm, XRedis and XKafka each probe once at startup through one shared implement
 
 | Module | Measurements |
 |---|---|
-| [xtls](../xtls/README.md#行为与实测) | Client-side TLS: each driver's errors and timings, and the driver defaults without a TLS block |
-| [xgorm](../xgorm/README.md#行为与实测) | GORM in general, MySQL, PostgreSQL |
-| [xgorm/clickhouse](../xgorm/clickhouse/README.md#行为与实测) | ClickHouse: timeouts and cancellation, resends, authentication, TLS |
+| [xtls](../xtls/README.md#behavior-measured) | Client-side TLS: each driver's errors and timings, and the driver defaults without a TLS block |
+| [xgorm](../xgorm/README.md#behavior-measured) | GORM in general, MySQL, PostgreSQL |
+| [xgorm/clickhouse](../xgorm/clickhouse/README.md#behavior-measured) | ClickHouse: timeouts and cancellation, resends, authentication, TLS |
 | [xredis](../xredis/README.md#行为与实测) | go-redis: timeouts, connection retries, the handshake on a new connection, memory |
-| [xcache](../xcache/README.md#行为与实测) | ristretto: internal overhead, stopping, the cost of metrics, TTL |
-| [xkafka](../xkafka/README.md#行为与实测) | franz-go: automatic commits, offset reset, `Close` and `Flush`, `Ping`, a missing topic, rebalancing and session timeouts |
+| [xcache](../xcache/README.md#behavior-measured) | ristretto: internal overhead, stopping, the cost of metrics, TTL |
+| [xkafka](../xkafka/README.md#behavior-measured) | franz-go: automatic commits, offset reset, `Close` and `Flush`, `Ping`, a missing topic, rebalancing and session timeouts |
 | [xhttp](../xhttp/README.md#行为与实测) | The defaults of resty / otelhttp / the standard library's Transport |
-| [xcron](../xcron/README.md#行为与实测) | cronexpr: field counts, timezone prefixes, DST, specs that never fire; the drift of `@every` |
+| [xcron](../xcron/README.md#behavior-measured) | cronexpr: field counts, timezone prefixes, DST, specs that never fire; the drift of `@every` |
 | [xgin](../xgin/README.md#behavior-measured) | gin / net/http: proxies, uploads, timeouts, h2c, TLS, graceful shutdown |
 | [xecho](../xecho/README.md#behavior-measured) | echo: client_ip, error rendering, route templates, group fallback routes, `e.Pre`, timeout middleware, panics, gommon logs, compression, the multipart threshold, strict route matching |
-| [xmetric](../xmetric/README.md#行为与实测) | client_golang: buckets, names, constant labels |
-| [xtrace](../xtrace/README.md#行为与实测) | The OTel SDK: sampling, service.name, forwarding |
-| [xlog](../xlog/README.md#行为与实测) | `Perm`, rotated file names, timezones |
+| [xmetric](../xmetric/README.md#behavior-measured) | client_golang: buckets, names, constant labels |
+| [xtrace](../xtrace/README.md#behavior-measured) | The OTel SDK: sampling, service.name, forwarding |
+| [xlog](../xlog/README.md#behavior-measured) | `Perm`, rotated file names, timezones |

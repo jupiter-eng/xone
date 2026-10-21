@@ -9,73 +9,73 @@ import (
 	"time"
 )
 
-// Option 定时任务的可选设置，用法见各个 With* / RunOnStart*。
+// Option is an optional setting for a scheduled job; the uses are on each With* / RunOnStart*.
 type Option func(*options)
 
-// firstRun 调度器起来时要不要先跑一次
+// firstRun says whether to run once as soon as the scheduler comes up.
 type firstRun int
 
 const (
-	firstNone  firstRun = iota // 等第一个时间点
-	firstAsync                 // RunOnStart：立刻在后台跑一次，不等它
-	firstWait                  // RunOnStartAndWait：立刻跑一次，启动等它跑完，失败启动就失败
+	firstNone  firstRun = iota // wait for the first time point
+	firstAsync                 // RunOnStart: run once in the background right away, without waiting
+	firstWait                  // RunOnStartAndWait: run once right away; startup waits for it, and its failure fails startup
 )
 
 type options struct {
 	name    string
-	named   bool // 显式写了 WithName，空串要报错，不能当成「没写」
+	named   bool // WithName was written explicitly, so an empty string is an error rather than "not written"
 	timeout time.Duration
 	overlap bool
 	loc     *time.Location
 	first   firstRun
 
-	// firsts 写了几个 RunOnStart / RunOnStartAndWait：两个都写是自相矛盾，报错而不是谁后写听谁的
+	// firsts counts how many RunOnStart / RunOnStartAndWait were written: writing both contradicts itself and is an error rather than last-one-wins
 	firsts int
 }
 
-// WithName 任务名：日志的 job 字段、Span 名（cron <name>）、报错里都用它，同一个进程里不能重复。
+// WithName is the job name: the log's job field, the Span name (cron <name>) and the errors all use it, and it must be unique within one process.
 //
-// 不写就取函数名，去掉 import path 前缀和方法值的 -fm 后缀（Go 1.25 实测）：
+// Without one the function name is used, with the import path prefix and a method value's -fm suffix removed (measured on Go 1.25):
 //
-//	普通函数 cleanup            → main.cleanup
-//	方法值 svc.Sync（值接收者）  → main.Service.Sync
-//	方法值 svc.Sync（指针接收者）→ main.(*Service).Sync
-//	闭包                        → main.main.func1
+//	an ordinary function cleanup                 -> main.cleanup
+//	the method value svc.Sync (value receiver)   -> main.Service.Sync
+//	the method value svc.Sync (pointer receiver) -> main.(*Service).Sync
+//	a closure                                    -> main.main.func1
 //
-// 闭包的名字是编译器按出现顺序编的号，挪一下代码就变，日志和告警里也看不出是哪个任务——
-// 传闭包时写上 WithName。
+// A closure's name is numbered by the compiler in order of appearance, so moving the code changes it and neither
+// logs nor alerts say which job it is -- write WithName when passing a closure.
 func WithName(name string) Option {
 	return func(o *options) { o.name, o.named = name, true }
 }
 
-// WithTimeout 每一次执行的超时：到点取消 fn 收到的 ctx。默认不限时。
+// WithTimeout is the time limit on each execution: the ctx fn receives is cancelled when it is reached. There is no limit by default.
 //
-// 只是取消 ctx：fn 不看 ctx 的话照样跑完，Go 没有从外面停下一个协程的办法。
-// 也管 RunOnStart / RunOnStartAndWait 的那第一次。
+// It only cancels the ctx: an fn that does not look at the ctx runs to completion anyway, since Go has no way to
+// stop a goroutine from the outside. It also covers the first run of RunOnStart / RunOnStartAndWait.
 func WithTimeout(d time.Duration) Option {
 	return func(o *options) { o.timeout = d }
 }
 
-// AllowOverlap 允许上一次还没跑完时开始下一次，两次并发执行。
+// AllowOverlap allows the next execution to start while the previous one is still running, so the two run concurrently.
 //
-// 默认不允许：到了时间点而上一次还在跑，这一次跳过并记一条 WARN（cron job skipped），
-// 下一个时间点照常。一个比间隔还慢的任务因此不会越积越多。
+// It is not allowed by default: when a time point arrives while the previous run is still going, this one is skipped
+// and a WARN is recorded (cron job skipped), and the next time point proceeds as usual. A job slower than its own interval therefore does not pile up.
 func AllowOverlap() Option {
 	return func(o *options) { o.overlap = true }
 }
 
-// WithLocation 按哪个时区解释 spec。默认 UTC。
+// WithLocation is the time zone the spec is interpreted in. It defaults to UTC.
 //
-//	xcron.Add("30 2 * * *", backup, xcron.WithLocation(berlin)) // 柏林时间每天 02:30
+//	xcron.Add("30 2 * * *", backup, xcron.WithLocation(berlin)) // 02:30 Berlin time, every day
 //
-// 有夏令时的时区里，拨快那天不存在的时刻整天跳过，拨回那天重复的时刻跑两次，
-// 见 README「行为与实测」。spec 里不收 CRON_TZ= / TZ= 前缀，时区只在这里写。
+// In a time zone with daylight saving, a time that does not exist on the day the clock goes forward is skipped for the
+// whole day, and a time that occurs twice on the day it goes back runs twice; see the README's "Behavior (measured)". A CRON_TZ= / TZ= prefix is not accepted in the spec; the time zone is written only here.
 func WithLocation(loc *time.Location) Option {
 	return func(o *options) { o.loc = loc }
 }
 
-// RunOnStart 调度器起来时先在后台跑一次，不等它，之后按 spec 照常。
-// 这一次失败只记日志，不影响启动。
+// RunOnStart runs once in the background as soon as the scheduler comes up, without waiting for it, and then follows
+// the spec as usual. A failure of that run is only logged and does not affect startup.
 func RunOnStart() Option {
 	return func(o *options) {
 		o.first = firstAsync
@@ -83,11 +83,11 @@ func RunOnStart() Option {
 	}
 }
 
-// RunOnStartAndWait 调度器起来时先跑一次，启动等它跑完；它失败，启动就失败。
+// RunOnStartAndWait runs once as soon as the scheduler comes up and startup waits for it; its failure fails startup.
 //
-// 适合「服务起来之前数据必须先就绪」的任务：先拉一次配置、先刷一次本地缓存。
-// 几个这样的任务并行跑，全部跑完启动才继续；收到退出信号时它们的 ctx 被取消。
-// 启动之后再 Add 的，Add 等这一次跑完，返回它的错误。
+// It suits jobs whose data must be ready before the service comes up: fetching the configuration once, refreshing a
+// local cache once. Several such jobs run in parallel and startup continues once all of them have finished; their ctx
+// is cancelled when a stop signal arrives. For an Add after startup, Add waits for that run and returns its error.
 func RunOnStartAndWait() Option {
 	return func(o *options) {
 		o.first = firstWait
@@ -95,7 +95,7 @@ func RunOnStartAndWait() Option {
 	}
 }
 
-// buildOptions 套上全部 Option，没写名字的取函数名
+// buildOptions applies every Option and takes the function name when no name was written.
 func buildOptions(fn any, opts []Option) options {
 	o := options{loc: time.UTC}
 	for _, opt := range opts {
@@ -107,7 +107,7 @@ func buildOptions(fn any, opts []Option) options {
 	return o
 }
 
-// validate Add 收到的设置是否成立。返回普通 error，由 Add 在边界上包成 xerror
+// validate reports whether the settings Add received hold. It returns a plain error, which Add wraps in an xerror at the boundary.
 func (o options) validate() error {
 	var errs []error
 	if strings.TrimSpace(o.name) == "" {
@@ -125,7 +125,7 @@ func (o options) validate() error {
 	return errors.Join(errs...)
 }
 
-// funcName 函数名去掉 import path 前缀和方法值的 -fm 后缀，见 WithName
+// funcName is the function name with the import path prefix and a method value's -fm suffix removed; see WithName.
 func funcName(fn any) string {
 	f := runtime.FuncForPC(reflect.ValueOf(fn).Pointer())
 	if f == nil {

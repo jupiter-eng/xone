@@ -22,39 +22,39 @@ type (
 	targetHostKey     struct{}
 )
 
-// headerRule 规范化之后的域名规则
+// headerRule is a normalized domain rule.
 type headerRule struct {
-	domains []string // 小写域名模式，支持 *.example.com
-	headers []string // 规范化的 header 名
+	domains []string // lowercase domain patterns, supporting *.example.com
+	headers []string // normalized header names
 }
 
-// HeaderPropagator 透传指定的自定义 HTTP Header（如 X-Request-Id、X-Tenant-Id）。
+// HeaderPropagator forwards the configured custom HTTP headers (X-Request-Id, X-Tenant-Id and the like).
 //
-// 它实现 propagation.TextMapPropagator，所以一旦装进全局 Propagator，
-// otelhttp 之类的组件会自动带上这些 Header，无需业务代码参与。
+// It implements propagation.TextMapPropagator, so once it is installed as the global Propagator, components such as
+// otelhttp carry these headers automatically, with no business code involved.
 //
-// 两种模式：全局透传发给所有下游；域名规则只发给匹配的下游。
-// 两种都只收可信对端发来的值，见 Extract。
+// There are two modes: global forwarding sends them to every downstream, while a domain rule sends them only to the
+// matching ones. Both accept only values from a trusted peer, see Extract.
 type HeaderPropagator struct {
 	globalHeaders []string
 	rules         []headerRule
-	allHeaders    []string // 全局 + 规则去重，Extract 和 Fields 用
+	allHeaders    []string // global plus rules, deduplicated, used by Extract and Fields
 
-	// warned 不可信的对端发来透传 Header 时，只告警一次
+	// warned makes the warning about forwarding headers from an untrusted peer happen only once
 	warned atomic.Bool
 }
 
-// NewHeaderPropagator 创建 HeaderPropagator。
+// NewHeaderPropagator creates a HeaderPropagator.
 //
-// header 名按 http.CanonicalHeaderKey 规范化，域名转小写。
-// 域名或 header 为空的规则整条丢弃。
+// Header names are normalized with http.CanonicalHeaderKey and domains are lowercased.
+// A rule whose domains or headers are empty is discarded whole.
 //
-// 域名只认两种写法：精确的 api.example.com，和通配的 *.example.com。
-// 其余带 * 的写法（*example.com、a.*.com、*）直接报错，理由见 checkDomain。
+// Only two spellings of a domain are accepted: the exact api.example.com and the wildcard *.example.com.
+// Any other spelling with a * (*example.com, a.*.com, *) is an error outright; the reasoning is in checkDomain.
 //
-// 同一个 header 同时出现在 globalHeaders 和某条域名规则里会直接报错：
-// 那是一份自相矛盾的配置——一边说发给所有人，一边说只发给这些人。
-// 猜哪边为准都可能把内部标识发给第三方，所以让它在启动时就停下。
+// The same header appearing both in globalHeaders and in a domain rule is an error outright: that configuration
+// contradicts itself -- one side says send it to everyone, the other says send it only to these. Guessing either way
+// could send an internal identifier to a third party, so it is stopped at startup.
 func NewHeaderPropagator(globalHeaders []string, rules []ForwardHeaderRule) (*HeaderPropagator, error) {
 	p, err := newHeaderPropagator(globalHeaders, rules)
 	if err != nil {
@@ -63,8 +63,8 @@ func NewHeaderPropagator(globalHeaders []string, rules []ForwardHeaderRule) (*He
 	return p, nil
 }
 
-// newHeaderPropagator 同 NewHeaderPropagator，返回普通 error：
-// Config.Validate 也用它查透传配置，那一层的错误由调用方包
+// newHeaderPropagator is NewHeaderPropagator returning a plain error:
+// Config.Validate uses it to check the forwarding configuration too, and that layer's error is wrapped by its caller.
 func newHeaderPropagator(globalHeaders []string, rules []ForwardHeaderRule) (*HeaderPropagator, error) {
 	normalizedRules, err := normalizeRules(rules)
 	if err != nil {
@@ -99,7 +99,7 @@ func newHeaderPropagator(globalHeaders []string, rules []ForwardHeaderRule) (*He
 	}, nil
 }
 
-// normalizeRules 规范化域名规则，域名或 header 为空的规则整条丢弃
+// normalizeRules normalizes the domain rules, discarding whole any rule whose domains or headers are empty.
 func normalizeRules(rules []ForwardHeaderRule) ([]headerRule, error) {
 	out := make([]headerRule, 0, len(rules))
 	for _, r := range rules {
@@ -116,7 +116,7 @@ func normalizeRules(rules []ForwardHeaderRule) ([]headerRule, error) {
 	return out, nil
 }
 
-// mergeHeaders 汇总去重，保持稳定顺序：全局在前，规则在后
+// mergeHeaders deduplicates while keeping a stable order: global first, then the rules.
 func mergeHeaders(global []string, rules []headerRule) []string {
 	all := make([]string, 0, len(global))
 	seen := make(map[string]struct{}, len(global))
@@ -138,10 +138,10 @@ func mergeHeaders(global []string, rules []headerRule) []string {
 	return all
 }
 
-// canonicalHeaders 规范化 header 名并丢弃空项
+// canonicalHeaders normalizes header names and discards empty ones.
 //
-// 不做 TrimSpace：header 名本就不允许含空格，CanonicalHeaderKey 遇到非法字符
-// 会原样返回，trim 掉反而把一个明显的配置错误悄悄改对了。
+// It does not TrimSpace: a header name may not contain spaces anyway, and CanonicalHeaderKey returns a name with
+// illegal characters unchanged, so trimming would quietly fix an obvious configuration error instead.
 func canonicalHeaders(headers []string) []string {
 	out := make([]string, 0, len(headers))
 	for _, h := range headers {
@@ -166,12 +166,12 @@ func normalizeDomains(domains []string) ([]string, error) {
 	return out, nil
 }
 
-// checkDomain 通配只允许出现在最前面、并且紧跟一个点：*.example.com。
+// checkDomain allows a wildcard only at the very front and only when followed by a dot: *.example.com.
 //
-// 原先的匹配是「切掉开头的 * 再比后缀」，于是 *trusted.com 也能匹配
-// eviltrusted.com——一个谁都能注册的域名拿到了内部令牌。*、a.*.com 这类写法
-// 同样说不清想匹配什么。这是一份决定内部凭证发给谁的配置，看不懂的就不猜，
-// 启动时直接停下。
+// The matching used to be "strip a leading * and compare the suffix", under which *trusted.com also matched
+// eviltrusted.com -- a domain anybody can register receiving an internal token. Spellings such as * and a.*.com
+// likewise do not say what they mean to match. This is configuration deciding who internal credentials are sent to,
+// so anything unclear is not guessed at and stops startup outright.
 func checkDomain(d string) error {
 	if rest, _ := strings.CutPrefix(d, "*."); rest == "" || strings.Contains(rest, "*") {
 		return fmt.Errorf("domain pattern %q is not supported, use an exact domain (api.example.com) or a leading *. wildcard (*.example.com)", d)
@@ -179,23 +179,23 @@ func checkDomain(d string) error {
 	return nil
 }
 
-// Extract 从上游请求里读出所有配置的 Header，存进 context。
+// Extract reads every configured header out of the upstream request and stores them in the context.
 //
-// 不区分域名：进来的东西先收下，发给谁是 Inject 的事。
+// It does not distinguish domains: what comes in is taken, and who it goes to is Inject's business.
 //
-// 但区分来源：只收可信对端发来的值。透传是「把上游给的值原样带给下游」，
-// 上游是谁就是信任边界——照单全收的话，公网客户端发一个 X-Tenant-Id /
-// X-Internal-Token，就被当成自己人给的，带进内网的每一次调用。
+// It does distinguish origins: only values from a trusted peer are accepted. Forwarding means "pass the values the
+// upstream gave on to the downstream as they are", so who the upstream is, is the trust boundary -- taking everything
+// would have an internet client's X-Tenant-Id / X-Internal-Token treated as our own and carried into every internal call.
 //
-// 本包不知道对端是谁，知道的是接请求的那一层，所以由 carrier 来说：
-// 它实现
+// This package does not know who the peer is; the layer accepting the request does, so the carrier says it:
+// it implements
 //
 //	TrustedPeer() bool
 //
-// 并返回 true，才算可信。xgin / xecho 的链路中间件按各自的 TrustedProxies 判断直连的
-// 对端，可信时交来的 carrier 带着这个方法。没有它的 carrier（otelhttp 的 handler、
-// 业务自己拼的 MapCarrier）一律当作不可信：拿不准就不收。
-// 从消息队列之类确实可信的来源取值时，给 carrier 加上这个方法即可。
+// and returns true to count as trusted. xgin's and xecho's tracing middleware judge the directly connected peer by
+// their own TrustedProxies, and the carrier they hand over carries this method when the peer is trusted. A carrier
+// without it (otelhttp's handler, a MapCarrier assembled by business code) always counts as untrusted: when in doubt,
+// do not take it. To take values from a genuinely trusted source such as a message queue, add this method to the carrier.
 func (p *HeaderPropagator) Extract(ctx context.Context, carrier propagation.TextMapCarrier) context.Context {
 	if len(p.allHeaders) == 0 {
 		return ctx
@@ -225,16 +225,16 @@ func (p *HeaderPropagator) Extract(ctx context.Context, carrier propagation.Text
 	return context.WithValue(ctx, forwardHeadersKey{}, merged)
 }
 
-// fromTrustedPeer carrier 是否声明了「发来这些值的对端可信」，见 Extract
+// fromTrustedPeer reports whether the carrier declares "the peer sending these values is trusted", see Extract.
 func fromTrustedPeer(c propagation.TextMapCarrier) bool {
 	t, ok := c.(interface{ TrustedPeer() bool })
 	return ok && t.TrustedPeer()
 }
 
-// warnUntrusted 不可信的对端带来了透传 Header 时告警一次。
+// warnUntrusted warns once when an untrusted peer brings forwarding headers.
 //
-// 这是「配了透传却什么都没传」时唯一的线索：升级之前这些值是照单全收的。
-// 只告警一次——公网上谁都能发这些头，每次都打就成了一个刷日志的入口。
+// It is the only clue when "forwarding is configured but nothing is forwarded": those values used to be taken
+// unconditionally. It warns once only -- anybody on the internet can send these headers, and warning every time would be a way to flood the log.
 func (p *HeaderPropagator) warnUntrusted(c propagation.TextMapCarrier) {
 	if p.warned.Load() {
 		return
@@ -250,25 +250,25 @@ func (p *HeaderPropagator) warnUntrusted(c propagation.TextMapCarrier) {
 	}
 }
 
-// trustedBaggage W3C baggage，只收可信对端发来的。
+// trustedBaggage is W3C baggage, accepted only from a trusted peer.
 //
-// baggage 和透传 Header 是同一种东西：上游给的键值原样带给下游、进每一次调用。
-// OTel 自带的 propagation.Baggage 谁发来的都收，于是 ForwardHeaders 挡在门外的
-// X-Tenant-Id，公网客户端改写成 baggage: tenant=… 照样被当成自己人给的、带进内网。
-// 所以它和 HeaderPropagator.Extract 认同一个记号：carrier 实现 TrustedPeer() 并返回 true。
+// Baggage and forwarding headers are the same thing: key-value pairs the upstream gave, carried to the downstream and
+// into every call. OTel's own propagation.Baggage accepts them from anybody, so the X-Tenant-Id that ForwardHeaders
+// keeps out would be taken as our own and carried into the network as soon as an internet client rewrote it as
+// baggage: tenant=... So it recognizes the same marker as HeaderPropagator.Extract: the carrier implements TrustedPeer() and returns true.
 //
-// 注入不设限：ctx 里的 baggage 要么来自可信的上游，要么是本进程自己写的。
+// Injection is not restricted: the baggage in a ctx either came from a trusted upstream or was written by this process.
 type trustedBaggage struct {
 	propagation.Baggage
 
-	// warned 不可信的对端发来 baggage 时，只告警一次
+	// warned makes the warning about baggage from an untrusted peer happen only once
 	warned atomic.Bool
 }
 
-// Extract 可信对端发来的才收，见 trustedBaggage
+// Extract accepts it only from a trusted peer, see trustedBaggage.
 func (b *trustedBaggage) Extract(ctx context.Context, carrier propagation.TextMapCarrier) context.Context {
 	if !fromTrustedPeer(carrier) {
-		// 只告警一次，理由同 warnUntrusted
+		// Warned once only, for the same reason as warnUntrusted.
 		if carrier.Get(baggageHeader) != "" && b.warned.CompareAndSwap(false, true) {
 			slog.Warn("xtrace ignored baggage from an untrusted peer, only peers in the web server's TrustedProxies (XGin / XEcho) are trusted")
 		}
@@ -277,13 +277,13 @@ func (b *trustedBaggage) Extract(ctx context.Context, carrier propagation.TextMa
 	return b.Baggage.Extract(ctx, carrier)
 }
 
-// baggageHeader W3C baggage 的请求头
+// baggageHeader is the W3C baggage request header.
 const baggageHeader = "baggage"
 
-// Inject 把 context 里的透传值写进下游请求。
+// Inject writes the forwarded values from the context into the downstream request.
 //
-// 全局 header 无条件注入；规则 header 只在目标域名匹配时注入。
-// 目标域名由 Transport 写进 context——没有它，域名规则一条都不会命中。
+// Global headers are injected unconditionally; rule headers only when the target domain matches.
+// The target domain is written into the context by Transport -- without it, no domain rule ever matches.
 func (p *HeaderPropagator) Inject(ctx context.Context, carrier propagation.TextMapCarrier) {
 	if len(p.allHeaders) == 0 {
 		return
@@ -318,24 +318,24 @@ func (p *HeaderPropagator) Inject(ctx context.Context, carrier propagation.TextM
 	}
 }
 
-// Fields 返回本 Propagator 管理的全部 Header（拷贝）
+// Fields returns every header this Propagator manages (a copy).
 func (p *HeaderPropagator) Fields() []string { return slices.Clone(p.allHeaders) }
 
-// matchDomains 判断 host 是否匹配任一域名模式，支持精确匹配和 *.example.com。
+// matchDomains reports whether host matches any domain pattern, supporting exact matches and *.example.com.
 //
-// *.example.com 匹配任意层级的子域（a.example.com、a.b.example.com），
-// 但不匹配 example.com 自身：想连裸域一起，就把 example.com 也写上。
-// 模式在构造时已经过 checkDomain，带 * 的一定是 *. 开头。
+// *.example.com matches a subdomain at any depth (a.example.com, a.b.example.com) but not example.com itself:
+// to include the bare domain, write example.com as well.
+// The patterns have already been through checkDomain when constructed, so one with a * necessarily starts with *.
 func matchDomains(host string, patterns []string) bool {
 	h, _, err := net.SplitHostPort(host)
 	if err != nil {
-		h = host // 没带端口
+		h = host // no port
 	}
 	h = strings.ToLower(h)
 
 	for _, pattern := range patterns {
 		if parent, ok := strings.CutPrefix(pattern, "*."); ok {
-			// 比的是「. + 父域」，所以 eviltrusted.com 对不上 *.trusted.com
+			// What is compared is ". plus the parent domain", so eviltrusted.com does not match *.trusted.com
 			if strings.HasSuffix(h, "."+parent) {
 				return true
 			}
@@ -348,12 +348,12 @@ func matchDomains(host string, patterns []string) bool {
 	return false
 }
 
-// WithTargetHost 把目标请求的 Host 写进 context，供域名规则过滤使用
+// WithTargetHost writes the target request's Host into the context, for the domain rules to filter on.
 func WithTargetHost(ctx context.Context, host string) context.Context {
 	return context.WithValue(ctx, targetHostKey{}, host)
 }
 
-// TargetHostFromContext 取出目标请求的 Host，没有则为空字符串
+// TargetHostFromContext takes the target request's Host back out, or an empty string when there is none.
 func TargetHostFromContext(ctx context.Context) string {
 	host, _ := ctx.Value(targetHostKey{}).(string)
 	return host
@@ -364,12 +364,12 @@ func forwardHeadersRaw(ctx context.Context) map[string]string {
 	return m
 }
 
-// ForwardHeadersFromContext 取出全部透传的 Header 键值对（拷贝）
+// ForwardHeadersFromContext returns every forwarded header key-value pair (a copy).
 func ForwardHeadersFromContext(ctx context.Context) map[string]string {
-	return maps.Clone(forwardHeadersRaw(ctx)) // Extract 只存非空的 map，没有时是 nil
+	return maps.Clone(forwardHeadersRaw(ctx)) // Extract only stores a non-empty map, so it is nil when there is none
 }
 
-// ForwardHeaderFromContext 取出指定 Header 的值，大小写不敏感
+// ForwardHeaderFromContext takes the value of one header, case-insensitively.
 func ForwardHeaderFromContext(ctx context.Context, key string) string {
 	return forwardHeadersRaw(ctx)[http.CanonicalHeaderKey(key)]
 }

@@ -8,8 +8,8 @@ import (
 	"github.com/jupiter-eng/xone/xlog"
 )
 
-// 快捷方法是业务代码每个请求都会调好几次的地方，这里量的是缓存命中之后的稳态：
-// 第一次调用建 collector、注册，只发生一次，不算进去。
+// The shortcuts are what business code calls several times per request, so what is measured here is the steady state
+// after a cache hit: the first call builds and registers the collector, happens once, and is not counted.
 
 func BenchmarkCounterInc_NoLabels(b *testing.B) {
 	newMetrics(b, nil)
@@ -41,7 +41,7 @@ func BenchmarkCounterInc_TwoLabels(b *testing.B) {
 	}
 }
 
-// 标签没按名字写，要先排序才能命中缓存
+// The tags are not written in name order, so they have to be sorted before the cache can hit.
 func BenchmarkCounterInc_TwoLabels_Reversed(b *testing.B) {
 	newMetrics(b, nil)
 	CounterInc("bench_total", T("status", "ok"), T("route", "/order"))
@@ -52,7 +52,7 @@ func BenchmarkCounterInc_TwoLabels_Reversed(b *testing.B) {
 	}
 }
 
-// 线上是很多请求协程同时打点，全局状态上的争用只在并发下才看得出来
+// In production many request goroutines record at once, and contention on global state only shows up under concurrency.
 func BenchmarkCounterInc_TwoLabels_Parallel(b *testing.B) {
 	newMetrics(b, nil)
 	CounterInc("bench_total", T("route", "/order"), T("status", "ok"))
@@ -85,11 +85,11 @@ func BenchmarkObserveDuration_TwoLabels(b *testing.B) {
 	}
 }
 
-// 经 xlog 写出的 Error 日志会走 observeLog 计数，这是日志热路径上额外的那一段
+// An Error log written through xlog goes through observeLog to be counted; this is the extra stretch on the logging hot path.
 func BenchmarkObserveLog_ErrorLogCount(b *testing.B) {
 	newMetrics(b, func(c *Config) { c.LogErrorMetric = true })
 	c := xlog.DefaultConfig()
-	c.Console = false // 一个输出都不开，只剩格式化和观察者
+	c.Console = false // no output at all, leaving only formatting and the observers
 	l, closer, err := xlog.New(c)
 	if err != nil {
 		b.Fatal(err)
@@ -99,6 +99,6 @@ func BenchmarkObserveLog_ErrorLogCount(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		l.ErrorContext(ctx, "出事了")
+		l.ErrorContext(ctx, "something went wrong")
 	}
 }

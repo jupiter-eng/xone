@@ -20,38 +20,38 @@ import (
 	"github.com/jupiter-eng/xone/xhook"
 )
 
-// Metrics 一份配置装配出来的指标设施。
+// Metrics is the metrics setup assembled from one configuration.
 //
-// New 只构造、不安装；装成进程级的是 Install 的事。
-// 分开是为了让测试能拿到一套独立的 Registry，而不必动全局状态。
+// New only constructs it and does not install it; making it process-wide is Install's job.
+// They are separate so a test can get a Registry of its own without touching global state.
 type Metrics struct {
-	// Registry 原生的 Prometheus Registry，需要完整控制时直接用它
+	// Registry is the native Prometheus Registry, used directly when full control is needed.
 	Registry *prometheus.Registry
 
-	// Handler /metrics 的 HTTP handler
+	// Handler is the HTTP handler for /metrics.
 	Handler http.Handler
 
 	cfg Config
 
-	// logCounter 日志错误计数器，未开启该特性时为 nil
+	// logCounter is the log error counter, nil when that feature is off.
 	logCounter *prometheus.CounterVec
 
-	// collectors 快捷方法（CounterInc / GaugeSet / …）建过的 collector，
-	// 按「类型 + 指标名 + 标签名」缓存，见 shortcut.go 的说明。
+	// collectors are the collectors the shortcuts (CounterInc / GaugeSet / ...) have built,
+	// cached by "type + metric name + label names"; see shortcut.go for the details.
 	//
-	// 跟着实例走而不是做成包级的：collector 是注册在本实例的 Registry 上的，
-	// 换了实例，旧的那些就再也导不出去了。缓存是包级的时候，
-	// Install 必须记得去清另一处的全局状态，忘了就是静默的数据丢失。
+	// It follows the instance rather than being package-level: a collector is registered on this instance's Registry,
+	// and once the instance is swapped the old ones can never be exported again. With a package-level cache, Install
+	// would have to remember to clear that other piece of global state, and forgetting is a silent loss of data.
 	collectors sync.Map   // map[string]prometheus.Collector
-	createMu   sync.Mutex // 保证「创建 + 注册 + 入缓存」是一步
+	createMu   sync.Mutex // keeps "create + register + cache" a single step
 }
 
-// New 按配置构造指标设施，不触碰任何全局变量。
+// New builds the metrics setup from the configuration and touches no globals.
 //
-// 成功时返回的 io.Closer 永不为 nil（目前什么都不做，留着是为了签名与其它
-// 集成一致）；出错时三个返回值里只有 error 有意义。
+// On success the io.Closer returned is never nil (it currently does nothing and exists to keep the signature
+// consistent with the other integrations); on failure only the error of the three return values is meaningful.
 //
-// 桶为 nil 的补上默认值，见 Config.withDefaults。
+// Buckets that are nil get the defaults; see Config.withDefaults.
 func New(cfg Config) (*Metrics, io.Closer, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, nil, xerror.Newf("xmetric", "config", "invalid config: %w", err)
@@ -59,9 +59,9 @@ func New(cfg Config) (*Metrics, io.Closer, error) {
 	cfg = cfg.withDefaults()
 	reg := prometheus.NewRegistry()
 
-	// 框架自带的和快捷方法建的指标都在各自的 Opts.ConstLabels 里填了常量标签，
-	// 这两组是 client_golang 现成的 collector，没有地方填，只能在注册这一侧包一层。
-	// 不包的话实测 go_* / process_* 全都没有常量标签，按 env 过滤的看板查不到它们
+	// The framework's own metrics and those built by the shortcuts fill the constant labels into their own
+	// Opts.ConstLabels. These two groups are ready-made collectors from client_golang with nowhere to fill them in, so
+	// they are wrapped on the registration side. Measured without that wrapping, go_* / process_* carried no constant labels at all and a dashboard filtering by env found none of them.
 	withLabels := prometheus.WrapRegistererWith(cfg.ConstLabels, reg)
 	if cfg.GoMetrics {
 		if err := withLabels.Register(promcollectors.NewGoCollector()); err != nil {
@@ -77,31 +77,31 @@ func New(cfg Config) (*Metrics, io.Closer, error) {
 	return assemble(reg, cfg), noopCloser{}, nil
 }
 
-// Install 把这套设施装成进程级的：此后快捷方法和 Handler() 都走它。
+// Install makes this setup the process-wide one: from then on the shortcuts and Handler() go through it.
 //
-// 开启 LogErrorMetric 时还会把当前的 slog 默认 logger 包一层，
-// 让 Error 及以上级别的日志自动计入 log_errors_total。
-// 计数走的是 xlog 的观察者（internal/logext），所以它只统计经 xlog 写出去的日志：
-// 自己另起一套 slog handler 的话，这个指标是空的。
+// With LogErrorMetric on it also wraps the current slog default logger, so logs at Error level and above are counted
+// into log_errors_total automatically.
+// The counting goes through xlog's observer (internal/logext), so it only counts logs written through xlog:
+// with a separate slog handler of your own, this metric stays empty.
 func (m *Metrics) Install() {
-	// 先把 logCounter 填好，最后才发布 —— 顺序反过来的话，current 已经指向
-	// 本实例、而 logCounter 还在被写，这中间每一条错误日志都在读一个
-	// 正在被写的字段。不只是 -race 会报：观察者是在赋值之前就挂上的，
-	// 所以那段窗口里的错误日志一条都计不进去，面板上看不出任何区别。
+	// logCounter is filled in first and published last -- the other way round, current would already point at this
+	// instance while logCounter was still being written, and every error log in between would read a field being
+	// written. It is not only -race that would report it: the observer is attached before the assignment, so not one
+	// error log in that window would be counted, and nothing on the dashboard would look any different.
 	//
-	// 发布是一次原子写，读的一侧 active() 是原子读，赋值因此对读者可见。
+	// Publishing is one atomic write and the reading side active() is an atomic read, so the assignment is visible to readers.
 	if m.cfg.LogErrorMetric {
 		m.logCounter = newLogCounter(m)
 	}
 
 	prev := current.Swap(m)
 	if prev == nil {
-		prev = fallback // 之前的打点都落在兜底实例上
+		prev = fallback // everything recorded so far landed on the fallback instance
 	}
 
-	// 换实例之前记的点是记在上一个 Registry 上的，不会出现在 /metrics 里。
-	// 缓存已经跟着实例走，不需要清任何东西——但这件事仍然要说出来，
-	// 否则就是一次完全静默的数据丢失。
+	// What was recorded before the instance was swapped is on the previous Registry and does not appear in /metrics.
+	// The cache already follows the instance, so nothing has to be cleared -- but this still has to be said out loud,
+	// or it is a completely silent loss of data.
 	if prev != m {
 		if n := prev.cachedCount(); n > 0 {
 			slog.Warn("metrics were recorded before xmetric was initialized; those values went to a temporary registry and will not be exported",
@@ -110,22 +110,22 @@ func (m *Metrics) Install() {
 	}
 }
 
-// ---- 全局状态 ----
+// ---- global state ----
 
 var (
-	// current 生效中的设施，由 Install 发布。每次打点都要读它，所以用原子指针而不是锁
+	// current is the setup in effect, published by Install. Every recording reads it, so it is an atomic pointer rather than a lock.
 	current atomic.Pointer[Metrics]
 
-	// fallback 未 Install 时用的兜底设施。
+	// fallback is the setup used before Install.
 	//
-	// 打点代码可能在初始化之前就跑起来（比如另一个组件 Init 里打的点），
-	// 那时既不该 panic 也不该把数据丢进空气里。它不采集 Go / 进程指标——
-	// 那些由真正的实例负责，这里只是给早到的打点一个不会丢的落点。
-	// 包变量直接建好：一个空 Registry，没有会失败的步骤，也不读任何配置。
+	// Recording code may run before initialization (a recording inside another component's Init, say), and at that
+	// point it must neither panic nor throw the data away. It collects no Go or process metrics -- those are the real
+	// instance's job, and this is only somewhere for early recordings to land without being lost.
+	// It is built directly as a package variable: an empty Registry, with no step that can fail and no configuration read.
 	fallback = assemble(prometheus.NewRegistry(), DefaultConfig())
 )
 
-// assemble 把 Registry 和配置装成一套设施
+// assemble turns a Registry and a configuration into one setup.
 func assemble(reg *prometheus.Registry, cfg Config) *Metrics {
 	return &Metrics{
 		Registry: reg,
@@ -134,7 +134,7 @@ func assemble(reg *prometheus.Registry, cfg Config) *Metrics {
 	}
 }
 
-// active 返回当前生效的设施，未 Install 时返回兜底实例
+// active returns the setup in effect, or the fallback instance before Install.
 func active() *Metrics {
 	if m := current.Load(); m != nil {
 		return m
@@ -142,39 +142,39 @@ func active() *Metrics {
 	return fallback
 }
 
-// Registry 返回当前生效的 Prometheus Registry
+// Registry returns the Prometheus Registry currently in effect.
 func Registry() *prometheus.Registry { return active().Registry }
 
-// Handler 返回 /metrics 的 HTTP handler
+// Handler returns the HTTP handler for /metrics.
 func Handler() http.Handler { return active().Handler }
 
-// MustRegister 把自定义 collector 注册到当前 Registry，重复注册会 panic
+// MustRegister registers a custom collector on the current Registry; registering the same one twice panics.
 func MustRegister(cs ...prometheus.Collector) { Registry().MustRegister(cs...) }
 
-// Register 注册 collector，已注册过同名同标签的则复用已有实例而不是 panic。
+// Register registers a collector, reusing an existing instance with the same name and labels instead of panicking.
 //
-// 返回实际生效的那个 collector——可能不是传进来的这个，务必用返回值。
+// It returns the collector actually in effect -- which may not be the one passed in, so always use the return value.
 //
-// 同名但类型或标签不同时返回错误。那种情况下传进来的这个 collector
-// 不在 registry 里，通过它记的值永远导不出去；调用方要么让启动失败，
-// 要么至少知道自己在往空气里写。
+// A same-named collector with a different type or different labels returns an error. The collector passed in is then
+// not in the registry and the values recorded through it can never be exported; the caller either fails startup or at
+// least knows it is writing into thin air.
 func Register(c prometheus.Collector) (prometheus.Collector, error) {
 	return register(Registry(), c)
 }
 
-// ConstLabels 返回配置的全局常量标签（拷贝）。
+// ConstLabels returns the configured global constant labels (a copy).
 //
-// 给自己建指标的包用：把它填进 prometheus.Opts.ConstLabels，
-// 你的指标就和框架内置指标带上同样的环境/集群标签。
+// It is for packages building metrics of their own: filling it into prometheus.Opts.ConstLabels gives those metrics
+// the same environment and cluster labels as the framework's built-in ones.
 func ConstLabels() prometheus.Labels { return maps.Clone(active().cfg.ConstLabels) }
 
-// HTTPDurationBuckets 返回 HTTP 耗时直方图的桶边界（拷贝）
+// HTTPDurationBuckets returns the bucket boundaries of the HTTP duration histograms (a copy).
 func HTTPDurationBuckets() []float64 { return slices.Clone(active().cfg.HTTPDurationBuckets) }
 
-// Namespace 返回配置的指标名前缀
+// Namespace returns the configured metric name prefix.
 func Namespace() string { return active().cfg.Namespace }
 
-// register 注册 collector，重复注册时复用已有实例
+// register registers a collector, reusing an existing instance when it is already registered.
 func register(reg *prometheus.Registry, c prometheus.Collector) (prometheus.Collector, error) {
 	err := reg.Register(c)
 	if err == nil {
@@ -184,8 +184,8 @@ func register(reg *prometheus.Registry, c prometheus.Collector) (prometheus.Coll
 	if errors.As(err, &are) {
 		return are.ExistingCollector, nil
 	}
-	// 同名不同标签之类的冲突：这个 collector 不在 registry 里，
-	// 通过它记的值永远导不出去
+	// A conflict such as the same name with different labels: this collector is not in the registry and the values
+	// recorded through it can never be exported.
 	return c, xerror.Newf("xmetric", "register", "metric registration failed, values recorded through it will not be exported: %w", err)
 }
 
@@ -193,14 +193,14 @@ type noopCloser struct{}
 
 func (noopCloser) Close() error { return nil }
 
-// ---- 登记 ----
+// ---- registration ----
 
-// init 指标要早于各类客户端就绪，否则它们打的点收不到
+// init puts metrics before the clients are ready, or the points they record are not collected.
 func init() {
 	xhook.BeforeStart(initXMetric, xhook.At(xhook.StageTelemetry))
 }
 
-// initXMetric 读配置，然后装好指标设施
+// initXMetric reads the configuration and then assembles the metrics setup.
 func initXMetric(context.Context) error {
 	c := DefaultConfig()
 	if err := xconfig.Unmarshal(ConfigKey, &c); err != nil {
@@ -209,10 +209,10 @@ func initXMetric(context.Context) error {
 	return install(c)
 }
 
-// install 按配置建好指标设施并装成全局默认实例
+// install builds the metrics setup from the configuration and makes it the global default instance.
 func install(c Config) error {
-	// 不登记停止钩子：New 返回的 Closer 目前什么都不做（见 New），
-	// 为调一个空操作去存一个全局、挂一个钩子不值得。哪天它真要收尾了再加回来
+	// No stop hook is registered: the Closer New returns currently does nothing (see New), and storing a global and
+	// attaching a hook to call a no-op is not worth it. It can come back if it ever has cleanup to do.
 	m, _, err := New(c)
 	if err != nil {
 		return err
@@ -221,16 +221,16 @@ func install(c Config) error {
 	return nil
 }
 
-// RegisterAs 注册 c 并把实际生效的那个断言回 T。
+// RegisterAs registers c and asserts the one actually in effect back to T.
 //
-// 比 Register 好用的地方：调用方几乎总是需要具体类型（*CounterVec 之类）
-// 才能打点，而 Register 返回的是接口，每个调用点都要重复一遍
-// 「注册 → 判错 → 类型断言 → 断言失败怎么办」。
+// What it gives over Register: a caller almost always needs the concrete type (a *CounterVec, say) in order to record,
+// while Register returns an interface, so every call site would repeat "register, check the error, type-assert, decide
+// what to do when the assertion fails".
 //
 //	total, err := xmetric.RegisterAs(prometheus.NewCounterVec(opts, labels))
 //
-// 出错时返回传进来的那个（可以照常打点，只是导不出去），
-// 调用方据此决定是让启动失败还是记一条日志继续。
+// On an error it returns the one passed in (which can be recorded to as usual, it just cannot be exported), so the
+// caller decides whether to fail startup or log a line and carry on.
 func RegisterAs[T prometheus.Collector](c T) (T, error) {
 	registered, err := Register(c)
 	if err != nil {

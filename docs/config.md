@@ -372,7 +372,7 @@ at a local directory it reads `(devel)`.
 | Connection retries | XGorm and XRedis probe once at startup, at most 3 attempts; an authentication failure or a rejected certificate is not retried. See [behavior.md "The startup connection probe"](behavior.md#the-startup-connection-probe) |
 
 The outbound TLS of XGorm (PostgreSQL / MySQL / ClickHouse), XRedis and XHttp is written as one and
-the same block (`TLS:`), see [xtls](../xtls/README.md#配置).
+the same block (`TLS:`), see [xtls](../xtls/README.md#configuration).
 
 ## Editor completion
 
@@ -400,18 +400,18 @@ and its troubleshooting.
 
 | Block | What it is | Module documentation |
 |---|---|---|
-| `XApp` | Application identity, profiles, Import | [xapp/README.md](../xapp/README.md#配置) |
-| `XLog` | Logging | [xlog/README.md](../xlog/README.md#配置) |
-| `XTrace` | Tracing | [xtrace/README.md](../xtrace/README.md#配置) |
-| `XMetric` | Metrics | [xmetric/README.md](../xmetric/README.md#配置) |
-| `XGorm` | Databases | [xgorm/README.md](../xgorm/README.md#配置) |
-| `XGorm` (`Driver: clickhouse`) | The ClickHouse driver | [xgorm/clickhouse/README.md](../xgorm/clickhouse/README.md#配置) |
+| `XApp` | Application identity, profiles, Import | [xapp/README.md](../xapp/README.md#configuration) |
+| `XLog` | Logging | [xlog/README.md](../xlog/README.md#configuration) |
+| `XTrace` | Tracing | [xtrace/README.md](../xtrace/README.md#configuration) |
+| `XMetric` | Metrics | [xmetric/README.md](../xmetric/README.md#configuration) |
+| `XGorm` | Databases | [xgorm/README.md](../xgorm/README.md#configuration) |
+| `XGorm` (`Driver: clickhouse`) | The ClickHouse driver | [xgorm/clickhouse/README.md](../xgorm/clickhouse/README.md#configuration) |
 | `XRedis` | Redis | [xredis/README.md](../xredis/README.md#配置) |
-| `XKafka` | Kafka | [xkafka/README.md](../xkafka/README.md#配置) |
-| `XCache` | A local cache | [xcache/README.md](../xcache/README.md#配置) |
+| `XKafka` | Kafka | [xkafka/README.md](../xkafka/README.md#configuration) |
+| `XCache` | A local cache | [xcache/README.md](../xcache/README.md#configuration) |
 | `XHttp` | Outbound HTTP | [xhttp/README.md](../xhttp/README.md#配置) |
 | `XGin` | A web server | [xgin/README.md](../xgin/README.md#configuration) |
-| `XGinSwagger` | API documentation | [xginswagger/README.md](../xginswagger/README.md#配置) |
+| `XGinSwagger` | API documentation | [xginswagger/README.md](../xginswagger/README.md#configuration) |
 | `XEcho` | A web server (Echo) | [xecho/README.md](../xecho/README.md#configuration) |
-| `XFlow` | Flow orchestration | [xflow/README.md](../xflow/README.md#配置) |
-| `TLS` (inside the XGorm / XRedis / XHttp / XKafka blocks) | Client-side TLS | [xtls/README.md](../xtls/README.md#配置) |
+| `XFlow` | Flow orchestration | [xflow/README.md](../xflow/README.md#configuration) |
+| `TLS` (inside the XGorm / XRedis / XHttp / XKafka blocks) | Client-side TLS | [xtls/README.md](../xtls/README.md#configuration) |

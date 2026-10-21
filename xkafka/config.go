@@ -1,10 +1,10 @@
-// Package xkafka 按配置装好 franz-go，生产用原生的 *kgo.Client，消费用 Consume 登记一个处理函数。
+// Package xkafka sets up franz-go from the configuration: producing uses the native *kgo.Client, and consuming registers a handler with Consume.
 //
 //	err := xkafka.C().ProduceSync(ctx, &kgo.Record{Topic: "orders", Value: b}).FirstErr()
 //
 //	xkafka.Consume("orders", "billing", func(ctx context.Context, r *kgo.Record) error { … })
 //
-// 不提供 CWithCtx：franz-go 生产、消费的每个方法本来就收 ctx。
+// There is no CWithCtx: every franz-go producing and consuming method takes a ctx anyway.
 package xkafka
 
 import (
@@ -18,116 +18,116 @@ import (
 	"github.com/jupiter-eng/xone/xtls"
 )
 
-// ConfigKey 本模块在配置文件里的顶层 key
+// ConfigKey is this module's top-level key in the config file.
 const ConfigKey = "XKafka"
 
-// DefaultName C() 不带参数时取的那个集群的名字，也是 Consume 默认用的集群
+// DefaultName is the name of the cluster C() returns without an argument, and also the one Consume uses by default.
 const DefaultName = xconfig.DefaultClientName
 
-// Config 本模块的配置。两种写法：
+// Config is this module's configuration. There are two forms:
 //
-//	XKafka:                 # 单集群
+//	XKafka:                 # a single cluster
 //	  Brokers: ["127.0.0.1:9092"]
 //
-//	XKafka:                 # 多集群
+//	XKafka:                 # several clusters
 //	  Clients:
 //	    default: {Brokers: ["10.0.0.1:9092", "10.0.0.2:9092"]}
 //	    audit:   {Brokers: ["10.0.1.1:9092"]}
 type Config struct {
-	// Clients 按名字组织的集群。单集群写法会被规整成一个名为 default 的集群。
+	// Clients holds the clusters by name. The single-cluster form is normalized to one cluster named default.
 	Clients map[string]ClientConfig
 }
 
-// ClientConfig 一个 Kafka 集群的配置
+// ClientConfig is the configuration of one Kafka cluster.
 type ClientConfig struct {
-	// Brokers 种子 broker 的地址，host:port。必填，没有默认值。
+	// Brokers are the seed broker addresses, host:port. It is required and has no default.
 	//
-	// 只是种子：连上任意一个之后，franz-go 从元数据里拿到整个集群的 broker。
+	// They are only seeds: once connected to any one of them, franz-go learns the whole cluster's brokers from the metadata.
 	Brokers []string `yaml:"Brokers"`
 
-	// ClientID 发给 broker 的 client.id，broker 端的日志、配额、监控按它区分客户端。
-	// 默认空：经框架建的用 XApp.Name，XApp.Name 也没配就是 franz-go 的默认值 kgo
-	// （v1.21.7 实测）；直接调 New 的不读 XApp，空就是 kgo。
+	// ClientID is the client.id sent to the brokers, which the broker-side logs, quotas and monitoring use to tell clients apart.
+	// It defaults to empty: one built through the framework uses XApp.Name, and without XApp.Name configured it is franz-go's default kgo
+	// (measured on v1.21.7); a direct call to New does not read XApp, so empty means kgo.
 	ClientID string `yaml:"ClientID"`
 
-	// DialTimeout 建一条连接（TCP，加上 TLS 握手）的超时。默认 1s；franz-go 自己的默认是 10s。
+	// DialTimeout is the timeout for making one connection (TCP, plus the TLS handshake). It defaults to 1s; franz-go's own default is 10s.
 	//
-	// 启动时的连通性探测每次尝试的预算是 2 × DialTimeout：建连加一个往返，见 README「行为与实测」。
+	// Each attempt of the connectivity probe at startup has a budget of 2 x DialTimeout: a connection plus one round trip, see the README's "Behavior (measured)".
 	DialTimeout time.Duration `yaml:"DialTimeout"`
 
-	// SASL 认证。默认不认证。
+	// SASL authentication. There is none by default.
 	SASL SASLConfig `yaml:"SASL"`
 
-	// TLS 连 broker 时走不走 TLS。默认不走。字段和规则各模块共用，见 xtls.Config。
+	// TLS says whether to use TLS when connecting to the brokers. It defaults to off. The fields and rules are shared across modules, see xtls.Config.
 	TLS xtls.Config `yaml:"TLS"`
 
-	// Producer 生产这一侧的几项设置。
+	// Producer holds the settings of the producing side.
 	Producer ProducerConfig `yaml:"Producer"`
 
-	// Consumer 消费这一侧的设置，对这个集群上的每个 Consume 生效。
+	// Consumer holds the settings of the consuming side, applying to every Consume on this cluster.
 	Consumer ConsumerConfig `yaml:"Consumer"`
 
-	// Trace 是否给生产、消费各开一个 Span。默认开启。
+	// Trace says whether a Span is opened for producing and for consuming. It defaults to on.
 	//
-	// 关掉的只是 Span：链路上下文（traceparent 等）照样写进消息头、照样从消息头里接上，
-	// 下游开着链路的服务看到的仍是同一条链路。
+	// Turning it off only turns off the Spans: the trace context (traceparent and the rest) is still written into the message headers and still picked up from them,
+	// so a downstream service with tracing on still sees one trace.
 	Trace bool `yaml:"Trace"`
 
-	// Metric 是否导出消费耗时指标（kafka_consume_duration_seconds）。默认开启。
+	// Metric says whether the consume duration metric (kafka_consume_duration_seconds) is exported. It defaults to on.
 	Metric bool `yaml:"Metric"`
 
-	// Log 是否记逐条消息的日志：生产失败（WARN）、每次处理失败（WARN）、处理成功（DEBUG）。默认开启。
+	// Log says whether per-message logs are recorded: a failed produce (WARN), each failed processing attempt (WARN) and a successful one (DEBUG). It defaults to on.
 	//
-	// 关掉之后，消息进了死信、被跳过、处理函数 panic、死信写不进去这几种照样记——
-	// 它们意味着一条消息没按正常的路走完，不记就没有任何痕迹。
-	// 只记消息的 key（可打印的 UTF-8，超过 256 字节截断），从不记 value，见 README「可观测」。
+	// With it off, a message reaching the dead letter, a skipped message, a panicking handler and a failed dead-letter write are still recorded --
+	// they mean a message did not travel its normal path, and without a record there would be no trace of it at all.
+	// Only the message key is recorded (printable UTF-8, truncated beyond 256 bytes), never the value, see the README's "Observability".
 	Log bool `yaml:"Log"`
 }
 
-// SASLConfig SASL 认证
+// SASLConfig is the SASL authentication.
 type SASLConfig struct {
-	// Mechanism 认证机制：PLAIN、SCRAM-SHA-256、SCRAM-SHA-512。默认空，不认证。
+	// Mechanism is the authentication mechanism: PLAIN, SCRAM-SHA-256, SCRAM-SHA-512. It defaults to empty, meaning no authentication.
 	//
-	// PLAIN 把密码原样发给 broker，不配 TLS 时它在网络上是明文。
+	// PLAIN sends the password to the broker as it is, which is plaintext on the wire without TLS configured.
 	Mechanism string `yaml:"Mechanism"`
 
-	// Username 用户名。Mechanism 非空时必填。
+	// Username is the user name. It is required when Mechanism is non-empty.
 	Username string `yaml:"Username"`
 
-	// Password 密码。Mechanism 非空时必填。
+	// Password is the password. It is required when Mechanism is non-empty.
 	//
-	// 建议写成 "${KAFKA_PASSWORD}"：凭证不该进版本库，漏配时启动就失败。
-	// 本模块不会把它写进任何日志和错误。
+	// Writing it as "${KAFKA_PASSWORD}" is the natural choice: a credential does not belong in version control, and a missing one fails startup.
+	// This module never writes it into any log or error.
 	Password string `yaml:"Password"`
 }
 
-// ProducerConfig 生产这一侧。没列出来的都是 franz-go 的默认值，数字见 README「行为与实测」
+// ProducerConfig is the producing side. Anything not listed keeps franz-go's default; the numbers are in the README's "Behavior (measured)".
 type ProducerConfig struct {
-	// Acks 写成功要几个副本确认：all、leader、none。默认 all（franz-go 的默认值）。
+	// Acks is how many replicas have to acknowledge a write: all, leader, none. It defaults to all (franz-go's default).
 	//
-	// all 时开着幂等写（franz-go 的默认）：重试不会写出重复的消息，同一分区里不乱序。
-	// leader、none 时 franz-go 要求关掉幂等写，本模块替你关：此时重试可能写出重复的消息。
+	// With all, idempotent writes are on (franz-go's default): a retry writes no duplicate and the order within a partition is kept.
+	// With leader or none, franz-go requires idempotent writes to be off, which this module does on the caller's behalf: a retry may then write a duplicate.
 	Acks string `yaml:"Acks"`
 
-	// Linger 一个批次最多等多久再发，攒批用。默认 10ms（franz-go 的默认值）；配 0 是不等，有就发。
+	// Linger is how long a batch waits at most before being sent, for batching. It defaults to 10ms (franz-go's default); 0 means no waiting, send what there is.
 	Linger time.Duration `yaml:"Linger"`
 
-	// Compression 批次的压缩算法：none、gzip、snappy、lz4、zstd。默认 snappy（franz-go 的默认值）。
+	// Compression is the batch compression algorithm: none, gzip, snappy, lz4, zstd. It defaults to snappy (franz-go's default).
 	Compression string `yaml:"Compression"`
 }
 
-// ConsumerConfig 消费这一侧
+// ConsumerConfig is the consuming side.
 type ConsumerConfig struct {
-	// ResetOffset 一个消费组第一次消费某个分区（还没提交过 offset）、或者提交过的 offset 已经被清理掉时，
-	// 从哪里开始：latest（只消费之后新来的）、earliest（从最早还留着的那条开始）。默认 latest。
+	// ResetOffset is where to start when a consumer group consumes a partition for the first time (with no committed offset),
+	// or when the committed offset has already been cleaned up: latest (only what arrives afterwards) or earliest (from the oldest message still retained). It defaults to latest.
 	//
-	// franz-go 的默认是 earliest（v1.21.7 实测）：新上线的消费组会把 topic 里留着的全部历史消息
-	// 处理一遍。本模块默认 latest，代价是新组上线、或者 topic 刚建好的那一刻之前写进去的消息，
-	// 这个组不会处理——要它们就配 earliest。
+	// franz-go's default is earliest (measured on v1.21.7): a newly deployed consumer group would process every historical message
+	// still retained in the topic. This module defaults to latest, at the cost of a new group, or a group starting just after the topic was created,
+	// never processing what was written before -- configure earliest when those are wanted.
 	ResetOffset string `yaml:"ResetOffset"`
 }
 
-// DefaultClientConfig 单个集群的全部默认值集中在这里
+// DefaultClientConfig holds every default of a single cluster in one place.
 func DefaultClientConfig() ClientConfig {
 	return ClientConfig{
 		DialTimeout: time.Second,
@@ -143,11 +143,11 @@ func DefaultClientConfig() ClientConfig {
 	}
 }
 
-// DefaultConfig 默认没有任何集群——没配 XKafka 就不该连任何 Kafka
+// DefaultConfig has no clusters at all -- without XKafka configured, no Kafka should be connected to.
 func DefaultConfig() Config { return Config{} }
 
-// loadConfig 读配置文件里的这一块。单集群和多集群两种写法都收，
-// 每个集群先铺上 DefaultClientConfig 再解，规则见 xconfig.UnmarshalClients
+// loadConfig reads this block of the config file. Both the single-cluster and the multi-cluster form are accepted,
+// each cluster is pre-filled with DefaultClientConfig before decoding, and the rules are in xconfig.UnmarshalClients.
 func loadConfig() (Config, error) {
 	clients, err := xconfig.UnmarshalClients(ConfigKey, DefaultClientConfig)
 	return Config{Clients: clients}, err
@@ -160,10 +160,10 @@ var (
 	resetOffsets   = []string{"latest", "earliest"}
 )
 
-// Validate 检查配置本身说不通的地方，在建连之前就失败。
+// Validate checks what does not make sense in the configuration itself and fails before anything is connected to.
 //
-// xconfig.UnmarshalClients 每解完一个集群调一次；直接调 New 的，New 也会调一次。
-// 返回普通 error，由调它的那一层包一次 xerror。错误里不带密码。
+// xconfig.UnmarshalClients calls it once per decoded cluster; a direct call to New calls it once as well.
+// It returns a plain error, which the layer calling it wraps in an xerror once. The error carries no password.
 func (c ClientConfig) Validate() error {
 	var errs []error
 	if len(c.Brokers) == 0 {
@@ -175,7 +175,7 @@ func (c ClientConfig) Validate() error {
 			break
 		}
 	}
-	// 负的时长在 franz-go 里不是「不限时」，是一次立刻失败的拨号
+	// A negative duration is not "no limit" in franz-go, it is a dial that fails immediately.
 	if c.DialTimeout < 0 {
 		errs = append(errs, fmt.Errorf("DialTimeout must not be negative, got=%v", c.DialTimeout))
 	}
@@ -208,7 +208,7 @@ func (s SASLConfig) validate() error {
 	return nil
 }
 
-// oneOf 值必须是列表里的一个（区分大小写：配置里写错大小写的，报错比猜更好）
+// oneOf requires the value to be one of the list (case-sensitively: for a value written with the wrong case, an error beats a guess).
 func oneOf(field, v string, allowed []string) error {
 	if slices.Contains(allowed, v) {
 		return nil

@@ -1,23 +1,24 @@
-// Package xtls 是各客户端集成共用的那一块 TLS 配置。
+// Package xtls holds the one block of TLS configuration the client integrations share.
 //
-// xgorm、xredis、xhttp、xkafka 的配置里都有一个同样形状的 TLS 块：
+// xgorm, xredis, xhttp and xkafka all have a TLS block of the same shape in their configuration:
 //
 //	TLS:
 //	  Enable: true
-//	  CAFile: /etc/ssl/internal-ca.pem   # 不填用系统根证书
-//	  CertFile: /etc/ssl/client.pem      # 服务端要求双向认证时和 KeyFile 成对填
+//	  CAFile: /etc/ssl/internal-ca.pem   # empty uses the system roots
+//	  CertFile: /etc/ssl/client.pem      # set together with KeyFile when the server wants mutual authentication
 //	  KeyFile: /etc/ssl/client-key.pem
-//	  ServerName: db.internal            # 不填取连接地址的主机部分
+//	  ServerName: db.internal            # empty takes the host part of the connection address
 //
-// 字段、默认值、校验规则、装出来的 *tls.Config 在这几个模块里一模一样，
-// 所以只在这里写一次。使用者只在配置文件里写它；直接调某个模块的 New 时
-// 才会在代码里写到 xtls.Config。
+// The fields, the defaults, the validation rules and the *tls.Config they build are identical
+// across those modules, so they are written once, here. Callers only write it in the config file;
+// xtls.Config appears in code only when calling a module's New directly.
 //
-// 只收最常用的几项，最低版本固定 TLS 1.2，证书校验一直开着，
-// **没有跳过校验的开关**——自签证书把 CA 填进 CAFile。要更细的控制（加密套件、
-// 自定义校验）就绕开配置、自己造原生 client，框架不挡路。
+// Only the few most common items are accepted, the minimum version is fixed at TLS 1.2 and
+// certificate verification is always on -- **there is no switch to skip it**; a self-signed
+// certificate goes into CAFile. For finer control (cipher suites, custom verification), go around
+// the configuration and build a native client; the framework does not stand in the way.
 //
-// 本包零第三方依赖。
+// This package has no third-party dependencies.
 package xtls
 
 import (
@@ -28,32 +29,38 @@ import (
 	"os"
 )
 
-// Config 客户端这一侧的 TLS 设置。零值就是不走 TLS
+// Config is the client side of a TLS setup. Its zero value means no TLS.
 type Config struct {
-	// Enable 是否走 TLS。默认 false。下面几项只在开着时生效，没开却写了它们，启动失败——
-	// 那多半是忘了开，照明文连过去比报错更糟。
+	// Enable turns TLS on. It defaults to false. The fields below only take effect while it is on,
+	// and setting them without it fails startup -- that is most likely a forgotten Enable, and
+	// connecting in plaintext would be worse than an error.
 	Enable bool `yaml:"Enable"`
 
-	// CAFile 校验服务端证书用的 CA 证书（PEM，可以放好几张）。默认空，用系统的根证书。
+	// CAFile is the CA certificate used to verify the server certificate (PEM, several are
+	// allowed). It defaults to empty, which uses the system roots.
 	//
-	// 填了就**只**认这个文件里的 CA，系统根证书不再参与校验。自签的证书填这里。
+	// When it is set, **only** the CAs in that file are accepted and the system roots no longer
+	// take part. A self-signed certificate goes here.
 	CAFile string `yaml:"CAFile"`
 
-	// CertFile 客户端证书（PEM），服务端要求双向认证时和 KeyFile 成对填。默认空。
+	// CertFile is the client certificate (PEM), set together with KeyFile when the server wants
+	// mutual authentication. It defaults to empty.
 	CertFile string `yaml:"CertFile"`
 
-	// KeyFile 客户端私钥（PEM），和 CertFile 成对填。默认空。
+	// KeyFile is the client private key (PEM), set together with CertFile. It defaults to empty.
 	KeyFile string `yaml:"KeyFile"`
 
-	// ServerName 校验服务端证书时比对的名字。默认空，取连接地址的主机部分；
-	// 按 IP 连、而证书上写的是域名时填它。
+	// ServerName is the name the server certificate is verified against. It defaults to empty,
+	// which takes the host part of the connection address; set it when connecting by IP to a
+	// certificate that names a domain.
 	ServerName string `yaml:"ServerName"`
 }
 
-// Validate 检查几项之间说不通的地方。文件读不读得出来留给 Build。
+// Validate checks the combinations that do not make sense. Whether the files can be read is left
+// to Build.
 //
-// 各模块的 Validate 会调它，于是配错的值在读配置时就失败。
-// 返回普通 error，由调它的那一层包一次 xerror。
+// Each module's Validate calls it, so a misconfigured value fails while the config is being read.
+// It returns a plain error, which the layer calling it wraps in an xerror once.
 func (c Config) Validate() error {
 	if !c.Enable {
 		if c != (Config{}) {
@@ -67,11 +74,14 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// Build 按配置装出 *tls.Config；没开 TLS 时返回 nil，调用方由此走明文。
+// Build assembles a *tls.Config from the configuration; with TLS off it returns nil, which is how
+// the caller ends up in plaintext.
 //
-// 读证书文件就在这里：读不出来、里面没有证书，都是这里报错，而不是等到第一次握手。
-// 返回的 ServerName 就是配置里的那个，没填时是空的——拿它去连的驱动
-// （pgx 由 xgorm 代填、go-sql-driver、go-redis、net/http）各自按连接地址补上。
+// Reading the certificate files happens here: an unreadable file, or one holding no certificate,
+// is reported here rather than at the first handshake. The ServerName returned is exactly the one
+// from the configuration, and empty when it was not set -- the drivers that connect with it (pgx,
+// filled in by xgorm; go-sql-driver; go-redis; net/http) each supply it from the connection
+// address.
 func (c Config) Build() (*tls.Config, error) {
 	if err := c.Validate(); err != nil {
 		return nil, err

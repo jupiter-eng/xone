@@ -1,24 +1,24 @@
-// Package xcron 进程内的定时任务：Add 登记，框架起停。
+// Package xcron provides in-process scheduled jobs: Add registers them and the framework starts and stops them.
 //
-// Web 服务里带几个后台任务：
+// A web service with a few background jobs:
 //
 //	func main() {
-//		xcron.Add("*/5 * * * *", syncOrders)                // 每 5 分钟（UTC）
-//		xcron.Add("@every 30s", refresh, xcron.RunOnStart()) // 起来先跑一次
+//		xcron.Add("*/5 * * * *", syncOrders)                 // every 5 minutes (UTC)
+//		xcron.Add("@every 30s", refresh, xcron.RunOnStart()) // run once as soon as it comes up
 //		xone.MustRun(xgin.New().WithRoutes(routes))
 //	}
 //
-// 只跑定时任务的进程：
+// A process running only scheduled jobs:
 //
 //	xone.MustRun(xone.UntilSignal())
 //
-// 调度器在 StageServer 那一档起来——客户端（xgorm、xredis……）和你的业务钩子都已就绪，
-// 任务里直接 xgorm.C()；停的时候它最先停，等在途的执行返回之后才轮到关客户端。
+// The scheduler comes up on StageServer -- the clients (xgorm, xredis, ...) and the caller's business hooks are all
+// ready, so a job can call xgorm.C() directly; on shutdown it stops first, and the clients are only closed once the executions in flight have returned.
 //
-// 每次执行有自己的根 Span（cron <name>），ctx 里带着 job=<name> 这个日志字段，
-// 结束记一行 cron job finished / failed；panic 被接住，记 ERROR，不影响别的任务和进程。
+// Each execution has a root Span of its own (cron <name>) and carries the log field job=<name> in its ctx,
+// recording one cron job finished / failed line at the end; a panic is caught and recorded at ERROR without affecting the other jobs or the process.
 //
-// 多副本部署时每个副本都会跑，只想一个副本跑的要自己抢锁，见 README「多副本」。
+// Every replica runs them in a multi-replica deployment; running on one replica only means taking a lock, see the README's "Multiple replicas".
 package xcron
 
 import (
@@ -27,23 +27,23 @@ import (
 	"github.com/jupiter-eng/xone/xerror"
 	"github.com/jupiter-eng/xone/xhook"
 
-	// 用了 xcron 就有链路：xtrace 装好全局的 TracerProvider，每次执行的 Span 经 otel 的全局 API 记下来
+	// Using xcron brings tracing: xtrace installs the global TracerProvider, and each execution's Span is recorded through otel's global API.
 	_ "github.com/jupiter-eng/xone/xtrace"
 )
 
-// Add 登记一个定时任务。spec 是标准的 5 段 cron（分 时 日 月 周），或者
-// @yearly / @monthly / @weekly / @daily / @hourly / @every <时长>；默认按 UTC 解释，见 WithLocation。
+// Add registers a scheduled job. spec is a standard 5-field cron (minute hour day month weekday), or
+// @yearly / @monthly / @weekly / @daily / @hourly / @every <duration>; it is interpreted in UTC by default, see WithLocation.
 //
 //	err := xcron.Add("0 3 * * *", cleanup, xcron.WithTimeout(10*time.Minute))
 //
-// 当场校验，返回 *xerror.Error（模块 xcron）：spec 写错、fn 是 nil、名字为空或重复是 config；
-// 退出流程已经开始之后再 Add 是 register。
+// It validates on the spot and returns an *xerror.Error (module xcron): a malformed spec, a nil fn, and an empty or
+// duplicate name are config; an Add after the shutdown sequence has begun is register.
 //
-// 什么时候调都行：在 xone.Run 之前登记的，调度器起来时一起开始；之后（比如在某个钩子里）登记的，
-// 当场开始。带 RunOnStartAndWait 的在调度器起来之后 Add，会等第一次跑完，失败就返回它的错误（op execute），
-// 这个任务也不登记。
+// It may be called at any time: a job registered before xone.Run starts together with the scheduler, and one
+// registered later (inside some hook, say) starts on the spot. An Add with RunOnStartAndWait after the scheduler is
+// up waits for that first run and returns its error on failure (op execute), and the job is not registered either.
 //
-// fn 收到的 ctx 在退出时被取消（WithTimeout 到点也是）。它返回的错误只记日志，不影响下一次。
+// The ctx fn receives is cancelled on shutdown (and when WithTimeout is reached). The error it returns is only logged and does not affect the next run.
 func Add(spec string, fn func(ctx context.Context) error, opts ...Option) error {
 	if fn == nil {
 		return xerror.Newf("xcron", "config", "job with spec %q has a nil function", spec)
@@ -59,13 +59,13 @@ func Add(spec string, fn func(ctx context.Context) error, opts ...Option) error 
 	return std.add(&job{name: o.name, sched: sched, fn: fn, o: o})
 }
 
-// ---- 登记 ----
+// ---- registration ----
 
-// 一对钩子起停整个调度器。StageServer：客户端和业务钩子都起来了它才起，
-// 停的时候它先停——在途的任务还在用数据库，等它们返回之后才轮到关数据库
+// One pair of hooks starts and stops the whole scheduler. StageServer: it comes up only once the clients and the
+// business hooks are up, and stops first -- the jobs in flight are still using the database, which is only closed once they have returned.
 func init() {
 	xhook.BeforeStart(startXCron, xhook.At(xhook.StageServer))
-	xhook.BeforeStop(stopXCron) // 档位跟着上面那个启动钩子
+	xhook.BeforeStop(stopXCron) // the stage follows the start hook above
 }
 
 func startXCron(ctx context.Context) error { return std.start(ctx) }

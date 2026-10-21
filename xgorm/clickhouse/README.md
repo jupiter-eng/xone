@@ -1,14 +1,16 @@
 # xgorm/clickhouse
 
-给 [xgorm](../README.md) 加 ClickHouse 驱动：匿名 import 一行、配置里写 `Driver: clickhouse`，拿到的仍是原生 `*gorm.DB`。
+The ClickHouse driver for [xgorm](../README.md): one blank import line and `Driver: clickhouse` in the configuration, and
+what comes back is still a native `*gorm.DB`.
 
-- 配置项、多实例、日志、指标、Span 都和 xgorm 一样
-- 独立 module：ClickHouse 驱动多带进 60 多个模块，不用它的应用不必背（见 [architecture.md](../../docs/architecture.md#2-every-integration-is-its-own-go-module)）
-- DSN 认 `clickhouse://` / `tcp://`（native 协议）和 `http://` / `https://`
-- TLS 块对 native 和 `https://` 都生效
-- 解析错误一律不回显 DSN（原始错误里带着明文密码）
+- Configuration fields, several instances, logs, metrics and Spans are all the same as in xgorm
+- A module of its own: the ClickHouse driver pulls in more than 60 extra modules, which applications that do not use it
+  should not have to carry (see [architecture.md](../../docs/architecture.md#2-every-integration-is-its-own-go-module))
+- The DSN accepts `clickhouse://` / `tcp://` (the native protocol) and `http://` / `https://`
+- The TLS block applies to both native and `https://`
+- A parse error never echoes the DSN (the original error carries the plaintext password)
 
-## 快速上手
+## Quick start
 
 ```yaml
 # conf/application.yml
@@ -21,10 +23,10 @@ XGorm:
 ```go
 import (
 	"github.com/jupiter-eng/xone/xgorm"
-	_ "github.com/jupiter-eng/xone/xgorm/clickhouse" // 注册驱动，代码里不直接调它
+	_ "github.com/jupiter-eng/xone/xgorm/clickhouse" // registers the driver; nothing in it is called directly
 )
 
-ctx, cancel := context.WithTimeout(ctx, 10*time.Second) // 截止时间要比 read_timeout 短，见「注意事项」
+ctx, cancel := context.WithTimeout(ctx, 10*time.Second) // the deadline must be shorter than read_timeout, see "Notes"
 defer cancel()
 
 var out []PageViews
@@ -33,92 +35,118 @@ err := xgorm.CWithCtx(ctx, "events").
 	Scan(&out).Error
 ```
 
-## 配置
+## Configuration
 
-只列 ClickHouse 相关的；其余字段、多实例写法见 [xgorm「配置」](../README.md#配置)。
+Only the ClickHouse-specific fields are listed here; the rest, and how to configure several instances, are in
+[xgorm "Configuration"](../README.md#configuration).
 
 ```yaml
 XGorm:
   Driver: clickhouse
-  DSN: "${CH_DSN}"         # clickhouse://user:pass@host:9000/db，也认 tcp:// http:// https://
-  DialTimeout: 500ms       # 注入 DSN 的 dial_timeout，DSN 里已写的不覆盖；0 不注入，驱动用它自己的 30s
+  DSN: "${CH_DSN}"         # clickhouse://user:pass@host:9000/db; tcp:// http:// https:// are accepted too
+  DialTimeout: 500ms       # the dial_timeout injected into the DSN; one already in the DSN is not overridden; 0 injects nothing and the driver uses its own 30s
 ```
 
-- `dial_timeout` 接在 DSN 的 query 末尾，你写的其余参数一个字节都不动（不重排、不重新转义）。
-- 库名写在路径里或写成 `?database=` 都行，两处都写时以 query 里的为准（建连日志的 `db`、Span 的 `db.namespace` 也按它记）。
-- TLS 规则见 [xtls](../../xtls/README.md)。开着 TLS 块时：`https://` 不必再写 `secure=true`；DSN 里不能再写
-  `secure` / `skip_verify` / `tls_server_name`；DSN 是 `http://` 的启动失败。
+- `dial_timeout` is appended to the end of the DSN's query, and the other parameters are not touched by a single byte (no
+  reordering, no re-escaping).
+- The database name may be written in the path or as `?database=`; when both are present the one in the query wins (and is
+  what the connect log's `db` and the Span's `db.namespace` record).
+- The TLS rules are in [xtls](../../xtls/README.md). While a TLS block is on: `https://` does not need `secure=true`; the DSN
+  must not set `secure` / `skip_verify` / `tls_server_name`; and a `http://` DSN fails startup.
 
 ## API
 
-| 名字 | 说明 |
+| Name | Description |
 |---|---|
-| `Driver` | 常量 `"clickhouse"`，即配置里 `Driver` 要写的值。包在 `init` 里自己注册，取实例照样用 `xgorm.C` / `xgorm.CWithCtx` |
+| `Driver` | The constant `"clickhouse"`, that is the value `Driver` takes in the configuration. The package registers itself in `init`, and instances are still fetched with `xgorm.C` / `xgorm.CWithCtx` |
 
-自己写驱动：在 `xgorm.RegisterDialect` 注册的 `Dialect` 里提供 `OpenTLS` 才收 TLS 块，否则配了 TLS 块就启动失败。
+Writing a driver of your own: a TLS block is only accepted when the `Dialect` registered with `xgorm.RegisterDialect`
+provides `OpenTLS`; otherwise configuring one fails startup.
 
-## 注意事项
+## Notes
 
-- **`read_timeout` 没写时是 300s，而且管的是一整段读**：健康的长查询也会被它打断；读超时的查询会被 `database/sql` 重发，一共发 3 次。
-  **给查询的截止时间要比 `read_timeout` 短**。见[「行为与实测」](#行为与实测)。
-- **新建连接不听 ctx**：拨号和握手只按 `dial_timeout`（`DialTimeout`，默认 500ms）。
-- 驱动对写入报的影响行数永远是 0，Span 的 `db.rows_affected` 在 ClickHouse 上没有意义。
-- DSN 必须是上面四种 scheme 之一的 URL。
-- 驱动名写错或忘了 import 时启动失败：`unknown Driver="clickhouse", registered: [mysql postgres]`，列出的就是 `xgorm.Drivers()`。
+- **When `read_timeout` is not set it is 300s, and it governs a whole read**: it interrupts healthy long-running queries too,
+  and a query that times out on a read is resent by `database/sql` for a total of 3 attempts.
+  **A query's deadline must be shorter than `read_timeout`.** See ["Behavior (measured)"](#behavior-measured).
+- **A new connection does not honor the ctx**: dialing and the handshake follow `dial_timeout` only (`DialTimeout`, 500ms by
+  default).
+- The driver always reports 0 rows affected for writes, so the Span's `db.rows_affected` is meaningless on ClickHouse.
+- The DSN must be a URL with one of the four schemes above.
+- A misspelled driver name or a forgotten import fails startup with
+  `unknown Driver="clickhouse", registered: [mysql postgres]`, where the list is exactly `xgorm.Drivers()`.
 
-## 行为与实测
+## Behavior (measured)
 
-实测环境和跨模块的总表见 [`docs/behavior.md`](../../docs/behavior.md)。
+The measurement environment and the cross-module summary table are in [`docs/behavior.md`](../../docs/behavior.md).
 
-clickhouse-go v2.48.0（native 协议）、`gorm.io/driver/clickhouse` v0.7.0、ch-go v0.74.0、ClickHouse 24.8.14（e2e）。
+clickhouse-go v2.48.0 (the native protocol), `gorm.io/driver/clickhouse` v0.7.0, ch-go v0.74.0, ClickHouse 24.8.14 (e2e).
 
-**为什么是独立的 module**：只 import xgorm 的应用模块图（`GOWORK=off go list -m all`，不含应用自己的模块）是 68 个，
-加上 ClickHouse 驱动变成 131 个（`go list -deps` 里的非标准库包 165 → 208）。多出来的大头是 Docker 和 testcontainers——
-clickhouse-go 用它们跑集成测试，而 `go.mod` 分不出「只测试用」。
+**Why it is a module of its own**: the module graph of an application that imports only xgorm
+(`GOWORK=off go list -m all`, excluding the application's own modules) holds 68 modules, and adding the ClickHouse driver
+makes it 131 (the non-standard-library packages in `go list -deps` go from 165 to 208). The bulk of the addition is Docker
+and testcontainers -- clickhouse-go uses them for its integration tests, and `go.mod` cannot distinguish "test only".
 
-**`Initialize` 里的版本查询**同 MySQL：写死的 `context.Background()`、发生在建连重试之前。实测对一个收下连接却不回话的
-地址，ctx 早已取消也要等满 `dial_timeout`，然后直接失败。这里同样挪进建连探测，版本号照样设进 Dialector
-（驱动靠它判断改列名（< 20.4）和列精度（< 21.11））。
+**The version query in `Initialize`** is the same as on MySQL: a hard-coded `context.Background()`, run before the connection
+retries. Measured against an address that accepts the connection and never answers, it waits out the full `dial_timeout`
+even though the ctx was cancelled long before, and then just fails. It is likewise moved into the connection probe here, and
+the version is still set on the Dialector (the driver uses it to decide how to rename columns (< 20.4) and how to handle
+column precision (< 21.11)).
 
-**超时与取消：**
+**Timeouts and cancellation:**
 
-- `read_timeout` 没写时是 **300s**（实测对端不回话、不给截止时间：300.6s 后才报错）。
-- **`read_timeout` 管的是一整段读，不是「多久没收到字节」。** 一条查询分两段读：读到第一个数据块、再读余下的全部，
-  每段开始时设一次 deadline，中途不续期。所以**健康的查询只要余下的结果读得比它久，照样失败**：实测
-  50 行 × 100ms 的流配 `read_timeout=1s`，1.0s 报 `i/o timeout`；`SELECT sleep(2)` 同样 1.0s 失败。
-  跑得久的查询要么调大 `read_timeout`，要么给调用方的截止时间。
-- **调用方的截止时间代替 `read_timeout`**，比它长也照截止时间来（同一条 5s 的流配 `read_timeout=1s`、截止时间 10s，5.0s 读完）；
-  池里的连接给 200ms 就在 201ms 返回。
-- **新建连接不听 ctx**：拨号和握手只按 `dial_timeout`。池里的连接用完之后，要新建连接的查询照样等满 `dial_timeout`
-  （默认 500ms，实测 500.2–501.5ms）。
-- **读超时的查询会被 `database/sql` 重发，一共发 3 次。** 驱动把读超时认成坏连接、报 `driver.ErrBadConn`，
-  `database/sql` 换一条连接再发（`maxBadConnRetries` = 2）。实测 `read_timeout=1s`：服务端要睡 1.5s 的查询 3.0s 后才失败，
-  `system.query_log` 里它开始了 3 次，返回的错误是 `driver: bad connection`（`i/o timeout` 这个根因丢了）。
-  clickhouse-go v2.30.0 时相反：读超时的连接还回池里，下一条借到它的查询**成功返回了上一条的结果**（上游 v2.47.0 修掉）。
-- ctx **取消**时当场返回 `context canceled`，同时给服务端发 Cancel 包、关掉这条连接：客户端断开之后 0.5ms handler 就返回了。
-  服务端按数据块停下（约 115ms 从 `system.processes` 消失），`sleep(2.5)` 打断不了。
-- `Ping` 只认截止时间、不认取消。建连探测每次都带截止时间（`2 × dial_timeout`），启动期间收到退出信号约 400ms 后退出。
-- **`DialTimeout: 0` 且 DSN 里没写 `dial_timeout`** 时驱动按 30s 建连（v2.48.0 `setDefaults`），建连探测的单次预算也按它算（60s），
-  不是兜底的 1s。实测（ClickHouse 24.8.14，中间一层代理让服务端的第一个字节晚 1.5s）：按 0 算时 3 次各 1s 全部超时、5.3s 后启动失败；
-  按 30s 算 1.5s 连上。
-- 参数由驱动代进语句再发给服务端：浮点数写成 `cast(1.5, 'Float64')`，在 `system.query_log` 里按语句文本找时要按这个写法找。
+- When `read_timeout` is not set it is **300s** (measured with a far end that never answers and no deadline: the error came
+  after 300.6s).
+- **`read_timeout` governs a whole read, not "how long without receiving a byte".** A query is read in two stages: up to the
+  first data block, then all the rest, with a deadline set once at the start of each stage and never extended. So **a healthy
+  query fails as soon as the remaining results take longer than that**: measured, a stream of 50 rows x 100ms with
+  `read_timeout=1s` reported `i/o timeout` after 1.0s, and `SELECT sleep(2)` likewise failed after 1.0s. Long-running
+  queries need either a larger `read_timeout` or a deadline from the caller.
+- **The caller's deadline replaces `read_timeout`**, even when it is longer (the same 5s stream with `read_timeout=1s` and a
+  10s deadline finished reading in 5.0s); a pooled connection given 200ms returned in 201ms.
+- **A new connection does not honor the ctx**: dialing and the handshake follow `dial_timeout` only. Once the pool is
+  exhausted, a query that needs a new connection still waits out the full `dial_timeout` (500ms by default, measured
+  500.2-501.5ms).
+- **A query that times out on a read is resent by `database/sql` for a total of 3 attempts.** The driver reads a read timeout
+  as a bad connection and returns `driver.ErrBadConn`, so `database/sql` picks another connection and sends it again
+  (`maxBadConnRetries` = 2). Measured with `read_timeout=1s`: a query the server sleeps 1.5s on failed only after 3.0s, it
+  appears started 3 times in `system.query_log`, and the error returned is `driver: bad connection` (the `i/o timeout` root
+  cause is lost). In clickhouse-go v2.30.0 it was the other way round: the timed-out connection went back into the pool and
+  the next query to borrow it **returned the previous query's results** (fixed upstream in v2.47.0).
+- A **cancelled** ctx returns `context canceled` on the spot while sending the server a Cancel packet and closing the
+  connection: the handler returned 0.5ms after the client disconnected. The server stops at a data-block boundary
+  (disappearing from `system.processes` after about 115ms), and `sleep(2.5)` cannot be interrupted.
+- `Ping` honors deadlines but not cancellation. The connection probe always carries a deadline (`2 x dial_timeout`), and a
+  stop signal received during startup exits after about 400ms.
+- **With `DialTimeout: 0` and no `dial_timeout` in the DSN**, the driver connects with a 30s budget (v2.48.0 `setDefaults`),
+  and the probe's per-attempt budget follows it (60s) rather than the 1s fallback. Measured (ClickHouse 24.8.14, with a proxy
+  in between delaying the server's first byte by 1.5s): computed from 0, all 3 attempts timed out after 1s each and startup
+  failed after 5.3s; computed from 30s, it connected in 1.5s.
+- Parameters are interpolated into the statement by the driver before it is sent to the server: a float becomes
+  `cast(1.5, 'Float64')`, which is the spelling to search for when looking up statement text in `system.query_log`.
 
-**认证失败**认的是服务端回的 `*clickhouse.Exception`（HTTP 协议下包在 `*clickhouse.HTTPError` 里）：
-516（AUTHENTICATION_FAILED）、192 / 193 / 194（老版本的 UNKNOWN_USER、WRONG_PASSWORD、REQUIRED_PASSWORD）。
-实测密码错、用户不存在都是 `code: 516`，只试 1 次、50ms 内失败；HTTP 协议下是 `[HTTP 403] code: 516`；
-库不存在是 81，不算认证失败，照常试满 3 次。
-报错里通常带着 `code: 81`，偶尔只有 `driver: bad connection`：库不存在时握手照样成功，服务端随后发来异常、关掉连接；
-驱动的 `database/sql` 路径在 ping 之前先从连接上读一个字节检查它还活着没有，异常要是已经到了，就被这一下读走，
-连接被当成坏的丢掉。实测 64 个协程并发各连 20 次（共 1280 次），`database/sql` 路径约 9% 是这样，驱动的原生 API 一次都没有。
+**An auth failure** is recognized from the `*clickhouse.Exception` the server returns (wrapped in a
+`*clickhouse.HTTPError` over the HTTP protocol): 516 (AUTHENTICATION_FAILED) and 192 / 193 / 194 (the older UNKNOWN_USER,
+WRONG_PASSWORD and REQUIRED_PASSWORD). Measured, both a wrong password and a missing user are `code: 516`, failing within
+50ms after a single attempt; over HTTP it is `[HTTP 403] code: 516`. A missing database is 81, which is not an auth failure
+and runs through all 3 attempts as usual.
 
-**TLS**（`verificationMode=relaxed`）：native 与 `https://` 都走 TLS 块，`system.query_log` 都是 `is_secure=1`。
+That error usually carries `code: 81`, and occasionally only `driver: bad connection`: with a missing database the handshake
+still succeeds, the server then sends the exception and closes the connection, and the driver's `database/sql` path reads one
+byte off the connection before pinging to check whether it is still alive -- if the exception has already arrived it is
+consumed by that read and the connection is discarded as bad. Measured with 64 goroutines connecting 20 times each (1280
+connections in total), about 9% of the `database/sql` path behaved this way, and the driver's native API never did.
 
-- CA 不对、`ServerName` 对不上、客户端证书不是服务端认的 CA 签的：都在 2–6ms 内失败、不重试。
-- TLS 块开着连到明文端口：`first record does not look like a TLS handshake`（native）/
-  `server gave HTTP response to HTTPS client`（HTTPS），照常重试。
-- 不开 TLS 块时 DSN 的 `skip_verify=true` 连得上，但服务端证书根本不校验。
-- GORM 的 clickhouse 驱动拿到 DSN 会另解一份、在带 `UpdateLocalTable` 的 UPDATE 里按那一份直连每台主机（`update.go`），
-  那几条直连不带 TLS 块——所以开着 TLS 块时不把 DSN 交给它。
+**TLS** (`verificationMode=relaxed`): both native and `https://` go through the TLS block, and `system.query_log` shows
+`is_secure=1` for both.
 
-多主机 `clickhouse://u:p@h1:9000,h2:9000/db` 按 `in_order` 依次去连，第一个挂了之后查询照常（e2e）；
-日志的 `addr`、Span 的 `server.address` 记第一个。
+- A wrong CA, a `ServerName` that does not match, or a client certificate not signed by the CA the server accepts: all fail
+  within 2-6ms and are not retried.
+- A TLS block connecting to a plaintext port: `first record does not look like a TLS handshake` (native) or
+  `server gave HTTP response to HTTPS client` (HTTPS), retried as usual.
+- Without a TLS block, `skip_verify=true` in the DSN connects, but the server certificate is not verified at all.
+- Given a DSN, gorm's clickhouse driver parses its own copy and uses it to connect to each host directly for an UPDATE with
+  `UpdateLocalTable` (`update.go`), and those direct connections carry no TLS block -- which is why the DSN is not handed to
+  it while a TLS block is on.
+
+A multi-host `clickhouse://u:p@h1:9000,h2:9000/db` is tried `in_order`, and queries carry on after the first host goes down
+(e2e); the log's `addr` and the Span's `server.address` record the first one.

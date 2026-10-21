@@ -15,27 +15,31 @@ import (
 	"gorm.io/gorm"
 )
 
-// 这里自己注册 GORM 回调，而不是用 gorm.io/plugin/opentelemetry/tracing。
+// The GORM callbacks are registered here rather than using gorm.io/plugin/opentelemetry/tracing.
 //
-// 那个官方插件 import 了 gorm.io/driver/clickhouse，于是每个用它的二进制
-// 都要编进整套 ClickHouse 客户端：实测模块图 159 个、编译包 372 个。
-// 为了在 MySQL 上打一条 Span，这个价钱太贵了。
+// That official plugin imports gorm.io/driver/clickhouse, so every binary using it compiles in the
+// whole ClickHouse client: measured, a module graph of 159 and 372 compiled packages. That is too
+// high a price for one span on MySQL.
 //
-// GORM 的回调接口本身很简单，自己接上只要下面这些代码，依赖只多 otel。
+// GORM's callback interface is simple enough that wiring it up takes only the code below, with
+// otel as the one added dependency.
 
 const tracerName = "github.com/jupiter-eng/xone/xgorm"
 
-// tracerOpts 属性按哪一版语义约定写，随 Tracer 一起报给后端。
-// 存成切片再展开传：每条 SQL 现拼一个变参切片就是多一次分配
+// tracerOpts is which version of the semantic conventions the attributes follow, reported to the
+// backend along with the Tracer. Stored as a slice and expanded: building a variadic slice per SQL
+// statement would be one more allocation each time.
 var tracerOpts = []trace.TracerOption{trace.WithSchemaURL(semconv.SchemaURL)}
 
-// registrar 是 *callback.Register 的方法值。
+// registrar is a method value of *callback.Register.
 //
-// GORM 的 processor / callback 都是非导出类型，外部没法给它们声明接口或变量，
-// 但方法值可以拿出来存——于是这张表还是写得成表。
+// GORM's processor and callback are unexported types, so nothing outside can declare an interface
+// or a variable for them — but a method value can be taken and stored, which is what keeps this a
+// table.
 type registrar func(name string, fn func(*gorm.DB)) error
 
-// installTracing 给实例挂上链路回调，每种操作前后各一个
+// installTracing attaches the tracing callbacks to an instance, one before and one after each kind
+// of operation.
 func installTracing(db *gorm.DB, info ConnInfo, d Dialect) error {
 	cb := db.Callback()
 	pairs := []struct {
@@ -61,11 +65,11 @@ func installTracing(db *gorm.DB, info ConnInfo, d Dialect) error {
 	return errors.Join(errs...)
 }
 
-// connAttrs 只由连接信息决定的那几个属性，按 OTel 数据库语义约定 v1.43.0
-// （与仓库里 otelhttp v0.71.0 用的是同一版）。
+// connAttrs are the attributes decided by the connection information alone, following OTel's
+// database semantic conventions v1.43.0 (the same version otelhttp v0.71.0 in this repository uses).
 //
-// 旧名字（db.system、db.name、db.statement、db.operation）在 v1.26 之后
-// 陆续改名，这里只出新名字，不双写。
+// The old names (db.system, db.name, db.statement, db.operation) were renamed one after another
+// after v1.26; only the new names are emitted here, with no dual writing.
 func connAttrs(info ConnInfo) []attribute.KeyValue {
 	out := []attribute.KeyValue{semconv.DBSystemNameKey.String(systemName(info.Driver))}
 	if info.DB != "" {
@@ -73,7 +77,7 @@ func connAttrs(info ConnInfo) []attribute.KeyValue {
 	}
 	host, port, err := net.SplitHostPort(info.Addr)
 	if err != nil {
-		// 不是 host:port（方言没解出端口）就整个当地址记
+		// Not host:port (the dialect produced no port), so the whole thing is recorded as the address
 		if info.Addr != "" {
 			out = append(out, semconv.ServerAddress(info.Addr))
 		}
@@ -86,8 +90,9 @@ func connAttrs(info ConnInfo) []attribute.KeyValue {
 	return out
 }
 
-// systemName 驱动名换成语义约定里的 db.system.name。
-// 只有 postgres 不同名（约定里是 postgresql）；mysql、clickhouse 同名，其余驱动按原名记
+// systemName maps a driver name to the db.system.name of the semantic conventions.
+// Only postgres differs (the conventions call it postgresql); mysql and clickhouse match, and any
+// other driver is recorded under its own name.
 func systemName(driver string) string {
 	if driver == string(DriverPostgres) {
 		return "postgresql"
@@ -95,11 +100,12 @@ func systemName(driver string) string {
 	return driver
 }
 
-// startSpan 开一个 Span 并把它塞回 Statement 的 context
+// startSpan opens a span and puts it back into the Statement's context.
 //
-// Span 名和起始选项只由 op 与连接信息决定，挂回调时拼一次就够了：
-// 放进闭包里的话每条 SQL 都要重新拼一遍，白白多出 5 次分配。
-// opts 由并发的各条 SQL 共用，Start 只读选项、不改它。
+// The span name and the start options are decided by op and the connection information alone, so
+// building them once while registering the callbacks is enough: inside the closure they would be
+// rebuilt for every SQL statement, costing 5 allocations for nothing. opts is shared by concurrent
+// statements, and Start only reads the options and never modifies them.
 func startSpan(info ConnInfo) func(op string) func(*gorm.DB) {
 	attrs := connAttrs(info)
 	return func(op string) func(*gorm.DB) {
@@ -115,7 +121,7 @@ func startSpan(info ConnInfo) func(op string) func(*gorm.DB) {
 	}
 }
 
-// endSpan 补上 SQL 与结果，然后结束 Span
+// endSpan fills in the SQL and the result, then ends the span.
 func endSpan(d Dialect) func(*gorm.DB) {
 	return func(db *gorm.DB) {
 		if db.Statement == nil {
@@ -123,34 +129,37 @@ func endSpan(d Dialect) func(*gorm.DB) {
 		}
 		span := trace.SpanFromContext(db.Statement.Context)
 		if !span.IsRecording() {
-			// 没采样时连 SQL 字符串都不用取
+			// Without sampling, even fetching the SQL string is unnecessary
 			span.End()
 			return
 		}
 		defer span.End()
 
-		// 记的是带占位符的 SQL，不记 Statement.Vars——参数里可能有个人信息或凭证。
-		// 行数取 db.RowsAffected 而不是 db.Statement.RowsAffected：后者是从
-		// Statement 内嵌的 *DB 提升上来的，指的是另一个实例，这里没有理由绕过去。
-		// db.rows_affected 不在语义约定里（约定只有 db.response.returned_rows，
-		// 那是查出来的行数），沿用这个名字
+		// What is recorded is the SQL with its placeholders, never Statement.Vars — the parameters may
+		// hold personal information or credentials. The row count comes from db.RowsAffected rather
+		// than db.Statement.RowsAffected: the latter is promoted from the *DB embedded in Statement and
+		// refers to a different instance, and there is no reason to go around it here.
+		// db.rows_affected is not in the semantic conventions (which only have
+		// db.response.returned_rows, the number of rows read), and this name is kept.
 		sql := db.Statement.SQL.String()
 		span.SetAttributes(semconv.DBQueryText(sql), attribute.Int64("db.rows_affected", db.RowsAffected))
 		if op := operationName(sql); op != "" {
 			span.SetAttributes(semconv.DBOperationName(op))
 		}
 
-		// 「没查到记录」是正常的业务分支，标成错误会让链路里满屏红色
+		// "No record found" is an ordinary business branch, and marking it as an error floods the
+		// trace with red
 		if db.Error != nil && !errors.Is(db.Error, gorm.ErrRecordNotFound) {
 			recordError(span, d, db.Error)
 		}
 	}
 }
 
-// recordError 把错误记进 Span，文本和日志是同一份（Dialect.redactedError）：服务端报的错只记错误码，
-// 客户端的错只有认得出是安全的几类才记原文——原文里可能就是参数值，而 db.query.text
-// 为了不带参数值特意只记了占位符。RecordError 会把 err.Error() 原样写进 exception.message，
-// 所以只交给它认出来的那个安全的错误
+// recordError records the error on the span, with the same text as the log (Dialect.redactedError):
+// a server-side error records the error code alone, and a client-side one records its text only for
+// the few kinds recognized as safe — the text may be the parameter values themselves, and
+// db.query.text deliberately records placeholders only to keep them out. RecordError writes
+// err.Error() into exception.message verbatim, so it is only handed the safe error it recognized.
 func recordError(span trace.Span, d Dialect, err error) {
 	text, code := d.redactedError(err)
 	if code != "" {
@@ -164,11 +173,12 @@ func recordError(span trace.Span, d Dialect, err error) {
 	span.SetStatus(codes.Error, text)
 }
 
-// operationName 语句的第一个关键字，如 SELECT、INSERT，原样大小写。
+// operationName is the statement's first keyword, SELECT or INSERT for instance, in its original case.
 //
-// 约定允许从语句里解析：取找到的第一个操作名。GORM 的 create / query 这类回调名
-// 说的不是数据库做了什么：软删除走的是 delete 回调，发出去的却是 UPDATE。
-// 第一个词不是纯字母（以注释、括号开头）就不记，不猜
+// The conventions allow parsing it from the statement: the first operation name found is taken.
+// GORM's callback names such as create and query do not say what the database did — a soft delete
+// goes through the delete callback while an UPDATE goes out. When the first word is not purely
+// alphabetic (it starts with a comment or a parenthesis) nothing is recorded, and nothing is guessed.
 func operationName(sql string) string {
 	sql = strings.TrimSpace(sql)
 	end := strings.IndexFunc(sql, func(r rune) bool { return !('a' <= r && r <= 'z' || 'A' <= r && r <= 'Z') })

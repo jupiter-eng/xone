@@ -18,11 +18,11 @@ import (
 	"github.com/jupiter-eng/xone/xonetest"
 )
 
-// install 装一套干净的指标设施，测试结束后还原全局状态
+// install sets up a clean metrics instance and restores the global state when the test ends.
 func newMetrics(t testing.TB, mutate func(*Config)) *Metrics {
 	t.Helper()
 	c := DefaultConfig()
-	// 默认关掉 Go / 进程指标：它们会往导出里塞几百行，淹掉断言想看的东西
+	// The Go / process metrics are off by default: they would add hundreds of lines to the export and drown what the assertions want to see.
 	c.GoMetrics, c.ProcessMetrics, c.LogErrorMetric = false, false, false
 	if mutate != nil {
 		mutate(&c)
@@ -44,13 +44,13 @@ func newMetrics(t testing.TB, mutate func(*Config)) *Metrics {
 	return m
 }
 
-// dump 抓一次 /metrics 的文本输出
+// dump scrapes the text output of /metrics once.
 func dump(t *testing.T, m *Metrics) string {
 	t.Helper()
 	w := httptest.NewRecorder()
 	m.Handler.ServeHTTP(w, httptest.NewRequest("GET", "/metrics", nil))
 	if w.Code != 200 {
-		t.Fatalf("/metrics 返回 %d", w.Code)
+		t.Fatalf("/metrics returned %d", w.Code)
 	}
 	return w.Body.String()
 }
@@ -64,7 +64,7 @@ func TestShortcut_Counter(t *testing.T) {
 	out := dump(t, m)
 	for _, want := range []string{`orders{status="ok"} 2`, `orders{status="failed"} 3`} {
 		if !strings.Contains(out, want) {
-			t.Errorf("导出里应有 %s\n实际=\n%s", want, out)
+			t.Errorf("the export must contain %s\ngot=\n%s", want, out)
 		}
 	}
 }
@@ -77,7 +77,7 @@ func TestShortcut_Gauge(t *testing.T) {
 	GaugeDec("queue_depth")
 
 	if out := dump(t, m); !strings.Contains(out, "queue_depth 9") {
-		t.Errorf("应为 10+1-1-1=9\n实际=\n%s", out)
+		t.Errorf("it must be 10+1-1-1=9\ngot=\n%s", out)
 	}
 }
 
@@ -87,55 +87,55 @@ func TestShortcut_Histogram(t *testing.T) {
 
 	out := dump(t, m)
 	if !strings.Contains(out, "payload_bytes_count 1") {
-		t.Errorf("应记到一次观测\n实际=\n%s", out)
+		t.Errorf("one observation must be recorded\ngot=\n%s", out)
 	}
-	// 默认桶是 prometheus.DefBuckets，0.3 应落在 0.5 那一档里
+	// The default buckets are prometheus.DefBuckets, so 0.3 must land in the 0.5 bucket.
 	if !strings.Contains(out, `payload_bytes_bucket{le="0.5"} 1`) {
-		t.Errorf("默认桶应为 prometheus.DefBuckets\n实际=\n%s", out)
+		t.Errorf("the default buckets must be prometheus.DefBuckets\ngot=\n%s", out)
 	}
 }
 
 func TestShortcut_LabelOrderDoesNotAffectReuse(t *testing.T) {
-	// 同一个指标写两种标签顺序，不该建出两个 collector——
-	// prometheus 会因「同名不同标签」拒掉第二个，数据就丢了
+	// Writing the same metric with the labels in two orders must not build two collectors --
+	// prometheus would reject the second one for "same name, different labels" and the data would be lost.
 	m := newMetrics(t, nil)
 	CounterInc("api_calls", T("a", "1"), T("b", "2"))
 	CounterInc("api_calls", T("b", "2"), T("a", "1"))
 
 	if out := dump(t, m); !strings.Contains(out, `api_calls{a="1",b="2"} 2`) {
-		t.Errorf("两种书写顺序应命中同一条时间序列\n实际=\n%s", out)
+		t.Errorf("both writing orders must hit the same time series\ngot=\n%s", out)
 	}
 }
 
 func TestShortcut_SortingLeavesCallerSliceIntact(t *testing.T) {
-	// 调用方可能拿同一个切片反复展开，排序改了它的顺序就是改了别人的数据
+	// A caller may expand the same slice repeatedly, so sorting it would change somebody else's data.
 	newMetrics(t, nil)
 	tags := []Tag{T("b", "2"), T("a", "1")}
 	CounterInc("api_calls", tags...)
 
 	if tags[0].Name != "b" || tags[1].Name != "a" {
-		t.Errorf("调用方的切片被改了顺序：%v", tags)
+		t.Errorf("the caller's slice was reordered: %v", tags)
 	}
 }
 
 func TestRegister_SameNameDifferentTypeReturnsError(t *testing.T) {
-	// 这种情况下传进来的 collector 不在 registry 里，记的值永远导不出去。
-	// 以前只记一条日志，调用方没法知道，于是启动照样成功、指标永远是空的
+	// In that case the collector passed in is not in the registry and the values it records can never be exported.
+	// It used to only write a log, which the caller could not see, so startup succeeded and the metric stayed empty forever.
 	newMetrics(t, nil)
 	MustRegister(prometheus.NewCounter(prometheus.CounterOpts{Name: "conflict", Help: "h"}))
 
-	got, err := Register(prometheus.NewGauge(prometheus.GaugeOpts{Name: "conflict", Help: "别的类型"}))
+	got, err := Register(prometheus.NewGauge(prometheus.GaugeOpts{Name: "conflict", Help: "another type"}))
 	if err == nil {
-		t.Fatal("同名不同类型应当返回错误")
+		t.Fatal("the same name with a different type must return an error")
 	}
 	if got == nil {
-		t.Error("即使出错也该返回一个非 nil 的 collector，免得调用方空指针")
+		t.Error("even on an error a non-nil collector must be returned, so the caller does not hit a nil pointer")
 	}
 }
 
 func TestShortcut_SameNameDifferentTypeNotSilent(t *testing.T) {
-	// 先 Counter 后 Gauge：第二个注册不进 registry，通过它记的值永远导不出去。
-	// 必须说出来，否则是一次完全静默的数据丢失
+	// A Counter first and a Gauge later: the second does not get into the registry and the values recorded through it
+	// can never be exported. That has to be said out loud, or it is a completely silent loss of data.
 	m := newMetrics(t, nil)
 	var logged strings.Builder
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelError})))
@@ -144,10 +144,10 @@ func TestShortcut_SameNameDifferentTypeNotSilent(t *testing.T) {
 	GaugeSet("dup_name", 5)
 
 	if !strings.Contains(logged.String(), "metric name conflict") {
-		t.Errorf("同名不同类型应当告警，实际日志=%q", logged.String())
+		t.Errorf("the same name with a different type must warn, got log=%q", logged.String())
 	}
 	if out := dump(t, m); !strings.Contains(out, "dup_name 1") {
-		t.Errorf("先注册的那个应当照常工作\n实际=\n%s", out)
+		t.Errorf("the one registered first must keep working\ngot=\n%s", out)
 	}
 }
 
@@ -159,7 +159,7 @@ func TestConfig_NamespaceAndConstLabels(t *testing.T) {
 	CounterInc("orders")
 
 	if out := dump(t, m); !strings.Contains(out, `myapp_orders{env="prod"} 1`) {
-		t.Errorf("前缀和常量标签都应生效\n实际=\n%s", out)
+		t.Errorf("both the prefix and the constant labels must take effect\ngot=\n%s", out)
 	}
 }
 
@@ -169,16 +169,16 @@ func TestConfig_CustomHistogramBuckets(t *testing.T) {
 
 	out := dump(t, m)
 	if !strings.Contains(out, `latency_bucket{le="0.2"} 1`) || strings.Contains(out, `le="0.5"`) {
-		t.Errorf("应使用配置里的桶\n实际=\n%s", out)
+		t.Errorf("the buckets from the configuration must be used\ngot=\n%s", out)
 	}
 }
 
 func TestConstLabels_ReturnsCopy(t *testing.T) {
 	newMetrics(t, func(c *Config) { c.ConstLabels = map[string]string{"env": "prod"} })
 	l := ConstLabels()
-	l["env"] = "改掉了"
+	l["env"] = "changed"
 	if ConstLabels()["env"] != "prod" {
-		t.Error("返回的应是拷贝，调用方改不动配置")
+		t.Error("a copy must be returned, so the caller cannot change the configuration")
 	}
 }
 
@@ -186,11 +186,11 @@ func TestHTTPDurationBuckets_ReturnsCopy(t *testing.T) {
 	newMetrics(t, nil)
 	b := HTTPDurationBuckets()
 	if len(b) == 0 {
-		t.Fatal("应有默认桶")
+		t.Fatal("there must be default buckets")
 	}
 	b[0] = -1
 	if HTTPDurationBuckets()[0] == -1 {
-		t.Error("返回的应是拷贝，调用方改不动配置")
+		t.Error("a copy must be returned, so the caller cannot change the configuration")
 	}
 }
 
@@ -200,22 +200,22 @@ func TestRegister_DuplicateReusesExisting(t *testing.T) {
 	first := prometheus.NewCounter(opts)
 	got, err := Register(first)
 	if err != nil || got != prometheus.Collector(first) {
-		t.Errorf("首次注册应返回传进去的那个，got=%v err=%v", got, err)
+		t.Errorf("the first registration must return the one passed in, got=%v err=%v", got, err)
 	}
 	second := prometheus.NewCounter(opts)
 	got, err = Register(second)
 	if err != nil {
-		t.Errorf("同名同标签的重复注册不是错误：%v", err)
+		t.Errorf("registering the same name and labels again is not an error: %v", err)
 	}
 	if got == prometheus.Collector(second) {
-		t.Error("重复注册应返回已有实例，而不是 panic 或返回新的")
+		t.Error("registering again must return the existing instance rather than panicking or returning a new one")
 	}
 }
 
-// resetFallback 把兜底实例清空重来。
+// resetFallback empties the fallback instance and starts over.
 //
-// 从前测试里写的是 clearCollectors()：缓存那时是包级的，一个测试留下的
-// collector 会串到下一个。现在缓存跟着实例走，要隔离的就是兜底实例本身
+// The tests used to call clearCollectors(): the cache was package-level back then and a collector left by one test
+// leaked into the next. Now that the cache follows the instance, what has to be isolated is the fallback instance itself.
 func resetFallback(t *testing.T) {
 	t.Helper()
 	old := fallback
@@ -224,18 +224,18 @@ func resetFallback(t *testing.T) {
 }
 
 func TestInstall_PreInitPointsDoNotLeakToNewInstance(t *testing.T) {
-	// 初始化前打的点记在兜底 registry 上。缓存要是跟实例分家，
-	// 初始化之后的打点会继续走那个不会被导出的 collector
+	// A recording before initialization goes onto the fallback registry. If the cache were separate from the instance,
+	// recordings after initialization would keep going through that collector, which is never exported.
 	old := current.Swap(nil)
 	t.Cleanup(func() { current.Store(old) })
 	resetFallback(t)
 
-	CounterInc("early") // 走兜底实例
+	CounterInc("early") // goes to the fallback instance
 
 	m := newMetrics(t, nil)
 	CounterInc("early")
 	if out := dump(t, m); !strings.Contains(out, "early 1") {
-		t.Errorf("初始化后的打点应记在新 registry 上，且从 1 开始\n实际=\n%s", out)
+		t.Errorf("a recording after initialization must land on the new registry and start from 1\ngot=\n%s", out)
 	}
 }
 
@@ -244,15 +244,15 @@ func TestActive_NoLossOrPanicBeforeInit(t *testing.T) {
 	t.Cleanup(func() { current.Store(old) })
 	resetFallback(t)
 
-	CounterInc("before_init") // 不该 panic
+	CounterInc("before_init") // must not panic
 	if Registry() == nil || Handler() == nil {
-		t.Error("未初始化时也该有可用的 registry 和 handler")
+		t.Error("a usable registry and handler must exist before initialization too")
 	}
 }
 
 func TestRegister_RegistrationMatchesFramework(t *testing.T) {
-	// 这是本包和框架之间唯一的一根线：钩子漏登记、档位挂错，
-	// 表现是「配置不生效」或者「比用它的东西晚就绪」，别处都测不出来
+	// This is the only wire between this package and the framework: a missing hook registration or a wrong stage shows
+	// up as "the config has no effect" or "it is ready later than what uses it", and nothing else catches it.
 	var got *hook.Entry
 	for _, e := range hook.Start() {
 		if e.Pkg == "github.com/jupiter-eng/xone/xmetric" {
@@ -261,10 +261,10 @@ func TestRegister_RegistrationMatchesFramework(t *testing.T) {
 		}
 	}
 	if got == nil {
-		t.Fatal("没有登记启动钩子")
+		t.Fatal("no start hook was registered")
 	}
 	if got.Stage != hook.StageTelemetry {
-		t.Errorf("指标要早于各类客户端就绪，否则它们打的点收不到，got=%v", got.Stage)
+		t.Errorf("metrics must be ready before the clients, or the points they record are not collected, got=%v", got.Stage)
 	}
 
 	var stopped bool
@@ -274,7 +274,7 @@ func TestRegister_RegistrationMatchesFramework(t *testing.T) {
 		}
 	}
 	if stopped {
-		t.Errorf("New 的 Closer 什么都不做，不该登记停止钩子")
+		t.Errorf("New's Closer does nothing, so no stop hook may be registered")
 	}
 }
 
@@ -290,15 +290,15 @@ func TestNew_RuntimeAndProcessMetrics(t *testing.T) {
 	out := dump(t, m)
 	for _, want := range []string{"go_goroutines", "process_"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("默认应采集 %s", want)
+			t.Errorf("%s must be collected by default", want)
 		}
 	}
 }
 
 func TestNew_RuntimeAndProcessMetricsHaveConstLabels(t *testing.T) {
-	// 文档说常量标签「附加到所有指标上」。这两组是 client_golang 现成的 collector，
-	// 从前直接注册在 Registry 上，实测 go_* / process_* 一个都不带，
-	// 按 env 过滤的看板查 go_goroutines{env="prod"} 什么都查不到
+	// The documentation says a constant label is "attached to every metric". These two groups are ready-made
+	// collectors from client_golang that used to be registered on the Registry directly, and measured, not one go_* or
+	// process_* carried them -- a dashboard filtering by env searching go_goroutines{env="prod"} found nothing.
 	c := DefaultConfig()
 	c.LogErrorMetric = false
 	c.ConstLabels = map[string]string{"env": "prod"}
@@ -316,25 +316,25 @@ func TestNew_RuntimeAndProcessMetricsHaveConstLabels(t *testing.T) {
 		goSeen = goSeen || strings.HasPrefix(line, "go_")
 		procSeen = procSeen || strings.HasPrefix(line, "process_")
 		if !strings.Contains(line, `env="prod"`) {
-			t.Errorf("每一条样本都该带常量标签 env=\"prod\"，这条没有：%s", line)
+			t.Errorf("every sample must carry the constant label env=\"prod\", this one does not: %s", line)
 		}
 	}
 	if !goSeen || !procSeen {
-		t.Errorf("默认应同时有 go_* 和 process_*，got go=%v process=%v", goSeen, procSeen)
+		t.Errorf("both go_* and process_* must be present by default, got go=%v process=%v", goSeen, procSeen)
 	}
 }
 
 func TestNew_RuntimeAndProcessMetricsCanBeDisabled(t *testing.T) {
-	m := newMetrics(t, nil) // install 默认关掉这两项
+	m := newMetrics(t, nil) // install turns both of them off by default
 	out := dump(t, m)
 	if strings.Contains(out, "go_goroutines") || strings.Contains(out, "process_cpu") {
-		t.Errorf("关掉之后不该出现\n实际=\n%s", out)
+		t.Errorf("they must not appear once turned off\ngot=\n%s", out)
 	}
 }
 
-// ---- 日志错误计数 ----
+// ---- the log error counter ----
 
-// logThrough 建一套只写文件的 xlog，返回它和日志文件目录
+// logThrough builds an xlog writing only to a file and returns it together with the log directory.
 func logThrough(t *testing.T) *slog.Logger {
 	t.Helper()
 	c := xlog.DefaultConfig()
@@ -349,34 +349,34 @@ func logThrough(t *testing.T) *slog.Logger {
 }
 
 func TestLogCounter_CountsErrorLogs(t *testing.T) {
-	// 「错误率」是最常用的告警，不该等业务先埋点
+	// The "error rate" is the most common alert and should not have to wait for the business to instrument it.
 	m := newMetrics(t, func(c *Config) { c.LogErrorMetric = true })
 	l := logThrough(t)
 
-	l.Info("这条不算")
-	l.Warn("这条也不算")
-	for _, msg := range []string{"出事了", "又出事了"} {
-		l.Error(msg) // 同一行，聚合成同一条时间序列
+	l.Info("this one does not count")
+	l.Warn("this one does not count either")
+	for _, msg := range []string{"something went wrong", "something went wrong again"} {
+		l.Error(msg) // the same line, aggregated into the same time series
 	}
 
 	out := dump(t, m)
 	if !strings.Contains(out, `log_errors_total{caller=`) {
-		t.Fatalf("应有 log_errors_total\n实际=\n%s", out)
+		t.Fatalf("there must be a log_errors_total\ngot=\n%s", out)
 	}
-	// caller 是聚合维度：同一行打的两条错误合成一条序列，计数为 2
+	// caller is an aggregation dimension: two errors logged on the same line become one series with a count of 2.
 	if !strings.Contains(out, `level="ERROR"} 2`) {
-		t.Errorf("同一处打的两条 Error 应合成一条序列、计数为 2\n实际=\n%s", out)
+		t.Errorf("two Errors logged in the same place must become one series with a count of 2\ngot=\n%s", out)
 	}
 }
 
 func TestInstall_NoDataRaceWithConcurrentLogging(t *testing.T) {
-	// Install 曾经先把设施发布成 current，再往它身上写 logCounter。
-	// 中间那一段里，任何一条经 xlog 写出的错误日志都会走观察者去读
-	// active().logCounter —— 读的正是一个还在被写的字段。
+	// Install used to publish the setup as current first and write logCounter onto it afterwards.
+	// In between, any error log written through xlog would go through the observer to read
+	// active().logCounter -- reading exactly the field being written.
 	//
-	// 后果不止是 -race 报警：观察者是在 logCounter 赋值之前挂上的，
-	// 所以这段窗口里的错误日志一条都没被计进去，而告警面板上看不出区别。
-	newMetrics(t, func(c *Config) { c.LogErrorMetric = true }) // 先挂上观察者
+	// The consequence is more than a -race warning: the observer is attached before logCounter is assigned, so not one
+	// error log in that window was counted, and the alerting dashboard looked no different.
+	newMetrics(t, func(c *Config) { c.LogErrorMetric = true }) // attach the observer first
 	l := logThrough(t)
 
 	stop := make(chan struct{})
@@ -388,7 +388,7 @@ func TestInstall_NoDataRaceWithConcurrentLogging(t *testing.T) {
 			case <-stop:
 				return
 			default:
-				l.Error("并发写")
+				l.Error("concurrent write")
 			}
 		}
 	}()
@@ -401,83 +401,83 @@ func TestInstall_NoDataRaceWithConcurrentLogging(t *testing.T) {
 }
 
 func TestLogCounter_LeavesGlobalLoggerAlone(t *testing.T) {
-	// 回归用例。曾经的实现是「把 slog.Default() 包一层再设回去」，
-	// 而 slog.SetDefault 顺带把标准库 log 包的输出也接到新 handler 上：
-	// 链条最终落回 slog 自带的 handler 时，记录经 log.Output 又流回来，
-	// 卡死在 log 包那把不可重入的锁上——不用 xlog 的应用第一条日志就挂住。
+	// Regression case. The implementation used to be "wrap slog.Default() and set it back", and slog.SetDefault also
+	// routes the standard library log package's output into the new handler:
+	// when that chain ends up back at slog's own handler, the record flows back through log.Output and
+	// deadlocks on the log package's non-reentrant lock -- an application not using xlog hangs on its first log line.
 	before := slog.Default()
 	newMetrics(t, func(c *Config) { c.LogErrorMetric = true })
 	if slog.Default() != before {
-		t.Fatal("不得改动全局 logger：那条路会和标准库 log 包绕成环")
+		t.Fatal("the global logger must not be changed: that path forms a cycle with the standard library log package")
 	}
 
-	// 直接用标准库默认 logger 打一条，不该挂住
+	// Log one line through the standard library default logger; it must not hang.
 	done := make(chan struct{})
 	go func() {
-		slog.Error("经标准库默认 logger")
+		slog.Error("through the standard library default logger")
 		close(done)
 	}()
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("经标准库默认 logger 打日志挂住了")
+		t.Fatal("logging through the standard library default logger hung")
 	}
 }
 
 func TestLogCounter_AttachesTraceAsExemplar(t *testing.T) {
-	// 面板上从指标点能跳到对应的链路
+	// A dashboard can jump from a metric point to the matching trace.
 	t.Cleanup(func() { xlog.SetTraceExtractor(nil) })
 	xlog.SetTraceExtractor(func(context.Context) (string, string) {
 		return "4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7"
 	})
 
 	m := newMetrics(t, func(c *Config) { c.LogErrorMetric = true })
-	logThrough(t).ErrorContext(context.Background(), "出事了")
+	logThrough(t).ErrorContext(context.Background(), "something went wrong")
 
-	// exemplar 只在 OpenMetrics 格式里导出
+	// An exemplar is only exported in the OpenMetrics format.
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/metrics", nil)
 	req.Header.Set("Accept", "application/openmetrics-text; version=1.0.0")
 	m.Handler.ServeHTTP(w, req)
 
 	if !strings.Contains(w.Body.String(), "trace_id=") {
-		t.Errorf("应带上 trace_id exemplar\n实际=\n%s", w.Body.String())
+		t.Errorf("a trace_id exemplar must be carried\ngot=\n%s", w.Body.String())
 	}
 }
 
 func TestLogCounter_NoExemplarWithoutTrace(t *testing.T) {
 	m := newMetrics(t, func(c *Config) { c.LogErrorMetric = true })
-	logThrough(t).Error("出事了")
+	logThrough(t).Error("something went wrong")
 
 	if out := dump(t, m); !strings.Contains(out, "log_errors_total") {
-		t.Errorf("没有链路也要正常计数\n实际=\n%s", out)
+		t.Errorf("it must count as usual without tracing\ngot=\n%s", out)
 	}
 }
 
 func TestLogCounter_StopsCountingWhenDisabled(t *testing.T) {
 	m := newMetrics(t, func(c *Config) { c.LogErrorMetric = false })
-	logThrough(t).Error("出事了")
+	logThrough(t).Error("something went wrong")
 
 	if out := dump(t, m); strings.Contains(out, "log_errors_total") {
-		t.Errorf("关掉之后不该有这个指标\n实际=\n%s", out)
+		t.Errorf("the metric must not exist once turned off\ngot=\n%s", out)
 	}
 }
 
 func TestLogCounter_CallerKeepsTwoPathSegments(t *testing.T) {
-	// 完整路径带着构建机的目录，同一份代码在不同机器上会产生不同的标签值
+	// A full path carries the build machine's directories, so the same code would give different label values on different machines.
 	m := newMetrics(t, func(c *Config) { c.LogErrorMetric = true })
-	logThrough(t).Error("出事了")
+	logThrough(t).Error("something went wrong")
 
 	out := dump(t, m)
 	if !strings.Contains(out, `caller="xmetric/xmetric_test.go:`) {
-		t.Errorf("caller 应是「上级目录/文件:行号」\n实际=\n%s", out)
+		t.Errorf("caller must be \"parent directory/file:line\"\ngot=\n%s", out)
 	}
 }
 
 func TestObserver_PanicDoesNotInterruptLogging(t *testing.T) {
-	// 观测出问题不该把日志本身打断
+	// A problem in observation must not interrupt the logging itself.
 	newMetrics(t, func(c *Config) { c.LogErrorMetric = true })
-	xlog.AddObserver(func(context.Context, slog.Record) { panic("观察者炸了") })
+	xlog.AddObserver(func(context.Context, slog.Record) { panic("the observer blew up") })
 
 	dir := t.TempDir()
 	c := xlog.DefaultConfig()
@@ -487,16 +487,16 @@ func TestObserver_PanicDoesNotInterruptLogging(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	l.Error("出事了")
+	l.Error("something went wrong")
 	closer.Close()
 
 	files, _ := filepath.Glob(filepath.Join(dir, "app.log.*"))
 	if len(files) == 0 {
-		t.Fatal("没写出日志文件")
+		t.Fatal("no log file was written")
 	}
 	b, _ := os.ReadFile(files[0])
-	if !strings.Contains(string(b), "出事了") {
-		t.Errorf("观察者 panic 了，日志本身还得写出去，实际=%q", b)
+	if !strings.Contains(string(b), "something went wrong") {
+		t.Errorf("the observer panicked, and the log itself must still be written, got=%q", b)
 	}
 }
 
@@ -515,7 +515,7 @@ func TestTrimPath(t *testing.T) {
 
 func TestCallerOf_NotEmptyWithoutPC(t *testing.T) {
 	if got := callerOf(slog.Record{}); got != "unknown" {
-		t.Errorf("取不到调用点时应返回 unknown，got=%q", got)
+		t.Errorf("unknown must be returned when the call site cannot be taken, got=%q", got)
 	}
 }
 
@@ -526,13 +526,13 @@ func TestMustRegister(t *testing.T) {
 	c.Inc()
 
 	if out := dump(t, active()); !strings.Contains(out, "must_total 1") {
-		t.Errorf("注册的自定义指标应被导出\n实际=\n%s", out)
+		t.Errorf("a registered custom metric must be exported\ngot=\n%s", out)
 	}
 }
 
 func TestNew_DuplicateCollectorFails(t *testing.T) {
-	// New 是纯构造器，registry 是新建的，正常路径不该冲突；
-	// 真冲突了要返回错误而不是 panic，好让框架把它当成普通启动失败处理
+	// New is a pure constructor with a freshly built registry, so the normal path cannot conflict;
+	// a real conflict must return an error rather than panic, so the framework can treat it as an ordinary startup failure.
 	c := DefaultConfig()
 	c.LogErrorMetric = false
 	m, closer, err := New(c)
@@ -541,14 +541,14 @@ func TestNew_DuplicateCollectorFails(t *testing.T) {
 	}
 	defer closer.Close()
 	if m.Registry == nil || m.Handler == nil {
-		t.Fatal("registry 和 handler 都不该为 nil")
+		t.Fatal("neither the registry nor the handler may be nil")
 	}
 }
 
 func TestInstall_PreInitPointsAreReported(t *testing.T) {
-	// 缓存跟着实例走之后，Install 不再需要去清另一处全局状态。
-	// 但「换实例之前记的点留在上一个 registry 里、导不出去」这件事
-	// 仍然要说出来，否则就是一次完全静默的数据丢失
+	// Now that the cache follows the instance, Install no longer has to clear that other piece of global state.
+	// But "what was recorded before the instance was swapped stays on the previous registry and cannot be exported"
+	// still has to be said out loud, or it is a completely silent loss of data.
 	old := current.Swap(nil)
 	t.Cleanup(func() { current.Store(old) })
 	resetFallback(t)
@@ -569,20 +569,20 @@ func TestInstall_PreInitPointsAreReported(t *testing.T) {
 	m.Install()
 
 	if !strings.Contains(buf.String(), "will not be exported") {
-		t.Errorf("初始化前记过点，Install 该报出来，实际日志=%q", buf.String())
+		t.Errorf("something was recorded before initialization and Install must report it, got log=%q", buf.String())
 	}
 	if !strings.Contains(buf.String(), "metrics=2") {
-		t.Errorf("该报出有几个指标，实际日志=%q", buf.String())
+		t.Errorf("it must report how many metrics there were, got log=%q", buf.String())
 	}
 }
 
 func TestInstall_CacheFollowsInstanceSwap(t *testing.T) {
-	// 缓存曾经是包级的，而 Registry 属于实例：换实例时必须记得
-	// 手动清另一处全局状态，忘了就是静默的数据丢失
+	// The cache used to be package-level while the Registry belongs to the instance: swapping the instance meant
+	// remembering to clear that other piece of global state, and forgetting was a silent loss of data.
 	m1 := newMetrics(t, nil)
 	CounterInc("shared_name")
 	if out := dump(t, m1); !strings.Contains(out, "shared_name 1") {
-		t.Fatalf("第一个实例该记到\n%s", out)
+		t.Fatalf("the first instance must have recorded it\n%s", out)
 	}
 
 	m2 := newMetrics(t, nil)
@@ -590,19 +590,19 @@ func TestInstall_CacheFollowsInstanceSwap(t *testing.T) {
 
 	out := dump(t, m2)
 	if !strings.Contains(out, "shared_name 1") {
-		t.Errorf("换实例之后该记在新 registry 上、且从 1 开始\n实际=\n%s", out)
+		t.Errorf("after the swap it must land on the new registry and start from 1\ngot=\n%s", out)
 	}
 }
 
-// initComponent 走一遍框架真正会走的路径：按这份配置装好本模块。
+// initComponent walks the path the framework really takes: set this module up from this configuration.
 func initComponent(t *testing.T, c Config) {
 	t.Helper()
 	if err := install(c); err != nil {
-		t.Fatalf("初始化失败：%v", err)
+		t.Fatalf("initialization failed: %v", err)
 	}
 }
 
-// keepGlobals 记下会被 install 改掉的那些全局值，测试结束还原
+// keepGlobals records the globals install will change and restores them when the test ends.
 func keepGlobals(t *testing.T) {
 	t.Helper()
 	oldLogger := slog.Default()
@@ -614,17 +614,17 @@ func keepGlobals(t *testing.T) {
 }
 
 func TestInitXMetric_InstallsDefaultMetricsWhenUnconfigured(t *testing.T) {
-	// 指标没配就不装的话，框架内置的那些打点全落到兜底实例上，
-	// /metrics 导出来是空的——而使用者没配指标本来就该是「用默认的」
+	// Not installing it when metrics are not configured would make every recording from the framework's built-in
+	// instrumentation land on the fallback instance and /metrics export nothing -- while not configuring metrics should simply mean "use the defaults".
 	keepGlobals(t)
 	xonetest.UseConfigYAML(t, "XApp:\n  Name: demo\n")
 
 	if err := initXMetric(context.Background()); err != nil {
-		t.Fatalf("没配不该报错：%v", err)
+		t.Fatalf("not configuring it must not be an error: %v", err)
 	}
 	got := current.Load()
 	if got == nil {
-		t.Fatal("没装上全局实例")
+		t.Fatal("no global instance was installed")
 	}
 }
 
@@ -633,7 +633,7 @@ func TestInitXMetric_ConfigTypoFailsStartup(t *testing.T) {
 	xonetest.UseConfigYAML(t, "XMetric:\n  NameSpace: app\n")
 
 	if err := initXMetric(context.Background()); err == nil {
-		t.Fatal("字段拼错应当让启动失败")
+		t.Fatal("a misspelled field must fail startup")
 	}
 }
 
@@ -660,13 +660,13 @@ func TestRegisterAs_ReturnsPassedCollectorOnSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got != c {
-		t.Error("第一次注册应当拿回同一个实例")
+		t.Error("the first registration must give back the same instance")
 	}
 }
 
 func TestRegisterAs_DuplicateReusesFirst(t *testing.T) {
-	// 两处代码各建一个同名 collector 时，两边必须打到同一个上，
-	// 否则后到的那份永远导不出去
+	// When two places each build a collector with the same name, both have to record to the same one,
+	// otherwise whichever arrives later can never be exported.
 	newMetrics(t, nil)
 	first := prometheus.NewCounter(prometheus.CounterOpts{Name: "registeras_dup"})
 	if _, err := RegisterAs(first); err != nil {
@@ -678,13 +678,13 @@ func TestRegisterAs_DuplicateReusesFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got != first {
-		t.Error("重复注册应当拿回先到的那个")
+		t.Error("registering again must give back the one that arrived first")
 	}
 }
 
 func TestRegisterAs_SameNameDifferentTypeFailsInsteadOfReplacing(t *testing.T) {
-	// 断言失败时还回传进来的那个：调用方照常打点（只是导不出去），
-	// 而不是拿到一个零值去空指针
+	// On a failed assertion the one passed in is given back: the caller records as usual (it just cannot be exported)
+	// rather than getting a zero value and a nil pointer.
 	newMetrics(t, nil)
 	if _, err := Register(prometheus.NewCounter(prometheus.CounterOpts{Name: "registeras_kind"})); err != nil {
 		t.Fatal(err)
@@ -692,19 +692,19 @@ func TestRegisterAs_SameNameDifferentTypeFailsInsteadOfReplacing(t *testing.T) {
 	want := prometheus.NewGauge(prometheus.GaugeOpts{Name: "registeras_kind"})
 	got, err := RegisterAs(want)
 	if err == nil {
-		t.Fatal("类型对不上应当报错")
+		t.Fatal("a type mismatch must be an error")
 	}
 	if !strings.Contains(err.Error(), "already registered") {
-		t.Errorf("错误要说清是被同名的别的类型占了，got=%v", err)
+		t.Errorf("the error must say plainly that the name is taken by another type, got=%v", err)
 	}
 	if got != want {
-		t.Error("出错时要把传进来的那个还回去，让调用方还能照常打点")
+		t.Error("on an error the one passed in must be given back, so the caller can still record")
 	}
 }
 
 func TestCollectorOf_SameNameDifferentTypeReportsInsteadOfDropping(t *testing.T) {
-	// 先 Counter 后 Gauge：后者不在 registry 里，通过它记的值永远导不出去。
-	// 不喊一声的话，面板上那条线一直是空的，而代码里明明在打点
+	// A Counter first and a Gauge later: the latter is not in the registry and the values recorded through it can never
+	// be exported. Without a word about it, that line on the dashboard stays empty while the code is clearly recording.
 	var buf bytes.Buffer
 	old := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
@@ -715,21 +715,21 @@ func TestCollectorOf_SameNameDifferentTypeReportsInsteadOfDropping(t *testing.T)
 	GaugeSet("clash", 5)
 
 	if !strings.Contains(buf.String(), "clash") {
-		t.Errorf("同名冲突必须留下记录，实际日志=\n%s", buf.String())
+		t.Errorf("a same-name conflict must leave a record, got log=\n%s", buf.String())
 	}
 }
 
 func TestCollectorOf_SameNameSameTypeReusesInstance(t *testing.T) {
-	// 不复用的话每次打点都新建一个 collector，注册被拒之后值全丢
+	// Without reuse, every recording would build a new collector and lose every value once registration is rejected.
 	m := newMetrics(t, nil)
 	before := m.cachedCount()
 	for i := 0; i < 5; i++ {
 		CounterInc("reused", T("a", "1"))
 	}
 	if got := m.cachedCount() - before; got != 1 {
-		t.Errorf("同名同标签只该建一个 collector，实际新建了 %d 个", got)
+		t.Errorf("the same name and labels must build only one collector, %d were built", got)
 	}
 	if out := dump(t, m); !strings.Contains(out, `reused{a="1"} 5`) {
-		t.Errorf("五次打点该累加到同一条序列上\n实际=\n%s", out)
+		t.Errorf("five recordings must accumulate on the same series\ngot=\n%s", out)
 	}
 }

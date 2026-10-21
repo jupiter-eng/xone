@@ -10,27 +10,27 @@ import (
 	"github.com/hashicorp/cronexpr"
 )
 
-// schedule 给一个时刻，算出它之后的下一个时间点。零值表示再也没有了
+// schedule takes a moment and works out the next time point after it. The zero value means there is no next one.
 type schedule interface {
 	Next(time.Time) time.Time
 }
 
-// descriptors 收的 @ 写法，就是 cronexpr v1.1.3 的 cronNormalizer 认的那几个，
-// 外加本包自己实现的 @every。没有 @midnight、@reboot：cronexpr 不认，报的是 missing field(s)
+// descriptors are the @ forms accepted: exactly the ones cronexpr v1.1.3's cronNormalizer recognizes, plus this
+// package's own @every. There is no @midnight or @reboot: cronexpr does not know them and reports missing field(s).
 var descriptors = []string{"@yearly", "@annually", "@monthly", "@weekly", "@daily", "@hourly"}
 
-// parse 把 spec 解析成 schedule。cronexpr 只用来解析和算下一个时间点，调度循环是本包自己的。
+// parse turns a spec into a schedule. cronexpr is used only for parsing and for computing the next time point; the scheduling loop is this package's own.
 //
-// 收标准的 5 段（分 时 日 月 周）、上面那几个 @ 写法和 @every <时长>。
-// 下面几条是 cronexpr v1.1.3 实测出来、在这里先拦下的，它自己的报错要么没有、要么说不清：
+// It accepts the standard 5 fields (minute hour day month weekday), the @ forms above and @every <duration>.
+// The points below were measured on cronexpr v1.1.3 and are caught here first, because its own error is either absent or unclear:
 //
-//   - 段数：它收 5 到 7 段，6 段时多出来的那段是年（"0 30 2 * * *" 报 syntax error in hour field: '30'，
-//     而不是当成秒），7 段时开头多一段秒，8 段及以上把第 7 段之后的悄悄丢掉。
-//     这里只收 5 段，其余说清楚要几段
-//   - CRON_TZ= / TZ= 前缀：不认，报 syntax error in minute field: 'CRON_TZ=Europe/Berlin'，
-//     看不出该怎么改。时区在 WithLocation 里写
-//   - 不认识的 @ 写法（@midnight、@reboot、@every）一律报 missing field(s)
-//   - 永远不会到的时间点（0 0 30 2 *，2 月 30 日）：解析成功，Next 返回零值，任务一次都不跑
+//   - Field count: it accepts 5 to 7 fields; with 6 the extra one is the year ("0 30 2 * * *" reports
+//     syntax error in hour field: '30' rather than taking it as seconds), with 7 the extra leading one is seconds,
+//     and with 8 or more everything after the 7th is dropped silently. Only 5 are accepted here, and anything else says plainly how many are needed.
+//   - A CRON_TZ= / TZ= prefix: not recognized, reported as syntax error in minute field:
+//     'CRON_TZ=Europe/Berlin', which gives no hint what to change. The time zone is written in WithLocation.
+//   - An unrecognized @ form (@midnight, @reboot, @every) is always reported as missing field(s).
+//   - A time point that never arrives (0 0 30 2 *, 30 February): it parses, Next returns the zero value, and the job never runs.
 func parse(spec string) (schedule, error) {
 	spec = strings.TrimSpace(spec)
 	if strings.HasPrefix(spec, "CRON_TZ=") || strings.HasPrefix(spec, "TZ=") {
@@ -63,20 +63,20 @@ func parse(spec string) (schedule, error) {
 	return e, nil
 }
 
-// every @every <d>：从传进来的时刻往后数 d，不对齐整点、整分。
-// cronexpr 没有这个写法，本包自己实现
+// every implements @every <d>: count d forward from the moment passed in, without aligning to a whole hour or minute.
+// cronexpr has no such form, so this package implements it.
 type every time.Duration
 
 func (d every) Next(t time.Time) time.Time { return t.Add(time.Duration(d)) }
 
-// next 下一个时间点，按 loc 解释 spec。
+// next is the next time point, with the spec interpreted in loc.
 //
-// cronexpr 按传进来的 t 的时区算（v1.1.3 实测：同一个 "30 2 * * *"，传柏林时间得到柏林的 02:30，
-// 传 UTC 得到 UTC 的 02:30），所以把 from 换到 loc 再交给 Next 就是「按 loc 解释」。
+// cronexpr computes in the time zone of the t passed in (measured on v1.1.3: the same "30 2 * * *" gives 02:30
+// Berlin for a Berlin time and 02:30 UTC for a UTC time), so converting from into loc before handing it to Next is what "interpret in loc" means.
 //
-// from 不早于 prev：墙上时钟被往回拨（NTP 校时）时，按 time.Now() 算会把刚跑过的那个时间点
-// 再算一遍、再跑一次。Next 严格大于它的参数（实测从 10:01:00 整算 "* * * * *" 得到 10:02:00），
-// 从 prev 算就不会重复
+// from is never earlier than prev: when the wall clock is turned back (an NTP correction), computing from time.Now()
+// would compute the time point that has just run again and run it again. Next is strictly greater than its argument
+// (measured: computing "* * * * *" from exactly 10:01:00 gives 10:02:00), so computing from prev never repeats.
 func next(s schedule, loc *time.Location, prev time.Time) time.Time {
 	from := time.Now()
 	if from.Before(prev) {

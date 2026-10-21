@@ -17,28 +17,28 @@ import (
 	"github.com/jupiter-eng/xone/xerror"
 )
 
-// Consume 登记一个消费者：从 topic 里以消费组 group 的身份消费，每条消息调一次 fn。
+// Consume registers a consumer: it consumes topic as a member of the consumer group group, calling fn once per message.
 //
 //	err := xkafka.Consume("orders", "billing", func(ctx context.Context, r *kgo.Record) error {
 //		return charge(ctx, r.Value)
 //	}, xkafka.WithTimeout(10*time.Second))
 //
-// 语义（详见 README「语义」）：
-//   - 每个分配到的分区一个协程：同一分区里按顺序一条一条处理，不同分区之间并行；
-//   - 一条消息处理完（成功、进了死信、或者被跳过）才提交它的 offset——至少一次：
-//     进程崩溃、被 kill -9 的话，没处理完的消息之后会重新投递，fn 要能承受重复；
-//   - fn 返回错误或 panic 时按 WithRetry 重试，用完了写进死信 topic（WithDeadLetter）；
-//   - 退出时不再取新消息，等在途的那一条处理完、提交之后才离开消费组。fn 收到的 ctx 不随退出信号取消，
-//     只受 WithTimeout 管；停止预算用完时才取消。
+// The semantics (in full in the README's "Semantics"):
+//   - one goroutine per assigned partition: messages within a partition are processed one at a time in order, and different partitions run in parallel;
+//   - a message's offset is committed only once it is done (succeeded, reached the dead letter, or was skipped) -- at least once:
+//     on a crash or a kill -9, unfinished messages are redelivered later and fn has to tolerate duplicates;
+//   - when fn returns an error or panics it is retried per WithRetry, and once those are used up it goes to the dead-letter topic (WithDeadLetter);
+//   - on shutdown no new message is fetched and the group is only left once the message in flight is processed and committed. The ctx fn receives is not cancelled by the stop signal,
+//     only by WithTimeout; it is cancelled only once the stop budget runs out.
 //
-// group 必填：同一个 group 的多个进程分摊分区，不同的 group 各自收到全部消息。
-// 新的 group 从哪里开始见 ConsumerConfig.ResetOffset（默认 latest）。
+// group is required: several processes in the same group share the partitions, while different groups each receive every message.
+// Where a new group starts is in ConsumerConfig.ResetOffset (latest by default).
 //
-// 当场校验，返回 *xerror.Error（模块 xkafka）：topic、group 为空、fn 是 nil、Option 不成立、
-// 同一个集群上同一对 topic + group 登记了两次是 config；退出流程已经开始之后再 Consume 是 register。
+// It validates on the spot and returns an *xerror.Error (module xkafka): an empty topic or group, a nil fn, an Option that does not hold,
+// and the same topic + group pair registered twice on the same cluster are config; a Consume after the shutdown sequence has begun is register.
 //
-// 什么时候调都行：在 xone.Run 之前登记的，在 StageServer 那一档一起开始消费；之后（比如在某个钩子里、
-// 在 Start 里）登记的，当场开始，这时集群名不对、建不了客户端也当场返回错误。
+// It may be called at any time: one registered before xone.Run starts consuming together with the StageServer stage, and one registered later (inside some hook,
+// or inside Start) starts on the spot, where a wrong cluster name or a client that cannot be built returns an error on the spot too.
 func Consume(topic, group string, fn func(ctx context.Context, r *kgo.Record) error, opts ...Option) error {
 	switch {
 	case strings.TrimSpace(topic) == "":
@@ -55,19 +55,19 @@ func Consume(topic, group string, fn func(ctx context.Context, r *kgo.Record) er
 	return std.add(&consumer{topic: topic, group: group, fn: fn, o: o})
 }
 
-// ---- 一个进程里的全部消费者 ----
+// ---- every consumer in one process ----
 
-// state 消费者们走到哪一步了
+// state is how far the consumers have got.
 type state int
 
 const (
-	idle    state = iota // 还没起来：Consume 只登记
-	running              // 起来了：Consume 当场开始
-	stopped              // 开始停了（或停完了）：Consume 报错
+	idle    state = iota // not up yet: Consume only registers
+	running              // up: Consume starts on the spot
+	stopped              // stopping has begun (or has finished): Consume is an error
 )
 
-// manager 一个进程里的全部消费者，由 xkafka StageServer 那一对钩子起停。
-// lookup 按集群名取集群：正常是注册表，测试换成自己的
+// manager holds every consumer in one process, started and stopped by xkafka's StageServer pair of hooks.
+// lookup fetches a cluster by name: the registry normally, replaced by its own in tests.
 type manager struct {
 	lookup func(name string) (instance, bool)
 
@@ -82,7 +82,7 @@ func startConsumers(ctx context.Context) error { return std.start(ctx) }
 
 func stopConsumers(ctx context.Context) error { return std.stop(ctx) }
 
-// add 登记一个消费者，已经起来的话当场开始
+// add registers a consumer, starting on the spot when they are already up.
 func (m *manager) add(c *consumer) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -102,8 +102,8 @@ func (m *manager) add(c *consumer) error {
 	return nil
 }
 
-// start 先给每个消费者建好客户端，全部成功了才开始消费：
-// 一个起不来时还一条消息都没取过，关掉已建的客户端就收拾干净了（这一档的停止钩子不会被调到）
+// start builds every consumer's client first and only begins consuming once they have all succeeded:
+// when one cannot come up, not a single message has been fetched yet and closing the clients already built is the whole cleanup (this stage's stop hook is never called).
 func (m *manager) start(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -126,7 +126,7 @@ func (m *manager) start(ctx context.Context) error {
 	return nil
 }
 
-// stop 并行停下全部消费者，等它们都停完或者 ctx 到点
+// stop stops every consumer in parallel and waits for them all, or for the ctx to be reached.
 func (m *manager) stop(ctx context.Context) error {
 	m.mu.Lock()
 	wasRunning := m.state == running
@@ -154,8 +154,8 @@ func (m *manager) names() []string {
 	return out
 }
 
-// joinBusy 停止预算用完时还没停完的，点名报出来：在处理消息的分区（topic/分区@offset），或者卡在提交、离开消费组上的消费者。
-// 框架也在看同一个截止时间，可能先一步返回、把这里的错误丢掉，所以点名的这一条日志无论如何都要写出去
+// joinBusy names what has not stopped by the time the stop budget runs out: the partitions still processing a message (topic/partition@offset), or the consumers stuck committing or leaving the group.
+// The framework watches the same deadline and may return first and drop this error, so this one log line naming them has to go out no matter what.
 func joinBusy(ctx context.Context, busy [][]string) error {
 	all := slices.Concat(busy...)
 	if len(all) == 0 {
@@ -166,22 +166,22 @@ func joinBusy(ctx context.Context, busy [][]string) error {
 		strings.Join(all, ", "), ctx.Err())
 }
 
-// ---- 一个消费者 ----
+// ---- one consumer ----
 
-// consumer 一次 Consume 登记的消费者，有它自己的 *kgo.Client（带着消费组）
+// consumer is one consumer registered by a Consume, with a *kgo.Client of its own (carrying the consumer group).
 type consumer struct {
 	topic, group string
 	fn           func(context.Context, *kgo.Record) error
 	o            options
 
-	// 下面这些在 prepare 里填好
+	// The fields below are filled in by prepare
 	cl     *kgo.Client
 	log    bool
 	trace  bool
 	metric bool
 
-	// base 每条消息的 ctx 的父亲：不随退出信号取消（在途的消息要处理完）。
-	// hard 在停止预算用完时才取消，叫停还没返回的处理函数
+	// base is the parent of every message's ctx: it is not cancelled by the stop signal (a message in flight has to finish).
+	// hard is cancelled only once the stop budget runs out, to stop a handler that has not returned.
 	base       context.Context
 	hard       context.Context
 	hardCancel context.CancelFunc
@@ -190,26 +190,26 @@ type consumer struct {
 	pollDone   chan struct{}
 
 	mu       sync.Mutex
-	assigned map[int32]*worker  // 当前分到的分区
-	live     map[*worker]string // 还没退出的分区协程（包括刚被收回、正在等在途消息的），值是 topic/partition
+	assigned map[int32]*worker  // the partitions currently assigned
+	live     map[*worker]string // the partition goroutines that have not exited (including ones just revoked and waiting for a message in flight), with topic/partition as the value
 }
 
 func (c *consumer) String() string { return c.topic + "/" + c.group }
 
-// same 同一个集群上同一对 topic + group：登记两次只是让同一个进程里多一个组员，分区一样分
+// same means the same topic + group pair on the same cluster: registering twice only adds another group member in the same process, and the partitions are shared the same way.
 func (c *consumer) same(o *consumer) bool {
 	return c.topic == o.topic && c.group == o.group && c.o.client == o.o.client
 }
 
-// maxPollRecords 一次最多取多少条来分给各分区。取多了，再均衡要多等这一批派发完
+// maxPollRecords is how many messages are fetched at most to dispatch across the partitions. Fetching more makes a rebalance wait longer for that batch to be dispatched.
 const maxPollRecords = 500
 
-// workerQueue 每个分区的协程前面最多排几批没处理的消息。排满了派发就停下等它——
-// 一个分区慢下来，其余分区的派发也跟着等，这是 franz-go 示例（goroutine_per_partition_consuming）的做法：
-// 不这样的话，慢的那个分区会一直往内存里攒
+// workerQueue is how many undispatched batches may queue in front of each partition's goroutine. Once full, dispatching stops and waits for it --
+// one slow partition makes the dispatching of the others wait too, which is what franz-go's example (goroutine_per_partition_consuming) does:
+// without it, the slow partition would keep accumulating in memory.
 const workerQueue = 4
 
-// prepare 建好这个消费者自己的客户端，还不开始消费
+// prepare builds this consumer's own client without starting to consume yet.
 func (c *consumer) prepare(ctx context.Context, lookup func(string) (instance, bool)) error {
 	inst, ok := lookup(c.o.client)
 	if !ok {
@@ -223,18 +223,18 @@ func (c *consumer) prepare(ctx context.Context, lookup func(string) (instance, b
 		kgo.ConsumerGroup(c.group),
 		kgo.ConsumeTopics(c.topic),
 		kgo.ConsumeResetOffset(resetOffset(inst.cfg.Consumer.ResetOffset)),
-		// 只提交标记过的：一条消息处理完才标记。franz-go 默认的自动提交提交的是「上一次 poll 取到的」，
-		// 不管处理完没有——这里 poll 和处理在不同的协程里，取到的消息可能还排在分区的队列里，
-		// 进程一崩就丢了（v1.21.7 实测，见 TestFranzDefault_AutocommitCommitsPolledButUnprocessed）
+		// Only what has been marked is committed: a message is marked once it is done. franz-go's default automatic commit commits "whatever the last poll returned",
+		// processed or not -- and here polling and processing are in different goroutines, so a fetched message may still be queued on a partition
+		// and would be lost on a crash (measured on v1.21.7, see TestFranzDefault_AutocommitCommitsPolledButUnprocessed).
 		kgo.AutoCommitMarks(),
-		// poll 到 AllowRebalance 之间不再均衡：派发和收回分区不会同时发生，分区协程的表不用和 poll 抢。
-		// franz-go 示例的做法（autocommit_marks）
+		// No rebalance happens between the poll and AllowRebalance: dispatching and revoking partitions never overlap, so the partition goroutine table does not have to race the poll.
+		// This is what franz-go's example does (autocommit_marks).
 		kgo.BlockRebalanceOnPoll(),
 		kgo.OnPartitionsAssigned(c.assignedFn),
 		kgo.OnPartitionsRevoked(c.revokedFn),
 		kgo.OnPartitionsLost(c.lostFn),
 	)
-	// 这些要在 NewClient 之前填好：它一建好就开始入组，分区分配的回调（assignedFn）可能在它返回之前就来了
+	// These have to be filled in before NewClient: it starts joining the group as soon as it is built, and the partition assignment callback (assignedFn) may arrive before it returns.
 	c.log, c.trace, c.metric = inst.cfg.Log, inst.cfg.Trace, inst.cfg.Metric
 	c.base = context.WithoutCancel(ctx)
 	c.hard, c.hardCancel = context.WithCancel(c.base)
@@ -243,7 +243,7 @@ func (c *consumer) prepare(ctx context.Context, lookup func(string) (instance, b
 	if err != nil {
 		return xerror.Newf("xkafka", "new", "consume %q: create client: %w", c.topic, err)
 	}
-	// 消息只在 launch 起了 poll 之后才派给分区协程，它们读 c.cl 时这里早写完了
+	// Messages are only dispatched to the partition goroutines after launch has started the poll, by which time this has long finished writing c.cl.
 	c.cl = cl
 	if c.metric {
 		registerMetrics()
@@ -259,12 +259,12 @@ func resetOffset(s string) kgo.Offset {
 	return kgo.NewOffset().AtEnd()
 }
 
-// warnIfMissing topic 不存在时记一条 WARN，不让启动失败。
+// warnIfMissing records a WARN when the topic does not exist, without failing startup.
 //
-// franz-go v1.21.7 对不存在的 topic 一声不吭地等：它的日志里只有 DEBUG / INFO，poll 什么都不返回，
-// topic 建好之后几秒内（元数据最短刷新间隔 5s）自己接上（实测 kfake 3.8s、Kafka 3.9.1 见 README）。
-// 不让启动失败：topic 常常由生产方或者运维晚一步建，消费方先上线是正常的部署顺序。
-// 但「一直没消息」时要有个线索，所以记一条。查不了（broker 一时连不上）就不说，那由连接的错误去说
+// franz-go v1.21.7 waits for a missing topic without a word: its logs hold only DEBUG / INFO, poll returns nothing,
+// and it picks up within seconds of the topic being created (the metadata refresh has a 5s minimum; measured 3.8s on kfake, and Kafka 3.9.1 in the README).
+// Startup is not failed: a topic is often created a step later by the producer or by operations, and the consumer going live first is a normal deployment order.
+// But "no messages ever arrive" needs a clue, so one line is recorded. If it cannot be checked (a broker briefly unreachable) nothing is said, and the connection error says it instead.
 func (c *consumer) warnIfMissing(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -282,7 +282,7 @@ func (c *consumer) warnIfMissing(ctx context.Context) {
 	}
 }
 
-// launch 开始消费：一个协程 poll，按分区派发
+// launch starts consuming: one goroutine polls and dispatches by partition.
 func (c *consumer) launch() {
 	var ctx context.Context
 	ctx, c.pollCancel = context.WithCancel(c.base)
@@ -290,13 +290,13 @@ func (c *consumer) launch() {
 	go c.poll(ctx)
 }
 
-// poll 取消息、按分区派给各自的协程，直到 stop 取消 ctx
+// poll fetches messages and dispatches them to each partition's goroutine, until stop cancels the ctx.
 func (c *consumer) poll(ctx context.Context) {
 	defer close(c.pollDone)
 	for {
 		fs := c.cl.PollRecords(ctx, maxPollRecords)
 		if ctx.Err() != nil || fs.IsClientClosed() {
-			// 这一批不派了：没处理就不会被标记，下一个拿到这些分区的组员（或者重启之后的自己）从头处理
+			// This batch is not dispatched: nothing processed is ever marked, so whichever member gets these partitions next (or this process after a restart) starts over
 			return
 		}
 		fs.EachError(func(topic string, partition int32, err error) {
@@ -310,7 +310,7 @@ func (c *consumer) poll(ctx context.Context) {
 			w := c.assigned[p.Partition]
 			c.mu.Unlock()
 			if w == nil {
-				return // BlockRebalanceOnPoll 下不会发生：收回分区要等这里 AllowRebalance
+				return // cannot happen under BlockRebalanceOnPoll: revoking partitions waits for the AllowRebalance here
 			}
 			select {
 			case w.recs <- p.Records:
@@ -321,16 +321,16 @@ func (c *consumer) poll(ctx context.Context) {
 	}
 }
 
-// stop 停下这个消费者：不再取新消息；离开消费组时 franz-go 收回全部分区，
-// revokedFn 等在途的消息处理完、提交标记过的 offset；然后关掉客户端。
-// ctx 到点还没停完的，取消在途处理函数的 ctx，返回还在处理的分区
+// stop stops this consumer: no new message is fetched; leaving the group makes franz-go revoke every partition,
+// revokedFn waits for the messages in flight to be processed and commits what was marked; then the client is closed.
+// Whatever has not stopped by the time the ctx is reached has the ctx of its handler in flight cancelled, and the partitions still processing are returned.
 func (c *consumer) stop(ctx context.Context) []string {
 	c.pollCancel()
 	<-c.pollDone
 
 	done := make(chan struct{})
 	go func() {
-		// 不是 Close：poll 停在 PollRecords 和 AllowRebalance 之间的话，Close 会一直等那次被挡住的再均衡
+		// Not Close: with the poll stopped between PollRecords and AllowRebalance, Close would wait forever for that blocked rebalance
 		c.cl.CloseAllowingRebalance()
 		close(done)
 	}()
@@ -340,8 +340,8 @@ func (c *consumer) stop(ctx context.Context) []string {
 		return nil
 	case <-ctx.Done():
 	}
-	// 先点名再叫停：叫停之后它们陆续返回，再点就点不全了。
-	// 没有在途消息却还没停完的，卡在提交或者离开消费组上（协调者连不上），点这个消费者的名
+	// Named before being stopped: once stopped they return one by one and naming them afterwards would miss some.
+	// One with no message in flight that has still not stopped is stuck committing or leaving the group (the coordinator is unreachable), so the consumer itself is named.
 	busy := c.busy()
 	if len(busy) == 0 {
 		busy = []string{c.String() + " (committing offsets / leaving the group)"}
@@ -350,7 +350,7 @@ func (c *consumer) stop(ctx context.Context) []string {
 	return busy
 }
 
-// busy 还在处理消息的分区，topic/partition@offset
+// busy lists the partitions still processing a message, as topic/partition@offset.
 func (c *consumer) busy() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -364,7 +364,7 @@ func (c *consumer) busy() []string {
 	return out
 }
 
-// ---- 再均衡 ----
+// ---- rebalancing ----
 
 func (c *consumer) assignedFn(_ context.Context, _ *kgo.Client, assigned map[string][]int32) {
 	c.mu.Lock()
@@ -377,8 +377,8 @@ func (c *consumer) assignedFn(_ context.Context, _ *kgo.Client, assigned map[str
 	}
 }
 
-// revokedFn 分区被收回（再均衡、离开消费组）：等这些分区的在途消息处理完，提交标记过的 offset，
-// 这之后 franz-go 才让再均衡继续。新的组员因此从下一条开始，不会把处理过的再处理一遍
+// revokedFn runs when partitions are revoked (a rebalance, leaving the group): it waits for those partitions' messages in flight to be processed and commits what was marked,
+// and only then does franz-go let the rebalance continue. The new member therefore starts from the next message and does not reprocess what was already processed.
 func (c *consumer) revokedFn(ctx context.Context, cl *kgo.Client, revoked map[string][]int32) {
 	c.kill(revoked[c.topic])
 	if err := cl.CommitMarkedOffsets(ctx); err != nil {
@@ -387,12 +387,12 @@ func (c *consumer) revokedFn(ctx context.Context, cl *kgo.Client, revoked map[st
 	}
 }
 
-// lostFn 分区丢了（会话超时之类）：已经不是这个组员的了，提交会被 broker 拒绝。只等在途的消息处理完
+// lostFn runs when partitions are lost (a session timeout and the like): they are no longer this member's and a commit would be rejected by the broker. It only waits for the messages in flight.
 func (c *consumer) lostFn(_ context.Context, _ *kgo.Client, lost map[string][]int32) {
 	c.kill(lost[c.topic])
 }
 
-// kill 让这些分区的协程处理完手上那一条就退出，等它们退出
+// kill makes these partitions' goroutines finish the message in hand and exit, and waits for them to exit.
 func (c *consumer) kill(partitions []int32) {
 	c.mu.Lock()
 	var ws []*worker

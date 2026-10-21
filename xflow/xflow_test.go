@@ -17,17 +17,17 @@ import (
 	"github.com/jupiter-eng/xone/internal/hook"
 )
 
-// TestMain 把流程日志丢掉：这些用例本来就会刷一屏
+// TestMain discards the flow logs: these cases fill a screen by design.
 func TestMain(m *testing.M) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	os.Exit(m.Run())
 }
 
-// data 流程里贯穿全程的共享数据
+// data is the data shared across a whole flow.
 type data struct {
 	mu   sync.Mutex
-	done []string // 正向执行过的步骤
-	back []string // 回滚过的步骤
+	done []string // the steps executed forward
+	back []string // the steps rolled back
 }
 
 func (d *data) record(list *[]string, name string) {
@@ -48,12 +48,12 @@ func (d *data) backList() []string {
 	return append([]string(nil), d.back...)
 }
 
-// step 一个可编排的测试步骤
+// step is one orchestratable test step.
 type step struct {
 	name     string
 	dep      Dependency
-	err      error // Process 返回它
-	rbErr    error // Rollback 返回它
+	err      error // returned by Process
+	rbErr    error // returned by Rollback
 	panics   bool
 	rbPanics bool
 	delay    time.Duration
@@ -68,10 +68,10 @@ func (s *step) Process(ctx context.Context, d *data) error {
 		time.Sleep(s.delay)
 	}
 	if s.panics {
-		panic("步骤炸了：" + s.name)
+		panic("the step blew up: " + s.name)
 	}
 	if s.err != nil {
-		return s.err // done 只记成功的，断言里才好读
+		return s.err // done records only the successes, which keeps the assertions readable
 	}
 	d.record(&d.done, s.name)
 	return nil
@@ -82,7 +82,7 @@ func (s *step) Rollback(ctx context.Context, d *data) error {
 		time.Sleep(s.rbDelay)
 	}
 	if s.rbPanics {
-		panic("回滚炸了：" + s.name)
+		panic("the rollback blew up: " + s.name)
 	}
 	d.record(&d.back, s.name)
 	return s.rbErr
@@ -92,11 +92,11 @@ func ok(name string) *step   { return &step{name: name, dep: Strong} }
 func weak(name string) *step { return &step{name: name, dep: Weak} }
 
 func failing(name string, dep Dependency) *step {
-	return &step{name: name, dep: dep, err: errors.New(name + " 失败")}
+	return &step{name: name, dep: dep, err: errors.New(name + " failed")}
 }
 
-// withConfig 换一份配置，测试结束还原。
-// 句柄是只读的，换配置就是把包级句柄换成一个 Fixed 的
+// withConfig swaps in another configuration and restores the previous one when the test ends.
+// The handle is read-only, so swapping the configuration means replacing the package-level handle with a Fixed one.
 func withConfig(t *testing.T, mutate func(*Config)) {
 	t.Helper()
 	old := cfg
@@ -111,75 +111,75 @@ func withConfig(t *testing.T, mutate func(*Config)) {
 func TestExecute_AllSucceed(t *testing.T) {
 	withConfig(t, nil)
 	d := &data{}
-	res := New("下单", ok("扣券"), ok("扣库存"), ok("扣款")).Execute(context.Background(), d)
+	res := New("place-order", ok("deduct-coupon"), ok("reserve-stock"), ok("charge")).Execute(context.Background(), d)
 
 	if !res.Success() {
-		t.Fatalf("应当成功：%v", res)
+		t.Fatalf("it must succeed: %v", res)
 	}
 	if res.Rolled {
-		t.Error("成功的流程不该回滚")
+		t.Error("a successful flow must not roll back")
 	}
-	if got := d.doneList(); len(got) != 3 || got[0] != "扣券" || got[2] != "扣款" {
-		t.Errorf("应按顺序执行，got=%v", got)
+	if got := d.doneList(); len(got) != 3 || got[0] != "deduct-coupon" || got[2] != "charge" {
+		t.Errorf("they must run in order, got=%v", got)
 	}
 	if len(d.backList()) != 0 {
-		t.Errorf("不该回滚，got=%v", d.backList())
+		t.Errorf("nothing may be rolled back, got=%v", d.backList())
 	}
 }
 
 func TestExecute_StrongDependencyFailureRollsBackInReverse(t *testing.T) {
-	// 「谁做的事，谁负责撤销」，而且撤销顺序必须和执行顺序相反
+	// "whoever did something is responsible for undoing it", and the undo order has to be the reverse of the run order.
 	withConfig(t, nil)
 	d := &data{}
-	res := New("下单",
-		ok("扣券"), ok("扣库存"), failing("扣款", Strong), ok("发通知"),
+	res := New("place-order",
+		ok("deduct-coupon"), ok("reserve-stock"), failing("charge", Strong), ok("notify"),
 	).Execute(context.Background(), d)
 
 	if res.Success() {
-		t.Fatal("强依赖失败时流程应当失败")
+		t.Fatal("the flow must fail when a strong dependency fails")
 	}
 	if !res.Rolled {
-		t.Error("应当触发回滚")
+		t.Error("a rollback must be triggered")
 	}
 	if got := d.doneList(); len(got) != 2 {
-		t.Errorf("失败之后的步骤不该执行，got=%v", got)
+		t.Errorf("the steps after the failure must not run, got=%v", got)
 	}
-	if got := d.backList(); len(got) != 2 || got[0] != "扣库存" || got[1] != "扣券" {
-		t.Errorf("应逆序回滚，got=%v", got)
+	if got := d.backList(); len(got) != 2 || got[0] != "reserve-stock" || got[1] != "deduct-coupon" {
+		t.Errorf("the rollback must run in reverse, got=%v", got)
 	}
 
 	var se *StepError
-	if !errors.As(res.Err, &se) || se.Processor != "扣款" {
-		t.Errorf("错误里应点名是哪一步，got=%v", res.Err)
+	if !errors.As(res.Err, &se) || se.Processor != "charge" {
+		t.Errorf("the error must name which step it was, got=%v", res.Err)
 	}
 }
 
 func TestExecute_WeakDependencyFailureContinues(t *testing.T) {
 	withConfig(t, nil)
 	d := &data{}
-	res := New("下单", ok("扣券"), failing("发通知", Weak), ok("写日志")).Execute(context.Background(), d)
+	res := New("place-order", ok("deduct-coupon"), failing("notify", Weak), ok("write-log")).Execute(context.Background(), d)
 
 	if !res.Success() {
-		t.Fatalf("弱依赖失败不该中断流程：%v", res)
+		t.Fatalf("a failing weak dependency must not interrupt the flow: %v", res)
 	}
-	if len(res.Skipped) != 1 || res.Skipped[0].Processor != "发通知" {
-		t.Errorf("应记下跳过的错误，got=%v", res.Skipped)
+	if len(res.Skipped) != 1 || res.Skipped[0].Processor != "notify" {
+		t.Errorf("the skipped error must be recorded, got=%v", res.Skipped)
 	}
-	if got := d.doneList(); len(got) != 2 || got[1] != "写日志" {
-		t.Errorf("后面的步骤应继续执行，got=%v", got)
+	if got := d.doneList(); len(got) != 2 || got[1] != "write-log" {
+		t.Errorf("the later steps must keep running, got=%v", got)
 	}
 }
 
 func TestExecute_FailedWeakDependencyIsAlsoRolledBack(t *testing.T) {
-	// 它可能已经产生了副作用，只是后面没走下去而已
+	// It may already have had side effects and merely did not carry on.
 	withConfig(t, nil)
 	d := &data{}
-	New("下单", ok("扣券"), failing("发通知", Weak), failing("扣款", Strong)).
+	New("place-order", ok("deduct-coupon"), failing("notify", Weak), failing("charge", Strong)).
 		Execute(context.Background(), d)
 
 	got := d.backList()
-	if len(got) != 2 || got[0] != "发通知" || got[1] != "扣券" {
-		t.Errorf("失败的弱依赖也该纳入回滚范围，got=%v", got)
+	if len(got) != 2 || got[0] != "notify" || got[1] != "deduct-coupon" {
+		t.Errorf("a failed weak dependency must be in the rollback range too, got=%v", got)
 	}
 }
 
@@ -188,25 +188,25 @@ func TestExecute_CtxCanceledStartsNoNewStepsButStillRollsBack(t *testing.T) {
 	d := &data{}
 	ctx, cancel := context.WithCancel(context.Background())
 
-	cancelStep := &step{name: "取消", dep: Strong}
-	res := New("下单", ok("扣券"), &cancelHook{step: cancelStep, cancel: cancel}, ok("扣款")).
+	cancelStep := &step{name: "cancel", dep: Strong}
+	res := New("place-order", ok("deduct-coupon"), &cancelHook{step: cancelStep, cancel: cancel}, ok("charge")).
 		Execute(ctx, d)
 
 	if res.Success() {
-		t.Fatal("ctx 取消后流程应当失败")
+		t.Fatal("the flow must fail once the ctx is cancelled")
 	}
 	if !errors.Is(res.Err, context.Canceled) {
-		t.Errorf("错误里应能看出是取消，got=%v", res.Err)
+		t.Errorf("the error must make the cancellation visible, got=%v", res.Err)
 	}
 	if got := d.doneList(); len(got) != 2 {
-		t.Errorf("取消之后不该再启动新步骤，got=%v", got)
+		t.Errorf("no new step may start after cancellation, got=%v", got)
 	}
 	if got := d.backList(); len(got) != 2 {
-		t.Errorf("已完成的部分照常回滚，got=%v", got)
+		t.Errorf("what is already done is rolled back as usual, got=%v", got)
 	}
 }
 
-// cancelHook 执行时顺手取消 ctx
+// cancelHook cancels the ctx while it runs.
 type cancelHook struct {
 	*step
 	cancel context.CancelFunc
@@ -219,25 +219,25 @@ func (c *cancelHook) Process(ctx context.Context, d *data) error {
 }
 
 func TestRollback_UsesCtxWithoutCancellation(t *testing.T) {
-	// 补偿逻辑最需要执行的时机恰恰是请求超时之后。
-	// 沿用已取消的 ctx，每个补偿调用一进去就被拒绝，资源就真的漏掉了
+	// Compensation logic is needed most precisely after a request has timed out.
+	// Inheriting an already cancelled ctx would have every compensation call rejected the moment it starts, really leaking the resources.
 	withConfig(t, nil)
 	d := &data{}
 
 	var rbCtxErr error
-	checker := &ctxChecker{step: &step{name: "检查", dep: Strong}, got: &rbCtxErr}
+	checker := &ctxChecker{step: &step{name: "check", dep: Strong}, got: &rbCtxErr}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // 一开始就取消
+	cancel() // cancelled from the start
 
-	New("下单", checker, ok("后面这步不会执行")).Execute(ctx, d)
+	New("place-order", checker, ok("this-step-never-runs")).Execute(ctx, d)
 
 	if rbCtxErr != nil {
-		t.Errorf("回滚用的 ctx 不该是已取消的，got=%v", rbCtxErr)
+		t.Errorf("the ctx used for the rollback must not be a cancelled one, got=%v", rbCtxErr)
 	}
 }
 
-// ctxChecker 在回滚时记下 ctx 的状态
+// ctxChecker records the ctx state during the rollback.
 type ctxChecker struct {
 	*step
 	got *error
@@ -249,17 +249,17 @@ func (c *ctxChecker) Rollback(ctx context.Context, d *data) error {
 }
 
 func TestRollback_CtxValuesPreserved(t *testing.T) {
-	// 剥的是取消和超时，不是 value：补偿逻辑常常要用到 ctx 里的租户、链路标识
+	// What is stripped off is cancellation and timeouts, not values: compensation logic often needs the tenant or the trace identifiers from the ctx.
 	withConfig(t, nil)
 	type key struct{}
-	ctx := context.WithValue(context.Background(), key{}, "租户A")
+	ctx := context.WithValue(context.Background(), key{}, "tenant-a")
 
 	var seen any
-	checker := &valueChecker{step: &step{name: "检查", dep: Strong}, key: key{}, got: &seen}
-	New("下单", checker, failing("扣款", Strong)).Execute(ctx, &data{})
+	checker := &valueChecker{step: &step{name: "check", dep: Strong}, key: key{}, got: &seen}
+	New("place-order", checker, failing("charge", Strong)).Execute(ctx, &data{})
 
-	if seen != "租户A" {
-		t.Errorf("回滚时应还能读到 ctx 里的值，got=%v", seen)
+	if seen != "tenant-a" {
+		t.Errorf("a value in the ctx must still be readable during the rollback, got=%v", seen)
 	}
 }
 
@@ -275,141 +275,141 @@ func (c *valueChecker) Rollback(ctx context.Context, d *data) error {
 }
 
 func TestRollback_RecordsRemainingStepsWhenBudgetExhausted(t *testing.T) {
-	// 调用方得知道还有哪些资源悬着，否则只能人工翻日志猜
+	// The caller has to know which resources are still dangling, otherwise the only option is guessing from the logs.
 	withConfig(t, func(c *Config) { c.RollbackTimeout = 30 * time.Millisecond })
 	d := &data{}
 
-	slow := &step{name: "慢补偿", dep: Strong, rbDelay: 60 * time.Millisecond}
-	res := New("下单", ok("第一步"), ok("第二步"), slow, failing("扣款", Strong)).
+	slow := &step{name: "slow-compensation", dep: Strong, rbDelay: 60 * time.Millisecond}
+	res := New("place-order", ok("step-one"), ok("step-two"), slow, failing("charge", Strong)).
 		Execute(context.Background(), d)
 
 	if len(res.RollbackErrors) == 0 {
-		t.Fatal("预算耗尽时应把没补偿的记下来")
+		t.Fatal("when the budget runs out, what was not compensated must be recorded")
 	}
 	var names []string
 	for _, e := range res.RollbackErrors {
 		names = append(names, e.Processor)
 	}
-	if !strings.Contains(strings.Join(names, ","), "第一步") {
-		t.Errorf("没轮到的步骤也该记下来，got=%v", names)
+	if !strings.Contains(strings.Join(names, ","), "step-one") {
+		t.Errorf("a step that never got a turn must be recorded too, got=%v", names)
 	}
 	if !strings.Contains(res.String(), "failed to roll back") {
-		t.Errorf("结果摘要里该看得出回滚没做完，got=%s", res.String())
+		t.Errorf("the result summary must show that the rollback did not finish, got=%s", res.String())
 	}
 }
 
 func TestWithRollbackTimeout_OverridesConfigForThisFlow_OriginalUnchanged(t *testing.T) {
-	// 不跑 xone.Run、单独用 xflow 时，配置文件没人读，改回滚预算只有这一条路
-	withConfig(t, nil) // 配置里是默认的 30s
-	slow := &step{name: "慢补偿", dep: Strong, rbDelay: 60 * time.Millisecond}
-	base := New("下单", ok("第一步"), slow, failing("扣款", Strong))
+	// When using xflow on its own without xone.Run, nobody reads the config file, so this is the only way to change the rollback budget.
+	withConfig(t, nil) // the configuration holds the default 30s
+	slow := &step{name: "slow-compensation", dep: Strong, rbDelay: 60 * time.Millisecond}
+	base := New("place-order", ok("step-one"), slow, failing("charge", Strong))
 	short := base.WithRollbackTimeout(20 * time.Millisecond)
 
 	if res := short.Execute(context.Background(), &data{}); len(res.RollbackErrors) == 0 {
-		t.Error("回滚预算 20ms、补偿要 60ms，该记下没做完的补偿")
+		t.Error("with a 20ms rollback budget and a 60ms compensation, the unfinished compensation must be recorded")
 	}
-	// 返回的是新流程：原来那个还跟着配置的 30s 走，补偿全部做完
+	// What comes back is a new flow: the original still follows the configured 30s and compensates everything.
 	if res := base.Execute(context.Background(), &data{}); len(res.RollbackErrors) != 0 {
-		t.Errorf("原来的流程不该被改掉，got=%v", res.RollbackErrors)
+		t.Errorf("the original flow must not be changed, got=%v", res.RollbackErrors)
 	}
 }
 
 func TestWithRollbackTimeout_PanicsOnNonPositive(t *testing.T) {
-	// 0 会让回滚一进去就判超时、补偿全被跳过，而流程看起来一切正常
+	// 0 would make a rollback time out the moment it starts and skip every compensation, while the flow looks entirely normal.
 	for _, d := range []time.Duration{0, -time.Second} {
 		func() {
 			defer func() {
 				if recover() == nil {
-					t.Errorf("WithRollbackTimeout(%v) 该 panic", d)
+					t.Errorf("WithRollbackTimeout(%v) must panic", d)
 				}
 			}()
-			New("下单", ok("第一步")).WithRollbackTimeout(d)
+			New("place-order", ok("step-one")).WithRollbackTimeout(d)
 		}()
 	}
 }
 
 func TestRollback_CompensationIgnoringCtxCannotHangExecute(t *testing.T) {
-	// 预算只在步骤之间查的话，一个不看 ctx 的 Rollback 能把 Execute 挂住：
-	// 实测 50ms 的预算等了 2s，而且挂住的那一步不在 RollbackErrors 里
+	// Checking the budget only between steps would let a Rollback that ignores the ctx hang Execute:
+	// measured, a 50ms budget waited 2s, and the hanging step was not in RollbackErrors.
 	withConfig(t, func(c *Config) { c.RollbackTimeout = 50 * time.Millisecond })
 	d := &data{}
 
-	// 挂 3s：挂得住的话 Execute 至少等 3s，上界 1.5s 离 50ms 的预算和 3s 都远
-	hung := &step{name: "不看ctx的补偿", dep: Strong, rbDelay: 3 * time.Second}
+	// It hangs for 3s: if it really hung, Execute would wait at least 3s, and the 1.5s bound is far from both the 50ms budget and the 3s.
+	hung := &step{name: "compensation-ignoring-ctx", dep: Strong, rbDelay: 3 * time.Second}
 	start := time.Now()
-	res := New("下单", ok("第一步"), hung, failing("扣款", Strong)).Execute(context.Background(), d)
+	res := New("place-order", ok("step-one"), hung, failing("charge", Strong)).Execute(context.Background(), d)
 
 	if took := time.Since(start); took > 1500*time.Millisecond {
-		t.Errorf("回滚预算 50ms，Execute 却等了 %v", took)
+		t.Errorf("the rollback budget was 50ms but Execute waited %v", took)
 	}
 	if len(res.RollbackErrors) != 2 {
-		t.Fatalf("挂住的那一步和没轮到的那一步都该记下来，got=%v", res.RollbackErrors)
+		t.Fatalf("both the hanging step and the one that never got a turn must be recorded, got=%v", res.RollbackErrors)
 	}
-	if e := res.RollbackErrors[0]; e.Processor != "不看ctx的补偿" || !errors.Is(e, context.DeadlineExceeded) {
-		t.Errorf("挂住的那一步该记成超时，got=%v", e)
+	if e := res.RollbackErrors[0]; e.Processor != "compensation-ignoring-ctx" || !errors.Is(e, context.DeadlineExceeded) {
+		t.Errorf("the hanging step must be recorded as a timeout, got=%v", e)
 	}
-	if e := res.RollbackErrors[1]; e.Processor != "第一步" {
-		t.Errorf("没轮到的步骤也该记下来，got=%v", e)
+	if e := res.RollbackErrors[1]; e.Processor != "step-one" {
+		t.Errorf("a step that never got a turn must be recorded too, got=%v", e)
 	}
 }
 
 func TestExecute_CanceledBeforeFirstStepIsNotRolledBack(t *testing.T) {
-	// 一步都没做就没有可回滚的：报成 rolled back 会让人去查一次并不存在的补偿
+	// With no step executed there is nothing to roll back: reporting rolled back would send someone looking for a compensation that never happened.
 	withConfig(t, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	res := New("下单", ok("扣券")).Execute(ctx, &data{})
+	res := New("place-order", ok("deduct-coupon")).Execute(ctx, &data{})
 
 	if res.Success() {
-		t.Fatal("ctx 取消后流程应当失败")
+		t.Fatal("the flow must fail once the ctx is cancelled")
 	}
 	if res.Rolled {
-		t.Error("一步都没执行，Rolled 不该是 true")
+		t.Error("with not a single step executed, Rolled must not be true")
 	}
 	if strings.Contains(res.String(), "rolled back") {
-		t.Errorf("摘要不该说回滚过，got=%s", res.String())
+		t.Errorf("the summary must not say it rolled back, got=%s", res.String())
 	}
 }
 
 func TestRollback_OneFailureDoesNotBlockOtherSteps(t *testing.T) {
 	withConfig(t, nil)
 	d := &data{}
-	bad := &step{name: "补偿会失败", dep: Strong, rbErr: errors.New("补偿失败")}
+	bad := &step{name: "compensation-fails", dep: Strong, rbErr: errors.New("compensation failed")}
 
-	res := New("下单", ok("第一步"), bad, failing("扣款", Strong)).Execute(context.Background(), d)
+	res := New("place-order", ok("step-one"), bad, failing("charge", Strong)).Execute(context.Background(), d)
 
 	if len(res.RollbackErrors) != 1 {
-		t.Errorf("应记下那一步的回滚错误，got=%v", res.RollbackErrors)
+		t.Errorf("that step's rollback error must be recorded, got=%v", res.RollbackErrors)
 	}
-	// 两步的补偿都跑过了：一步失败不该拦住另一步
+	// Both compensations ran: one failing must not stop the other.
 	if got := d.backList(); len(got) != 2 {
-		t.Errorf("其余步骤的回滚应照常进行，got=%v", got)
+		t.Errorf("the other steps must be rolled back as usual, got=%v", got)
 	}
 }
 
 func TestExecute_StepPanicBecomesOrdinaryFailure(t *testing.T) {
-	// 一步炸了不该把整个进程打穿，前面几步还得有机会回滚
+	// One step blowing up must not take the whole process down, and the earlier steps must still get a chance to be rolled back.
 	withConfig(t, nil)
 	d := &data{}
-	res := New("下单", ok("扣券"), &step{name: "炸", dep: Strong, panics: true}).
+	res := New("place-order", ok("deduct-coupon"), &step{name: "boom", dep: Strong, panics: true}).
 		Execute(context.Background(), d)
 
 	if res.Success() {
-		t.Fatal("panic 应当变成流程失败")
+		t.Fatal("a panic must become a flow failure")
 	}
 	if !strings.Contains(res.Err.Error(), "panic") {
-		t.Errorf("错误里应看得出是 panic，got=%v", res.Err)
+		t.Errorf("the error must make the panic visible, got=%v", res.Err)
 	}
-	if got := d.backList(); len(got) != 1 || got[0] != "扣券" {
-		t.Errorf("前面的步骤仍应回滚，got=%v", got)
+	if got := d.backList(); len(got) != 1 || got[0] != "deduct-coupon" {
+		t.Errorf("the earlier steps must still be rolled back, got=%v", got)
 	}
 }
 
-// errPanicStep panic 出一个 error 值的步骤
+// errPanicStep is a step that panics with an error value.
 type errPanicStep struct{ err error }
 
-func (errPanicStep) Name() string           { return "炸出error" }
+func (errPanicStep) Name() string           { return "panics-with-error" }
 func (errPanicStep) Dependency() Dependency { return Strong }
 func (s errPanicStep) Process(context.Context, *data) error {
 	panic(s.err)
@@ -417,42 +417,42 @@ func (s errPanicStep) Process(context.Context, *data) error {
 func (errPanicStep) Rollback(context.Context, *data) error { return nil }
 
 func TestExecute_StepPanicWrappedOnceAndKeepsErrorChain(t *testing.T) {
-	// 一个模块边界一个 xerror：panic 在 safeProcess 里包一次、在 Execute 里
-	// 又包一次的话，文本就套成 xone xflow execute failed, err=[... xone xflow execute failed ...]。
-	// panic 出来的是 error 时要用 %w 接住，errors.Is 才问得出根因；
-	// 调用栈是几十行，塞进错误消息就把告警标题和日志检索全搅乱了
+	// One module boundary, one xerror: wrapping the panic once in safeProcess and once again in Execute would nest the
+	// text into xone xflow execute failed, err=[... xone xflow execute failed ...].
+	// A panicked error has to be caught with %w so errors.Is can reach the root cause;
+	// the call stack is dozens of lines and would wreck alert titles and log search if it went into the message.
 	withConfig(t, nil)
-	cause := errors.New("连接池炸了")
-	res := New[*data]("下单", errPanicStep{cause}).Execute(context.Background(), &data{})
+	cause := errors.New("the connection pool blew up")
+	res := New[*data]("place-order", errPanicStep{cause}).Execute(context.Background(), &data{})
 
 	if res.Success() {
-		t.Fatal("panic 应当变成流程失败")
+		t.Fatal("a panic must become a flow failure")
 	}
 	msg := res.Err.Error()
 	if n := strings.Count(msg, "xone xflow"); n != 1 {
-		t.Errorf("该只有一层 xflow 错误，got %d 层：%s", n, msg)
+		t.Errorf("there must be only one layer of xflow error, got %d layers: %s", n, msg)
 	}
 	if strings.Contains(msg, "\n") {
-		t.Errorf("错误消息里不该有多行的调用栈：%s", msg)
+		t.Errorf("the error message must not hold a multi-line call stack: %s", msg)
 	}
 	if !errors.Is(res.Err, cause) {
-		t.Errorf("panic 出来的 error 该还在链上，got=%v", res.Err)
+		t.Errorf("the panicked error must still be on the chain, got=%v", res.Err)
 	}
 	var pe *PanicError
 	if !errors.As(res.Err, &pe) || !strings.Contains(string(pe.Stack), "goroutine") {
-		t.Errorf("调用栈该挂在 PanicError.Stack 上，got=%+v", pe)
+		t.Errorf("the call stack must hang on PanicError.Stack, got=%+v", pe)
 	}
 }
 
 func TestMonitor_DefaultRecordsPanicStackAsSeparateField(t *testing.T) {
-	// 栈不进错误消息，就得有个地方看得到它：默认监控把它放进 stack 字段
+	// With the stack out of the error message, it has to be visible somewhere: the default monitor puts it in a stack field.
 	withConfig(t, nil)
 	var buf strings.Builder
 	old := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
 	t.Cleanup(func() { slog.SetDefault(old) })
 
-	New("下单", &step{name: "炸", dep: Strong, panics: true}).Execute(context.Background(), &data{})
+	New("place-order", &step{name: "boom", dep: Strong, panics: true}).Execute(context.Background(), &data{})
 
 	var line string
 	for _, l := range strings.Split(buf.String(), "\n") {
@@ -461,45 +461,45 @@ func TestMonitor_DefaultRecordsPanicStackAsSeparateField(t *testing.T) {
 		}
 	}
 	if !strings.Contains(line, `"stack":"goroutine`) {
-		t.Errorf("失败那一步的日志该带 stack 字段，got=%s", line)
+		t.Errorf("the log of the failing step must carry a stack field, got=%s", line)
 	}
 }
 
 func TestRollback_PanicDoesNotBlockOtherCompensations(t *testing.T) {
 	withConfig(t, nil)
 	d := &data{}
-	res := New("下单",
-		ok("第一步"),
-		&step{name: "补偿会炸", dep: Strong, rbPanics: true},
-		failing("扣款", Strong),
+	res := New("place-order",
+		ok("step-one"),
+		&step{name: "compensation-blows-up", dep: Strong, rbPanics: true},
+		failing("charge", Strong),
 	).Execute(context.Background(), d)
 
 	if len(res.RollbackErrors) != 1 {
-		t.Errorf("应记下那一步的 panic，got=%v", res.RollbackErrors)
+		t.Errorf("that step's panic must be recorded, got=%v", res.RollbackErrors)
 	}
-	if got := d.backList(); len(got) != 1 || got[0] != "第一步" {
-		t.Errorf("其余补偿应照常进行，got=%v", got)
+	if got := d.backList(); len(got) != 1 || got[0] != "step-one" {
+		t.Errorf("the other compensations must run as usual, got=%v", got)
 	}
 }
 
 func TestNew_NilStepPanics(t *testing.T) {
-	// 它只会在执行到那一步时炸成空指针，那时错误早已脱离构建现场
+	// It would otherwise only blow up as a nil pointer when that step runs, by which time the error is long detached from where it was built.
 	defer func() {
 		r := recover()
 		if r == nil {
-			t.Fatal("传 nil 步骤应当 panic")
+			t.Fatal("passing a nil step must panic")
 		}
 		if !strings.Contains(fmt.Sprint(r), "step 1") {
-			t.Errorf("应指出是第几步，got=%v", r)
+			t.Errorf("it must say which step it was, got=%v", r)
 		}
 	}()
-	New[*data]("下单", ok("第一步"), nil)
+	New[*data]("place-order", ok("step-one"), nil)
 }
 
 func TestFlow_CanExecuteConcurrently(t *testing.T) {
-	// 构建之后字段不再变化
+	// The fields do not change after it is built.
 	withConfig(t, nil)
-	flow := New("下单", ok("扣券"), weak("发通知"), ok("扣款"))
+	flow := New("place-order", ok("deduct-coupon"), weak("notify"), ok("charge"))
 
 	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ {
@@ -507,7 +507,7 @@ func TestFlow_CanExecuteConcurrently(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			if res := flow.Execute(context.Background(), &data{}); !res.Success() {
-				t.Errorf("并发执行应当都成功：%v", res)
+				t.Errorf("concurrent executions must all succeed: %v", res)
 			}
 		}()
 	}
@@ -516,15 +516,15 @@ func TestFlow_CanExecuteConcurrently(t *testing.T) {
 
 func TestExecute_nil_CtxDoesNotPanic(t *testing.T) {
 	withConfig(t, nil)
-	//nolint:staticcheck // 故意传 nil
-	if res := New("下单", ok("第一步")).Execute(nil, &data{}); !res.Success() {
-		t.Errorf("nil ctx 应当兜住，got=%v", res)
+	//nolint:staticcheck // nil is passed on purpose
+	if res := New("place-order", ok("step-one")).Execute(nil, &data{}); !res.Success() {
+		t.Errorf("a nil ctx must be handled, got=%v", res)
 	}
 }
 
 func TestDependencyString(t *testing.T) {
 	if Strong.String() != "strong" || Weak.String() != "weak" || Dependency(9).String() != "unknown" {
-		t.Error("依赖类型的文案不对")
+		t.Error("the dependency type text is wrong")
 	}
 }
 
@@ -535,34 +535,34 @@ func TestResultString(t *testing.T) {
 	}{
 		{&Result{}, "flow succeeded"},
 		{&Result{Skipped: []*StepError{{}}}, "1 weak step(s) skipped"},
-		{&Result{Err: errors.New("炸了")}, "flow failed"},
-		{&Result{Err: errors.New("炸了"), Rolled: true}, "rolled back"},
-		{&Result{Err: errors.New("炸了"), Rolled: true, RollbackErrors: []*StepError{{}}}, "1 step(s) failed to roll back"},
+		{&Result{Err: errors.New("boom")}, "flow failed"},
+		{&Result{Err: errors.New("boom"), Rolled: true}, "rolled back"},
+		{&Result{Err: errors.New("boom"), Rolled: true, RollbackErrors: []*StepError{{}}}, "1 step(s) failed to roll back"},
 	} {
 		if got := c.res.String(); !strings.Contains(got, c.want) {
-			t.Errorf("摘要里应含 %q，got=%q", c.want, got)
+			t.Errorf("the summary must contain %q, got=%q", c.want, got)
 		}
 	}
 }
 
 func TestStepError(t *testing.T) {
-	cause := errors.New("根因")
-	e := &StepError{Processor: "扣款", Dependency: Strong, Err: cause}
-	if !strings.Contains(e.Error(), "扣款") || !strings.Contains(e.Error(), "strong") {
-		t.Errorf("错误信息应带上步骤名和依赖类型，got=%s", e.Error())
+	cause := errors.New("the root cause")
+	e := &StepError{Processor: "charge", Dependency: Strong, Err: cause}
+	if !strings.Contains(e.Error(), "charge") || !strings.Contains(e.Error(), "strong") {
+		t.Errorf("the error message must carry the step name and the dependency type, got=%s", e.Error())
 	}
 	if !errors.Is(e, cause) {
-		t.Error("应当能 errors.Is 出根因")
+		t.Error("errors.Is must reach the root cause")
 	}
 }
 
 func TestFlowName(t *testing.T) {
-	if got := New[*data]("下单").Name(); got != "下单" {
-		t.Errorf("Name 不对，got=%q", got)
+	if got := New[*data]("place-order").Name(); got != "place-order" {
+		t.Errorf("Name is wrong, got=%q", got)
 	}
 }
 
-// ---- 配置与登记 ----
+// ---- configuration and registration ----
 
 func TestConfig_LoadsFromFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "application.yml")
@@ -573,20 +573,20 @@ func TestConfig_LoadsFromFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c.Monitor || c.RollbackTimeout != 5*time.Second {
-		t.Errorf("配置没生效，got=%+v", c)
+		t.Errorf("the configuration had no effect, got=%+v", c)
 	}
 }
 
 func TestValidate_ZeroRollbackBudgetFails(t *testing.T) {
-	// 配成 0 会让每次回滚一进去就判超时、所有补偿被跳过，
-	// 而流程本身看起来一切正常——这种配错必须在启动时拦住
+	// A 0 would make every rollback time out the moment it starts and skip every compensation,
+	// while the flow itself looks entirely normal -- a misconfiguration like that has to be caught at startup.
 	c := DefaultConfig()
 	c.RollbackTimeout = 0
 	if err := c.Validate(); err == nil {
-		t.Fatal("回滚预算为 0 应当报错")
+		t.Fatal("a rollback budget of 0 must be an error")
 	}
 	if err := DefaultConfig().Validate(); err != nil {
-		t.Errorf("默认配置应当合法：%v", err)
+		t.Errorf("the default configuration must be valid: %v", err)
 	}
 }
 
@@ -598,58 +598,58 @@ func TestRegister_OnlyReadsConfigBuildsNothing(t *testing.T) {
 		}
 	}
 	if got == nil {
-		t.Fatal("没有登记启动钩子，XFlow 那一块就没人读、Validate 也没人调")
+		t.Fatal("no start hook is registered, so nobody reads the XFlow block and nobody calls Validate")
 	}
 	for _, e := range hook.Stop() {
 		if e.Pkg == "github.com/jupiter-eng/xone/xflow" {
-			t.Error("本包没有要关的资源，登记停止钩子会让它出现在退出序列里")
+			t.Error("this package has nothing to close, and registering a stop hook would put it in the shutdown sequence")
 		}
 	}
-	// Config 要实现 Validate()，框架才会在启动时替它拦住配错的配置
+	// Config has to implement Validate() for the framework to catch a misconfiguration at startup.
 	var c any = &Config{}
 	if _, ok := c.(interface{ Validate() error }); !ok {
-		t.Error("Config 必须实现 Validate()，否则 RollbackTimeout 配成 0 没人拦")
+		t.Error("Config must implement Validate(), otherwise nothing catches a RollbackTimeout of 0")
 	}
 }
 
 func TestLoad_InvalidConfigFailsStartup(t *testing.T) {
-	// RollbackTimeout 配成 0 会让每次回滚一进去就判超时、补偿全被跳过，
-	// 而流程本身看起来一切正常——这种配错只有加载时的 Validate 能拦
+	// A RollbackTimeout of 0 would make every rollback time out the moment it starts and skip every compensation,
+	// while the flow itself looks entirely normal -- only the Validate at load time can catch that.
 	path := filepath.Join(t.TempDir(), "application.yml")
 	os.WriteFile(path, []byte("XFlow:\n  RollbackTimeout: 0s\n"), 0o644)
 
 	c := DefaultConfig()
 	err := config.LoadInto(path, ConfigKey, &c)
 	if err == nil {
-		t.Fatal("非法配置应当让加载失败")
+		t.Fatal("an invalid configuration must fail loading")
 	}
 	if !strings.Contains(err.Error(), "RollbackTimeout") {
-		t.Errorf("错误里应点名是哪个字段，got=%v", err)
+		t.Errorf("the error must name the field, got=%v", err)
 	}
 }
 
-// panicMonitor 每个回调都炸，用来确认监控实现的故障不会打断业务流程
+// panicMonitor panics in every callback, to confirm that a failing monitoring implementation never interrupts the business flow.
 type panicMonitor struct{}
 
-func (panicMonitor) OnStep(context.Context, *StepEvent) { panic("监控的 OnStep 炸了") }
-func (panicMonitor) OnFlow(context.Context, *FlowEvent) { panic("监控的 OnFlow 炸了") }
+func (panicMonitor) OnStep(context.Context, *StepEvent) { panic("the monitor's OnStep blew up") }
+func (panicMonitor) OnFlow(context.Context, *FlowEvent) { panic("the monitor's OnFlow blew up") }
 
 func TestMonitor_CallbackPanicIsolated(t *testing.T) {
-	// 观测出问题只该丢一次观测，不该把业务流程打断。
-	// 隔离是用 defer recoverNotify() 做的——recover 必须由被 defer 的那个
-	// 函数直接调用才生效，包一层就失效了，所以这条要钉住
+	// A problem in observation must only lose one observation and must not interrupt the business flow.
+	// The isolation is done with defer recoverNotify() -- recover only works when called directly by the deferred
+	// function, and wrapping it in another layer breaks it, which is why this is pinned down.
 	withConfig(t, nil)
 	SetMonitor(panicMonitor{})
 	t.Cleanup(func() { SetMonitor(slogMonitor{}) })
 
 	d := &data{}
-	res := New("下单", ok("扣券"), ok("扣款")).Execute(context.Background(), d)
+	res := New("place-order", ok("deduct-coupon"), ok("charge")).Execute(context.Background(), d)
 
 	if !res.Success() {
-		t.Fatalf("监控炸了不该让流程失败：%v", res)
+		t.Fatalf("a panicking monitor must not fail the flow: %v", res)
 	}
 	if got := d.doneList(); len(got) != 2 {
-		t.Errorf("每一步都该照常执行，got=%v", got)
+		t.Errorf("every step must run as usual, got=%v", got)
 	}
 }
 
@@ -659,49 +659,49 @@ func TestMonitor_CallbackPanicIsolatedDuringRollback(t *testing.T) {
 	t.Cleanup(func() { SetMonitor(slogMonitor{}) })
 
 	d := &data{}
-	res := New("下单", ok("扣券"), failing("扣款", Strong)).Execute(context.Background(), d)
+	res := New("place-order", ok("deduct-coupon"), failing("charge", Strong)).Execute(context.Background(), d)
 
 	if res.Success() {
-		t.Fatal("强依赖失败时流程应当失败")
+		t.Fatal("the flow must fail when a strong dependency fails")
 	}
-	if got := d.backList(); len(got) != 1 || got[0] != "扣券" {
-		t.Errorf("监控炸了不该拦住回滚，got=%v", got)
+	if got := d.backList(); len(got) != 1 || got[0] != "deduct-coupon" {
+		t.Errorf("a panicking monitor must not stop the rollback, got=%v", got)
 	}
 }
 
 func TestSlogMonitor_StepLogsAtInfoLevel(t *testing.T) {
-	// 开着 Monitor 就是想看每一步：成功的步骤记 INFO，默认级别下就看得到，流程结果也在
+	// Monitor on means wanting to see every step: a successful step is recorded at INFO, visible at the default level, and so is the flow result.
 	withConfig(t, nil)
 	var buf strings.Builder
 	old := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	t.Cleanup(func() { slog.SetDefault(old) })
 
-	New("下单", ok("扣券"), ok("扣款")).Execute(context.Background(), &data{})
+	New("place-order", ok("deduct-coupon"), ok("charge")).Execute(context.Background(), &data{})
 
 	got := buf.String()
-	for _, want := range []string{`"level":"INFO","msg":"xflow step process done"`, "扣券", "扣款", `"msg":"xflow flow done"`} {
+	for _, want := range []string{`"level":"INFO","msg":"xflow step process done"`, "deduct-coupon", "charge", `"msg":"xflow flow done"`} {
 		if !strings.Contains(got, want) {
-			t.Errorf("默认的 info 级别下该看得到每一步和流程结果，缺 %q\n实际=\n%s", want, got)
+			t.Errorf("at the default info level every step and the flow result must be visible, missing %q\ngot=\n%s", want, got)
 		}
 	}
 }
 
 func TestSlogMonitor_NoStepLogsAtWarnLevel(t *testing.T) {
-	// 日志级别设成 warn 时成功的步骤不写；失败的步骤照样写
+	// With the log level at warn a successful step writes nothing; a failing step still writes.
 	withConfig(t, nil)
 	var buf strings.Builder
 	old := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 	t.Cleanup(func() { slog.SetDefault(old) })
 
-	New("下单", ok("扣券")).Execute(context.Background(), &data{})
+	New("place-order", ok("deduct-coupon")).Execute(context.Background(), &data{})
 	if strings.Contains(buf.String(), "xflow step") {
-		t.Errorf("warn 级别下不该有成功步骤的日志\n实际=\n%s", buf.String())
+		t.Errorf("at warn level there must be no log for a successful step\ngot=\n%s", buf.String())
 	}
 }
 
-// cancelingStep 在自己执行期间取消父 ctx，并把取消如实返回
+// cancelingStep cancels the parent ctx while it runs and returns the cancellation faithfully.
 type cancelingStep struct {
 	name   string
 	dep    Dependency
@@ -720,27 +720,27 @@ func (s *cancelingStep) Rollback(_ context.Context, d *data) error {
 }
 
 func TestExecute_CanceledLastStepMustNotReportSuccess(t *testing.T) {
-	// 取消只在每步开始前查一次的话，最后一步撞上取消就查不到了：
-	// 它的 context.Canceled 走进「弱依赖跳过」分支，循环随即结束，
-	// 于是一个被取消的流程报成了 Success，还一步都没回滚
+	// Checking for cancellation only at the start of each step would miss a cancellation hitting the last step:
+	// its context.Canceled would walk into the "weak dependency skipped" branch, the loop would end right after,
+	// and a cancelled flow would be reported as Success with not a single step rolled back.
 	withConfig(t, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &data{}
 
-	res := New("下单", ok("扣券"), &cancelingStep{name: "发通知", dep: Weak, cancel: cancel}).
+	res := New("place-order", ok("deduct-coupon"), &cancelingStep{name: "notify", dep: Weak, cancel: cancel}).
 		Execute(ctx, d)
 
 	if res.Success() {
-		t.Fatalf("流程被取消了，不该报成功：%v", res)
+		t.Fatalf("the flow was cancelled and must not be reported as a success: %v", res)
 	}
 	if !errors.Is(res.Err, context.Canceled) {
-		t.Errorf("该如实说是被取消，got=%v", res.Err)
+		t.Errorf("it must say plainly that it was cancelled, got=%v", res.Err)
 	}
 	if !res.Rolled {
-		t.Error("取消之后已执行的步骤要回滚")
+		t.Error("the executed steps must be rolled back after a cancellation")
 	}
 	if got := d.backList(); len(got) != 2 {
-		t.Errorf("失败的弱依赖也在回滚范围内，got=%v", got)
+		t.Errorf("a failed weak dependency is in the rollback range too, got=%v", got)
 	}
 }
 
@@ -749,23 +749,23 @@ func TestExecute_CanceledMiddleWeakStepAlsoAborts(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	d := &data{}
 
-	res := New("下单",
-		ok("扣券"),
-		&cancelingStep{name: "发通知", dep: Weak, cancel: cancel},
-		ok("不该跑到"),
+	res := New("place-order",
+		ok("deduct-coupon"),
+		&cancelingStep{name: "notify", dep: Weak, cancel: cancel},
+		ok("must-not-run"),
 	).Execute(ctx, d)
 
 	if res.Success() {
-		t.Fatal("流程被取消了，不该报成功")
+		t.Fatal("the flow was cancelled and must not be reported as a success")
 	}
-	if got := d.doneList(); strings.Contains(strings.Join(got, ","), "不该跑到") {
-		t.Errorf("取消之后不该再往下走，got=%v", got)
+	if got := d.doneList(); strings.Contains(strings.Join(got, ","), "must-not-run") {
+		t.Errorf("nothing may carry on after a cancellation, got=%v", got)
 	}
 }
 
 func TestLoadConfig_ReadsConfigFlowActuallyUses(t *testing.T) {
-	// 解进一个局部变量也能让配置「加载成功」，但 Execute 读的是包级的 cfg——
-	// 那样 RollbackTimeout 和 Monitor 配了等于没配，且没有任何迹象
+	// Decoding into a local variable would also make the configuration "load successfully", but Execute reads the
+	// package-level cfg -- RollbackTimeout and Monitor would then be configured for nothing, with no sign of it.
 	old := cfg
 	t.Cleanup(func() { cfg = old })
 	cfg = DefaultConfig()
@@ -784,7 +784,7 @@ func TestLoadConfig_ReadsConfigFlowActuallyUses(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.Monitor || cfg.RollbackTimeout != 3*time.Second {
-		t.Errorf("配置没落到包级变量上，got=%+v", cfg)
+		t.Errorf("the configuration did not reach the package-level variable, got=%+v", cfg)
 	}
 }
 
@@ -804,19 +804,19 @@ func TestLoadConfig_InvalidConfigFailsStartup(t *testing.T) {
 
 	cfg = DefaultConfig()
 	if err := loadConfig(context.Background()); err == nil {
-		t.Fatal("回滚预算为 0 应当让启动失败")
+		t.Fatal("a rollback budget of 0 must fail startup")
 	}
 	if cfg.RollbackTimeout != DefaultConfig().RollbackTimeout {
-		t.Errorf("校验失败的值不该留在包级配置上，got=%v", cfg.RollbackTimeout)
+		t.Errorf("a value that failed validation must not stay on the package-level configuration, got=%v", cfg.RollbackTimeout)
 	}
 }
 
 func TestLoadConfig_UnsetFieldsResetToDefaultsNotPreviousValues(t *testing.T) {
-	// 同一进程里跑两次 Run：第二次的配置文件没写 RollbackTimeout，
-	// 就该是默认的 30s，而不是上一次配的 3s
+	// Two Runs in the same process: the second config file does not write RollbackTimeout,
+	// so it must be the default 30s rather than the 3s configured the first time.
 	old := cfg
 	t.Cleanup(func() { cfg = old })
-	cfg = Config{Monitor: false, RollbackTimeout: 3 * time.Second} // 上一次 Run 留下的
+	cfg = Config{Monitor: false, RollbackTimeout: 3 * time.Second} // left over from the previous Run
 
 	path := filepath.Join(t.TempDir(), "application.yml")
 	if err := os.WriteFile(path, []byte("XFlow:\n  Monitor: false\n"), 0o600); err != nil {
@@ -832,6 +832,6 @@ func TestLoadConfig_UnsetFieldsResetToDefaultsNotPreviousValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.RollbackTimeout != DefaultConfig().RollbackTimeout {
-		t.Errorf("没写的字段该回到默认值，got=%v", cfg.RollbackTimeout)
+		t.Errorf("a field that is not set must return to its default, got=%v", cfg.RollbackTimeout)
 	}
 }

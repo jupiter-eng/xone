@@ -1,248 +1,271 @@
-# xgorm 的变异：module xgorm 里的承诺。写法见 scripts/mutations/__init__.py
+# Mutations for xgorm: the promises of the xgorm module. The format is in scripts/mutations/__init__.py.
 from . import cut, mutate, section, swap
 
-section("配置")
-# 调用点：三个集成读配置时要把自己的默认值交进去
-mutate("xgorm 多实例铺的是自己的默认值", "xgorm/config.go", "./xgorm", "TestConfig_SingleInstanceForm",
+section("configuration")
+# The call site: all three integrations must hand their own defaults in when reading the config.
+mutate("xgorm spreads its own defaults over several instances", "xgorm/config.go", "./xgorm", "TestConfig_SingleInstanceForm",
        swap('xconfig.UnmarshalClients(ConfigKey, DefaultClientConfig)', 'xconfig.UnmarshalClients(ConfigKey, func() ClientConfig { return ClientConfig{} })'))
 
-section("中间件")
-# pgx 的错误原文里就是整串 DSN，它自己的打码只遮得住两种规整写法。
-# 打在调用点上：绕开 parsePostgres 直接调 pgx，密码就跟着它的错误进了日志
-mutate("PG 的 DSN 解不开时不把密码带进错误", "xgorm/dsn.go", "./xgorm", "TestResolvePostgres_",
+section("middleware")
+# pgx's error text is the whole DSN, and its own masking covers only two tidy spellings.
+# Aimed at the call site: bypassing parsePostgres and calling pgx directly puts the password in the log with its error.
+mutate("a PG DSN that cannot be parsed does not carry the password into the error", "xgorm/dsn.go", "./xgorm", "TestResolvePostgres_",
        swap('\tpc, err := parsePostgres(dsn)\n', '\tpc, err := pgconn.ParseConfig(dsn)\n'))
-# gorm 的 postgres 驱动建连用的是 pgx.ParseConfig，比 pgconn 多校验三项。
-# 预检退回 pgconn 的话这三项写错会放行到建连，password = hunter2 跟着 pgx 的错误出去
-mutate("PG 预检用的是建连时同一个解析器", "xgorm/dsn.go", "./xgorm", "TestNew_PG_PgxValidationErrorsKeepPasswordOut",
+# gorm's postgres driver connects through pgx.ParseConfig, which validates three more items than pgconn.
+# Falling back to pgconn for the pre-check would let those three through to the connection, and
+# password = hunter2 would go out with pgx's error.
+mutate("the PG pre-check uses the same parser as connecting", "xgorm/dsn.go", "./xgorm", "TestNew_PG_PgxValidationErrorsKeepPasswordOut",
        swap('\tcc, err := pgx.ParseConfig(dsn)\n\tif err == nil {\n\t\treturn &cc.Config, nil\n',
      '\t_ = pgx.ParseConfig\n\tcc, err := pgconn.ParseConfig(dsn)\n\tif err == nil {\n\t\treturn cc, nil\n'))
-# gorm 用正则读原串、不解码：整个 query 重新编码，Asia/Shanghai 就成了 Asia%2FShanghai
-mutate("URL 形式补参数不改写使用者的 query", "xgorm/dsn.go", "./xgorm", "TestResolveDSN_PG_URLAddsParamsWithoutRewritingUserQuery",
+# gorm reads the raw string with a regexp and does not decode it: re-encoding the whole query turns
+# Asia/Shanghai into Asia%2FShanghai.
+mutate("adding parameters to a URL does not rewrite the caller's query", "xgorm/dsn.go", "./xgorm", "TestResolveDSN_PG_URLAddsParamsWithoutRewritingUserQuery",
        swap('\tu.RawQuery = strings.Join(pairs, "&")\n',
      '\tu.RawQuery = strings.Join(pairs, "&")\n\tif all, err := url.ParseQuery(u.RawQuery); err == nil {\n\t\tu.RawQuery = all.Encode()\n\t}\n'))
-mutate("补进 URL 的值不编码 /", "xgorm/dsn.go", "./xgorm", "TestResolveDSN_PG_URLAddsParamsWithoutRewritingUserQuery",
+mutate("a value added to a URL does not have its / encoded", "xgorm/dsn.go", "./xgorm", "TestResolveDSN_PG_URLAddsParamsWithoutRewritingUserQuery",
        swap('queryEscape(k)+"="+queryEscape(injects[k])', 'queryEscape(k)+"="+url.QueryEscape(injects[k])'))
-mutate("PG 证书文件读不到时说清是哪个文件", "xgorm/dsn.go", "./xgorm", "TestResolvePostgres_",
+mutate("an unreadable PG certificate file is named in the error", "xgorm/dsn.go", "./xgorm", "TestResolvePostgres_",
        swap('\t\treturn nil, fmt.Errorf("cannot read a file named in the DSN: %w", pathErr)', '\t\treturn nil, errMalformedDSN'))
-# 默认值垫在前面、不去判断 DSN 里写没写过，就是为了不再有这种检测。
-# 变异把一个朴素的「写过就跳过」塞回来：密码里的 connect_timeout= 就能骗过它
-mutate("密码里的参数名骗不过注入", "xgorm/dsn.go", "./xgorm", "TestResolveDSN_PGParamNameInPasswordNotMistaken",
+# Placing the defaults first instead of checking whether the DSN already sets something is exactly what
+# removes this kind of detection. The mutation puts a naive "skip if already set" back: a connect_timeout=
+# inside the password is enough to fool it.
+mutate("a parameter name inside the password does not fool the injection", "xgorm/dsn.go", "./xgorm", "TestResolveDSN_PGParamNameInPasswordNotMistaken",
        swap('\t\tif skipTimeZone && gormTimeZone.MatchString(k+"=") {\n',
      '\t\tif strings.Contains(dsn, k+"=") || skipTimeZone && gormTimeZone.MatchString(k+"=") {\n'))
 
-section("登记板")
-# 客户端类集成要显式声明 StageClient：漏写就掉进默认的业务档，和用它的业务钩子同档
-mutate("xgorm 在业务档之前就绪", "xgorm/xgorm.go", "./xgorm", "TestRegister_MatchesFramework",
+section("the registration board")
+# A client-style integration must declare StageClient explicitly: leaving it out drops it into the default
+# business stage, alongside the business hooks that use it.
+mutate("xgorm is ready before the business stage", "xgorm/xgorm.go", "./xgorm", "TestRegister_MatchesFramework",
        swap('xhook.BeforeStart(initXGorm, xhook.At(xhook.StageClient))', 'xhook.BeforeStart(initXGorm)'))
 
-section("客户端")
-# 打在调用点上：没配时不走 Build 的话，注册表一直停在「还没启动」，
-# C() 就会把「没配」说成「调早了」
-mutate("xgorm 没配也让注册表知道启动过了", "xgorm/xgorm.go", "./xgorm", "TestInitXGorm_CSaysNotConfiguredRatherThanTooEarly",
+section("clients")
+# Aimed at the call site: without going through Build when nothing is configured, the registry stays at
+# "not started yet" and C() reports "not configured" as "called too early".
+mutate("with nothing configured the registry still learns that startup ran", "xgorm/xgorm.go", "./xgorm", "TestInitXGorm_CSaysNotConfiguredRatherThanTooEarly",
        swap('\t\treturn xclient.Build(ctx, reg, nil, build)\n', '\t\treturn nil\n'))
-# 连接信息交给 pgx 解。变异换回一个按空白切的解法：密码里的 host=… 就被读成地址
-mutate("DSN 里的密码不进日志", "xgorm/dsn.go", "./xgorm", "TestResolveDSN_PGPasswordFragmentNotTakenAsConnInfo",
+# The connection info is parsed by pgx. The mutation puts back a solution that splits on whitespace: a
+# host=... inside the password is then read as the address.
+mutate("the password in the DSN does not reach the log", "xgorm/dsn.go", "./xgorm", "TestResolveDSN_PGPasswordFragmentNotTakenAsConnInfo",
        swap('\t\tAddr:         net.JoinHostPort(pc.Host, strconv.Itoa(int(pc.Port))),\n',
      '\t\tAddr:         net.JoinHostPort(naiveKV(dsn)["host"], strconv.Itoa(int(pc.Port))),\n'),
-       swap('// seconds 向上取整为整秒',
-     'func naiveKV(dsn string) map[string]string {\n\tall := map[string]string{}\n\tfor _, tok := range strings.Fields(dsn) {\n\t\tif k, v, ok := strings.Cut(tok, "="); ok {\n\t\t\tall[k] = v\n\t\t}\n\t}\n\treturn all\n}\n\n// seconds 向上取整为整秒'))
-# pgx 同一个 key 取最后一次：默认值追加在后面的话，使用者显式写的值
-# （包括 connect_timeout = 10 这种写法）就被盖掉了
-mutate("DSN 里已写的 key 不被默认值盖掉", "xgorm/dsn.go", "./xgorm", "TestResolveDSN_PG",
+       swap('// seconds rounds up to whole seconds',
+     'func naiveKV(dsn string) map[string]string {\n\tall := map[string]string{}\n\tfor _, tok := range strings.Fields(dsn) {\n\t\tif k, v, ok := strings.Cut(tok, "="); ok {\n\t\t\tall[k] = v\n\t\t}\n\t}\n\treturn all\n}\n\n// seconds rounds up to whole seconds'))
+# pgx takes the last occurrence of a key: appending the defaults would override what the caller wrote
+# explicitly (including the spelling connect_timeout = 10).
+mutate("a key already set in the DSN is not overridden by a default", "xgorm/dsn.go", "./xgorm", "TestResolveDSN_PG",
        swap('\treturn strings.Join(pairs, " ") + " " + dsn\n', '\treturn dsn + " " + strings.Join(pairs, " ")\n'))
-mutate("垫在前面的参数不粘到 DSN 的第一项上", "xgorm/dsn.go", "./xgorm", "TestResolveDSN_PG",
+mutate("the parameters placed first do not run into the DSN's first item", "xgorm/dsn.go", "./xgorm", "TestResolveDSN_PG",
        swap('\treturn strings.Join(pairs, " ") + " " + dsn\n', '\treturn strings.Join(pairs, " ") + dsn\n'))
-# gorm 另用正则取 DSN 里第一处时区，垫在前面的 Params 时区会抢在使用者写的前面
-mutate("DSN 里写了时区就不垫时区", "xgorm/dsn.go", "./xgorm", "TestResolveDSN_PG_DSNTimezoneSkipsDefaultTimezone",
+# gorm separately picks the first time zone in the DSN with a regexp, so a time zone from Params placed
+# first would be taken ahead of the one the caller wrote.
+mutate("no time zone is prepended when the DSN already sets one", "xgorm/dsn.go", "./xgorm", "TestResolveDSN_PG_DSNTimezoneSkipsDefaultTimezone",
        swap('\tskipTimeZone := gormTimeZone.MatchString(dsn)\n', '\tskipTimeZone := false\n'))
-mutate("首次建连受 ctx 管", "xgorm/xgorm.go", "./xgorm", "TestNew",
+mutate("the first connection honors the ctx", "xgorm/xgorm.go", "./xgorm", "TestNew",
        swap('\t\tDisableAutomaticPing:                     true,\n', ''))
-# 原样交给 gorm.Config 的几项，每一项在调用点上各改坏一次
-mutate("DisableForeignKeyConstraintWhenMigrating 交给 GORM", "xgorm/xgorm.go", "./xgorm", "TestNew_GormOptionsReachGorm",
+# The items passed to gorm.Config as they are: each one broken once, at the call site.
+mutate("DisableForeignKeyConstraintWhenMigrating reaches GORM", "xgorm/xgorm.go", "./xgorm", "TestNew_GormOptionsReachGorm",
        swap('DisableForeignKeyConstraintWhenMigrating: cfg.DisableForeignKeyConstraintWhenMigrating,', 'DisableForeignKeyConstraintWhenMigrating: false,'))
-mutate("SkipDefaultTransaction 交给 GORM", "xgorm/xgorm.go", "./xgorm", "TestNew_GormOptionsReachGorm",
+mutate("SkipDefaultTransaction reaches GORM", "xgorm/xgorm.go", "./xgorm", "TestNew_GormOptionsReachGorm",
        swap('SkipDefaultTransaction:                   cfg.SkipDefaultTransaction,', 'SkipDefaultTransaction:                   false,'))
-mutate("PrepareStmt 交给 GORM", "xgorm/xgorm.go", "./xgorm", "TestNew_GormOptionsReachGorm",
+mutate("PrepareStmt reaches GORM", "xgorm/xgorm.go", "./xgorm", "TestNew_GormOptionsReachGorm",
        swap('PrepareStmt:                              cfg.PrepareStmt,', 'PrepareStmt:                              false,'))
-mutate("CreateBatchSize 交给 GORM", "xgorm/xgorm.go", "./xgorm", "TestNew_GormOptionsReachGorm",
+mutate("CreateBatchSize reaches GORM", "xgorm/xgorm.go", "./xgorm", "TestNew_GormOptionsReachGorm",
        swap('CreateBatchSize:                          cfg.CreateBatchSize,', 'CreateBatchSize:                          0,'))
-mutate("CreateBatchSize 为负启动失败", "xgorm/config.go", "./xgorm", "TestValidate",
+mutate("a negative CreateBatchSize fails startup", "xgorm/config.go", "./xgorm", "TestValidate",
        swap('if c.CreateBatchSize < 0 {', 'if false {'))
-# 驱动的初始化查询挪到 Ready 里，就是为了受 ctx 管、跟着重试。调用点不接的话，
-# 那次查询就没人做了
-mutate("方言的 Ready 在建连探测里执行", "xgorm/xgorm.go", "./xgorm", "TestNew",
+# The driver's initialization query moved into Ready precisely so it honors the ctx and is retried. Without
+# the call site wiring it up, nobody runs that query at all.
+mutate("the dialect's Ready runs inside the connection probe", "xgorm/xgorm.go", "./xgorm", "TestNew",
        swap('xclient.Probe(ctx, policy, probe(pool, readyOf(dialect, db)))', 'xclient.Probe(ctx, policy, probe(pool, nil))'))
-# connect_timeout 管的是整个建连（TCP、TLS、认证），预算比它短就会
-# 在 pgx 自己放弃之前把一次合法的慢握手判成超时
-mutate("PG 的探测预算盖住 connect_timeout", "xgorm/dsn.go", "./xgorm", "TestProbeTimeout",
+# connect_timeout covers the whole connection (TCP, TLS, auth), so a shorter budget would time out a legal
+# slow handshake before pgx itself gives up.
+mutate("the PG probe budget covers connect_timeout", "xgorm/dsn.go", "./xgorm", "TestProbeTimeout",
        swap('\treturn cmp.Or(connect, ceilSeconds(dial)) + dial\n', '\treturn dial + 0*cmp.Or(connect, ceilSeconds(dial))\n'))
-# statement_timeout 等的 0 是不限制：不满 1ms 的向下取整成 0，超时就静默消失了
-mutate("PG 的毫秒超时向上取整", "xgorm/dsn.go", "./xgorm", "TestSecondsMillis",
+# A 0 for statement_timeout and friends means no limit: rounding anything under 1ms down to 0 would make the
+# timeout silently disappear.
+mutate("PG millisecond timeouts round up", "xgorm/dsn.go", "./xgorm", "TestSecondsMillis",
        swap('int64((d+time.Millisecond-1)/time.Millisecond)', 'd.Milliseconds()'))
-# 配置里的超时只是默认值。DSN 里写了更长的，驱动就等那么久，预算还按配置算的话
-# 会在驱动放弃之前把一次慢但合法的建连判超时。打在读出预算的调用点上（方言填的 ProbeTimeout）和各方言算预算的那一行
-mutate("探测预算按 DSN 里写的超时放宽", "xgorm/xgorm.go", "./xgorm", "TestProbeTimeout",
+# The timeouts in the config are only defaults. If the DSN sets something longer the driver waits that long,
+# and a budget still computed from the config would time out a slow but legal connection before the driver
+# gives up. Aimed at the call site that reads the budget (the ProbeTimeout each dialect fills in) and at the
+# line in each dialect that computes it.
+mutate("the probe budget widens to the timeout written in the DSN", "xgorm/xgorm.go", "./xgorm", "TestProbeTimeout",
        swap('\treturn cmp.Or(info.ProbeTimeout, 2*cfg.DialTimeout, fallbackPingTimeout)\n', '\treturn cmp.Or(2*cfg.DialTimeout, fallbackPingTimeout)\n'))
-mutate("PG 的探测预算用 DSN 里的 connect_timeout", "xgorm/dsn.go", "./xgorm", "TestProbeTimeout_DSN",
+mutate("the PG probe budget uses the connect_timeout from the DSN", "xgorm/dsn.go", "./xgorm", "TestProbeTimeout_DSN",
        swap('ProbeTimeout: postgresProbeTimeout(pc.ConnectTimeout, c.DialTimeout),', 'ProbeTimeout: postgresProbeTimeout(0, c.DialTimeout),'))
-mutate("MySQL 的探测预算用 DSN 里的超时", "xgorm/mysql.go", "./xgorm", "TestProbeTimeout_DSN",
+mutate("the MySQL probe budget uses the timeouts from the DSN", "xgorm/mysql.go", "./xgorm", "TestProbeTimeout_DSN",
        swap('ProbeTimeout: mysqlProbeTimeout(cfg.Timeout, cfg.ReadTimeout),', 'ProbeTimeout: mysqlProbeTimeout(c.DialTimeout, c.MySQL.ReadTimeout),'))
-# ReadTimeout: 0 是「驱动不限时」：预算照旧只加上 0 的话，只剩建连超时，登录包还没回来就判超时
-mutate("MySQL 配成 0 的那段超时按另一段的量级算预算", "xgorm/mysql.go", "./xgorm", "TestProbeTimeout$",
+# ReadTimeout: 0 means "no limit in the driver": still adding 0 to the budget would leave only the dial
+# timeout, and it would time out before the login packet comes back.
+mutate("a MySQL timeout set to 0 gets a budget of the same order as the other one", "xgorm/mysql.go", "./xgorm", "TestProbeTimeout$",
        swap('\treturn cmp.Or(dial, read) + cmp.Or(read, dial)\n', '\treturn cmp.Or(dial) + read\n'))
-# GORM 只在 Logger 实现了 ParamsFilter 时才不把参数代进 SQL：否则日志里就是真实的参数值，凭证跟着出去
-mutate("SQL 日志里没有参数值", "xgorm/logger.go", "./xgorm", "TestLogger",
+# GORM leaves parameters out of the SQL only when the Logger implements ParamsFilter: otherwise the log holds
+# the real parameter values and credentials go out with them.
+mutate("SQL logs hold no parameter values", "xgorm/logger.go", "./xgorm", "TestLogger",
        swap('func (l *gormLogger) ParamsFilter(', 'func (l *gormLogger) paramsFilter('))
-# Scan 借用的 Recorder 不问实例 Logger 的 ParamsFilter，只认进程级的 RecorderParamsFilter：
-# 打在 init 里接它的那一行上
-mutate("Scan 的 SQL 日志里没有参数值", "xgorm/xgorm.go", "./xgorm", "TestLogger_Scan",
+# The Recorder that Scan borrows does not consult the instance Logger's ParamsFilter, only the process-wide
+# RecorderParamsFilter: aimed at the line in init that wires it up.
+mutate("the SQL log of a Scan holds no parameter values", "xgorm/xgorm.go", "./xgorm", "TestLogger_Scan",
        swap('\tlogger.RecorderParamsFilter = withoutParams\n', ''))
-# PG 方言的 Explain 没参数可代时把 $1 留成 $1$：日志里的语句和发出去的对不上。
-# 打在记 SQL 的调用点上，和判断方言占位符的那一处
-mutate("PG 的 SQL 日志就是发出去的那条", "xgorm/logger.go", "./xgorm", "TestLogger",
+# When the PG dialect's Explain has no parameters to substitute it leaves $1 as $1$, and the logged statement
+# no longer matches what was sent. Aimed at the call site that records the SQL and at the place that detects
+# the dialect's placeholders.
+mutate("the PG SQL log is exactly what was sent", "xgorm/logger.go", "./xgorm", "TestLogger",
        swap('\t\tsql, rows := l.statement(fc)\n\t\tslog.InfoContext', '\t\tsql, rows := fc()\n\t\tslog.InfoContext'))
-mutate("认得出方言会改写 $N 占位符", "xgorm/logger.go", "./xgorm", "TestLogger",
+mutate("a dialect that rewrites $N placeholders is recognized", "xgorm/logger.go", "./xgorm", "TestLogger",
        swap('numbered:       d.Explain("$1") == "$1$",', 'numbered:       false,'))
-mutate("xgorm 认证失败不重试", "xgorm/xgorm.go", "./xgorm", "TestNew_|TestNew_MySQLNoRetryOnAuthFailureAndSaysSo",
+mutate("an xgorm auth failure is not retried", "xgorm/xgorm.go", "./xgorm", "TestNew_|TestNew_MySQLNoRetryOnAuthFailureAndSaysSo",
        swap('\t\tAuthFailed: d.authFailed,\n', ''))
-# 打在调用点上：换成零值方言就是「认不出认证失败」，只影响这一条路（重试策略仍按方言认）
-mutate("认证失败报的是认证失败", "xgorm/xgorm.go", "./xgorm", "TestNew_",
+# Aimed at the call site: a zero-value dialect means "does not recognize an auth failure" and affects only
+# this one path (the retry policy still asks the dialect).
+mutate("an auth failure is reported as an auth failure", "xgorm/xgorm.go", "./xgorm", "TestNew_",
        swap('connectError(dialect, "cannot reach %s: %w"', 'connectError(Dialect{}, "cannot reach %s: %w"'))
-# 注册进来的方言要是在 Initialize 里建连，认证错误就在 gorm.Open 里出来，走不到 ping：
-# 只在 ping 那条路上认的话，密码错报的是 open … failed。打在 gorm.Open 的调用点上
-# （内置的 MySQL 原先就是这样，查版本挪进 Ready 之后走的是 ping 那条路）
-mutate("MySQL 认证失败在 gorm.Open 那条路上也报认证失败", "xgorm/xgorm.go", "./xgorm", "TestNew_MySQLNoRetryOnAuthFailureAndSaysSo",
+# A registered dialect that connects in Initialize surfaces the auth error inside gorm.Open and never reaches
+# the ping: recognizing it only on the ping path would report a wrong password as open ... failed. Aimed at
+# the gorm.Open call site (which is how the built-in MySQL used to behave, before the version query moved
+# into Ready and put it on the ping path).
+mutate("a MySQL auth failure is reported as one on the gorm.Open path too", "xgorm/xgorm.go", "./xgorm", "TestNew_MySQLNoRetryOnAuthFailureAndSaysSo",
        swap('connectError(dialect, "open %s failed: %w"', 'connectError(Dialect{}, "open %s failed: %w"'))
-mutate("认得出 MySQL 的 1045 / 1044", "xgorm/mysql.go", "./xgorm", "TestNew_MySQLNoRetryOnAuthFailureAndSaysSo|TestDialect_BuiltInsRecognizeAuthFailureAndErrorCode",
+mutate("MySQL 1045 / 1044 are recognized", "xgorm/mysql.go", "./xgorm", "TestNew_MySQLNoRetryOnAuthFailureAndSaysSo|TestDialect_BuiltInsRecognizeAuthFailureAndErrorCode",
        swap('return errors.As(err, &myErr) && (myErr.Number == mysqlAccessDenied || myErr.Number == mysqlDBAccessDenied)',
             'return errors.As(err, &myErr) && false'))
-# MySQL 的 Dialector 在 Initialize 里用 context.Background() 查版本：那是第一次建连，
-# 失败了 gorm.Open 直接返回，三次重试一次都没轮上，退出信号也管不到
-mutate("MySQL 首次建连受 ctx 管也会重试", "xgorm/mysql.go", "./xgorm", "TestNew_MySQLRetriesThreeTimesWhenPeerSilent|TestMySQLDialect_OpenSkipsNetwork_VersionProbeInReady",
+# The MySQL Dialector queries the version in Initialize with context.Background(): that is the first
+# connection, gorm.Open returns straight away on failure, none of the three retries gets a turn, and the stop
+# signal cannot reach it either.
+mutate("the first MySQL connection honors the ctx and is retried", "xgorm/mysql.go", "./xgorm", "TestNew_MySQLRetriesThreeTimesWhenPeerSilent|TestMySQLDialect_OpenSkipsNetwork_VersionProbeInReady",
        swap('SkipInitializeWithVersion: true})', 'SkipInitializeWithVersion: false})'))
-mutate("MySQL 仍然查版本", "xgorm/dialect.go", "./xgorm", "TestMySQLDialect_OpenSkipsNetwork_VersionProbeInReady|TestProbeMySQLVersion",
+mutate("MySQL still queries the version", "xgorm/dialect.go", "./xgorm", "TestMySQLDialect_OpenSkipsNetwork_VersionProbeInReady|TestProbeMySQLVersion",
        swap(', Ready: probeMySQLVersion,\n', ',\n'))
-mutate("MySQL 查版本受 ctx 管", "xgorm/mysql.go", "./xgorm", "TestProbeMySQLVersion",
+mutate("the MySQL version query honors the ctx", "xgorm/mysql.go", "./xgorm", "TestProbeMySQLVersion",
        swap('db.ConnPool.QueryRowContext(ctx, "SELECT VERSION()")', 'db.ConnPool.QueryRowContext(context.Background(), "SELECT VERSION()")'))
-# 版本号不设进开关的话，老版本 / MariaDB 上迁移生成它不认的 DDL
-mutate("MySQL 的版本号设进开关", "xgorm/mysql.go", "./xgorm", "TestProbeMySQLVersion|TestApplyMySQLVersion",
+# Without the version reaching the switches, a migration on an older version or MariaDB generates DDL it does
+# not understand.
+mutate("the MySQL version reaches the switches", "xgorm/mysql.go", "./xgorm", "TestProbeMySQLVersion|TestApplyMySQLVersion",
        swap('\treturn applyMySQLVersion(db, d.Config, v)\n', '\t_, _ = d, v\n\treturn nil\n'))
-mutate("MariaDB 10.5+ 的增删改带 RETURNING", "xgorm/mysql.go", "./xgorm", "TestApplyMySQLVersion",
+mutate("writes on MariaDB 10.5+ carry RETURNING", "xgorm/mysql.go", "./xgorm", "TestApplyMySQLVersion",
        swap('\t\treturn enableReturning(db)\n', '\t\treturn nil\n'))
-# 打在调用点上：探测不用这一轮的 ctx，卡在握手读上时退出信号要等满 ReadTimeout
-mutate("MySQL 建连探测收到退出信号当场放弃", "xgorm/xgorm.go", "./xgorm", "TestNew_MySQLCancelReturnsImmediatelyWithoutReadTimeout",
+# Aimed at the call site: without this round's ctx, a probe stuck on the handshake read makes the stop signal
+# wait out the full ReadTimeout.
+mutate("the MySQL connection probe gives up at once on a stop signal", "xgorm/xgorm.go", "./xgorm", "TestNew_MySQLCancelReturnsImmediatelyWithoutReadTimeout",
        swap('err := pool.PingContext(ctx)', 'err := pool.PingContext(context.Background())'))
-# 认证失败的识别住在方言里：内置方言不接上的话，核心里再没有别处认得出来
-mutate("内置 PG 方言认得出认证失败", "xgorm/dialect.go", "./xgorm", "TestDialect_BuiltInsRecognizeAuthFailureAndErrorCode",
+# Recognizing an auth failure lives in the dialect: without the built-in dialects wiring it up, nothing else
+# in the core recognizes it.
+mutate("the built-in PG dialect recognizes an auth failure", "xgorm/dialect.go", "./xgorm", "TestDialect_BuiltInsRecognizeAuthFailureAndErrorCode",
        swap('\t\tAuthFailed: postgresAuthFailed, ErrorCode: postgresErrorCode,\n', '\t\tErrorCode: postgresErrorCode,\n'))
-mutate("内置 MySQL 方言认得出认证失败", "xgorm/dialect.go", "./xgorm", "TestDialect_BuiltInsRecognizeAuthFailureAndErrorCode",
+mutate("the built-in MySQL dialect recognizes an auth failure", "xgorm/dialect.go", "./xgorm", "TestDialect_BuiltInsRecognizeAuthFailureAndErrorCode",
        swap('\t\tAuthFailed: mysqlAuthFailed, ErrorCode: mysqlErrorCode,\n', '\t\tErrorCode: mysqlErrorCode,\n'))
-mutate("认得出 PG 的 28 类", "xgorm/dsn.go", "./xgorm", "TestDialect_BuiltInsRecognizeAuthFailureAndErrorCode|TestNew_",
+mutate("the PG 28 class is recognized", "xgorm/dsn.go", "./xgorm", "TestDialect_BuiltInsRecognizeAuthFailureAndErrorCode|TestNew_",
        swap('return strings.HasPrefix(postgresErrorCode(err), "28")', 'return postgresErrorCode(err) == "28P01"'))
-# 服务端错误原文里带着参数值（MySQL 1062 的 Duplicate entry 'a@b.com'）：
-# 日志和 Span 两个出口都要打在调用点上，外加方言接上错误码的那一处
-mutate("SQL 日志不记服务端错误原文", "xgorm/logger.go", "./xgorm", "TestLogger_ServerErrorLogsCodeNotMessage",
+# The server's error text carries parameter values (the Duplicate entry 'a@b.com' of MySQL's 1062): both
+# exits, the log and the Span, are aimed at their call sites, plus the place where the dialect wires up the
+# error code.
+mutate("SQL logs do not record the server's error text", "xgorm/logger.go", "./xgorm", "TestLogger_ServerErrorLogsCodeNotMessage",
        swap('attrs(sql, rows, elapsed, l.errorAttrs(err)...)', 'attrs(sql, rows, elapsed, "error", err)'))
-mutate("Span 不记服务端错误原文", "xgorm/trace.go", "./xgorm", "TestSpan_ServerErrorRecordsCodeNotMessage",
+mutate("Spans do not record the server's error text", "xgorm/trace.go", "./xgorm", "TestSpan_ServerErrorRecordsCodeNotMessage",
        swap('\t\t\trecordError(span, d, db.Error)\n', '\t\t\tspan.RecordError(db.Error)\n\t\t\tspan.SetStatus(codes.Error, db.Error.Error())\n'))
-mutate("Span 服务端报错时不调 RecordError", "xgorm/trace.go", "./xgorm", "TestSpan_ServerErrorRecordsCodeNotMessage",
+mutate("RecordError is not called on a Span for a server error", "xgorm/trace.go", "./xgorm", "TestSpan_ServerErrorRecordsCodeNotMessage",
        swap('\t\tspan.SetAttributes(semconv.DBResponseStatusCode(code), semconv.ErrorTypeKey.String(code))\n',
             '\t\tspan.SetAttributes(semconv.DBResponseStatusCode(code), semconv.ErrorTypeKey.String(code))\n\t\tspan.RecordError(err)\n'))
-# 客户端的错也带参数值：pgx 编码失败用 %#v 写出整个参数、database/sql 扫描失败用 %q 写出读回来的值。
-# 白名单放行打在 redactedError 上，Span 那个出口的 RecordError 另打一条，
-# 外加「只记认出来的那一个，不记整条链」（GORM 的 AddError 把前一个错误的原文拼在前面）
-mutate("客户端的错不在白名单里就不记原文", "xgorm/dialect.go", "./xgorm", "TestRedactedError_ClientErrors|TestLogger_ClientErrorKeepsParamValuesOut|TestSpan_ClientErrorKeepsParamValuesOut",
+# Client errors carry parameter values too: a pgx encoding failure writes the whole parameter with %#v, and a
+# failed database/sql scan writes the value read back with %q. The allowlist is aimed at redactedError, the
+# Span exit's RecordError gets a mutation of its own, and so does "record only the one recognized, not the
+# whole chain" (GORM's AddError prepends the previous error's text).
+mutate("a client error outside the allowlist is not recorded verbatim", "xgorm/dialect.go", "./xgorm", "TestRedactedError_ClientErrors|TestLogger_ClientErrorKeepsParamValuesOut|TestSpan_ClientErrorKeepsParamValuesOut",
        swap('\treturn clientErrorOmitted, ""\n', '\treturn err.Error(), ""\n'))
-mutate("Span 的 exception.message 只记认出来的安全错误", "xgorm/trace.go", "./xgorm", "TestSpan_ClientErrorKeepsParamValuesOut",
+mutate("a Span's exception.message records only the recognized safe error", "xgorm/trace.go", "./xgorm", "TestSpan_ClientErrorKeepsParamValuesOut",
        swap('\t\t\tspan.RecordError(safe)\n', '\t\t\tspan.RecordError(err)\n'))
-mutate("认不出的客户端错误不调 RecordError", "xgorm/trace.go", "./xgorm", "TestSpan_ClientErrorKeepsParamValuesOut",
+mutate("RecordError is not called for an unrecognized client error", "xgorm/trace.go", "./xgorm", "TestSpan_ClientErrorKeepsParamValuesOut",
        swap('\t\tspan.SetAttributes(semconv.ErrorTypeOther)\n', '\t\tspan.RecordError(err)\n\t\tspan.SetAttributes(semconv.ErrorTypeOther)\n'))
-mutate("白名单里的错误只记认出来的那一个", "xgorm/dialect.go", "./xgorm", "TestRedactedError_ClientErrors",
+mutate("an allowlisted error records only the one recognized", "xgorm/dialect.go", "./xgorm", "TestRedactedError_ClientErrors",
        swap('\t\tif errors.Is(err, safe) {\n\t\t\treturn safe\n', '\t\tif errors.Is(err, safe) {\n\t\t\treturn err\n'))
-mutate("MySQL 方言认得出服务端错误码", "xgorm/dialect.go", "./xgorm", "TestLogger_ServerErrorLogsCodeNotMessage|TestSpan_ServerErrorRecordsCodeNotMessage",
+mutate("the MySQL dialect recognizes the server's error code", "xgorm/dialect.go", "./xgorm", "TestLogger_ServerErrorLogsCodeNotMessage|TestSpan_ServerErrorRecordsCodeNotMessage",
        swap('AuthFailed: mysqlAuthFailed, ErrorCode: mysqlErrorCode,', 'AuthFailed: mysqlAuthFailed,'))
-mutate("PG 方言认得出服务端错误码", "xgorm/dialect.go", "./xgorm", "TestLogger_ServerErrorLogsCodeNotMessage|TestSpan_ServerErrorRecordsCodeNotMessage",
+mutate("the PG dialect recognizes the server's error code", "xgorm/dialect.go", "./xgorm", "TestLogger_ServerErrorLogsCodeNotMessage|TestSpan_ServerErrorRecordsCodeNotMessage",
        swap('AuthFailed: postgresAuthFailed, ErrorCode: postgresErrorCode,', 'AuthFailed: postgresAuthFailed,'))
-# 驱动默认 parseTime=false：DATETIME 扫不进 time.Time
-mutate("MySQL 没写 parseTime 时补成 true", "xgorm/mysql.go", "./xgorm", "TestResolveDSN_MySQLDefaultsParseTimeToTrue",
+# The driver defaults to parseTime=false: a DATETIME cannot be scanned into a time.Time.
+mutate("MySQL adds parseTime=true when the DSN does not set it", "xgorm/mysql.go", "./xgorm", "TestResolveDSN_MySQLDefaultsParseTimeToTrue",
        swap('\tif !mysqlParamSet(c.DSN, "parseTime") {\n', '\tif false && !mysqlParamSet(c.DSN, "parseTime") {\n'))
-mutate("DSN 里写了 parseTime 以 DSN 为准", "xgorm/mysql.go", "./xgorm", "TestResolveDSN_MySQLDefaultsParseTimeToTrue",
+mutate("a parseTime written in the DSN wins", "xgorm/mysql.go", "./xgorm", "TestResolveDSN_MySQLDefaultsParseTimeToTrue",
        swap('\tif !mysqlParamSet(c.DSN, "parseTime") {\n', '\tif true {\n'))
-mutate("密码里的 parseTime 骗不过它", "xgorm/mysql.go", "./xgorm", "TestResolveDSN_MySQLDefaultsParseTimeToTrue",
+mutate("a parseTime inside the password does not fool it", "xgorm/mysql.go", "./xgorm", "TestResolveDSN_MySQLDefaultsParseTimeToTrue",
        swap("\ti := strings.LastIndexByte(dsn, '/')\n", "\ti := strings.IndexByte(dsn, '/')\n"))
-# 配置在读的时候就校验：负的时长底下每一处都静默变成「不限」
-mutate("负的时长被拒", "xgorm/config.go", "./xgorm", "TestValidate",
+# The config is validated as it is read: every layer below silently turns a negative duration into "no limit".
+mutate("a negative duration is rejected", "xgorm/config.go", "./xgorm", "TestValidate",
        swap('\t\tif f.val < 0 {\n', '\t\tif false && f.val < 0 {\n'))
-mutate("New 也校验配置", "xgorm/xgorm.go", "./xgorm", "TestNew_NoConnectOnBadConfig",
+mutate("New validates the config too", "xgorm/xgorm.go", "./xgorm", "TestNew_NoConnectOnBadConfig",
        swap('\tif err := cfg.Validate(); err != nil {\n', '\tif err := error(nil); err != nil {\n'))
-mutate("多实例的 Validate 点名实例", "xgorm/config.go", "./xgorm", "TestConfig_ValidateNamesInstance",
+mutate("Validate names the instance when there are several", "xgorm/config.go", "./xgorm", "TestConfig_ValidateNamesInstance",
        swap('errs = append(errs, fmt.Errorf("Clients.%s: %w", name, err))', 'errs = append(errs, err)'))
-# 建连日志要写是哪个实例：打在 build 往 open 传名字的调用点上
-mutate("建连日志写着实例名", "xgorm/xgorm.go", "./xgorm", "TestInstall_ConnectLogNamesInstance",
+# The connect log must say which instance it is: aimed at the call site where build passes the name to open.
+mutate("the connect log carries the instance name", "xgorm/xgorm.go", "./xgorm", "TestInstall_ConnectLogNamesInstance",
        swap('open(ctx, name, c)', 'open(ctx, "", c)'))
-# OTel 数据库语义约定的名字：旧名字换回来，看板和采集规则就对不上
-mutate("Span 用语义约定的 db.query.text", "xgorm/trace.go", "./xgorm", "TestSpan_IncludesConnInfoAndSQL",
+# The names from OTel's database semantic conventions: putting the old names back makes dashboards and
+# collection rules stop matching.
+mutate("the Span uses the semantic convention's db.query.text", "xgorm/trace.go", "./xgorm", "TestSpan_IncludesConnInfoAndSQL",
        swap('span.SetAttributes(semconv.DBQueryText(sql),', 'span.SetAttributes(attribute.String("db.statement", sql),'))
-mutate("Span 的 db.system.name 是 postgresql", "xgorm/trace.go", "./xgorm", "TestConnAttrs",
+mutate("the Span's db.system.name is postgresql", "xgorm/trace.go", "./xgorm", "TestConnAttrs",
        swap('\t\treturn "postgresql"\n', '\t\treturn driver\n'))
-mutate("Span 的地址拆成主机和端口", "xgorm/trace.go", "./xgorm", "TestSpan_IncludesConnInfoAndSQL|TestConnAttrs",
+mutate("the Span splits the address into host and port", "xgorm/trace.go", "./xgorm", "TestSpan_IncludesConnInfoAndSQL|TestConnAttrs",
        swap('\tout = append(out, semconv.ServerAddress(host))\n', '\tout = append(out, semconv.ServerAddress(info.Addr+host[:0]))\n'))
-mutate("db.operation.name 取语句的第一个关键字", "xgorm/trace.go", "./xgorm", "TestSpan_IncludesConnInfoAndSQL",
+mutate("db.operation.name takes the statement's first keyword", "xgorm/trace.go", "./xgorm", "TestSpan_IncludesConnInfoAndSQL",
        swap('\tif op := operationName(sql); op != "" {\n', '\tif op := ""; op != "" {\n'))
-mutate("连接池指标叫 db_pool_*", "xgorm/metric.go", "./xgorm", "TestPoolCollector|TestInstall",
+mutate("the connection-pool metrics are named db_pool_*", "xgorm/metric.go", "./xgorm", "TestPoolCollector|TestInstall",
        swap('{"db_pool_open", ', '{"db_connections_open", '))
-# 不接的话 go-sql-driver 往 stderr 写 [mysql] … 纯文本，不是 JSON
-mutate("go-sql-driver 自己的日志进 slog", "xgorm/xgorm.go", "./xgorm", "TestNew_MySQLDriverLogsGoToSlog",
-       swap('\t_ = mysqldriver.SetLogger(mysqlDriverLogger{})', '\t_ = mysqldriver.SetLogger(nil) // 只在参数为 nil 时报错，于是什么都没设'))
-# collector 是进程级的一个、抓取时遍历全部实例，不看实例自己的开关，
-# Metric: false 就是一句空话
-mutate("Metric 关掉的数据库实例不导出", "xgorm/xgorm.go", "./xgorm", "TestInstall", swap('\t\tif !inst.metric {\n', '\t\tif false {\n'))
-# 进程级的「只挂一次」会把 xmetric 重装之后的那次挡掉：新 Registry 上
-# 没有连接池 collector，第二轮生命周期里这组指标一个都导不出去
-mutate("xmetric 重装后数据库连接池指标照样导出", "xgorm/xgorm.go", "./xgorm", "TestInstall",
+# Without this, go-sql-driver writes plain [mysql] ... text to stderr, which is not JSON.
+mutate("go-sql-driver's own log goes into slog", "xgorm/xgorm.go", "./xgorm", "TestNew_MySQLDriverLogsGoToSlog",
+       swap('\t_ = mysqldriver.SetLogger(mysqlDriverLogger{})', '\t_ = mysqldriver.SetLogger(nil) // it only errors on a nil argument, so nothing is set'))
+# The collector is a single process-wide object that walks every instance when scraped; without consulting
+# each instance's own switch, Metric: false is an empty phrase.
+mutate("a database instance with Metric off is not exported", "xgorm/xgorm.go", "./xgorm", "TestInstall", swap('\t\tif !inst.metric {\n', '\t\tif false {\n'))
+# A process-wide "install only once" would block the install after xmetric is reinstalled: the new Registry
+# would hold no pool collector, and none of these metrics would be exported in the second lifecycle.
+mutate("the database pool metrics are still exported after xmetric is reinstalled", "xgorm/xgorm.go", "./xgorm", "TestInstall",
        swap('func installPoolMetrics() {\n\tif _, err := xmetric.RegisterAs(',
      'var poolInstalled bool\n\nfunc installPoolMetrics() {\n\tif poolInstalled {\n\t\treturn\n\t}\n\tpoolInstalled = true\n\tif _, err := xmetric.RegisterAs('))
-mutate("XGorm 校验 TLS 块", "xgorm/config.go", "./xgorm", "TestValidate_TLSBlock|TestConfig_TLSBlockFromConfigFile",
+mutate("XGorm validates the TLS block", "xgorm/config.go", "./xgorm", "TestValidate_TLSBlock|TestConfig_TLSBlockFromConfigFile",
        swap('\tif err := c.TLS.Validate(); err != nil {\n\t\treturn err\n\t}\n', ''))
-mutate("方言不收 TLS 块时配了要失败", "xgorm/config.go", "./xgorm", "TestValidate_TLSBlock",
+mutate("configuring a TLS block for a dialect that does not accept one fails", "xgorm/config.go", "./xgorm", "TestValidate_TLSBlock",
        swap('if c.TLS.Enable && d.OpenTLS == nil {', 'if c.TLS.Enable && d.OpenTLS == nil && false {'))
-mutate("开了 TLS 块走 OpenTLS", "xgorm/dialect.go", "./xgorm", "TestNew_PG_TLS|TestNew_MySQL_TLS",
+mutate("a configured TLS block goes through OpenTLS", "xgorm/dialect.go", "./xgorm", "TestNew_PG_TLS|TestNew_MySQL_TLS",
        swap('\tif cfg == nil {\n\t\treturn d.Open(dsn), nil\n\t}', '\tif true {\n\t\treturn d.Open(dsn), nil\n\t}'))
-# pgx 默认的 prefer 不校验证书、服务端不肯 TLS 就改走明文
-mutate("PG 建连时换上 TLS 块的配置", "xgorm/tls.go", "./xgorm", "TestNew_PG_TLS",
+# pgx's default prefer does not verify the certificate and switches to plaintext when the server refuses TLS.
+mutate("PG swaps in the TLS block's config when connecting", "xgorm/tls.go", "./xgorm", "TestNew_PG_TLS",
        swap('\t\t\tusePostgresTLS(&cc.Config, cfg)\n', ''))
-mutate("PG 开了 TLS 块不退回明文", "xgorm/tls.go", "./xgorm", "TestNew_PG_TLSBlockFailsInsteadOfPlaintextFallback|TestUsePostgresTLS",
+mutate("with a PG TLS block there is no fallback to plaintext", "xgorm/tls.go", "./xgorm", "TestNew_PG_TLSBlockFailsInsteadOfPlaintextFallback|TestUsePostgresTLS",
        swap('\tc.Fallbacks = hosts[1:]\n', ''))
-mutate("PG 没配 ServerName 时按主机名比对", "xgorm/tls.go", "./xgorm", "TestNew_PG_TLSBlockApplies|TestUsePostgresTLS",
+mutate("without a configured ServerName PG verifies against the host name", "xgorm/tls.go", "./xgorm", "TestNew_PG_TLSBlockApplies|TestUsePostgresTLS",
        swap('\t\t\tif tc.ServerName == "" {\n\t\t\t\ttc.ServerName = h.Host\n\t\t\t}\n', ''))
-mutate("PG TLS 块和 DSN 里的 ssl 参数不能同时写", "xgorm/dsn.go", "./xgorm", "TestResolveDSN_PG_TLSBlockConflictsWithDSNSSLParams",
+mutate("a PG TLS block and ssl parameters in the DSN cannot both be set", "xgorm/dsn.go", "./xgorm", "TestResolveDSN_PG_TLSBlockConflictsWithDSNSSLParams",
        swap('\t\tif err := checkPostgresTLSParams(dsn); err != nil {', '\t\tif err := checkPostgresTLSParams(dsn); false && err != nil {'))
-mutate("PG 冲突查的是补完 Params 之后的 DSN", "xgorm/dsn.go", "./xgorm", "TestResolveDSN_PG_TLSBlockConflictsWithDSNSSLParams",
+mutate("the PG conflict check looks at the DSN after Params have been merged in", "xgorm/dsn.go", "./xgorm", "TestResolveDSN_PG_TLSBlockConflictsWithDSNSSLParams",
        swap('checkPostgresTLSParams(dsn)', 'checkPostgresTLSParams(c.DSN)'))
-mutate("PG 只有 ssl 开头的参数算冲突", "xgorm/tls.go", "./xgorm", "TestResolveDSN_PG_TLSBlockConflictsWithDSNSSLParams",
+mutate("only parameters starting with ssl count as a PG conflict", "xgorm/tls.go", "./xgorm", "TestResolveDSN_PG_TLSBlockConflictsWithDSNSSLParams",
        swap('if strings.HasPrefix(key, "ssl") {', 'if strings.HasPrefix(key, "") {'))
-mutate("PG TLS 块不收 Unix socket", "xgorm/dsn.go", "./xgorm", "TestResolveDSN_PG_TLSBlockRejectsUnixSocket",
+mutate("a PG TLS block does not accept a Unix socket", "xgorm/dsn.go", "./xgorm", "TestResolveDSN_PG_TLSBlockRejectsUnixSocket",
        swap('\t\tif err := checkPostgresTCP(pc); err != nil {', '\t\tif err := checkPostgresTCP(pc); false && err != nil {'))
-mutate("MySQL TLS 块和 DSN 里的 tls 不能同时写", "xgorm/mysql.go", "./xgorm", "TestResolveDSN_MySQL_TLSBlockConflictsWithDSNTLS",
+mutate("a MySQL TLS block and a tls option in the DSN cannot both be set", "xgorm/mysql.go", "./xgorm", "TestResolveDSN_MySQL_TLSBlockConflictsWithDSNTLS",
        swap('\t\tif err := checkMySQLTLS(c.DSN, cfg); err != nil {', '\t\tif err := checkMySQLTLS(c.DSN, cfg); false && err != nil {'))
-# 问候包里的 CLIENT_SSL 是明文的，中间人清掉它，allowFallbackToPlaintext=true 的驱动就改发明文登录包。
-# 校验的调用点和交给驱动的配置各打一条
-mutate("MySQL TLS 块不收 allowFallbackToPlaintext", "xgorm/tls.go", "./xgorm", "TestNew_MySQL_TLSBlockRejectsPlaintextFallbackParam",
+# The CLIENT_SSL bit in the greeting arrives in plaintext; a man in the middle clearing it makes a driver with
+# allowFallbackToPlaintext=true send the login packet in plaintext. One mutation for the validation call site
+# and one for the config handed to the driver.
+mutate("a MySQL TLS block does not accept allowFallbackToPlaintext", "xgorm/tls.go", "./xgorm", "TestNew_MySQL_TLSBlockRejectsPlaintextFallbackParam",
        swap('\tif mysqlParamSet(dsn, "allowFallbackToPlaintext") {', '\tif false && mysqlParamSet(dsn, "allowFallbackToPlaintext") {'))
-mutate("MySQL TLS 块的连接配置钉死不退回明文", "xgorm/tls.go", "./xgorm", "TestOpenMySQLTLS_NeverFallsBackToPlaintext",
+mutate("the connection config of a MySQL TLS block pins away the plaintext fallback", "xgorm/tls.go", "./xgorm", "TestOpenMySQLTLS_NeverFallsBackToPlaintext",
        swap('\tdc.AllowFallbackToPlaintext = false\n', ''))
-mutate("MySQL 连接配置带上 TLS 块", "xgorm/tls.go", "./xgorm", "TestNew_MySQL_TLS",
+mutate("the MySQL connection config carries the TLS block", "xgorm/tls.go", "./xgorm", "TestNew_MySQL_TLS",
        swap('\tdc.TLS = cfg.Clone()\n', ''))
-mutate("Log 关掉时 GORM 不自己往标准输出写", "xgorm/xgorm.go", "./xgorm", "TestNew",
+mutate("with Log off GORM does not write to standard output itself", "xgorm/xgorm.go", "./xgorm", "TestNew",
        swap('gormCfg.Logger = logger.Discard','gormCfg.Logger = logger.Default'))
 
-section("链路")
-# 用了 xgorm 就有链路，使用者不用记得另外 import xtrace。摘掉这一行，
-# 全局的 TracerProvider 就一直是 noop：Span 什么都不记、日志没有 trace_id，而且没有任何报错
-mutate("用了 xgorm 不另外 import xtrace 也有链路", "xgorm/xgorm.go", "./xgorm", "TestTracingWorksWithoutImportingXtrace",
+section("tracing")
+# Using xgorm brings tracing with it, and the caller does not have to remember to import xtrace separately.
+# Removing this line leaves the global TracerProvider a noop forever: Spans record nothing, logs have no
+# trace_id, and nothing is reported at all.
+mutate("tracing works with xgorm without importing xtrace separately", "xgorm/xgorm.go", "./xgorm", "TestTracingWorksWithoutImportingXtrace",
        swap('\t_ "github.com/jupiter-eng/xone/xtrace"\n', ''))
 
-# 慢查询的阈值和耗时都要是毫秒：写成纳秒的话 threshold_ms 看着是 10000000
-mutate("慢查询日志的阈值是毫秒", "xgorm/logger.go", "./xgorm", "TestLogger_SlowQueryLogsWarn",
+# The slow-query threshold and the elapsed time must both be milliseconds: in nanoseconds threshold_ms would
+# read as 10000000.
+mutate("the slow-query log's threshold is in milliseconds", "xgorm/logger.go", "./xgorm", "TestLogger_SlowQueryLogsWarn",
        swap('"threshold_ms", ms(l.slowThreshold))', '"threshold_ms", float64(l.slowThreshold))'))
-

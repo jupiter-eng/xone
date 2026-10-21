@@ -20,7 +20,7 @@ type item struct {
 
 func defItem() item { return item{B: 42} }
 
-// UnmarshalYAML 就是本包文档里推荐的写法，顺带当例子测一遍
+// UnmarshalYAML is exactly the form this package's doc recommends, so it doubles as a test of that example.
 func (i *item) UnmarshalYAML(n *yaml.Node) error {
 	*i = defItem()
 	type raw item
@@ -40,19 +40,19 @@ func TestDecodeStrict_UnknownFieldIsError(t *testing.T) {
 	var got item
 	err := decode(t, "A: x\nZZZ: 1\n", &got)
 	if err == nil {
-		t.Fatal("拼错的字段应当报错")
+		t.Fatal("a misspelled field must be an error")
 	}
 	if !strings.Contains(err.Error(), "ZZZ") {
-		t.Errorf("错误里要点名，got=%v", err)
+		t.Errorf("the error must name it, got=%v", err)
 	}
 }
 
 func TestDecodeStrict_CollectionElementsStayStrict(t *testing.T) {
-	// 这是本包存在的理由：元素类型自己写 UnmarshalYAML 铺默认值时，
-	// 如果图省事用 node.Decode，严格检查就在集合里悄悄失效了
+	// This is why this package exists: when an element type writes its own UnmarshalYAML to pre-fill defaults,
+	// taking the easy route with node.Decode makes the strict check quietly stop holding inside the collection.
 	var got map[string]item
 	if err := decode(t, "a:\n  A: x\n  ZZZ: 1\n", &got); err == nil {
-		t.Fatal("集合元素里的字段拼错也应当报错")
+		t.Fatal("a misspelled field inside a collection element must be an error too")
 	}
 }
 
@@ -62,7 +62,7 @@ func TestDecodeStrict_DefaultsApplied(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got["a"].A != "x" || got["a"].B != 42 {
-		t.Errorf("没写的字段应保持默认，got=%+v", got["a"])
+		t.Errorf("a field that is not set must keep its default, got=%+v", got["a"])
 	}
 }
 
@@ -71,10 +71,10 @@ type client struct {
 	Max  int    `yaml:"Max"`
 }
 
-// client 故意不写 UnmarshalYAML：两种写法的默认值都该由 UnmarshalClients 铺
+// client deliberately writes no UnmarshalYAML: the defaults of both forms must come from UnmarshalClients.
 func defClient() client { return client{Addr: "127.0.0.1", Max: 50} }
 
-// clients 把 src 作为 XMod 这一块装进全局配置，再按两种写法解出来
+// clients installs src as the XMod block in the global configuration and decodes it in both forms.
 func clients(t *testing.T, src string) (map[string]client, error) {
 	t.Helper()
 	body := "XMod:\n"
@@ -93,14 +93,14 @@ func TestUnmarshalClients_SingleInstanceForm(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(got) != 1 {
-		t.Fatalf("应解出一个实例，got=%v", got)
+		t.Fatalf("exactly one instance must be decoded, got=%v", got)
 	}
 	c, ok := got[DefaultClientName]
 	if !ok {
-		t.Fatalf("单实例写法应规整成名为 %s 的实例，got=%v", DefaultClientName, got)
+		t.Fatalf("the single-instance form must be normalized to an instance named %s, got=%v", DefaultClientName, got)
 	}
 	if c.Addr != "10.0.0.1" || c.Max != 50 {
-		t.Errorf("写了的生效、没写的保持默认，got=%+v", c)
+		t.Errorf("what is set takes effect and what is not keeps its default, got=%+v", c)
 	}
 }
 
@@ -110,86 +110,86 @@ func TestUnmarshalClients_MultiInstanceForm(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(got) != 2 {
-		t.Fatalf("应解出两个实例，got=%v", got)
+		t.Fatalf("two instances must be decoded, got=%v", got)
 	}
-	// 一个实例覆盖了的字段不该影响另一个
+	// A field one instance overrides must not affect the other.
 	if got["default"].Max != 50 || got["report"].Max != 5 {
-		t.Errorf("默认值应逐个实例生效，got=%v", got)
+		t.Errorf("the defaults must apply per instance, got=%v", got)
 	}
 }
 
 func TestUnmarshalClients_NameOnlyInstanceGetsDefaults(t *testing.T) {
-	// report: 后面什么都没写，是「这个实例全用默认值」，不是「这个实例全是零值」
+	// Nothing written after report: means "this instance uses every default", not "this instance is all zero values".
 	got, err := clients(t, "Clients:\n  default: {Addr: a}\n  report:\n")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got["report"] != defClient() {
-		t.Errorf("没写的实例该是默认值，got=%+v", got["report"])
+		t.Errorf("an instance with nothing written must hold the defaults, got=%+v", got["report"])
 	}
 }
 
 func TestUnmarshalClients_TypoInInstanceNamesTheInstance(t *testing.T) {
 	_, err := clients(t, "Clients:\n  a: {Addr: x}\n  b: {Adrr: y}\n")
 	if err == nil {
-		t.Fatal("拼错应当报错")
+		t.Fatal("a misspelling must be an error")
 	}
 	if !strings.Contains(err.Error(), "Clients.b") || !strings.Contains(err.Error(), "Adrr") {
-		t.Errorf("错误该点名实例和字段，got=%v", err)
+		t.Errorf("the error must name the instance and the field, got=%v", err)
 	}
 }
 
 func TestUnmarshalClients_FormsCannotBeMixed(t *testing.T) {
-	// 混着写时「default 到底是哪个」没有不让人意外的答案
+	// When the two are mixed there is no unsurprising answer to "which one is default".
 	_, err := clients(t, "Addr: a\nClients:\n  x: {Addr: b}\n")
 	if err == nil {
-		t.Fatal("混用两种写法应当报错")
+		t.Fatal("mixing the two forms must be an error")
 	}
 	if !strings.Contains(err.Error(), "cannot mix") {
-		t.Errorf("错误该说清楚为什么，got=%v", err)
+		t.Errorf("the error must say plainly why, got=%v", err)
 	}
-	// 还要点名是哪个字段没了归属，否则一个几十行的配置块看不出改哪里
+	// It must also name the field left without an owner, otherwise a config block of a few dozen lines gives no hint what to change.
 	if !strings.Contains(err.Error(), "Addr") {
-		t.Errorf("错误该指出是哪个字段，got=%v", err)
+		t.Errorf("the error must point at the field, got=%v", err)
 	}
 }
 
 func TestUnmarshalClients_TypoInInstanceNotReportedAsMixing(t *testing.T) {
-	// 「不能混用」这句话曾经是套在任何一个解码错误上的：实例里一个字段拼错
-	// （Clients.x.Adrr）报的也是它。那份配置根本没混用，使用者会照着这句话
-	// 去改一个没问题的地方，真正的拼写错误反而被这句提示盖住了。
+	// "the two forms cannot be mixed" used to be attached to any decoding error at all: a misspelled field
+	// inside an instance (Clients.x.Adrr) was reported with it too. That configuration mixes nothing, so the
+	// caller would follow the message and change something that was fine, while the real typo stayed hidden behind it.
 	cases := map[string]string{
-		"实例里字段拼错": "Clients:\n  x: {Adrr: a}\n",
-		"实例里类型不对": "Clients:\n  x: {Max: abc}\n",
+		"a misspelled field inside an instance": "Clients:\n  x: {Adrr: a}\n",
+		"a wrong type inside an instance":       "Clients:\n  x: {Max: abc}\n",
 	}
 	for name, src := range cases {
 		_, err := clients(t, src)
 		if err == nil {
-			t.Fatalf("%s：应当报错", name)
+			t.Fatalf("%s: must be an error", name)
 		}
 		if strings.Contains(err.Error(), "cannot mix") {
-			t.Errorf("%s：这不是混用，不该这么报，got=%v", name, err)
+			t.Errorf("%s: this is not mixing and must not be reported as such, got=%v", name, err)
 		}
 	}
 }
 
 func TestUnmarshalClients_EmptyClientsIsError(t *testing.T) {
 	if _, err := clients(t, "Clients: {}\n"); err == nil {
-		t.Fatal("写了 Clients 却是空的，应当报错")
+		t.Fatal("writing Clients and leaving it empty must be an error")
 	}
 }
 
 func TestUnmarshalClients_TyposCaughtInBothForms(t *testing.T) {
-	// 集合元素走的是自定义解码器，严格检查很容易在那里悄悄失效
+	// A collection element goes through a custom decoder, where the strict check very easily stops holding quietly.
 	if _, err := clients(t, "Adrr: a\n"); err == nil {
-		t.Error("单实例写法里拼错应当报错")
+		t.Error("a misspelling in the single-instance form must be an error")
 	}
 	if _, err := clients(t, "Clients:\n  x: {Adrr: a}\n"); err == nil {
-		t.Error("多实例写法里拼错应当报错")
+		t.Error("a misspelling in the multi-instance form must be an error")
 	}
 }
 
-// ---- Unmarshal / Has：集成包唯一会用到的两个入口 ----
+// ---- Unmarshal / Has: the only two entry points an integration package uses ----
 
 type modCfg struct {
 	Addr    string `yaml:"Addr"`
@@ -205,8 +205,8 @@ func (c *modCfg) Validate() error {
 }
 
 func TestUnmarshal_FieldsNotInFileKeepDefaults(t *testing.T) {
-	// 「默认值预填在结构体里」是整个配置模型的地基：少了它，
-	// 每个字段都得用指针类型来区分「没配」和「配成零值」
+	// "defaults pre-filled in the struct" is the foundation of the whole configuration model: without it, every
+	// field would need a pointer type to tell "not configured" from "configured to the zero value".
 	xonetest.UseConfigYAML(t, "XMod:\n  Retry: 3\n")
 
 	c := modCfg{Addr: "127.0.0.1", Retry: 1}
@@ -214,10 +214,10 @@ func TestUnmarshal_FieldsNotInFileKeepDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c.Addr != "127.0.0.1" {
-		t.Errorf("没写的字段被抹成零值了，got=%q", c.Addr)
+		t.Errorf("a field that is not set was wiped to its zero value, got=%q", c.Addr)
 	}
 	if c.Retry != 3 {
-		t.Errorf("写了的字段没生效，got=%d", c.Retry)
+		t.Errorf("a field that is set had no effect, got=%d", c.Retry)
 	}
 }
 
@@ -226,10 +226,10 @@ func TestUnmarshal_AbsentBlockLeavesValueUntouched(t *testing.T) {
 
 	c := modCfg{Addr: "127.0.0.1"}
 	if err := Unmarshal("XMod", &c); err != nil {
-		t.Fatalf("没配这一块不该报错：%v", err)
+		t.Fatalf("not configuring this block must not be an error: %v", err)
 	}
 	if c.Addr != "127.0.0.1" {
-		t.Errorf("默认值被动了，got=%q", c.Addr)
+		t.Errorf("the defaults were touched, got=%q", c.Addr)
 	}
 }
 
@@ -238,26 +238,26 @@ func TestUnmarshal_UnknownFieldIsError(t *testing.T) {
 
 	c := modCfg{}
 	if err := Unmarshal("XMod", &c); err == nil {
-		t.Fatal("字段拼错应当报错，否则使用者会一直以为自己配上了")
+		t.Fatal("a misspelled field must be an error, otherwise the caller keeps believing the setting took")
 	}
 }
 
 func TestUnmarshal_CallsValidateOnce(t *testing.T) {
-	// 有些配错不会让初始化失败，只是让某个行为永远走不到，
-	// 那种只能靠 Validate 拦
+	// Some misconfigurations do not fail initialization and only make some behavior unreachable forever;
+	// only Validate catches those.
 	xonetest.UseConfigYAML(t, "XMod:\n  Retry: 1\n")
 
 	c := modCfg{badFlag: true}
 	err := Unmarshal("XMod", &c)
 	if err == nil {
-		t.Fatal("Validate 报错应当让 Unmarshal 失败")
+		t.Fatal("a Validate error must make Unmarshal fail")
 	}
 	if !strings.Contains(err.Error(), "validate said no") {
-		t.Errorf("要把 Validate 的话带上来，got=%v", err)
+		t.Errorf("Validate's words must be carried up, got=%v", err)
 	}
 }
 
-// useEnvConf 把一份配置写进文件，经 XONE_CONFIG 交给「第一次读时自动加载」
+// useEnvConf writes a configuration to a file and hands it through XONE_CONFIG to "load on the first read".
 func useEnvConf(t *testing.T, yml string) {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), "application.yml")
@@ -270,8 +270,8 @@ func useEnvConf(t *testing.T, yml string) {
 }
 
 func TestUnmarshal_LoadsFirstIfNotLoaded(t *testing.T) {
-	// 读得早不是错误，也不会静默拿到默认值：第一次读就先加载，
-	// 在 main 里、在 Run 之前读到的都是文件里的最终值
+	// Reading early is not an error and does not quietly yield the defaults: the first read loads first,
+	// so a read in main or before Run gets the final values from the file.
 	useEnvConf(t, "XMod:\n  Retry: 7\n")
 
 	c := modCfg{}
@@ -279,7 +279,7 @@ func TestUnmarshal_LoadsFirstIfNotLoaded(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c.Retry != 7 {
-		t.Errorf("读到的应是文件里的值，got=%d", c.Retry)
+		t.Errorf("the values from the file must be read, got=%d", c.Retry)
 	}
 }
 
@@ -287,33 +287,33 @@ func TestHas_DistinguishesUnsetFromSet(t *testing.T) {
 	xonetest.UseConfigYAML(t, "XMod:\n  Retry: 1\nXOther:\n")
 
 	if !Has("XMod") {
-		t.Error("写了的块应当报告有")
+		t.Error("a block that is written must be reported as present")
 	}
 	if Has("XNope") {
-		t.Error("没写的块不该报告有")
+		t.Error("a block that is not written must not be reported as present")
 	}
 	if Has("XOther") {
-		t.Error("写了个空块等于没配，不该让可选组件白建一套")
+		t.Error("an empty block is the same as not configured and must not make an optional component build for nothing")
 	}
 }
 
 func TestHas_LoadsFirstIfNotLoaded(t *testing.T) {
 	useEnvConf(t, "XMod:\n  Retry: 1\n")
 	if !Has("XMod") {
-		t.Error("第一次问的时候该先加载，而不是报告没有")
+		t.Error("the first question must load first rather than report absence")
 	}
 }
 
 func TestHas_AskingCountsAsClaim(t *testing.T) {
-	// 跳过的那一块不该落在「没人认领」的名单里：可选组件正是靠 Has
-	// 决定跳过的，把它算成没人要会让启动直接失败
+	// The skipped block must not end up on the "nobody claimed it" list: an optional component decides to skip
+	// precisely by Has, and counting it as unwanted would fail startup outright.
 	xonetest.UseConfigYAML(t, "XMod:\n")
 
 	if Has("XMod") {
-		t.Fatal("空块应当报告没配")
+		t.Fatal("an empty block must be reported as not configured")
 	}
 	if got := config.Unclaimed(); len(got) != 0 {
-		t.Errorf("want 空，got=%v", got)
+		t.Errorf("want empty, got=%v", got)
 	}
 }
 
@@ -331,12 +331,12 @@ func TestUnmarshalClients_TypoInInstanceReportsFileAndLine(t *testing.T) {
 	_, err := UnmarshalClients("XMod", defClient)
 	for _, want := range []string{"Clients.b: ", p + ":6: field Adrr not found"} {
 		if err == nil || !strings.Contains(err.Error(), want) {
-			t.Errorf("报错该点名实例、文件和行号 %q，got=%v", want, err)
+			t.Errorf("the error must name the instance, the file and the line %q, got=%v", want, err)
 		}
 	}
 	var te *yaml.TypeError
 	if !errors.As(err, &te) {
-		t.Errorf("errors.As 该照样取得到 yaml 的类型错误，got=%v", err)
+		t.Errorf("errors.As must still reach yaml's type error, got=%v", err)
 	}
 }
 
@@ -344,14 +344,14 @@ func TestUnmarshalClients_AbsentBlockReturnsNilAndClaims(t *testing.T) {
 	xonetest.UseConfigYAML(t, "XMod:\n")
 	got, err := UnmarshalClients("XMod", defClient)
 	if err != nil || got != nil {
-		t.Fatalf("没配这一块该是 nil、不报错，got=%v err=%v", got, err)
+		t.Fatalf("not configuring this block must give nil and no error, got=%v err=%v", got, err)
 	}
 	if left := config.Unclaimed(); len(left) != 0 {
-		t.Errorf("问过就算认领，want 空，got=%v", left)
+		t.Errorf("asking counts as claiming, want empty, got=%v", left)
 	}
 }
 
-// checked 实现了 Validate 的实例类型
+// checked is an instance type that implements Validate.
 type checked struct {
 	Max int `yaml:"Max"`
 }
@@ -366,8 +366,8 @@ func (c *checked) Validate() error {
 func TestUnmarshalClients_CallsValidateForEachInstance(t *testing.T) {
 	xonetest.UseConfigYAML(t, "XMod:\n  Clients:\n    a: {Max: 1}\n    b: {Max: 0}\n")
 	_, err := UnmarshalClients("XMod", func() checked { return checked{Max: 1} })
-	// 还要带上这个实例在哪个文件第几行：Validate 自己只说得出字段名
+	// It must also carry which file and line this instance is on: Validate itself can only name the field.
 	if err == nil || !strings.Contains(err.Error(), "Clients.b: ") || !strings.Contains(err.Error(), "application.yml:4: Max must be > 0") {
-		t.Errorf("Validate 的话要带上来、点名实例并带上文件和行号，got=%v", err)
+		t.Errorf("Validate's words must be carried up, naming the instance and carrying the file and line, got=%v", err)
 	}
 }

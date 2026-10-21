@@ -9,7 +9,7 @@ mutate("没配时区时清掉上一次的", "xlog/xlog.go", ".", "TestInitXLog_T
        swap('\tloc, _ := parseLocation(c.Timezone)\n\tlocation.Store(loc)\n',
             '\tif loc, _ := parseLocation(c.Timezone); loc != nil {\n\t\tlocation.Store(loc)\n\t}\n'))
 mutate("UseHandler 时清掉上一次的时区", "xlog/xlog.go", ".", "TestInitXLog_TimezoneClearedWhenLaterRunLeavesItUnset",
-       swap('\t\tlocation.Store(nil) // 时间戳由你的 handler 决定，xlog 没有时区\n', ''))
+       swap('\t\tlocation.Store(nil) // the timestamps are decided by that handler, so xlog has no time zone\n', ''))
 mutate("时区加载不到直接失败", "xlog/xlog.go", ".", "TestNew_FailsWhenTimezoneCannotLoad",
        swap('''\tloc, err := time.LoadLocation(name)
 \tif err != nil {''', '''\tloc, err := time.LoadLocation(name)
@@ -59,7 +59,7 @@ mutate("片段也有 profile 变体", "internal/config/source.go", ".", "TestLoa
 mutate("重试的等待逐次翻倍", "xutil/retry.go", ".", "TestRetry", swap('\t\t\tbackoff = nextBackoff(backoff)\n', ''))
 mutate("预算按退避上界算", "xutil/retry.go", ".", "TestRetryBudget",
        swap('''\tbudget := timeout * time.Duration(attempts)
-\tbackoff := min(interval, maxBackoff) // 与 Retry 一致：第一次也封顶
+\tbackoff := min(interval, maxBackoff) // same as Retry: the first one is capped too
 \tfor i := 1; i < attempts; i++ {
 \t\tbudget += backoff
 \t\tbackoff = nextBackoff(backoff)
@@ -69,7 +69,7 @@ mutate("预算按退避上界算", "xutil/retry.go", ".", "TestRetryBudget",
 mutate("第一次等待也封顶", "xutil/retry.go", ".", "TestRetry_FirstWaitAlsoCapped",
        swap('\tvar last error\n\tbackoff := min(interval, maxBackoff)', '\tvar last error\n\tbackoff := interval'))
 mutate("预算里的第一次退避也封顶", "xutil/retry.go", ".", "TestRetryBudget_FirstBackoffAlsoCapped",
-       swap('\tbackoff := min(interval, maxBackoff) // 与 Retry 一致', '\tbackoff := interval // 与 Retry 一致'))
+       swap('\tbackoff := min(interval, maxBackoff) // same as Retry', '\tbackoff := interval // same as Retry'))
 mutate("重试的等待带抖动", "xutil/retry.go", ".", "TestJitter",
        swap('\treturn time.Duration(rand.Int64N(int64(d) + 1))', '\treturn d - time.Duration(rand.Int64N(2))'))
 # 密码错、库不存在也照样重试满整轮，启动白白拖长几十秒
@@ -283,7 +283,7 @@ mutate("New 收到带类型的 nil 不 panic", "xerror/xerror.go", ".", "TestNew
 mutate("Newf 参数里带类型的 nil 不 panic", "xerror/xerror.go", ".", "TestNewf_TypedNilArgRendersAsNilNotPanic",
        swap('if xe, ok := a.(*Error); ok && xe != nil {', 'if xe, ok := a.(*Error); ok {'))
 mutate("Is 遇到带类型的 nil 不 panic", "xerror/xerror.go", ".", "TestNewf_TypedNilArgRendersAsNilNotPanic",
-       swap('\t\tif xe == nil {\n\t\t\treturn false // 带类型的 nil', '\t\tif false {\n\t\t\treturn false // 带类型的 nil'))
+       swap('\t\tif xe == nil {\n\t\t\treturn false // a typed nil', '\t\tif false {\n\t\t\treturn false // a typed nil'))
 mutate("同模块再包一层原样返回", "xerror/xerror.go", ".", "TestNew_",
        swap('\t\tif xe.Module == module {\n\t\t\treturn xe\n\t\t}\n', ''))
 mutate("建连重试可以被取消", "xutil/retry.go", ".", "TestRetry",
@@ -319,7 +319,7 @@ mutate("回滚预算不是正数要 panic", "xflow/xflow.go", ".", "TestWithRoll
        swap('\tif d <= 0 {\n\t\tpanic(fmt.Sprintf("xflow: rollback timeout', '\tif d < 0 {\n\t\tpanic(fmt.Sprintf("xflow: rollback timeout'))
 # 回滚的是已执行的那段前缀：失败的弱依赖算在内（它可能留下了副作用），
 # 失败的强依赖不算（它没成）
-mutate("失败的弱依赖也要回滚", "xflow/xflow.go", ".", "TestExecute", swap('\t\t\tn++ // 失败的弱依赖', '\t\t\t// 失败的弱依赖'))
+mutate("失败的弱依赖也要回滚", "xflow/xflow.go", ".", "TestExecute", swap('\t\t\tn++ // a failed weak dependency', '\t\t\t// a failed weak dependency'))
 mutate("失败的强依赖那一步不回滚", "xflow/xflow.go", ".", "TestExecute",
        swap('''\t\tf.rollback(ctx, data, f.steps[:n], res, m)
 \t\treturn res
@@ -624,7 +624,7 @@ mutate("UseHandler 和 XLog 块同时写就启动失败", "xlog/xlog.go", ".", "
 mutate("日志装好之后 UseHandler 不生效", "xlog/xlog.go", ".", "TestUseHandler_LateCall",
        swap('\tif installed.Load() {\n', '\tif false {\n'))
 mutate("关掉之后 UseHandler 重新可用", "xlog/xlog.go", ".", "TestUseHandler_UsableAgain",
-       swap('\tinstalled.Store(false) // 同一进程里再跑一次 Run', '\t// 同一进程里再跑一次 Run'))
+       swap('\tinstalled.Store(false) // so UseHandler still works', '\t// so UseHandler still works'))
 # 每条日志的身份字段：框架装配时加上，Fields 覆盖同名的，空串不写
 mutate("日志默认带身份字段", "xlog/xlog.go", ".", "TestIdentity_DefaultFields",
        swap('l, cl, err := build(c, identity())', 'l, cl, err := build(c, nil)'))

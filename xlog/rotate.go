@@ -11,68 +11,68 @@ import (
 	"github.com/jupiter-eng/xone/xerror"
 )
 
-// 日志文件名的时间后缀格式，按轮转周期选择合适的粒度
-// 周期小于一天时需要更细的粒度，否则不同周期会生成同名文件而无法真正轮转
+// The time suffix formats of a log file name, chosen by rotation period for the right granularity.
+// A period shorter than a day needs a finer granularity, or different periods would produce the same file name and nothing would really rotate.
 const (
 	rotateLayoutDay    = "20060102"
 	rotateLayoutHour   = "2006010215"
 	rotateLayoutMinute = "200601021504"
 )
 
-// rotateLayouts 三种后缀格式，各自对应的标准周期，从粗到细。
+// rotateLayouts holds the three suffix formats with their standard periods, from coarse to fine.
 //
-// 选格式（rotateLayoutFor）和清理（expired）共用这一张表。清理时三种都认：
-// 换过 RotateTime 之后，按旧粒度命名的那些文件同样是我们写的，不能因为
-// 粒度变了就永远留在那里。三者长度各不相同（8 / 10 / 12 位），
-// 一个后缀最多只能被其中一种解析成功
+// Choosing a format (rotateLayoutFor) and cleaning up (expired) share this one table. Cleanup accepts all three:
+// after RotateTime is changed, the files named at the old granularity are still ours and must not stay forever
+// just because the granularity changed. The three have different lengths (8 / 10 / 12 characters), so one suffix
+// can parse successfully under at most one of them.
 var rotateLayouts = []struct {
 	layout string
-	period time.Duration // 周期不短于它时选这种格式
+	period time.Duration // this format is chosen when the period is no shorter than this
 }{
 	{rotateLayoutDay, 24 * time.Hour},
 	{rotateLayoutHour, time.Hour},
 	{rotateLayoutMinute, time.Minute},
 }
 
-// defaultLogFilePerm 日志文件默认权限
+// defaultLogFilePerm is the default log file permission.
 const defaultLogFilePerm = 0o644
 
-// rotateErrLogInterval 轮转失败告警的最小间隔
+// rotateErrLogInterval is the minimum interval between rotation failure warnings.
 const rotateErrLogInterval = time.Minute
 
-// rotateWriter 按时间轮转的日志文件写入器
+// rotateWriter is a log file writer that rotates by time.
 //
-// 文件名形如 {base}.20260912，并维护一个指向当前文件的符号链接 {base}，
-// 便于 tail 等工具始终跟随最新日志。
+// The file names look like {base}.20260912, with a symbolic link {base} kept pointing at the current file
+// so tools such as tail always follow the latest log.
 //
-// slog 的 handler 会从任意多个协程并发调用 Write，Close 也可能来自别的协程，故加锁保护。
-// 没有缓冲：每条日志都直接 write 到文件，关闭时没有要 flush 的东西。
+// slog's handler calls Write from any number of goroutines concurrently, and Close may come from another goroutine too, hence the lock.
+// There is no buffering: every log line is written straight to the file, so there is nothing to flush on close.
 type rotateWriter struct {
-	base     string        // 文件名前缀，如 /var/log/app.log
-	linkName string        // 符号链接路径，为空表示不创建
-	layout   string        // 时间后缀格式
-	maxAge   time.Duration // 超过该时长的历史文件会被清理，<=0 表示不清理
-	rotate   time.Duration // 轮转周期
+	base     string        // the file name prefix, such as /var/log/app.log
+	linkName string        // the symbolic link path; empty means none is created
+	layout   string        // the time suffix format
+	maxAge   time.Duration // historical files older than this are cleaned up; <=0 means no cleanup
+	rotate   time.Duration // the rotation period
 
-	// clock 可注入的时间源，便于测试轮转与清理
+	// clock is an injectable time source, which makes rotation and cleanup testable
 	clock func() time.Time
 
-	// perm 日志文件权限
+	// perm is the log file permission
 	perm os.FileMode
 
 	mu          sync.Mutex
-	file        *os.File // Close 之后为 nil
+	file        *os.File // nil after Close
 	currentName string
 
-	// lastRotateErrAt 上次记录轮转失败的时刻，用于告警降噪
+	// lastRotateErrAt is when a rotation failure was last recorded, for warning noise reduction
 	lastRotateErrAt time.Time
 }
 
-// newRotateWriter 创建轮转写入器，立即打开当前文件，并清理一次过期文件。
+// newRotateWriter creates the rotating writer, opens the current file immediately and cleans up expired files once.
 //
-// 提前打开可将权限、路径等问题暴露在初始化阶段，而非首次写日志时才失败。
-// 清理也要在这里做一次，不能只挂在轮转上：按天轮转的服务每次发版重启都落在
-// 周期中间，一天重启几次的话，过期文件可能永远等不到那次轮转。
+// Opening early surfaces permission and path problems during initialization rather than at the first log line.
+// The cleanup also has to happen here and not only on rotation: a service rotating daily restarts into the middle of
+// a period on every deploy, and restarting several times a day could leave expired files waiting for a rotation that never comes.
 func newRotateWriter(base string, maxAge, rotate time.Duration, perm os.FileMode) (*rotateWriter, error) {
 	if perm == 0 {
 		perm = defaultLogFilePerm
@@ -86,10 +86,10 @@ func newRotateWriter(base string, maxAge, rotate time.Duration, perm os.FileMode
 		clock:    time.Now,
 		perm:     perm,
 	}
-	// {base} 上要放的是符号链接。那里已经有一个别的文件时（老版本直接写的 app.log、
-	// 别的日志库留下的），Rename 会把它原子地替换掉，里面的日志一声不响就没了。
-	// 挪走它也不对——挪到哪、叫什么，都是在替使用者做他不知道的决定。
-	// 所以拒绝启动，把选择交还给他
+	// What goes at {base} is a symbolic link. When something else is already there (an app.log an older version wrote
+	// directly, or one another logging library left behind), Rename would replace it atomically and the logs inside
+	// would vanish without a word. Moving it away is not right either -- where to and under what name are decisions
+	// taken on the caller's behalf without their knowledge. So startup is refused and the choice handed back to them.
 	if occupied(w.linkName) {
 		return nil, xerror.Newf("xlog", "new",
 			"%s exists and is not a symlink; xlog keeps a symlink to the current log file there and will not overwrite it: move it away or change File.Name", w.linkName)
@@ -101,13 +101,13 @@ func newRotateWriter(base string, maxAge, rotate time.Duration, perm os.FileMode
 	return w, nil
 }
 
-// occupied 路径上有东西，且不是符号链接
+// occupied reports whether something is at the path and is not a symbolic link.
 func occupied(path string) bool {
 	fi, err := os.Lstat(path)
 	return err == nil && fi.Mode()&os.ModeSymlink == 0
 }
 
-// rotateLayoutFor 依据轮转周期选择时间后缀粒度：周期够得着的最粗那一档
+// rotateLayoutFor picks the time suffix granularity by rotation period: the coarsest one the period reaches.
 func rotateLayoutFor(d time.Duration) string {
 	for _, l := range rotateLayouts {
 		if d >= l.period {
@@ -117,7 +117,7 @@ func rotateLayoutFor(d time.Duration) string {
 	return rotateLayoutMinute
 }
 
-// Write 写入日志，跨越轮转周期时先切换文件
+// Write writes a log line, switching files first when a rotation period has been crossed.
 func (w *rotateWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -128,13 +128,13 @@ func (w *rotateWriter) Write(p []byte) (int, error) {
 
 	if name := w.filenameFor(w.clock()); name != w.currentName {
 		if err := w.rotateTo(name); err != nil {
-			// 轮转失败不能丢日志：旧文件句柄仍然可用，降级继续写它。
-			// 直接返回错误的话，从第一次轮转失败起每条日志都走这条路，
-			// 而 slog.Logger 会把 handler 返回的错误直接丢掉——
-			// 现象就是某天日志突然断了，没有任何报错
+			// A failed rotation must not lose logs: the old file handle is still usable, so it degrades to writing that.
+			// Returning the error instead would send every log line down this path from the first failed rotation on,
+			// and slog.Logger simply discards the error a handler returns --
+			// what that looks like is the logs stopping one day with nothing reported.
 			w.reportRotateFailure(err)
 		} else {
-			// 清理放到后台执行，避免阻塞日志写入；当前文件名以参数传入，避免再次取锁
+			// Cleanup runs in the background so it does not block log writing; the current file name is passed as an argument to avoid taking the lock again.
 			go w.purge(name)
 		}
 	}
@@ -142,8 +142,8 @@ func (w *rotateWriter) Write(p []byte) (int, error) {
 	return w.file.Write(p)
 }
 
-// reportRotateFailure 记录轮转失败
-// 按间隔降噪：轮转周期到了之后每条日志都会重试，不限流会把告警刷爆
+// reportRotateFailure records a rotation failure.
+// It is rate-limited by interval: once the rotation period has passed, every log line retries, and without a limit the warnings would flood.
 func (w *rotateWriter) reportRotateFailure(err error) {
 	now := w.clock()
 	if w.lastRotateErrAt.IsZero() || now.Sub(w.lastRotateErrAt) >= rotateErrLogInterval {
@@ -152,7 +152,7 @@ func (w *rotateWriter) reportRotateFailure(err error) {
 	}
 }
 
-// Close 关闭当前日志文件，多次调用安全
+// Close closes the current log file and is safe to call several times.
 func (w *rotateWriter) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -165,16 +165,16 @@ func (w *rotateWriter) Close() error {
 	return err
 }
 
-// filenameFor 计算指定时刻所属周期的日志文件名
+// filenameFor computes the log file name of the period a given moment belongs to.
 func (w *rotateWriter) filenameFor(t time.Time) string {
 	return w.base + "." + truncateInLocation(t, w.rotate).Format(w.layout)
 }
 
-// rotateTo 切换到指定文件
-// 调用方需持有锁；构造阶段实例尚未被共享，此时无需加锁。
+// rotateTo switches to the given file.
+// The caller holds the lock; during construction the instance is not shared yet and no lock is needed.
 //
-// 返回普通 error：构造时由 newRotateWriter 包成 xerror，运行中的轮转失败
-// 只走 warnf，不出本包
+// It returns a plain error: during construction newRotateWriter wraps it in an xerror, while a rotation failure at
+// runtime only goes through warnf and never leaves this package.
 func (w *rotateWriter) rotateTo(name string) error {
 	f, err := os.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_APPEND, w.perm)
 	if err != nil {
@@ -182,7 +182,7 @@ func (w *rotateWriter) rotateTo(name string) error {
 	}
 
 	if w.file != nil {
-		// 旧文件关闭失败不影响继续写入新文件，仅记录
+		// Failing to close the old file does not stop writing to the new one and is only recorded.
 		if cerr := w.file.Close(); cerr != nil {
 			warnf("rotate: close previous file failed, err=[%v]", cerr)
 		}
@@ -194,20 +194,20 @@ func (w *rotateWriter) rotateTo(name string) error {
 	return nil
 }
 
-// updateSymlink 将符号链接指向当前文件
-// 符号链接在部分平台或文件系统上不被支持，失败不影响日志写入
+// updateSymlink points the symbolic link at the current file.
+// Symbolic links are unsupported on some platforms and file systems, and a failure does not affect log writing.
 func (w *rotateWriter) updateSymlink(target string) {
 	if w.linkName == "" {
 		return
 	}
-	// 构造时已经拦过一次；这里防的是运行中有人把链接换成了普通文件
-	// （手工 mv、copytruncate 式的工具），轮转时照样 Rename 过去就把它吞了
+	// Construction already caught this once; what is guarded here is somebody replacing the link with a regular file
+	// at runtime (a manual mv, a copytruncate-style tool), which a rotation would otherwise swallow by Renaming over it.
 	if occupied(w.linkName) {
 		warnf("rotate: %s is not a symlink, leaving it alone and not updating the link", w.linkName)
 		return
 	}
 
-	// 先创建临时链接再原子替换，避免替换过程中链接短暂缺失
+	// A temporary link is created first and then swapped atomically, so the link is never briefly missing.
 	tmp := w.linkName + ".tmp"
 	_ = os.Remove(tmp)
 	if err := os.Symlink(filepath.Base(target), tmp); err != nil {
@@ -220,11 +220,11 @@ func (w *rotateWriter) updateSymlink(target string) {
 	}
 }
 
-// purge 删除超过 maxAge 的历史日志文件，current 为当前正在写入的文件。
+// purge deletes historical log files older than maxAge, where current is the file being written.
 //
-// 只删我们自己命名的文件（{base}.{时间后缀}）。base.* 匹配到的不全是我们写的：
-// 使用者手工备份的 app.log.bak、别的工具压缩出来的 app.log.1.gz 都在里面，
-// 它们解析不出时间，就一律不碰——哪怕 mtime 很旧
+// It only deletes files this package named ({base}.{time suffix}). Not everything base.* matches is ours:
+// an app.log.bak the caller backed up by hand or an app.log.1.gz another tool compressed are in there too,
+// and since no time parses out of them they are never touched -- however old their mtime is.
 func (w *rotateWriter) purge(current string) {
 	if w.maxAge <= 0 {
 		return
@@ -236,19 +236,19 @@ func (w *rotateWriter) purge(current string) {
 		return
 	}
 
-	// filepath.Glob 返回结果已排序，删除顺序是确定的
+	// filepath.Glob returns its results sorted, so the deletion order is deterministic.
 	cutoff := w.clock().Add(-w.maxAge)
 	for _, path := range matches {
-		// Lstat 而非 Stat：避免跟随符号链接把当前文件误判为历史文件
+		// Lstat rather than Stat: it must not follow the symbolic link and mistake the current file for a historical one.
 		fi, err := os.Lstat(path)
 		if err != nil {
 			continue
 		}
 		if fi.Mode()&os.ModeSymlink != 0 {
-			continue // 跳过符号链接本身
+			continue // skip the symbolic link itself
 		}
 		if path == current {
-			continue // 不删除正在写入的文件
+			continue // do not delete the file being written
 		}
 		if !w.expired(path, cutoff) {
 			continue
@@ -259,11 +259,11 @@ func (w *rotateWriter) purge(current string) {
 	}
 }
 
-// expired 判断历史日志文件是否已过保留期；不是我们命名的文件一律返回 false
+// expired reports whether a historical log file is past its retention; anything not named by this package is always false.
 //
-// 用文件名里的时间后缀，而不是 mtime：备份恢复、rsync、容器镜像分层
-// 都会重写 mtime，按它判断可能把昨天的日志当成刚写的而永远不清，
-// 也可能把刚轮转出来的文件当成过期的删掉
+// It uses the time suffix in the file name rather than the mtime: a backup restore, an rsync and container image
+// layers all rewrite the mtime, and going by that could take yesterday's log for a fresh one and never clean it,
+// or take a file just rotated out for an expired one and delete it.
 func (w *rotateWriter) expired(path string, cutoff time.Time) bool {
 	suffix := strings.TrimPrefix(path, w.base+".")
 	for _, l := range rotateLayouts {
@@ -271,11 +271,11 @@ func (w *rotateWriter) expired(path string, cutoff time.Time) bool {
 		if err != nil {
 			continue
 		}
-		// 文件名记的是所属周期的起点，整个周期结束后才算过期。
-		// 按当前粒度命名的，周期就是 RotateTime；按别的粒度命名的是改配置之前
-		// 留下的，按那一档的标准周期算。都按现在的 RotateTime 算的话，从按天
-		// 改成按小时之后，今天那个按天的文件零点一过就「过期」了，
-		// 而它直到这次重启之前都还在写
+		// The file name records the start of the period it belongs to, and it is only expired once that whole period has
+		// ended. One named at the current granularity has RotateTime as its period; one named at another granularity is
+		// left over from before the configuration changed and uses that granularity's standard period. Computing them
+		// all with the current RotateTime would make today's daily file "expired" at midnight after switching from
+		// daily to hourly -- while it was still being written to right up until this restart.
 		period := l.period
 		if l.layout == w.layout {
 			period = w.rotate
@@ -285,11 +285,11 @@ func (w *rotateWriter) expired(path string, cutoff time.Time) bool {
 	return false
 }
 
-// truncateInLocation 按周期截断时间，且对齐到本地时区
+// truncateInLocation truncates a time by period while aligning to the local time zone.
 //
-// time.Truncate 以 UTC 零点为基准，直接用于按天轮转会导致切割点落在本地时间的
-// 非零点时刻。这里先把本地时间的各字段原样搬到 UTC 上做截断，再搬回本地时区，
-// 使按天轮转对齐本地零点（与替换前的 file-rotatelogs 行为保持一致）。
+// time.Truncate works from the UTC epoch, so using it for daily rotation would put the cut at a non-midnight moment
+// in local time. This moves the local time's fields onto UTC as they are, truncates there, and moves them back,
+// so daily rotation aligns to local midnight (which matches the behavior of the file-rotatelogs it replaced).
 func truncateInLocation(t time.Time, d time.Duration) time.Time {
 	if d <= 0 {
 		return t
@@ -303,9 +303,9 @@ func truncateInLocation(t time.Time, d time.Duration) time.Time {
 	return time.Date(base.Year(), base.Month(), base.Day(), base.Hour(), base.Minute(), base.Second(), base.Nanosecond(), t.Location())
 }
 
-// warnf 把日志系统自身的故障直接写到 stderr
+// warnf writes a failure of the logging system itself straight to stderr.
 //
-// 不能走日志系统：出错的正是它，再调用它就成了环。
+// It cannot go through the logging system: that is what failed, and calling it again would form a cycle.
 func warnf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "xlog: "+format+"\n", args...)
 }

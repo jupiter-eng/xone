@@ -14,26 +14,26 @@ import (
 // configDocs 每个配置块写在哪一节：模块的配置块在那个模块 README 的「## 配置」。
 // 加了一个配置块就在这里登记，没登记的 checkDocs 会报出来
 var configDocs = map[string]docSection{
-	"XApp":        {"xapp/README.md", "配置"},
-	"XLog":        {"xlog/README.md", "配置"},
-	"XTrace":      {"xtrace/README.md", "配置"},
-	"XMetric":     {"xmetric/README.md", "配置"},
-	"XGorm":       {"xgorm/README.md", "配置"},
+	"XApp":        {"xapp/README.md", "Configuration"},
+	"XLog":        {"xlog/README.md", "Configuration"},
+	"XTrace":      {"xtrace/README.md", "Configuration"},
+	"XMetric":     {"xmetric/README.md", "Configuration"},
+	"XGorm":       {"xgorm/README.md", "Configuration"},
 	"XRedis":      {"xredis/README.md", "配置"},
-	"XKafka":      {"xkafka/README.md", "配置"},
-	"XCache":      {"xcache/README.md", "配置"},
+	"XKafka":      {"xkafka/README.md", "Configuration"},
+	"XCache":      {"xcache/README.md", "Configuration"},
 	"XHttp":       {"xhttp/README.md", "配置"},
 	"XGin":        {"xgin/README.md", "Configuration"},
-	"XGinSwagger": {"xginswagger/README.md", "配置"},
+	"XGinSwagger": {"xginswagger/README.md", "Configuration"},
 	// xecho 的 README 已经英文化，小节名是 Configuration；其余模块随各自的批次改
 	"XEcho": {"xecho/README.md", "Configuration"},
-	"XFlow": {"xflow/README.md", "配置"},
+	"XFlow": {"xflow/README.md", "Configuration"},
 }
 
 // exampleDocs 自己没有配置块、却写了 YAML 示例的节：只校验示例。
 // xgorm/clickhouse 的示例写的是 XGorm 块；docs/config.md 的 Profiles、Import 两节讲的是 XApp 的两项
 var exampleDocs = []docSection{
-	{"xgorm/clickhouse/README.md", "配置"},
+	{"xgorm/clickhouse/README.md", "Configuration"},
 	{"docs/config.md", "Profiles"},
 	{"docs/config.md", "Import"},
 }

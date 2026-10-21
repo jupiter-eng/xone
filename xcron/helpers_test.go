@@ -19,8 +19,8 @@ import (
 	"github.com/jupiter-eng/xone/xlog"
 )
 
-// fresh 换一个干净的全局调度器（Add 用的就是它），测试结束时停掉它、换回原来的。
-// 用了它的测试不能 t.Parallel
+// fresh swaps in a clean global scheduler (the one Add uses) and stops it, restoring the previous one, when the
+// test ends. A test using it cannot t.Parallel.
 func fresh(t *testing.T) *scheduler {
 	t.Helper()
 	old := std
@@ -35,7 +35,7 @@ func fresh(t *testing.T) *scheduler {
 	return s
 }
 
-// started 起调度器，测试结束时（fresh 的清理里）停掉
+// started brings the scheduler up and stops it when the test ends (in fresh's cleanup).
 func started(t *testing.T, s *scheduler) {
 	t.Helper()
 	if err := s.start(context.Background()); err != nil {
@@ -43,11 +43,11 @@ func started(t *testing.T, s *scheduler) {
 	}
 }
 
-// logLine 一行 JSON 日志
+// logLine is one JSON log line.
 type logLine map[string]any
 
-// captureLogs 把默认 logger 换成真的 xlog（job 字段、trace_id 是它的 handler 从 ctx 里取的），
-// 级别开到 debug；返回的函数随时读出到目前为止的全部日志
+// captureLogs swaps the default logger for a real xlog (whose handler takes the job field and the trace_id out of
+// the ctx) with the level at debug; the function returned reads out every log so far at any time.
 func captureLogs(t *testing.T) func() []logLine {
 	t.Helper()
 	dir := t.TempDir()
@@ -85,7 +85,7 @@ func captureLogs(t *testing.T) func() []logLine {
 	}
 }
 
-// withMsg 挑出 msg 是这一句的日志
+// withMsg picks out the logs whose msg is this one.
 func withMsg(lines []logLine, msg string) []logLine {
 	var out []logLine
 	for _, l := range lines {
@@ -96,7 +96,7 @@ func withMsg(lines []logLine, msg string) []logLine {
 	return out
 }
 
-// captureSpans 换一个同步导出到内存的 TracerProvider
+// captureSpans swaps in a TracerProvider exporting synchronously into memory.
 func captureSpans(t *testing.T) *tracetest.InMemoryExporter {
 	t.Helper()
 	exp := tracetest.NewInMemoryExporter()
@@ -106,19 +106,19 @@ func captureSpans(t *testing.T) *tracetest.InMemoryExporter {
 	return exp
 }
 
-// eventually 等 cond 成立，最多 5s：调度在别的协程里，结果要等一会儿才看得到
+// eventually waits for cond to hold, for at most 5s: scheduling happens in another goroutine, so the result takes a moment to become visible.
 func eventually(t *testing.T, what string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for !cond() {
 		if time.Now().After(deadline) {
-			t.Fatalf("5s 内没等到：%s", what)
+			t.Fatalf("not reached within 5s: %s", what)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
 }
 
-// release 测试结束时关掉 ch，放走卡在它上面的任务（在 fresh 停调度器之前）
+// release closes ch when the test ends, freeing the jobs blocked on it (before fresh stops the scheduler).
 func release(t *testing.T) chan struct{} {
 	ch := make(chan struct{})
 	t.Cleanup(func() { close(ch) })
@@ -127,8 +127,8 @@ func release(t *testing.T) chan struct{} {
 
 func ok(context.Context) error { return nil }
 
-// waitCtx 等 ctx 结束，返回它的错误。2s 还没结束就返回一个别的错误：
-// 该取消 ctx 的代码被改坏时，测试是红而不是挂住
+// waitCtx waits for ctx to end and returns its error. After 2s it returns a different error instead, so that code
+// broken in a way that leaves the ctx uncancelled makes the test go red rather than hang.
 func waitCtx(ctx context.Context) error {
 	select {
 	case <-ctx.Done():

@@ -1,8 +1,8 @@
-// Package xmetric 按配置装好 Prometheus 的 Registry 与 /metrics handler，
-// 并提供一组免去样板的打点快捷方法。
+// Package xmetric sets up a Prometheus Registry and a /metrics handler from the configuration, together with a set of
+// shortcuts that save the boilerplate of recording metrics.
 //
-// 需要完整控制时，Registry() 返回的就是原生的 *prometheus.Registry，
-// 自己 NewCounterVec 再 MustRegister 即可，本包不挡路。
+// For full control, Registry() returns the native *prometheus.Registry, so a NewCounterVec plus MustRegister works as
+// usual; this package does not stand in the way.
 package xmetric
 
 import (
@@ -17,79 +17,78 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// ConfigKey 本模块在配置文件里的顶层 key
+// ConfigKey is this module's top-level key in the config file.
 const ConfigKey = "XMetric"
 
-// defaultHTTPDurationBuckets HTTP 请求耗时默认桶边界（秒）
+// defaultHTTPDurationBuckets are the default bucket boundaries for HTTP request duration (in seconds).
 //
-// 与 prometheus.DefBuckets 同构，头部补一档 1ms 以便观察极快的接口。
-// 用秒而非毫秒：Prometheus 约定以基准单位记录，各类 exporter、
-// 社区看板与告警模板都按秒来，混用单位会让同一个服务导出两套刻度。
+// They have the same shape as prometheus.DefBuckets, with a 1ms bucket added at the front to make very fast endpoints
+// visible. Seconds rather than milliseconds: Prometheus convention records in base units, and the exporters, the
+// community dashboards and the alerting templates all work in seconds; mixing units would export two scales for one service.
 var defaultHTTPDurationBuckets = []float64{0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
 
-// Config 指标配置
+// Config is the metrics configuration.
 type Config struct {
-	// Namespace 指标名前缀。默认无。
+	// Namespace is the metric name prefix. There is none by default.
 	//
-	// 只能是字母、数字、下划线，且不以数字开头，否则启动失败。client_golang
-	// v1.24 按 UTF-8 规则校验名字，不合规的前缀不会报错，而是在导出时被悄悄
-	// 转义：实测 my-app 导出成 my_app_，1app 成了 _app_，中文成了一串下划线，
-	// 看板和告警按配置里写的名字查，什么都查不到。
+	// It may contain only letters, digits and underscores and must not start with a digit, or startup fails.
+	// client_golang v1.24 validates names by UTF-8 rules, so a non-conforming prefix is not reported as an error but
+	// quietly escaped on export: measured, my-app was exported as my_app_, 1app became _app_, and non-ASCII text became
+	// a string of underscores -- so dashboards and alerts searching for the name written in the configuration find nothing.
 	Namespace string `yaml:"Namespace"`
 
-	// ConstLabels 附加到所有指标上的常量标签，包括 Go 运行时与进程指标。默认无。
+	// ConstLabels are constant labels attached to every metric, including the Go runtime and process metrics. There are none by default.
 	//
-	// 典型用途是区分环境和集群：env: "${ENV:dev}"、cluster: "${CLUSTER:local}"。
-	// 标签名的规则同 Namespace，另外不能以 __ 开头（Prometheus 保留），
-	// 也不能是 le、quantile、version（go_info 自带）或框架自带指标的变量标签名
-	// （level、caller、method、status、route、host、name），否则启动失败：
-	// 常量标签附加在所有指标上，撞了名的那个指标就建不起来。
+	// The typical use is telling environments and clusters apart: env: "${ENV:dev}", cluster: "${CLUSTER:local}".
+	// Label names follow the same rules as Namespace and additionally must not start with __ (reserved by Prometheus),
+	// nor be le, quantile, version (carried by go_info) or a variable label name of the framework's own metrics
+	// (level, caller, method, status, route, host, name), or startup fails: a constant label is attached to every
+	// metric, and the metric whose own label name it collides with cannot be built at all.
 	ConstLabels map[string]string `yaml:"ConstLabels"`
 
-	// HTTPDurationBuckets HTTP 出入站耗时 Histogram 的桶边界（秒）。
-	// 默认 [0.001 0.005 0.01 0.025 0.05 0.1 0.25 0.5 1 2.5 5 10]。
+	// HTTPDurationBuckets are the bucket boundaries of the inbound and outbound HTTP duration Histograms (in seconds).
+	// They default to [0.001 0.005 0.01 0.025 0.05 0.1 0.25 0.5 1 2.5 5 10].
 	//
-	// 必须严格递增、都是有限数。写了空列表 [] 启动失败：列表字段是整体替换的，
-	// [] 不是「用默认」，而是被 Prometheus 悄悄换成它自己的 DefBuckets
-	// （少了 1ms 那一档）。要默认值就别写这个字段。
+	// They must be strictly increasing and all finite. Writing an empty list [] fails startup: a list field is replaced
+	// whole, and [] does not mean "use the defaults" but is quietly replaced by Prometheus with its own DefBuckets
+	// (which lacks the 1ms bucket). For the defaults, leave the field out.
 	HTTPDurationBuckets []float64 `yaml:"HTTPDurationBuckets"`
 
-	// HistogramBuckets 快捷方法建出来的业务 Histogram 的桶边界（秒）。
-	// 默认 prometheus.DefBuckets。规则同 HTTPDurationBuckets。
+	// HistogramBuckets are the bucket boundaries of the business Histograms the shortcuts build (in seconds).
+	// They default to prometheus.DefBuckets. The rules are the same as HTTPDurationBuckets'.
 	//
-	// 不在这里拦的话，[1, 0.5, 2] 能通过启动，然后在第一次 HistogramObserve
-	// 时 panic（histogram buckets must be in increasing order）——那是在业务
-	// 请求里，不是在启动时。
+	// Without catching it here, [1, 0.5, 2] would pass startup and then panic on the first HistogramObserve
+	// (histogram buckets must be in increasing order) -- inside a business request, not at startup.
 	HistogramBuckets []float64 `yaml:"HistogramBuckets"`
 
-	// GoMetrics 是否采集 Go 运行时指标（goroutine 数、GC 等）。默认开启。
+	// GoMetrics says whether to collect the Go runtime metrics (goroutine count, GC and so on). It defaults to on.
 	GoMetrics bool `yaml:"GoMetrics"`
 
-	// ProcessMetrics 是否采集进程指标（CPU、内存、文件描述符等）。默认开启。
+	// ProcessMetrics says whether to collect the process metrics (CPU, memory, file descriptors and so on). It defaults to on.
 	ProcessMetrics bool `yaml:"ProcessMetrics"`
 
-	// LogErrorMetric 是否把 Error 及以上级别的日志计入 log_errors_total。默认开启。
+	// LogErrorMetric says whether logs at Error level and above are counted into log_errors_total. It defaults to on.
 	//
-	// 它让「错误率」这条最常用的告警不必等业务先埋点。
-	// 统计的是走 xlog 的日志：不用 xlog 的应用这项不会报错，只是数不到。
+	// It makes the "error rate", the most common alert, available without waiting for the business to instrument it.
+	// What is counted is the logs going through xlog: an application not using xlog gets no error from this, only no count.
 	LogErrorMetric bool `yaml:"LogErrorMetric"`
 }
 
-// nameRE 指标名前缀和标签名的合法形态：经典的 Prometheus 规则，不含冒号
-// （冒号留给录制规则），这样在任何导出格式下名字都原样出现
+// nameRE is the valid form of a metric name prefix and a label name: the classic Prometheus rules, without a colon
+// (colons are reserved for recording rules), so the name appears as it is in every export format.
 var nameRE = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
-// reservedLabels 不能当常量标签名的那些，值是它被谁占着。
+// reservedLabels are the names that cannot be used as constant labels, with the value saying who holds each one.
 //
-// 常量标签附加在所有指标上，和哪个指标自己的变量标签撞名，那个指标就建不起来。
-// 实测（client_golang v1.24.1）不拦的后果：
-//   - le：New 照常通过，第一次 HistogramObserve 在业务请求里 panic
-//   - quantile：NewSummary 当场 panic
-//   - 其余是框架自带指标的变量标签：注册失败，只打一条错误日志，
-//     那组指标从此一个都导不出去，服务照常跑
+// A constant label is attached to every metric, and colliding with some metric's own variable label makes that metric
+// impossible to build. Measured (client_golang v1.24.1), what happens without catching it:
+//   - le: New passes as usual, and the first HistogramObserve panics inside a business request
+//   - quantile: NewSummary panics on the spot
+//   - the rest are variable labels of the framework's own metrics: registration fails, one error log is written,
+//     and that whole group of metrics is never exported again while the service runs on
 //
-// 这些指标分散在各自的模块里，而它们都依赖本模块，没法反过来引用，
-// 所以集中列在这里：给框架加指标、改变量标签时要同步。
+// Those metrics live in their own modules, which all depend on this one and cannot be referenced the other way round,
+// so they are listed here in one place: adding a metric to the framework or changing a variable label updates this list.
 var reservedLabels = map[string]string{
 	"le":       "histogram buckets",
 	"quantile": "summary quantiles",
@@ -100,15 +99,15 @@ var reservedLabels = map[string]string{
 	"route":    "the xgin / xecho request metrics",
 	"host":     "the xhttp request metrics",
 	"name":     "the xgorm, xredis and xcache instance metrics",
-	// go_info 自带常量标签 version，常量标签也附加在 Go 运行时指标上，
-	// 实测撞名时 New 报 attempted wrapping with already existing label name "version"
+	// go_info carries the constant label version, and constant labels are attached to the Go runtime metrics too;
+	// measured, a collision makes New report attempted wrapping with already existing label name "version"
 	"version": "go_info in the Go runtime metrics",
 }
 
-// Validate 检查配置本身说不通的地方，在建任何指标之前就失败。
+// Validate checks what does not make sense in the configuration itself and fails before any metric is built.
 //
-// xconfig.Unmarshal 解完配置文件里的 XMetric 块会调它；直接调 New 的，New 也会调一次。
-// 返回普通 error，由调它的那一层包一次 xerror。
+// xconfig.Unmarshal calls it after decoding the XMetric block of the config file; a direct call to New calls it once as well.
+// It returns a plain error, which the layer calling it wraps in an xerror once.
 func (c Config) Validate() error {
 	if c.Namespace != "" && !nameRE.MatchString(c.Namespace) {
 		return fmt.Errorf("Namespace %q is not a valid metric name prefix: use letters, digits and underscores, not starting with a digit", c.Namespace)
@@ -130,7 +129,7 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// validBuckets nil 表示用默认值；写了就必须非空、有限、严格递增
+// validBuckets treats nil as "use the defaults"; anything written must be non-empty, finite and strictly increasing.
 func validBuckets(b []float64) error {
 	if b == nil {
 		return nil
@@ -149,13 +148,13 @@ func validBuckets(b []float64) error {
 	return nil
 }
 
-// withDefaults 没给桶（nil）的补上默认值。
+// withDefaults fills in the defaults for buckets that were not given (nil).
 //
-// 直接用 Config{} 调 New 的话两个桶都是 nil，交给 Prometheus 就是它自己的
-// DefBuckets，而不是这里的默认值——同一个「没配」有两种结果
+// Calling New with a bare Config{} leaves both bucket sets nil, and handing that to Prometheus would give its own
+// DefBuckets rather than the defaults here -- one "not configured" with two different outcomes.
 func (c Config) withDefaults() Config {
 	d := DefaultConfig()
-	// 拷一份：调用方手里那个 map 之后再改，不该改到已经装好的设施
+	// A copy is taken: the caller changing their map later must not change an already assembled setup.
 	c.ConstLabels = maps.Clone(c.ConstLabels)
 	if c.HTTPDurationBuckets == nil {
 		c.HTTPDurationBuckets = d.HTTPDurationBuckets
@@ -166,7 +165,7 @@ func (c Config) withDefaults() Config {
 	return c
 }
 
-// DefaultConfig 全部默认值集中在这里。
+// DefaultConfig holds every default in one place.
 func DefaultConfig() Config {
 	return Config{
 		HTTPDurationBuckets: slices.Clone(defaultHTTPDurationBuckets),
