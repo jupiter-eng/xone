@@ -43,7 +43,7 @@ By the time every start hook has run, the config file still holds a top-level ke
   `import _ "github.com/jupiter-eng/xone/xgorm"` (or a package using it).
 - **The business's own block is read too late**: a block first read with `xconfig.Unmarshal` inside
   `Start` does not count. Move it into `main` before `xone.Run`, or into a `BeforeStart` hook, see
-  [xconfig](../xconfig/README.md#注意事项).
+  [xconfig](../xconfig/README.md#notes).
 - A package that uses a block only when it is configured checks with `xconfig.Has(key)`: asking
   counts as claiming it.
 

@@ -1,20 +1,22 @@
-// Package xconfig 提供集成包写配置解码时需要的那一点东西。
+// Package xconfig provides the little an integration package needs in order to decode its configuration.
 //
-// 框架读配置的规矩是「默认值预填在结构体里、未知字段是错误」。
-// 结构体字段上这两条都自动成立，但**集合装不下默认值**：
-// map 的 value 和切片元素都是从零值开始解的，框架不知道该拿什么去填。
+// The framework's rule for reading configuration is "defaults pre-filled in the struct, an unknown field is
+// an error". Both hold automatically for struct fields, but **a collection cannot hold defaults**: the values
+// of a map and the elements of a slice are decoded starting from their zero value, and the framework has
+// nothing to pre-fill them with.
 //
-// 多实例的 Clients 块不用操这个心：UnmarshalClients 拿你给的默认值逐个实例铺好再解。
-// 别的集合要默认值，就给元素类型写一个 UnmarshalYAML，先铺默认值再解：
+// A multi-instance Clients block does not have to worry about this: UnmarshalClients spreads the given
+// defaults over every instance before decoding. Another collection that needs defaults gets an UnmarshalYAML
+// on its element type, which pre-fills the defaults and then decodes:
 //
 //	func (c *ClientConfig) UnmarshalYAML(n *yaml.Node) error {
 //		*c = DefaultClientConfig()
-//		type raw ClientConfig // 换个类型，否则这里会递归调用自己
+//		type raw ClientConfig // a different type, otherwise this would call itself recursively
 //		return xconfig.DecodeStrict(n, (*raw)(c))
 //	}
 //
-// 这里必须用 DecodeStrict 而不是 n.Decode：后者不带严格检查，
-// 于是「字段拼错就启动失败」这条保证会在集合里悄悄失效。
+// DecodeStrict is required here rather than n.Decode: the latter performs no strict check, so the guarantee
+// that "a misspelled field fails startup" would quietly stop holding inside collections.
 package xconfig
 
 import (
@@ -23,7 +25,7 @@ import (
 	"github.com/jupiter-eng/xone/internal/config"
 )
 
-// Unmarshal 把配置文件里 key 那一块解进 into。
+// Unmarshal decodes the key block of the config file into into.
 //
 //	func initXRedis(ctx context.Context) error {
 //		c := DefaultConfig()
@@ -33,58 +35,63 @@ import (
 //		...
 //	}
 //
-// into 里已经是默认值，文件里没写的字段保持不变——所以不需要指针字段来区分
-// 「没配」和「配成零值」。整块没配时 into 原样不动，返回 nil；要区分
-// 「没配」和「配了」用 Has。
+// into already holds the defaults and a field the file does not set is left unchanged -- which is why no
+// pointer fields are needed to tell "not configured" from "configured to the zero value". When the whole
+// block is absent, into is left untouched and nil is returned; to tell "not configured" from "configured",
+// use Has.
 //
-// 认不出的字段是错误。into 若实现了 Validate() error，解完会调一次。
+// An unrecognized field is an error. If into implements Validate() error, it is called once after decoding.
 //
-// **在 Start 之前任何时候调都行**：在 main 里、在 xone.Run 之前、在启动钩子里都一样。
-// 第一次调用时框架才去找配置文件、加载它，读到的永远是最终值——不会因为
-// 读得早就静默拿到一份默认值。只在 Start 里才第一次读的块不算有人认领：
-// 启动钩子跑完时框架把没人读过的顶层 key 报成启动失败。
+// **It may be called at any time before Start**: in main, before xone.Run, or inside a start hook, all the
+// same. The framework looks for the config file and loads it on the first call, so what is read is always the
+// final value -- reading early never quietly yields a set of defaults. A block first read inside Start does
+// not count as claimed: once the start hooks have run, the framework reports every top-level key nobody read
+// as a startup failure.
 func Unmarshal(key string, into any) error { return config.Unmarshal(key, into) }
 
-// Has 报告配置文件里有没有写这一块，用于「配了才初始化」。
+// Has reports whether the config file writes this block, for "initialize only when configured".
 //
 //	func initXRedis(ctx context.Context) error {
 //		if !xconfig.Has(ConfigKey) {
-//			return nil // 没配就不建，本模块是可选依赖
+//			return nil // not configured means nothing is built; this module is an optional dependency
 //		}
 //		...
 //	}
 //
-// 和 Unmarshal 一样，问过这一块就算你认领了它：框架在全部启动钩子跑完之后
-// 会把没人认领的顶层 key 报出来，跳过的那些不该落在那张名单里。
+// As with Unmarshal, asking about a block counts as claiming it: once every start hook has run, the framework
+// reports the top-level keys nobody claimed, and the ones that were skipped must not be on that list.
 func Has(key string) bool { return config.Has(key) }
 
-// UnmarshalClients 解一个「既支持单实例也支持多实例」的配置块，按名字给出每个实例。
+// UnmarshalClients decodes a block that supports both a single instance and several, and returns each
+// instance by name.
 //
-//	XGorm:                  # 单实例，直接写字段，名字就是 default
+//	XGorm:                  # a single instance, written as fields; the name is default
 //	  DSN: "${DB_DSN}"
 //
-//	XGorm:                  # 多实例，按名字写
+//	XGorm:                  # several instances, written by name
 //	  Clients:
 //	    default: {DSN: "${DB_DSN}"}
 //	    report:  {DSN: "${REPORT_DSN}"}
 //
 //	clients, err := xconfig.UnmarshalClients(ConfigKey, DefaultClientConfig)
 //
-// 看有没有 Clients 决定按哪种解。两种混着写直接报错：那时候
-// 「default 到底是哪个」没有一个不让人意外的答案；写了 Clients 却是空的也报错。
+// The presence of Clients decides which form is decoded. Mixing the two is an error outright: there is no
+// unsurprising answer to "which one is default" in that case. Writing Clients and leaving it empty is an
+// error too.
 //
-// defaults 提供单个实例的默认值，两种写法里的每个实例都先铺上它再解，
-// 所以文件里没写的字段保持默认——实例类型不必自己写 UnmarshalYAML。
-// 整块没配时返回 nil；其余规矩与 Unmarshal 相同（认领、先加载、Validate）。
+// defaults supplies the defaults for a single instance, and every instance in either form is pre-filled with
+// them before decoding, so a field the file does not set keeps its default -- the instance type does not have
+// to write an UnmarshalYAML of its own. When the whole block is absent it returns nil; the rest of the rules
+// are the same as Unmarshal's (claiming, loading first, Validate).
 func UnmarshalClients[C any](key string, defaults func() C) (map[string]C, error) {
 	return config.UnmarshalClients(key, defaults)
 }
 
-// DecodeStrict 把一个 YAML 节点解进 v，认不出的字段是错误。
+// DecodeStrict decodes a YAML node into v, where an unrecognized field is an error.
 //
-// 只在集合元素自己的 UnmarshalYAML 里用（见包文档）：节点是 yaml 交给
-// UnmarshalYAML 的那一个，报错里的文件和行号照样是配置文件里的。
+// Use it only inside a collection element's own UnmarshalYAML (see the package doc): the node is the one yaml
+// hands to UnmarshalYAML, so the file and line number in an error still point into the config file.
 func DecodeStrict(node *yaml.Node, v any) error { return config.DecodeStrict(node, v) }
 
-// DefaultClientName 单实例写法被规整成的名字
+// DefaultClientName is the name the single-instance form is normalized to.
 const DefaultClientName = config.DefaultClientName

@@ -25,7 +25,6 @@ docs/guide.md
 docs/images/architecture.svg
 docs/images/lifecycle.svg
 docs/observability.md
-docs/troubleshooting.md
 e2e/.gitignore
 e2e/baseline/main.go
 e2e/clickhouse_auth_test.go
@@ -206,9 +205,6 @@ xcache/go.mod
 xcache/metric.go
 xcache/xcache.go
 xcache/xcache_test.go
-xconfig/README.md
-xconfig/xconfig.go
-xconfig/xconfig_test.go
 xcron/README.md
 xcron/go.mod
 xcron/helpers_test.go
