@@ -198,7 +198,6 @@ scripts/mutations/xredis.py
 scripts/mutations/xtrace.py
 scripts/release.sh
 scripts/test.sh
-xapp/README.md
 xhttp/README.md
 xhttp/bench_test.go
 xhttp/config.go
@@ -252,10 +251,3 @@ xredis/trace_test.go
 xredis/tracing_test.go
 xredis/xredis.go
 xredis/xredis_test.go
-xtrace/README.md
-xtrace/config.go
-xtrace/go.mod
-xtrace/propagator.go
-xtrace/propagator_test.go
-xtrace/xtrace.go
-xtrace/xtrace_test.go

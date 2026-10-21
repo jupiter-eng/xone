@@ -46,7 +46,7 @@ mutate("透传 Header 只收可信对端发来的", "xtrace/propagator.go", "./x
        swap('\tif !fromTrustedPeer(carrier) {\n\t\tp.warnUntrusted(carrier)', '\tif false && !fromTrustedPeer(carrier) {\n\t\tp.warnUntrusted(carrier)'))
 # baggage 和透传头是同一种东西，OTel 自带的那个谁发来的都收
 mutate("baggage 只收可信对端发来的", "xtrace/propagator.go", "./xtrace", "TestNew_InstalledPropagatorAcceptsBaggageOnlyFromTrustedPeers",
-       swap('\tif !fromTrustedPeer(carrier) {\n\t\t// 只告警一次', '\tif false {\n\t\t// 只告警一次'))
+       swap('\tif !fromTrustedPeer(carrier) {\n\t\t// Warned once only', '\tif false {\n\t\t// Warned once only'))
 mutate("装的是只收可信对端的 baggage", "xtrace/xtrace.go", "./xtrace", "TestNew_InstalledPropagatorAcceptsBaggageOnlyFromTrustedPeers",
        swap('&trustedBaggage{}', 'propagation.Baggage{}'))
 mutate("不可信对端带来 baggage 时只告警一次", "xtrace/propagator.go", "./xtrace", "TestTrustedBaggage",

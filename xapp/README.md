@@ -54,4 +54,4 @@ XApp:
 - **`Profiles` and `Import` are read by the configuration loader itself** and taken out of `XApp` once read, so what xapp sees is only `Name` and `Version`.
 - **Metrics do not read this block**: to tell applications apart in metrics, use `XMetric.ConstLabels` (such as `app: shop.order.api`).
 - **Environment variables win over this block**: `OTEL_RESOURCE_ATTRIBUTES` / `OTEL_SERVICE_NAME` override `Name` / `Version`. The precedence is in
-  [xtrace "行为与实测"](../xtrace/README.md#行为与实测).
+  [xtrace "Behavior (measured)"](../xtrace/README.md#behavior-measured).

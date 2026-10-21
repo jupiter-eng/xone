@@ -12,7 +12,7 @@ README (the index is in [`config.md`](config.md#config-blocks--module-documentat
 | The access log fields and the masking rules | [xgin "Access log"](../xgin/README.md#access-log) (xecho's fields and rules are identical, see [xecho "Access log"](../xecho/README.md#access-log)) |
 | Building a dashboard: which metrics the framework ships | [Metrics](#metrics) |
 | How tracing propagates and whose headers are accepted | [Propagation and the trust boundary](#propagation-and-the-trust-boundary) |
-| Exporting spans | [xtrace "快速上手"](../xtrace/README.md#快速上手): `xtrace.AddSpanProcessor(...)` |
+| Exporting spans | [xtrace "Quick start"](../xtrace/README.md#quick-start): `xtrace.AddSpanProcessor(...)` |
 
 - [Logs](#logs)
   - [The framework's own logs](#the-frameworks-own-logs)
@@ -70,7 +70,7 @@ Each module's own logs are under "Observability" in its README:
 `partition` / `offset` / `group`) · [xcron](../xcron/README.md#logs) (`cron job finished` /
 `cron job failed` / `cron job panicked`, `cron job skipped, previous run still running`) ·
 [xflow](../xflow/README.md#logs) (`xflow flow done` / `xflow flow failed`; the per-step
-`xflow step … done` is INFO and `… failed` is WARN) · [xtrace](../xtrace/README.md#日志).
+`xflow step … done` is INFO and `… failed` is WARN) · [xtrace](../xtrace/README.md#logs).
 
 ## Metrics
 
@@ -139,7 +139,7 @@ Three things are accepted inbound and sent outbound, under different trust rules
 | Forwarded headers | whatever `XTrace.ForwardHeaders` / `ForwardHeaderRules` list | **trusted peers only** | `ForwardHeaders` goes to every downstream, `ForwardHeaderRules` only to matching hosts |
 
 - **Trace identifiers are accepted from anyone, and so is the sampling decision**: the sampler is
-  `ParentBased` (see [xtrace "行为与实测"](../xtrace/README.md#行为与实测)), so a request arriving
+  `ParentBased` (see [xtrace "Behavior (measured)"](../xtrace/README.md#behavior-measured)), so a request arriving
   with `sampled=01` is always sampled and exported, beyond the reach of `SampleRatio`. A public
   client sending `traceparent: 00-…-01` on every request fills this hop and every hop below it with
   spans — the cost lands on the tracing backend's storage and export bandwidth. To limit it, strip

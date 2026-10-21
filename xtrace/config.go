@@ -1,10 +1,10 @@
-// Package xtrace 按配置装好 OpenTelemetry 的全局 TracerProvider 与 Propagator。
+// Package xtrace sets up OpenTelemetry's global TracerProvider and Propagator from the configuration.
 //
-// 使用者拿到的是原生的 OpenTelemetry：业务代码直接用 otel.Tracer("...") 开 Span，
-// 不需要认识本包。本包只有两件事是自己的：
+// What the caller gets is native OpenTelemetry: business code opens Spans with otel.Tracer("...") directly and does
+// not have to know this package. Only two things here are this package's own:
 //
-//   - AddSpanProcessor —— 挂上报用的 exporter（框架不内置任何一个）
-//   - HeaderPropagator —— 按配置透传自定义 Header，如 X-Request-Id
+//   - AddSpanProcessor -- attaches the exporter that does the reporting (the framework bundles none)
+//   - HeaderPropagator -- forwards custom headers such as X-Request-Id, from the configuration
 package xtrace
 
 import (
@@ -13,63 +13,63 @@ import (
 	"time"
 )
 
-// ConfigKey 本模块在配置文件里的顶层 key
+// ConfigKey is this module's top-level key in the config file.
 const ConfigKey = "XTrace"
 
-// ForwardHeaderRule 按域名透传的 Header 规则。
-// 仅当目标域名匹配 Domains 中任一模式时，才透传对应的 Headers。
+// ForwardHeaderRule is a per-domain header forwarding rule.
+// The matching headers are forwarded only when the target domain matches one of the patterns in Domains.
 type ForwardHeaderRule struct {
-	// Domains 域名模式，支持精确匹配和通配前缀（*.example.com）
+	// Domains are the domain patterns, supporting exact matches and a wildcard prefix (*.example.com).
 	Domains []string `yaml:"Domains"`
 
-	// Headers 该规则下要透传的 Header
+	// Headers are the headers to forward under this rule.
 	Headers []string `yaml:"Headers"`
 }
 
-// Config 链路配置
+// Config is the tracing configuration.
 type Config struct {
-	// Enable 是否开启链路。默认开启。
+	// Enable says whether tracing is on. It defaults to on.
 	//
-	// 关掉之后 Span 仍然能创建（是个 noop），TraceID 不再生成，
-	// 但 Header 透传照常生效——那是两件事。
+	// With it off, Spans can still be created (they are noops) and no TraceID is generated any more,
+	// while header forwarding keeps working -- those are two different things.
 	Enable bool `yaml:"Enable"`
 
-	// Console 是否把 Span 打到标准输出，仅用于本地调试。默认关闭。
+	// Console says whether Spans are printed to standard output, for local debugging only. It defaults to off.
 	Console bool `yaml:"Console"`
 
-	// SampleRatio 根 Span 的采样率，取值 [0, 1]。默认 1。越界或 NaN 启动失败。
+	// SampleRatio is the sampling ratio for root Spans, in [0, 1]. It defaults to 1. Out of range or NaN fails startup.
 	//
-	// 只管「没有上游」的那些链路：上游传来了采样决定（traceparent 的 sampled 位）
-	// 就照它的来，采样率是 1 也不例外——否则上游刻意丢掉的链路会在这里被捡回来。
+	// It only governs traces with no upstream: when an upstream sends a sampling decision (traceparent's sampled bit)
+	// that decision is followed, even at a ratio of 1 -- otherwise a trace an upstream deliberately dropped would be picked back up here.
 	//
-	// 写 0 是「新链路一条都不采」，但 Span 照常创建、TraceID 照常生成和透传——
-	// 想让下游拿得到 TraceID、本地又不落 Span 时就这么配。
-	// 要连 Span 都不产生（noop provider）请用 Enable: false，那是另一件事。
+	// Writing 0 means "sample no new trace at all", while Spans are still created and TraceIDs are still generated and
+	// forwarded -- which is how to give downstream services a TraceID without storing Spans locally.
+	// To produce no Spans at all (a noop provider), use Enable: false, which is a different thing.
 	SampleRatio float64 `yaml:"SampleRatio"`
 
-	// ShutdownTimeout 关闭时等待 Span 导出完成的上限。默认 5s，必须大于 0。
+	// ShutdownTimeout is the upper bound on waiting for Spans to be exported during shutdown. It defaults to 5s and must be greater than 0.
 	//
-	// 必须有上限：导出端不可达时 Shutdown 会一直阻塞，
-	// 没有 deadline 就是退出时挂死。
+	// There has to be an upper bound: with the export endpoint unreachable, Shutdown blocks forever,
+	// and without a deadline that is a hang on exit.
 	//
-	// 同样地，0 不是「不限时」而是「一点都不等」：Shutdown 拿到的是一个
-	// 已经过期的 context，缓冲区里还没发出去的 Span 会被直接丢掉。
+	// Likewise, 0 does not mean "no limit" but "do not wait at all": Shutdown receives an already expired context,
+	// and the Spans still in the buffer are dropped outright.
 	ShutdownTimeout time.Duration `yaml:"ShutdownTimeout"`
 
-	// ForwardHeaders 向所有域名透传的 Header。默认无。
+	// ForwardHeaders are the headers forwarded to every domain. There are none by default.
 	//
-	// 只收可信对端发来的值：用 xgin 时就是 XGin.TrustedProxies 里的那些（xecho 是 XEcho.TrustedProxies），
-	// 默认只信私有网段（负载均衡、K8s 的 Ingress 和 Pod），公网直连的不收。理由见 HeaderPropagator.Extract。
+	// Only values from a trusted peer are accepted: with xgin that is whatever is in XGin.TrustedProxies (XEcho.TrustedProxies for xecho),
+	// which by default trusts only the private ranges (load balancers, a K8s Ingress and Pods) and not a direct connection from the internet. The reasoning is in HeaderPropagator.Extract.
 	ForwardHeaders []string `yaml:"ForwardHeaders"`
 
-	// ForwardHeaderRules 按域名透传的 Header 规则。默认无。
+	// ForwardHeaderRules are the per-domain header forwarding rules. There are none by default.
 	//
-	// 用于不该外泄的内部标识：只发给自己人，不发给第三方。
-	// 与 ForwardHeaders 一样，只收可信对端发来的值。
+	// They are for internal identifiers that must not leak: sent only to our own services, never to a third party.
+	// As with ForwardHeaders, only values from a trusted peer are accepted.
 	ForwardHeaderRules []ForwardHeaderRule `yaml:"ForwardHeaderRules"`
 }
 
-// DefaultConfig 全部默认值集中在这里。
+// DefaultConfig holds every default in one place.
 func DefaultConfig() Config {
 	return Config{
 		Enable:          true,
@@ -78,24 +78,24 @@ func DefaultConfig() Config {
 	}
 }
 
-// Validate 检查配置本身说不通的地方，透传 Header 的规则也在内。
+// Validate checks what does not make sense in the configuration itself, the header forwarding rules included.
 //
-// xconfig.Unmarshal 解完配置文件里的 XTrace 块会调它，配错的值在读配置时就失败；
-// 直接调 New 的，New 也会调一次。
+// xconfig.Unmarshal calls it after decoding the XTrace block of the config file, so a misconfigured value fails while
+// the config is read; a direct call to New calls it once as well.
 //
-// 这里返回普通 error，由调它的那一层（xconfig.Unmarshal 或 New）包一次 xerror：
-// 每层都包的话，消息里会套出两层 xtrace。
+// It returns a plain error here, which the layer calling it (xconfig.Unmarshal or New) wraps in an xerror once:
+// wrapping at every level would nest two layers of xtrace into the message.
 func (c Config) Validate() error {
 	if c.ShutdownTimeout <= 0 {
 		return fmt.Errorf("ShutdownTimeout must be > 0 "+
 			"(0 is not unlimited, it is no wait at all, and buffered spans get dropped), got=%v", c.ShutdownTimeout)
 	}
-	// NaN 跟任何数比较都是 false，所以要单独判：不拦的话 TraceIDRatioBased
-	// 会拿它算出一个说不清的阈值
+	// NaN compares false against anything, so it needs its own check: without catching it, TraceIDRatioBased
+	// would compute some indefinable threshold from it.
 	if math.IsNaN(c.SampleRatio) || c.SampleRatio < 0 || c.SampleRatio > 1 {
 		return fmt.Errorf("SampleRatio must be within [0, 1], got=%v", c.SampleRatio)
 	}
-	// 通配写错、一个头两边都写，都是决定内部标识发给谁的配置，读配置时就拦下
+	// A malformed wildcard and a header written on both sides are both configuration deciding who an internal identifier is sent to, so they are caught while the config is read.
 	if c.forwardEnabled() {
 		if _, err := newHeaderPropagator(c.ForwardHeaders, c.ForwardHeaderRules); err != nil {
 			return err
@@ -104,7 +104,7 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// forwardEnabled 是否配置了 Header 透传
+// forwardEnabled reports whether any header forwarding is configured.
 func (c Config) forwardEnabled() bool {
 	return len(c.ForwardHeaders) > 0 || len(c.ForwardHeaderRules) > 0
 }
