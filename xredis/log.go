@@ -15,23 +15,23 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// maxLoggedKey key 最多记这么多字节，超出的截掉并带上 key_truncated。
-// key 是业务拼出来的，偶尔有人把一整段 JSON 当 key，一条日志不该因此撑到几十 KB
+// maxLoggedKey is how many bytes of a key are recorded at most; anything beyond is cut and key_truncated is added.
+// A key is assembled by business code, and someone occasionally uses a whole JSON document as one; a log line should not grow to tens of KB for that.
 const maxLoggedKey = 256
 
-// maxLoggedPipelineCmds 一条 pipeline 日志最多列出这么多个命令名，总数另见 count
+// maxLoggedPipelineCmds is how many command names one pipeline log line lists at most; the total is in count.
 const maxLoggedPipelineCmds = 10
 
-// logHook 把每条命令、每个 pipeline 记一条日志（ClientConfig.Log）。
+// logHook records one line per command and per pipeline (ClientConfig.Log).
 //
-// 只记命令名和第一个 key，不记值、不记其余参数：值里常有会话、令牌、个人信息，
-// 与 xgorm 只记占位符 SQL、链路不写 db.statement 是同一条原则。key 是整条记的：
-// 业务把令牌、手机号拼进 key 的话，它们就进了日志（见 ClientConfig.Log）。
-// ctx 用命令自己的：xlog 由此给日志带上 trace_id / span_id。钩子挂在链路钩子之后，
-// 在它里面，所以 span_id 是这条命令的 redis Span（见 New）。
+// Only the command name and the first key are recorded, never the value and never the other arguments: a value often
+// holds a session, a token or personal information, the same principle that has xgorm record SQL with placeholders
+// and keep db.statement off the trace. The key is recorded whole: if business code puts a token or a phone number
+// into a key, it reaches the log (see ClientConfig.Log).
+// The ctx is the command's own, which is how xlog gives the log a trace_id / span_id. The hook is added after the tracing hook and therefore runs inside it, so span_id is this command's redis Span (see New).
 type logHook struct {
-	name string        // 实例名，配了好几个 Redis 时分得清是哪一个；直接调 New 建的为空
-	slow time.Duration // 0 不记慢命令
+	name string        // the instance name, which tells several Redis instances apart; empty for one built by calling New directly
+	slow time.Duration // 0 records no slow commands
 }
 
 func (h logHook) DialHook(next redis.DialHook) redis.DialHook { return next }
@@ -54,11 +54,11 @@ func (h logHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.Proce
 	}
 }
 
-// command 一条命令记一行。redis.Nil（key 不存在）不是故障，记成普通的一行、带 nil=true
+// command records one line per command. redis.Nil (the key does not exist) is not a failure and is recorded as an ordinary line with nil=true.
 func (h logHook) command(ctx context.Context, cmd redis.Cmder, err error, elapsed time.Duration) {
 	failed := err != nil && !errors.Is(err, redis.Nil)
 	if !failed && !h.isSlow(elapsed) && !slog.Default().Enabled(ctx, slog.LevelInfo) {
-		return // slog 不收 info 时不白拼字段：这是每条命令都走的路
+		return // do not assemble the fields for nothing when slog is not accepting info: this is the path every command takes
 	}
 
 	attrs := make([]any, 0, 12)
@@ -79,14 +79,14 @@ func (h logHook) command(ctx context.Context, cmd redis.Cmder, err error, elapse
 	}
 }
 
-// pipeline 整个 pipeline 记一行：命令数、前几个命令名、第一个真正的错误。
-// 不带 key：一个 pipeline 可以有上千条命令，每条的 key 都列出来一行日志就没边了。
-// count 是 go-redis 实际发出去的命令数：TxPipelined 的里面带着 MULTI 和 EXEC
+// pipeline records one line for the whole pipeline: the command count, the first few command names and the first real error.
+// It carries no key: a pipeline may hold thousands of commands, and listing every key would make the line endless.
+// count is the number of commands go-redis actually sent: a TxPipelined holds MULTI and EXEC inside it.
 func (h logHook) pipeline(ctx context.Context, cmds []redis.Cmder, err error, elapsed time.Duration) {
-	// WATCH 的 key 被别人改了：EXEC 回空数组，go-redis 给 pipeline 和里面每条命令都设成
-	// redis.TxFailedErr。那是乐观锁的正常结果（调用方重试就是了），不是故障，与 redis.Nil 同理
+	// A WATCHed key changed by somebody else: EXEC answers an empty array and go-redis sets redis.TxFailedErr on the
+	// pipeline and on every command inside it. That is the normal outcome of optimistic locking (the caller retries) and not a failure, as with redis.Nil.
 	txFailed := errors.Is(err, redis.TxFailedErr)
-	// Exec 在某条命令拿到 redis.Nil 时也返回它，那不算失败；找第一个不是 Nil 的
+	// Exec also returns redis.Nil when one command got it, which is not a failure either; find the first one that is not Nil.
 	if err == nil || errors.Is(err, redis.Nil) || txFailed {
 		err = nil
 		for _, c := range cmds {
@@ -119,7 +119,7 @@ func (h logHook) pipeline(ctx context.Context, cmds []redis.Cmder, err error, el
 	}
 }
 
-// nameAttr 实例名。直接调 New 建的没有名字，就不写这个字段
+// nameAttr is the instance name. One built by calling New directly has no name and the field is not written.
 func (h logHook) nameAttr() []any {
 	if h.name == "" {
 		return nil
@@ -129,7 +129,7 @@ func (h logHook) nameAttr() []any {
 
 func (h logHook) isSlow(elapsed time.Duration) bool { return h.slow > 0 && elapsed > h.slow }
 
-// nilAttr 没查到时补一个 nil=true，其余原样
+// nilAttr adds nil=true for a miss and passes everything else through.
 func nilAttr(err error, extra ...any) []any {
 	if errors.Is(err, redis.Nil) {
 		return append([]any{"nil", true}, extra...)
@@ -137,10 +137,10 @@ func nilAttr(err error, extra ...any) []any {
 	return extra
 }
 
-// keyAttrs key 超长时截到 maxLoggedKey 字节（不切断 UTF-8 字符），带上 key_truncated。
+// keyAttrs cuts an overlong key to maxLoggedKey bytes (without cutting a UTF-8 character) and adds key_truncated.
 //
-// 往回找字符起点最多退 utf8.UTFMax-1 个字节：合法的 UTF-8 一定在这几步里找到。
-// key 是任意字节串，一串 0x80 这样的根本没有起点，一路退下去会截成空串
+// Walking back to a character boundary takes at most utf8.UTFMax-1 bytes: valid UTF-8 is found within those steps.
+// A key is an arbitrary byte string, and one that is a run of 0x80 has no boundary at all, so walking back forever would cut it to an empty string.
 func keyAttrs(key string) []any {
 	if len(key) <= maxLoggedKey {
 		return []any{"key", key}
@@ -155,17 +155,17 @@ func keyAttrs(key string) []any {
 	return []any{"key", key[:cut], "key_truncated", true}
 }
 
-// invalidCmdName 命令名不像命令名时记成这个
+// invalidCmdName is what a command name that does not look like one is recorded as.
 const invalidCmdName = "<invalid>"
 
-// validCmdName Redis 的命令名，加上模块命令里的点（json.set、ft.search）、子命令记法里的 |，最长 64 字节
+// validCmdName is a Redis command name, plus the dot of module commands (json.set, ft.search) and the | of the subcommand form, at most 64 bytes.
 var validCmdName = regexp.MustCompile(`^[a-z][a-z0-9._|-]{0,63}$`)
 
-// cmdName 日志里的命令名。
+// cmdName is the command name in the log.
 //
-// go-redis 的 cmd.Name() 是第 1 个参数原样转小写，不截断、不校验：实测
-// Do(ctx, "SET k1 <值>") 记出来是 cmd: "set k1 <值>"，整条命令连同值都在命令名里。
-// 不像命令名的一律换成固定的占位，不猜它哪一截是命令
+// go-redis's cmd.Name() is the first argument lowercased as it is, neither truncated nor validated: measured,
+// Do(ctx, "SET k1 <value>") is recorded as cmd: "set k1 <value>", with the whole command and its value inside the command name.
+// Anything that does not look like a command name is replaced by a fixed placeholder rather than guessing which part is the command.
 func cmdName(cmd redis.Cmder) string {
 	if name := cmd.Name(); validCmdName.MatchString(name) {
 		return name
@@ -173,30 +173,30 @@ func cmdName(cmd redis.Cmder) string {
 	return invalidCmdName
 }
 
-// firstKey 取命令的第一个 key，认不准就不给。
+// firstKey takes a command's first key, and gives none when it cannot be sure.
 //
-// go-redis v9.22.0 自己知道 key 在哪（Cmder 的 firstKeyPos），但那是未导出的方法；
-// 它的兜底又是「不在免 key 名单里就当第 1 个参数」：MIGRATE（第 1 个是 host）、
-// INFO、KEYS 都会被当成有 key。这里反过来：只认下面名单里的命令，名单外的一律不记 key。
-// 猜错的代价是把一个值写进日志，漏记一个 key 只是少一个字段。
+// go-redis v9.22.0 knows where the key is itself (Cmder's firstKeyPos), but that is an unexported method;
+// and its fallback is "anything not on the no-key list has the key as the first argument": MIGRATE (whose first is a host),
+// INFO and KEYS would all be taken to have a key. This does the reverse: only the commands on the list below are recognized, and anything else records no key.
+// Guessing wrong costs a value written into the log, while missing a key only costs one field.
 //
-// AUTH、HELLO（带 AUTH 时参数里就是密码）、MIGRATE（可以带 AUTH）、CONFIG SET 这类
-// 参数里可能有凭证的命令不在名单里，除了命令名什么都不记。
+// AUTH, HELLO (whose arguments are the password when AUTH is given), MIGRATE (which may carry AUTH) and CONFIG SET --
+// commands whose arguments may hold credentials -- are not on the list, and nothing but the command name is recorded for them.
 func firstKey(cmd redis.Cmder) (string, bool) {
 	args := cmd.Args()
 	pos := 0
 	switch name := cmd.Name(); name {
 	case "eval", "evalsha", "eval_ro", "evalsha_ro", "fcall", "fcall_ro":
-		// EVAL script numkeys key... arg...：numkeys 为 0 时第 3 个参数已经是 ARGV
+		// EVAL script numkeys key... arg...: with numkeys 0, the 3rd argument is already ARGV
 		if numKeys(args) > 0 {
 			pos = 3
 		}
 	case "xread":
-		// XREAD [COUNT n] [BLOCK ms] STREAMS key... id...：COUNT / BLOCK 后面都是数字，
-		// 第一个 STREAMS 就是那个关键字
+		// XREAD [COUNT n] [BLOCK ms] STREAMS key... id...: what follows COUNT / BLOCK is a number,
+		// so the first STREAMS is that keyword
 		pos = afterStreams(args, 1)
 	case "xreadgroup":
-		// XREADGROUP GROUP group consumer [...] STREAMS key...：组名、消费者名可以恰好叫 streams，跳过它们
+		// XREADGROUP GROUP group consumer [...] STREAMS key...: the group and consumer names may happen to be "streams", so they are skipped
 		pos = afterStreams(args, 4)
 	default:
 		if _, ok := keyAtFirstArg[name]; ok {
@@ -209,7 +209,7 @@ func firstKey(cmd redis.Cmder) (string, bool) {
 	return argString(args, pos)
 }
 
-// afterStreams 从 from 起找 STREAMS 关键字，返回它后面那个参数的位置，找不到返回 0
+// afterStreams looks for the STREAMS keyword from index from and returns the position of the argument after it, or 0 when there is none.
 func afterStreams(args []any, from int) int {
 	for i := from; i < len(args)-1; i++ {
 		if s, ok := args[i].(string); ok && strings.EqualFold(s, "streams") {
@@ -219,8 +219,8 @@ func afterStreams(args []any, from int) int {
 	return 0
 }
 
-// numKeys EVAL / FCALL 的 numkeys。go-redis 的 Eval 传的是 int（len(keys)），
-// 自己用 Do 拼的多半是字符串；认不出来当 0，不记 key
+// numKeys is EVAL / FCALL's numkeys. go-redis's Eval passes an int (len(keys)),
+// while one assembled with Do is usually a string; an unrecognized one counts as 0 and no key is recorded.
 func numKeys(args []any) int64 {
 	if len(args) < 3 {
 		return 0
@@ -237,7 +237,7 @@ func numKeys(args []any) int64 {
 	return 0
 }
 
-// argString 第 i 个参数是字符串（或 []byte）时取出来；别的类型不猜
+// argString takes the i-th argument when it is a string (or []byte); other types are not guessed at.
 func argString(args []any, i int) (string, bool) {
 	if i >= len(args) {
 		return "", false
@@ -251,12 +251,12 @@ func argString(args []any, i int) (string, bool) {
 	return "", false
 }
 
-// keyAtFirstArg 第 1 个参数一定是 key 的命令。名单外的不记 key，理由见 firstKey
+// keyAtFirstArg are the commands whose first argument is certainly a key. Anything else records no key, see firstKey.
 var keyAtFirstArg = setOf(
 	// string
 	"get", "set", "setnx", "setex", "psetex", "getset", "getdel", "getex", "getrange", "setrange",
 	"append", "strlen", "incr", "incrby", "incrbyfloat", "decr", "decrby", "mget", "mset", "msetnx", "lcs",
-	// 通用
+	// general
 	"del", "unlink", "exists", "expire", "expireat", "pexpire", "pexpireat", "expiretime", "pexpiretime",
 	"ttl", "pttl", "persist", "type", "rename", "renamenx", "copy", "dump", "restore", "touch",
 	"sort", "sort_ro", "watch",
@@ -277,7 +277,7 @@ var keyAtFirstArg = setOf(
 	"zpopmin", "zpopmax", "bzpopmin", "bzpopmax", "zrandmember", "zscan",
 	// stream
 	"xadd", "xlen", "xrange", "xrevrange", "xdel", "xtrim", "xack", "xpending", "xclaim", "xautoclaim", "xsetid",
-	// HyperLogLog、geo、bitmap
+	// HyperLogLog, geo, bitmap
 	"pfadd", "pfcount", "pfmerge",
 	"geoadd", "geopos", "geodist", "geohash", "georadius", "georadiusbymember", "geosearch", "geosearchstore",
 	"setbit", "getbit", "bitcount", "bitpos", "bitfield", "bitfield_ro",
@@ -291,7 +291,7 @@ func setOf(names ...string) map[string]struct{} {
 	return m
 }
 
-// errorAttrs 错误的字段，文本和错误码见 redactedError
+// errorAttrs are the error's fields; the text and the error code are in redactedError.
 func errorAttrs(err error) []any {
 	text, code := redactedError(err)
 	if code != "" {
@@ -300,18 +300,18 @@ func errorAttrs(err error) []any {
 	return []any{"error", text}
 }
 
-// redactedError 要写进日志和 Span 的错误文本：服务端报的错只记错误码，不记原文。
+// redactedError is the error text that goes into the log and onto the Span: a server-side error keeps its error code alone, never the text.
 //
-// 服务端的错误原文会把参数带出来，实测 Redis 7.0.15：
+// A server's error text carries the arguments out with it, measured on Redis 7.0.15:
 //
 //	ERR unknown command 'foo', with args beginning with: 'secretarg1' 'secretarg2'
-//	ERR mysecretvalue                     ← EVAL 里 redis.error_reply(ARGV[1])
-//	plainsecret                           ← EVAL 里 return {err=ARGV[1]}，连错误码的位置都是值
+//	ERR mysecretvalue                     ← redis.error_reply(ARGV[1]) inside an EVAL
+//	plainsecret                           ← return {err=ARGV[1]} inside an EVAL, where even the error code position is a value
 //
-// 所以错误码也不是「取第一个词」：只认 knownErrorCodes 里的，其余的只说是服务端的错。
-// 客户端这一侧的错误只有 clientSafe 认得的几类照原文记；
-// 别的也不记原文——go-redis 解析回复失败时把回复内容写进错误（reader.go 的 can't parse %q）。
-// 返回给调用方的错误不变。
+// So the error code is not "the first word" either: only the ones in knownErrorCodes are recognized, and the rest only say that it is a server error.
+// On the client side, only the few kinds clientSafe recognizes are recorded verbatim;
+// the rest are not either -- when go-redis fails to parse a reply it writes the reply content into the error (reader.go's can't parse %q).
+// The error returned to the caller is unchanged.
 func redactedError(err error) (text, code string) {
 	var rerr redis.Error
 	if errors.As(err, &rerr) {
@@ -327,7 +327,7 @@ func redactedError(err error) (text, code string) {
 	return "redis client error (message omitted, it may contain reply data)", ""
 }
 
-// clientSafe 客户端这一侧、原文可以照记的错：地址、超时，排查正要看这个
+// clientSafe are the client-side errors whose text may be recorded verbatim: addresses and timeouts, which is exactly what an investigation needs.
 func clientSafe(err error) bool {
 	var ne net.Error
 	return errors.As(err, &ne) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
@@ -335,7 +335,7 @@ func clientSafe(err error) bool {
 		errors.Is(err, redis.ErrClosed) || errors.Is(err, redis.ErrPoolTimeout) || errors.Is(err, redis.ErrPoolExhausted)
 }
 
-// knownErrorCodes Redis 自己用的错误码（Redis 7 源码里 addReplyError 的前缀，加上集群、ACL 的那几个）
+// knownErrorCodes are the error codes Redis itself uses (the prefixes of addReplyError in the Redis 7 source, plus the cluster and ACL ones).
 var knownErrorCodes = setOf(
 	"ERR", "WRONGTYPE", "NOSCRIPT", "BUSY", "BUSYKEY", "BUSYGROUP", "NOTBUSY", "UNKILLABLE",
 	"NOAUTH", "WRONGPASS", "NOPERM", "OOM", "READONLY", "EXECABORT", "LOADING", "MISCONF",
@@ -343,5 +343,5 @@ var knownErrorCodes = setOf(
 	"NOGROUP", "NOPROTO", "UNBLOCKED", "NOQUORUM",
 )
 
-// ms 耗时换成毫秒，保留到微秒。字段名带单位，与 xgorm 的 elapsed_ms 一致
+// ms converts an elapsed time to milliseconds, keeping microseconds. The field name carries the unit, matching xgorm's elapsed_ms.
 func ms(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }

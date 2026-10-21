@@ -16,8 +16,6 @@ README.md
 banner.go
 banner_test.go
 config_schema.json
-docs/behavior.md
-docs/config.md
 docs/guide.md
 # The two diagrams hold their text as SVG nodes at fixed coordinates. English is wider than
 # Chinese at the same font size, so translating them without rendering the result risks text
@@ -198,19 +196,3 @@ scripts/release.sh
 scripts/test.sh
 xone.go
 xone_test.go
-xredis/README.md
-xredis/config.go
-xredis/config_test.go
-xredis/failure_test.go
-xredis/fakeserver_test.go
-xredis/go.mod
-xredis/helpers_test.go
-xredis/log.go
-xredis/log_test.go
-xredis/metric.go
-xredis/tls_test.go
-xredis/trace.go
-xredis/trace_test.go
-xredis/tracing_test.go
-xredis/xredis.go
-xredis/xredis_test.go

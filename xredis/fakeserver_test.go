@@ -13,29 +13,29 @@ import (
 	"time"
 )
 
-// fakeRedis 一个够用的假 Redis：认 RESP 的命令帧，PING 回 PONG，其余回 OK。
+// fakeRedis is a Redis stub that does just enough: it reads RESP command frames, answers PONG to PING and OK to everything else.
 //
-// 自己写而不是引 miniredis：测试依赖会被 go mod tidy 记成直接依赖，
-// 跟着进每个使用者的模块图（xtrace 上实测过，23 涨到 27）。
-// 为了几十行的握手省这一笔是划算的。
+// Written here rather than pulling in miniredis: a test dependency is recorded as a direct dependency by go mod tidy
+// and travels into every caller's module graph (measured on xtrace: 23 grew to 27).
+// Saving that for a few dozen lines of handshake is a good trade.
 type fakeRedis struct {
 	ln net.Listener
 
 	mu       sync.Mutex
-	commands []string // 收到过的命令名，小写
-	failPing bool     // 让 PING 返回错误，用来测连不上的分支
-	failAuth bool     // 让 AUTH 回 WRONGPASS，用来测认证失败的分支
-	stall    string   // 这个命令收下但永不回复，用来测 deadline
-	resp3    bool     // 认 HELLO 3，之后按 RESP3 回复：go-redis 只在 RESP3 连接上发维护通知的握手
-	live     int      // 当前还开着的连接数
+	commands []string // the command names received, lowercased
+	failPing bool     // make PING return an error, for the cannot-connect branch
+	failAuth bool     // make AUTH answer WRONGPASS, for the failed-authentication branch
+	stall    string   // accept this command and never answer, for testing deadlines
+	resp3    bool     // accept HELLO 3 and answer in RESP3 afterwards: go-redis only sends the maintenance-notification handshake on a RESP3 connection
+	live     int      // the number of connections currently open
 	conns    map[net.Conn]struct{}
-	replies  map[string]string        // 这些命令回这段原始 RESP，用来测 nil、服务端报错
-	delays   map[string]time.Duration // 这些命令等一会儿再回，用来测慢命令
+	replies  map[string]string        // answer these commands with this raw RESP, for testing nil and server errors
+	delays   map[string]time.Duration // delay these commands before answering, for testing slow commands
 }
 
 func newFakeRedis(t *testing.T) *fakeRedis { return newFakeRedisTLS(t, nil) }
 
-// newFakeRedisTLS 同 newFakeRedis，cfg 不为 nil 时监听的是 TLS
+// newFakeRedisTLS is newFakeRedis listening over TLS when cfg is non-nil.
 func newFakeRedisTLS(t *testing.T, cfg *tls.Config) *fakeRedis {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -74,7 +74,7 @@ func (f *fakeRedis) setFailPing(v bool) {
 	f.failPing = v
 }
 
-// setReply 让命令 cmd（小写）回 raw，raw 是原始的 RESP，如 "$-1\r\n"、"-ERR x\r\n"
+// setReply makes the command cmd (lowercase) answer raw, which is raw RESP such as "$-1\r\n" or "-ERR x\r\n".
 func (f *fakeRedis) setReply(cmd, raw string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -84,7 +84,7 @@ func (f *fakeRedis) setReply(cmd, raw string) {
 	f.replies[cmd] = raw
 }
 
-// setDelay 让命令 cmd（小写）等 d 再回
+// setDelay makes the command cmd (lowercase) wait d before answering.
 func (f *fakeRedis) setDelay(cmd string, d time.Duration) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -106,7 +106,7 @@ func (f *fakeRedis) setFailAuth(v bool) {
 	f.failAuth = v
 }
 
-// stop 关掉监听和全部连接，之后再连就是 connection refused：模拟运行中 Redis 进程挂了
+// stop closes the listener and every connection, so connecting afterwards is a connection refused: simulating the Redis process dying at runtime.
 func (f *fakeRedis) stop() {
 	f.ln.Close()
 	f.mu.Lock()
@@ -116,7 +116,7 @@ func (f *fakeRedis) stop() {
 	}
 }
 
-// count 收到过几次这个命令
+// count is how many times this command was received.
 func (f *fakeRedis) count(cmd string) int {
 	n := 0
 	for _, c := range f.seen() {
@@ -127,24 +127,24 @@ func (f *fakeRedis) count(cmd string) int {
 	return n
 }
 
-// setStall 让某个命令收下之后永不回复，模拟一个卡住的 Redis
+// setStall makes a command be accepted and never answered, simulating a stuck Redis.
 func (f *fakeRedis) setStall(cmd string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.stall = cmd
 }
 
-// liveConns 当前还开着的连接数。
+// liveConns is the number of connections currently open.
 //
-// 用它而不是数协程来验证「实例真的被关掉了」：协程数会被假服务端
-// 自己的那些协程搅浑，而连接数是直接可观察的事实。
+// It is used instead of counting goroutines to verify "the instance really was closed": the goroutine count is
+// muddied by the fake server's own goroutines, while the connection count is a directly observable fact.
 func (f *fakeRedis) liveConns() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.live
 }
 
-// waitConns 等连接数降到 want，超时返回实际值
+// waitConns waits for the connection count to fall to want and returns the actual value on timeout.
 func (f *fakeRedis) waitConns(want int) int {
 	for i := 0; i < 100; i++ {
 		if n := f.liveConns(); n == want {
@@ -190,7 +190,7 @@ func (f *fakeRedis) serve(conn net.Conn) {
 		time.Sleep(delay)
 
 		if stall {
-			// 收下了，就是不回。连接留着，让调用方自己决定等到什么时候
+			// Accepted and simply not answered. The connection stays open and the caller decides how long to wait.
 			continue
 		}
 
@@ -199,15 +199,15 @@ func (f *fakeRedis) serve(conn net.Conn) {
 		case hasCustom:
 			reply = custom
 		case name == "hello" && resp3:
-			// HELLO 回一个 map，go-redis 由此认定协商成了 RESP3
+			// HELLO answers a map, from which go-redis concludes that RESP3 was negotiated
 			reply = "%1\r\n+proto\r\n:3\r\n"
 		case name == "hello":
-			// 回错误，go-redis 会退回 RESP2 继续——省掉实现 RESP3 握手
+			// Answer an error and go-redis falls back to RESP2 and carries on -- which saves implementing the RESP3 handshake
 			reply = "-ERR unknown command 'HELLO'\r\n"
 		case name == "auth" && failAuth:
 			reply = "-WRONGPASS invalid username-password pair or user is disabled.\r\n"
 		case name == "ping" && fail:
-			reply = "-ERR 假装挂了\r\n"
+			reply = "-ERR pretending to be down\r\n"
 		case name == "ping":
 			reply = "+PONG\r\n"
 		default:
@@ -219,7 +219,7 @@ func (f *fakeRedis) serve(conn net.Conn) {
 	}
 }
 
-// readCommand 读一个 RESP 命令帧：*N\r\n 之后跟 N 个 $len\r\n<data>\r\n
+// readCommand reads one RESP command frame: *N\r\n followed by N times $len\r\n<data>\r\n.
 func readCommand(r *bufio.Reader) ([]string, error) {
 	line, err := r.ReadString('\n')
 	if err != nil {
@@ -227,11 +227,11 @@ func readCommand(r *bufio.Reader) ([]string, error) {
 	}
 	line = strings.TrimRight(line, "\r\n")
 	if !strings.HasPrefix(line, "*") {
-		return nil, fmt.Errorf("不是命令帧: %q", line)
+		return nil, fmt.Errorf("not a command frame: %q", line)
 	}
 	n, err := strconv.Atoi(line[1:])
 	if err != nil || n < 0 {
-		return nil, fmt.Errorf("参数个数不对: %q", line)
+		return nil, fmt.Errorf("wrong argument count: %q", line)
 	}
 
 	args := make([]string, 0, n)
@@ -244,7 +244,7 @@ func readCommand(r *bufio.Reader) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		buf := make([]byte, size+2) // 连同结尾的 \r\n 一起读掉
+		buf := make([]byte, size+2) // read the trailing \r\n with it
 		if _, err := io.ReadFull(r, buf); err != nil {
 			return nil, err
 		}

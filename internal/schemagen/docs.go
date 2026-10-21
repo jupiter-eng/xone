@@ -19,7 +19,7 @@ var configDocs = map[string]docSection{
 	"XTrace":      {"xtrace/README.md", "Configuration"},
 	"XMetric":     {"xmetric/README.md", "Configuration"},
 	"XGorm":       {"xgorm/README.md", "Configuration"},
-	"XRedis":      {"xredis/README.md", "配置"},
+	"XRedis":      {"xredis/README.md", "Configuration"},
 	"XKafka":      {"xkafka/README.md", "Configuration"},
 	"XCache":      {"xcache/README.md", "Configuration"},
 	"XHttp":       {"xhttp/README.md", "Configuration"},

@@ -20,10 +20,10 @@ import (
 	"github.com/jupiter-eng/xone/xtls"
 )
 
-// testPKI 测试时现造的一套证书：一个 CA，它签的服务端证书（127.0.0.1 / redis.internal）
-// 和客户端证书。都写进临时目录，路径交给配置
+// testPKI is a set of certificates built during the test: a CA, the server certificate it signs (127.0.0.1 / redis.internal)
+// and a client certificate. All are written into a temporary directory and the paths go into the configuration.
 type testPKI struct {
-	caFile, certFile, keyFile string // CA 证书；客户端证书与私钥
+	caFile, certFile, keyFile string // the CA certificate; the client certificate and its key
 	server                    tls.Certificate
 	pool                      *x509.CertPool
 }
@@ -88,13 +88,13 @@ func TestNew_TLS(t *testing.T) {
 		tls  xtls.Config
 		ok   bool
 	}{
-		{"CAFile 认得服务端证书", xtls.Config{Enable: true, CAFile: pki.caFile}, true},
-		// 不填 CAFile 用系统根证书，自签的 CA 不在里面：证书校验真的开着
-		{"不填 CAFile 时自签证书过不了校验", xtls.Config{Enable: true}, false},
-		{"ServerName 对不上证书就失败", xtls.Config{Enable: true, CAFile: pki.caFile, ServerName: "other.internal"}, false},
-		{"ServerName 按证书上的域名填", xtls.Config{Enable: true, CAFile: pki.caFile, ServerName: "redis.internal"}, true},
-		// 没开 TLS 就是明文，明文打到 TLS 端口上连不上
-		{"没开 TLS 就是明文", xtls.Config{}, false},
+		{"CAFile recognizes the server certificate", xtls.Config{Enable: true, CAFile: pki.caFile}, true},
+		// Without CAFile the system roots are used, and the self-signed CA is not among them: verification really is on
+		{"without CAFile a self-signed certificate fails verification", xtls.Config{Enable: true}, false},
+		{"a ServerName not matching the certificate fails", xtls.Config{Enable: true, CAFile: pki.caFile, ServerName: "other.internal"}, false},
+		{"ServerName set to the domain on the certificate", xtls.Config{Enable: true, CAFile: pki.caFile, ServerName: "redis.internal"}, true},
+		// Without TLS it is plaintext, and plaintext against a TLS port does not connect
+		{"without TLS it is plaintext", xtls.Config{}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -107,7 +107,7 @@ func TestNew_TLS(t *testing.T) {
 			if err == nil {
 				defer closer.Close()
 				if err := client.Ping(context.Background()).Err(); err != nil {
-					t.Errorf("连上之后该能用：%v", err)
+					t.Errorf("the connection must be usable once established: %v", err)
 				}
 			}
 		})
@@ -125,13 +125,13 @@ func TestNew_TLSMutualAuth(t *testing.T) {
 	cfg := liveCfg(f)
 	cfg.TLS = xtls.Config{Enable: true, CAFile: pki.caFile}
 	if _, _, err := New(context.Background(), cfg); err == nil {
-		t.Fatal("服务端要客户端证书时，不带证书该连不上")
+		t.Fatal("when the server requires a client certificate, connecting without one must fail")
 	}
 
 	cfg.TLS.CertFile, cfg.TLS.KeyFile = pki.certFile, pki.keyFile
 	_, closer, err := New(context.Background(), cfg)
 	if err != nil {
-		t.Fatalf("带上客户端证书该连得上：%v", err)
+		t.Fatalf("connecting with a client certificate must succeed: %v", err)
 	}
 	closer.Close()
 }
@@ -142,16 +142,16 @@ func TestNew_TLSUnreadableFileIsConfigError(t *testing.T) {
 	os.WriteFile(notPEM, []byte("not a certificate"), 0o600)
 
 	for name, tc := range map[string]xtls.Config{
-		"CAFile 不存在":   {Enable: true, CAFile: missing},
-		"CAFile 里没有证书": {Enable: true, CAFile: notPEM},
-		"客户端证书读不出来":    {Enable: true, CertFile: missing, KeyFile: missing},
+		"CAFile does not exist":                 {Enable: true, CAFile: missing},
+		"CAFile holds no certificate":           {Enable: true, CAFile: notPEM},
+		"the client certificate cannot be read": {Enable: true, CertFile: missing, KeyFile: missing},
 	} {
 		cfg := DefaultClientConfig()
 		cfg.Addr = deadAddr(t)
 		cfg.TLS = tc
 		_, _, err := New(context.Background(), cfg)
 		if err == nil || !strings.Contains(err.Error(), "config") {
-			t.Errorf("%s：该在建连之前报配置错误，got=%v", name, err)
+			t.Errorf("%s: it must be a configuration error before connecting, got=%v", name, err)
 		}
 	}
 }

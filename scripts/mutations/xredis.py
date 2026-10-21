@@ -114,7 +114,7 @@ mutate("Redis 命令日志带着配置里的实例名", "xredis/xredis.go", "./x
 # 日志钩子挂到链路钩子外面，日志的 span_id 就成了调用方的，对不上这条命令的 Span
 mutate("Redis 命令日志在 redis Span 里面", "xredis/xredis.go", "./xredis", "TestLog_CarriesRedisSpanOfCallerTrace",
        swap('\tif cfg.Log {\n\t\tclient.AddHook(logHook{name: name, slow: cfg.SlowThreshold})\n\t}\n', ''),
-       swap('\tif cfg.Trace {\n\t\t// 关掉 db.statement', '\tif cfg.Log {\n\t\tclient.AddHook(logHook{name: name, slow: cfg.SlowThreshold})\n\t}\n\tif cfg.Trace {\n\t\t// 关掉 db.statement'))
+       swap('\tif cfg.Trace {\n\t\t// Turn db.statement off', '\tif cfg.Log {\n\t\tclient.AddHook(logHook{name: name, slow: cfg.SlowThreshold})\n\t}\n\tif cfg.Trace {\n\t\t// Turn db.statement off'))
 mutate("Redis 命令日志用命令的 ctx", "xredis/log.go", "./xredis", "TestLog_CarriesRedisSpanOfCallerTrace",
        swap('slog.InfoContext(ctx, "redis command"', 'slog.InfoContext(context.Background(), "redis command"'))
 # 读穿缓存天天走 key 不存在：当成失败的话 WARN 刷屏，真故障淹在里面

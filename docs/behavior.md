@@ -41,11 +41,11 @@ MySQL 8.0.46, Redis 7.0.15, ClickHouse 24.8.14).
 | [`XGorm` MySQL `parseTime`](../xgorm/README.md#behavior-measured) | `false` | `true` is added when the DSN does not say | Otherwise a `DATETIME` cannot be scanned into a `time.Time` |
 | [`XGorm` server error text](../xgorm/README.md#behavior-measured) | Logged and put on the span as is | Only the error code is recorded | The text carries parameter values |
 | [go-sql-driver's log](../xgorm/README.md#behavior-measured) | The standard library's log to `os.Stderr` | Routed into slog as WARN | Plain text bypassing slog never reaches the logging platform |
-| [`XRedis` command timeout](../xredis/README.md#行为与实测) | Honors `ReadTimeout` only | Honors the caller's ctx deadline | Otherwise a request with a 200ms budget waits out the whole `ReadTimeout` |
-| [`XRedis` connecting](../xredis/README.md#行为与实测) | Redials 5 times internally per connection | Dials once | Otherwise one command takes 11.7s when the host is down |
-| [`XRedis` handshake on a new connection](../xredis/README.md#行为与实测) | `CLIENT SETINFO` and maintenance notifications both on | Both off | A server older than 7.2 leaves one failing span per connection |
-| [`XRedis.Trace`](../xredis/README.md#行为与实测) | The whole command with its arguments goes into `db.statement` | The command name only | Otherwise the value of a `SET` reaches the tracing backend verbatim |
-| [go-redis's log](../xredis/README.md#行为与实测) | The standard library's log to `os.Stderr` | Routed into slog as WARN | Same as go-sql-driver |
+| [`XRedis` command timeout](../xredis/README.md#behavior-measured) | Honors `ReadTimeout` only | Honors the caller's ctx deadline | Otherwise a request with a 200ms budget waits out the whole `ReadTimeout` |
+| [`XRedis` connecting](../xredis/README.md#behavior-measured) | Redials 5 times internally per connection | Dials once | Otherwise one command takes 11.7s when the host is down |
+| [`XRedis` handshake on a new connection](../xredis/README.md#behavior-measured) | `CLIENT SETINFO` and maintenance notifications both on | Both off | A server older than 7.2 leaves one failing span per connection |
+| [`XRedis.Trace`](../xredis/README.md#behavior-measured) | The whole command with its arguments goes into `db.statement` | The command name only | Otherwise the value of a `SET` reaches the tracing backend verbatim |
+| [go-redis's log](../xredis/README.md#behavior-measured) | The standard library's log to `os.Stderr` | Routed into slog as WARN | Same as go-sql-driver |
 | [`XKafka` consumer commits](../xkafka/README.md#behavior-measured) | Automatically commits "whatever the last poll returned", processed or not | Commits only what was processed (`AutoCommitMarks`) | With one goroutine per partition, messages still queued and unprocessed get committed first and are lost the moment the process dies |
 | [`XKafka.Consumer.ResetOffset`](../xkafka/README.md#behavior-measured) | earliest | latest | Otherwise a newly deployed consumer group reprocesses the topic's entire history |
 | [`XKafka` stopping](../xkafka/README.md#behavior-measured) | `Close` fails every buffered message | `Flush` first, then `Close` | Otherwise messages handed to `Produce` at the moment of exit are dropped silently |
@@ -92,7 +92,7 @@ XGorm, XRedis and XKafka each probe once at startup through one shared implement
 | [xtls](../xtls/README.md#behavior-measured) | Client-side TLS: each driver's errors and timings, and the driver defaults without a TLS block |
 | [xgorm](../xgorm/README.md#behavior-measured) | GORM in general, MySQL, PostgreSQL |
 | [xgorm/clickhouse](../xgorm/clickhouse/README.md#behavior-measured) | ClickHouse: timeouts and cancellation, resends, authentication, TLS |
-| [xredis](../xredis/README.md#行为与实测) | go-redis: timeouts, connection retries, the handshake on a new connection, memory |
+| [xredis](../xredis/README.md#behavior-measured) | go-redis: timeouts, connection retries, the handshake on a new connection, memory |
 | [xcache](../xcache/README.md#behavior-measured) | ristretto: internal overhead, stopping, the cost of metrics, TTL |
 | [xkafka](../xkafka/README.md#behavior-measured) | franz-go: automatic commits, offset reset, `Close` and `Flush`, `Ping`, a missing topic, rebalancing and session timeouts |
 | [xhttp](../xhttp/README.md#behavior-measured) | The defaults of resty / otelhttp / the standard library's Transport |

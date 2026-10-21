@@ -1476,41 +1476,41 @@
       "additionalProperties": false
     },
     "XRedis": {
-      "description": "本模块的配置。两种写法",
+      "description": "is this module's configuration. There are two forms",
       "oneOf": [
         {
           "type": "object",
           "properties": {
             "Addr": {
               "type": "string",
-              "description": "服务器地址。默认 127.0.0.1:6379。"
+              "description": "is the server address. It defaults to 127.0.0.1:6379."
             },
             "ConnMaxIdleTime": {
               "type": "string",
-              "description": "空闲连接最长存活时间。默认 5m；配 0 交给 go-redis（30m）。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+              "description": "is how long an idle connection lives at most. It defaults to 5m; 0 leaves it to go-redis (30m).（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
             },
             "ConnMaxLifetime": {
               "type": "string",
-              "description": "连接最长存活时间。默认 5m；配 0 是不按存活时间换连接（go-redis 的默认）。 定期换连接，服务端扩缩容后流量才会重新摊开。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+              "description": "is how long a connection lives at most. It defaults to 5m; 0 means connections are not replaced by age (go-redis's default). Replacing connections periodically is what lets traffic spread out again after the server scales.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
             },
             "DB": {
               "type": [
                 "integer",
                 "string"
               ],
-              "description": "数据库编号。默认 0。",
+              "description": "is the database number. It defaults to 0.",
               "pattern": "\\$\\{"
             },
             "DialTimeout": {
               "type": "string",
-              "description": "建连超时。默认 500ms；配 0 交给 go-redis（5s）。 下面几个时长配 0 都不是「不限时」，是 go-redis v9.22.0 的默认值（options.go init，实测一致）。 启动时建连验证的单次预算按换算之后的 DialTimeout + ReadTimeout 算。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+              "description": "is the connection timeout. It defaults to 500ms; 0 leaves it to go-redis (5s). None of the durations below means \"no limit\" at 0; 0 is go-redis v9.22.0's default (options.go init, measured to match). The per-attempt budget of the connection check at startup is the resolved DialTimeout + ReadTimeout.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
             },
             "Log": {
               "type": [
                 "boolean",
                 "string"
               ],
-              "description": "是否每条命令记一条日志（pipeline 整个记一条）。默认关闭。 只记命令名和第一个 key，不记值、不记其余参数；AUTH、HELLO 这类参数里可能有凭证的 命令只记命令名。key 是整条记的（超过 256 字节才截断）：开着 Log 时别把令牌、手机号、 邮箱拼进 key。key 不存在（redis.Nil）、WATCH 冲突（redis.TxFailedErr）不算失败，照常记 INFO。 服务端报的错只记错误码（另有 error_code 字段），不记原文：实测 Redis 7.0.15 的 ERR unknown command 'foo', with args beginning with: … 把参数原样带出来； 超时、连不上、ctx 取消、redis: client is closed 这类客户端一侧的错误照原文记。 返回给调用方的错误不变。字段和实测见 xredis/README.md「可观测」「行为与实测」。",
+              "description": "says whether one line is recorded per command (and one for a whole pipeline). It defaults to off. Only the command name and the first key are recorded, never the value and never the other arguments; a command whose arguments may hold credentials, such as AUTH or HELLO, records the command name alone. The key is recorded whole (truncated only beyond 256 bytes): with Log on, do not put a token, a phone number or an email into a key. A missing key (redis.Nil) and a WATCH conflict (redis.TxFailedErr) are not failures and are recorded at INFO as usual. A server-side error keeps its error code alone (in a separate error_code field) and never its text: measured on Redis 7.0.15, ERR unknown command 'foo', with args beginning with: … carries the arguments out as they are; a client-side error such as a timeout, a failed connection, a cancelled ctx or redis: client is closed is recorded verbatim. The error returned to the caller is unchanged. The fields are in xredis/README.md.",
               "pattern": "\\$\\{"
             },
             "MaxActiveConns": {
@@ -1518,7 +1518,7 @@
                 "integer",
                 "string"
               ],
-              "description": "最大活跃连接数。默认 0，即不限制。",
+              "description": "is the maximum number of active connections. It defaults to 0, meaning no limit.",
               "pattern": "\\$\\{"
             },
             "MaxIdleConns": {
@@ -1526,7 +1526,7 @@
                 "integer",
                 "string"
               ],
-              "description": "最大空闲连接数。默认 0，即不限制。",
+              "description": "is the maximum number of idle connections. It defaults to 0, meaning no limit.",
               "pattern": "\\$\\{"
             },
             "MaxRetries": {
@@ -1534,19 +1534,19 @@
                 "integer",
                 "string"
               ],
-              "description": "最大重试次数。默认 0，交给 go-redis（3 次）；配 -1 关闭重试。",
+              "description": "is the maximum number of retries. It defaults to 0, left to go-redis (3); -1 turns retrying off.",
               "pattern": "\\$\\{"
             },
             "MaxRetryBackoff": {
               "type": "string",
-              "description": "最大重试退避。默认 0，交给 go-redis（1s，实测 v9.22.0）； 配 -1ns 关闭退避，同上。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+              "description": "is the maximum retry backoff. It defaults to 0, left to go-redis (1s, measured on v9.22.0); -1ns turns the backoff off, as above.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
             },
             "Metric": {
               "type": [
                 "boolean",
                 "string"
               ],
-              "description": "是否导出连接池指标。默认开启。 指标在被抓取时才读 PoolStats()，不额外占协程。 按实例生效：配了 Metric: false 的实例不出现在 /metrics 里。",
+              "description": "says whether the connection-pool metrics are exported. It defaults to on. The metrics read PoolStats() only when scraped and hold no extra goroutine. It applies per instance: an instance configured with Metric: false does not appear in /metrics.",
               "pattern": "\\$\\{"
             },
             "MinIdleConns": {
@@ -1554,40 +1554,40 @@
                 "integer",
                 "string"
               ],
-              "description": "最小空闲连接数，预热连接避免冷启动抖动。默认 5。",
+              "description": "is the minimum number of idle connections, warming them up to avoid cold-start jitter. It defaults to 5.",
               "pattern": "\\$\\{"
             },
             "MinRetryBackoff": {
               "type": "string",
-              "description": "最小重试退避。默认 0，交给 go-redis（10ms，实测 v9.22.0）； 配 -1ns 关闭退避（得带单位，裸写 -1 解不成时长，启动报错）。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+              "description": "is the minimum retry backoff. It defaults to 0, left to go-redis (10ms, measured on v9.22.0); -1ns turns the backoff off (the unit is required, since a bare -1 does not parse as a duration and fails startup).（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
             },
             "Password": {
               "type": "string",
-              "description": "认证密码。默认无。 建议写成 \"${REDIS_PASSWORD}\"：凭证不该进版本库，漏配时启动就失败。 本模块不会把它写进任何日志。"
+              "description": "is the authentication password. There is none by default. Writing it as \"${REDIS_PASSWORD}\" is the natural choice: a credential does not belong in version control, and a missing one fails startup. This module never writes it into any log."
             },
             "PoolSize": {
               "type": [
                 "integer",
                 "string"
               ],
-              "description": "连接池大小。默认 0，交给 go-redis（10 × GOMAXPROCS）。",
+              "description": "is the connection pool size. It defaults to 0, left to go-redis (10 x GOMAXPROCS).",
               "pattern": "\\$\\{"
             },
             "PoolTimeout": {
               "type": "string",
-              "description": "池子没有空闲连接时的等待上限。默认 1s；配 0 是换算之后的 ReadTimeout + 1s。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+              "description": "is the upper bound on waiting when the pool has no idle connection. It defaults to 1s; 0 is the resolved ReadTimeout + 1s.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
             },
             "ReadTimeout": {
               "type": "string",
-              "description": "读超时。默认 500ms；配 0 交给 go-redis（5s）。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+              "description": "is the read timeout. It defaults to 500ms; 0 leaves it to go-redis (5s).（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
             },
             "SlowThreshold": {
               "type": "string",
-              "description": "超过这个耗时的命令（或 pipeline）记一条 warn 日志。默认 100ms，需 Log 开启，配 0 不记。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+              "description": "records one warn line for a command (or pipeline) taking longer than this. It defaults to 100ms, requires Log, and 0 records nothing.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
             },
             "TLS": {
               "type": "object",
-              "description": "连 Redis 时走不走 TLS。默认不走。字段和规则各模块共用，见 xtls.Config。 握手受 DialTimeout 管：go-redis v9.22.0 用 tls.DialWithDialer，拨号和握手共用那一个超时。",
+              "description": "says whether to use TLS when connecting to Redis. It defaults to off. The fields and rules are shared across modules, see xtls.Config. The handshake is bounded by DialTimeout: go-redis v9.22.0 uses tls.DialWithDialer, so dialing and the handshake share that one timeout.",
               "properties": {
                 "CAFile": {
                   "type": "string",
@@ -1621,16 +1621,16 @@
                 "boolean",
                 "string"
               ],
-              "description": "是否挂 OpenTelemetry 钩子。默认开启。 没装链路时它产出的是 noop Span，但钩子本身不是零成本：实测 （redisotel v9.22.0，本机回环，noop provider）每条命令多约 3µs、8 次分配、 约 1.2KB。真实网络的往返动辄几百微秒，占比小得多，所以默认开着； 对单条命令延迟极敏感的服务可以关掉。",
+              "description": "says whether the OpenTelemetry hook is attached. It defaults to on. Without tracing installed it produces noop Spans, but the hook itself is not free: measured (redisotel v9.22.0, local loopback, a noop provider) at about 3µs, 8 allocations and about 1.2KB more per command. A real network round trip is hundreds of microseconds, where the share is far smaller, which is why it is on by default; a service extremely sensitive to single-command latency can turn it off.",
               "pattern": "\\$\\{"
             },
             "Username": {
               "type": "string",
-              "description": "ACL 用户名（Redis 6.0+）。默认无。"
+              "description": "is the ACL user name (Redis 6.0+). There is none by default."
             },
             "WriteTimeout": {
               "type": "string",
-              "description": "写超时。默认 500ms；配 0 跟着换算之后的 ReadTimeout。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+              "description": "is the write timeout. It defaults to 500ms; 0 follows the resolved ReadTimeout.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
             }
           },
           "additionalProperties": false
@@ -1646,34 +1646,34 @@
                 "properties": {
                   "Addr": {
                     "type": "string",
-                    "description": "服务器地址。默认 127.0.0.1:6379。"
+                    "description": "is the server address. It defaults to 127.0.0.1:6379."
                   },
                   "ConnMaxIdleTime": {
                     "type": "string",
-                    "description": "空闲连接最长存活时间。默认 5m；配 0 交给 go-redis（30m）。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                    "description": "is how long an idle connection lives at most. It defaults to 5m; 0 leaves it to go-redis (30m).（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
                   },
                   "ConnMaxLifetime": {
                     "type": "string",
-                    "description": "连接最长存活时间。默认 5m；配 0 是不按存活时间换连接（go-redis 的默认）。 定期换连接，服务端扩缩容后流量才会重新摊开。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                    "description": "is how long a connection lives at most. It defaults to 5m; 0 means connections are not replaced by age (go-redis's default). Replacing connections periodically is what lets traffic spread out again after the server scales.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
                   },
                   "DB": {
                     "type": [
                       "integer",
                       "string"
                     ],
-                    "description": "数据库编号。默认 0。",
+                    "description": "is the database number. It defaults to 0.",
                     "pattern": "\\$\\{"
                   },
                   "DialTimeout": {
                     "type": "string",
-                    "description": "建连超时。默认 500ms；配 0 交给 go-redis（5s）。 下面几个时长配 0 都不是「不限时」，是 go-redis v9.22.0 的默认值（options.go init，实测一致）。 启动时建连验证的单次预算按换算之后的 DialTimeout + ReadTimeout 算。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                    "description": "is the connection timeout. It defaults to 500ms; 0 leaves it to go-redis (5s). None of the durations below means \"no limit\" at 0; 0 is go-redis v9.22.0's default (options.go init, measured to match). The per-attempt budget of the connection check at startup is the resolved DialTimeout + ReadTimeout.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
                   },
                   "Log": {
                     "type": [
                       "boolean",
                       "string"
                     ],
-                    "description": "是否每条命令记一条日志（pipeline 整个记一条）。默认关闭。 只记命令名和第一个 key，不记值、不记其余参数；AUTH、HELLO 这类参数里可能有凭证的 命令只记命令名。key 是整条记的（超过 256 字节才截断）：开着 Log 时别把令牌、手机号、 邮箱拼进 key。key 不存在（redis.Nil）、WATCH 冲突（redis.TxFailedErr）不算失败，照常记 INFO。 服务端报的错只记错误码（另有 error_code 字段），不记原文：实测 Redis 7.0.15 的 ERR unknown command 'foo', with args beginning with: … 把参数原样带出来； 超时、连不上、ctx 取消、redis: client is closed 这类客户端一侧的错误照原文记。 返回给调用方的错误不变。字段和实测见 xredis/README.md「可观测」「行为与实测」。",
+                    "description": "says whether one line is recorded per command (and one for a whole pipeline). It defaults to off. Only the command name and the first key are recorded, never the value and never the other arguments; a command whose arguments may hold credentials, such as AUTH or HELLO, records the command name alone. The key is recorded whole (truncated only beyond 256 bytes): with Log on, do not put a token, a phone number or an email into a key. A missing key (redis.Nil) and a WATCH conflict (redis.TxFailedErr) are not failures and are recorded at INFO as usual. A server-side error keeps its error code alone (in a separate error_code field) and never its text: measured on Redis 7.0.15, ERR unknown command 'foo', with args beginning with: … carries the arguments out as they are; a client-side error such as a timeout, a failed connection, a cancelled ctx or redis: client is closed is recorded verbatim. The error returned to the caller is unchanged. The fields are in xredis/README.md.",
                     "pattern": "\\$\\{"
                   },
                   "MaxActiveConns": {
@@ -1681,7 +1681,7 @@
                       "integer",
                       "string"
                     ],
-                    "description": "最大活跃连接数。默认 0，即不限制。",
+                    "description": "is the maximum number of active connections. It defaults to 0, meaning no limit.",
                     "pattern": "\\$\\{"
                   },
                   "MaxIdleConns": {
@@ -1689,7 +1689,7 @@
                       "integer",
                       "string"
                     ],
-                    "description": "最大空闲连接数。默认 0，即不限制。",
+                    "description": "is the maximum number of idle connections. It defaults to 0, meaning no limit.",
                     "pattern": "\\$\\{"
                   },
                   "MaxRetries": {
@@ -1697,19 +1697,19 @@
                       "integer",
                       "string"
                     ],
-                    "description": "最大重试次数。默认 0，交给 go-redis（3 次）；配 -1 关闭重试。",
+                    "description": "is the maximum number of retries. It defaults to 0, left to go-redis (3); -1 turns retrying off.",
                     "pattern": "\\$\\{"
                   },
                   "MaxRetryBackoff": {
                     "type": "string",
-                    "description": "最大重试退避。默认 0，交给 go-redis（1s，实测 v9.22.0）； 配 -1ns 关闭退避，同上。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                    "description": "is the maximum retry backoff. It defaults to 0, left to go-redis (1s, measured on v9.22.0); -1ns turns the backoff off, as above.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
                   },
                   "Metric": {
                     "type": [
                       "boolean",
                       "string"
                     ],
-                    "description": "是否导出连接池指标。默认开启。 指标在被抓取时才读 PoolStats()，不额外占协程。 按实例生效：配了 Metric: false 的实例不出现在 /metrics 里。",
+                    "description": "says whether the connection-pool metrics are exported. It defaults to on. The metrics read PoolStats() only when scraped and hold no extra goroutine. It applies per instance: an instance configured with Metric: false does not appear in /metrics.",
                     "pattern": "\\$\\{"
                   },
                   "MinIdleConns": {
@@ -1717,40 +1717,40 @@
                       "integer",
                       "string"
                     ],
-                    "description": "最小空闲连接数，预热连接避免冷启动抖动。默认 5。",
+                    "description": "is the minimum number of idle connections, warming them up to avoid cold-start jitter. It defaults to 5.",
                     "pattern": "\\$\\{"
                   },
                   "MinRetryBackoff": {
                     "type": "string",
-                    "description": "最小重试退避。默认 0，交给 go-redis（10ms，实测 v9.22.0）； 配 -1ns 关闭退避（得带单位，裸写 -1 解不成时长，启动报错）。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                    "description": "is the minimum retry backoff. It defaults to 0, left to go-redis (10ms, measured on v9.22.0); -1ns turns the backoff off (the unit is required, since a bare -1 does not parse as a duration and fails startup).（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
                   },
                   "Password": {
                     "type": "string",
-                    "description": "认证密码。默认无。 建议写成 \"${REDIS_PASSWORD}\"：凭证不该进版本库，漏配时启动就失败。 本模块不会把它写进任何日志。"
+                    "description": "is the authentication password. There is none by default. Writing it as \"${REDIS_PASSWORD}\" is the natural choice: a credential does not belong in version control, and a missing one fails startup. This module never writes it into any log."
                   },
                   "PoolSize": {
                     "type": [
                       "integer",
                       "string"
                     ],
-                    "description": "连接池大小。默认 0，交给 go-redis（10 × GOMAXPROCS）。",
+                    "description": "is the connection pool size. It defaults to 0, left to go-redis (10 x GOMAXPROCS).",
                     "pattern": "\\$\\{"
                   },
                   "PoolTimeout": {
                     "type": "string",
-                    "description": "池子没有空闲连接时的等待上限。默认 1s；配 0 是换算之后的 ReadTimeout + 1s。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                    "description": "is the upper bound on waiting when the pool has no idle connection. It defaults to 1s; 0 is the resolved ReadTimeout + 1s.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
                   },
                   "ReadTimeout": {
                     "type": "string",
-                    "description": "读超时。默认 500ms；配 0 交给 go-redis（5s）。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                    "description": "is the read timeout. It defaults to 500ms; 0 leaves it to go-redis (5s).（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
                   },
                   "SlowThreshold": {
                     "type": "string",
-                    "description": "超过这个耗时的命令（或 pipeline）记一条 warn 日志。默认 100ms，需 Log 开启，配 0 不记。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                    "description": "records one warn line for a command (or pipeline) taking longer than this. It defaults to 100ms, requires Log, and 0 records nothing.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
                   },
                   "TLS": {
                     "type": "object",
-                    "description": "连 Redis 时走不走 TLS。默认不走。字段和规则各模块共用，见 xtls.Config。 握手受 DialTimeout 管：go-redis v9.22.0 用 tls.DialWithDialer，拨号和握手共用那一个超时。",
+                    "description": "says whether to use TLS when connecting to Redis. It defaults to off. The fields and rules are shared across modules, see xtls.Config. The handshake is bounded by DialTimeout: go-redis v9.22.0 uses tls.DialWithDialer, so dialing and the handshake share that one timeout.",
                     "properties": {
                       "CAFile": {
                         "type": "string",
@@ -1784,16 +1784,16 @@
                       "boolean",
                       "string"
                     ],
-                    "description": "是否挂 OpenTelemetry 钩子。默认开启。 没装链路时它产出的是 noop Span，但钩子本身不是零成本：实测 （redisotel v9.22.0，本机回环，noop provider）每条命令多约 3µs、8 次分配、 约 1.2KB。真实网络的往返动辄几百微秒，占比小得多，所以默认开着； 对单条命令延迟极敏感的服务可以关掉。",
+                    "description": "says whether the OpenTelemetry hook is attached. It defaults to on. Without tracing installed it produces noop Spans, but the hook itself is not free: measured (redisotel v9.22.0, local loopback, a noop provider) at about 3µs, 8 allocations and about 1.2KB more per command. A real network round trip is hundreds of microseconds, where the share is far smaller, which is why it is on by default; a service extremely sensitive to single-command latency can turn it off.",
                     "pattern": "\\$\\{"
                   },
                   "Username": {
                     "type": "string",
-                    "description": "ACL 用户名（Redis 6.0+）。默认无。"
+                    "description": "is the ACL user name (Redis 6.0+). There is none by default."
                   },
                   "WriteTimeout": {
                     "type": "string",
-                    "description": "写超时。默认 500ms；配 0 跟着换算之后的 ReadTimeout。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                    "description": "is the write timeout. It defaults to 500ms; 0 follows the resolved ReadTimeout.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
                   }
                 },
                 "additionalProperties": false

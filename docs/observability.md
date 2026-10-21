@@ -62,7 +62,7 @@ Each module's own logs are under "Observability" in its README:
 `xgin http server error`) · [xecho](../xecho/README.md#observability) (the access log,
 `xecho listening`, `echo internal log`, `xecho http server error`) ·
 [xgorm](../xgorm/README.md#logs) (`xgorm connected`, SQL logs) ·
-[xredis](../xredis/README.md#日志) (`xredis connected`, `redis command`, `redis pipeline`) ·
+[xredis](../xredis/README.md#logs) (`xredis connected`, `redis command`, `redis pipeline`) ·
 [xhttp](../xhttp/README.md#logs) (`xhttp ready`, `http request`) ·
 [xcache](../xcache/README.md#logs) · [xkafka](../xkafka/README.md#logs)
 (`kafka produce failed`, `kafka message failed` / `kafka message dead-lettered` /
@@ -82,7 +82,7 @@ Every metric the framework ships carries `XMetric.ConstLabels`; apart from clien
 | [xgin](../xgin/README.md#metrics) · [xecho](../xecho/README.md#metrics) | `http_requests_total`, `http_request_duration_seconds` (identical names and labels on both sides, so one dashboard serves both) |
 | [xhttp](../xhttp/README.md#metrics) | `http_client_request_duration_seconds` |
 | [xgorm](../xgorm/README.md#metrics) | `db_pool_*` |
-| [xredis](../xredis/README.md#指标) | `redis_pool_*` |
+| [xredis](../xredis/README.md#metrics) | `redis_pool_*` |
 | [xkafka](../xkafka/README.md#metrics) | `kafka_consume_duration_seconds` |
 | [xcache](../xcache/README.md#metrics) | `cache_*` |
 | [xmetric](../xmetric/README.md#metrics) | `log_errors_total`, `go_*` / `process_*`, and the business's own instrumentation |
@@ -118,7 +118,7 @@ Each module's span names and key attributes are under "Observability · Tracing"
 | [xecho](../xecho/README.md#tracing) | Inbound, with span names and attributes identical to xgin's and the error attribute called `echo.errors` |
 | [xhttp](../xhttp/README.md#tracing) | Outbound |
 | [xgorm](../xgorm/README.md#tracing) | One per SQL statement, with attributes following OTel's database semantic conventions |
-| [xredis](../xredis/README.md#链路) | One per command |
+| [xredis](../xredis/README.md#tracing) | One per command |
 | [xcron](../xcron/README.md#tracing) | One root span `cron <name>` per execution |
 | [xkafka](../xkafka/README.md#tracing) | `<topic> publish` when producing and `<topic> process` when consuming, with consumption joining the trace from the message headers |
 | [xflow](../xflow/README.md#tracing) | Opens no spans |
