@@ -221,8 +221,6 @@ xcron/schedule_test.go
 xcron/scheduler.go
 xcron/xcron.go
 xcron/xcron_test.go
-xerror/xerror.go
-xerror/xerror_test.go
 xflow/README.md
 xflow/bench_test.go
 xflow/config.go

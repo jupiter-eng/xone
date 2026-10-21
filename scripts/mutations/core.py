@@ -283,7 +283,7 @@ mutate("New 收到带类型的 nil 不 panic", "xerror/xerror.go", ".", "TestNew
 mutate("Newf 参数里带类型的 nil 不 panic", "xerror/xerror.go", ".", "TestNewf_TypedNilArgRendersAsNilNotPanic",
        swap('if xe, ok := a.(*Error); ok && xe != nil {', 'if xe, ok := a.(*Error); ok {'))
 mutate("Is 遇到带类型的 nil 不 panic", "xerror/xerror.go", ".", "TestNewf_TypedNilArgRendersAsNilNotPanic",
-       swap('\t\tif xe == nil {\n\t\t\treturn false // 带类型的 nil', '\t\tif false {\n\t\t\treturn false // 带类型的 nil'))
+       swap('\t\tif xe == nil {\n\t\t\treturn false // a typed nil', '\t\tif false {\n\t\t\treturn false // a typed nil'))
 mutate("同模块再包一层原样返回", "xerror/xerror.go", ".", "TestNew_",
        swap('\t\tif xe.Module == module {\n\t\t\treturn xe\n\t\t}\n', ''))
 mutate("建连重试可以被取消", "xutil/retry.go", ".", "TestRetry",

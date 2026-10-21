@@ -7,15 +7,15 @@ import (
 	"testing"
 )
 
-var errBase = errors.New("底层错误")
+var errBase = errors.New("the underlying error")
 
 func TestErrorMessage(t *testing.T) {
 	e := New("xgorm", "init", errBase)
 	got := e.Error()
-	// 前缀是框架名 xone，曾经手抖写成了 xtwo —— 它出现在本包产出的每一条错误里
-	for _, want := range []string{"xone ", "xgorm", "init", "底层错误"} {
+	// The prefix is the framework name xone; it was once mistyped as xtwo -- it appears in every error this package produces.
+	for _, want := range []string{"xone ", "xgorm", "init", "the underlying error"} {
 		if !strings.Contains(got, want) {
-			t.Errorf("错误消息应包含 %q，got=%q", want, got)
+			t.Errorf("the error message must contain %q, got=%q", want, got)
 		}
 	}
 }
@@ -23,113 +23,113 @@ func TestErrorMessage(t *testing.T) {
 func TestUnwrapSupportsErrorsIs(t *testing.T) {
 	e := New("xgorm", "init", errBase)
 	if !errors.Is(e, errBase) {
-		t.Fatal("应能通过 errors.Is 找到被包装的原始错误")
+		t.Fatal("errors.Is must find the wrapped original error")
 	}
 }
 
 func TestIsWalksWholeChain(t *testing.T) {
-	// 模块之间会互相包装：xgorm 的错误里裹着 config 的错误
+	// Modules wrap each other: an xgorm error holds a config error inside.
 	inner := New("config", "load", errBase)
 	outer := New("xgorm", "init", inner)
 
 	if !Is(outer, "xgorm") {
-		t.Error("应认出最外层模块")
+		t.Error("the outermost module must be recognized")
 	}
 	if !Is(outer, "config") {
-		t.Error("应认出链条内层的模块 —— 只看最外层就会漏")
+		t.Error("a module further inside the chain must be recognized -- looking only at the outermost layer would miss it")
 	}
 	if Is(outer, "xredis") {
-		t.Error("不该认出链条里没有的模块")
+		t.Error("a module that is not in the chain must not be recognized")
 	}
 }
 
 func TestModuleTakesOutermost(t *testing.T) {
 	outer := New("xgorm", "init", New("config", "load", errBase))
 	if got := Module(outer); got != "xgorm" {
-		t.Errorf("Module 应取最外层（谁最终报出这个错），got=%q", got)
+		t.Errorf("Module must take the outermost layer (who finally reported this), got=%q", got)
 	}
 	if got := Module(errBase); got != "" {
-		t.Errorf("非本包错误应返回空串，got=%q", got)
+		t.Errorf("an error from another package must give an empty string, got=%q", got)
 	}
 }
 
 func TestNewf(t *testing.T) {
-	e := Newf("xhttp", "request", "超时 timeout=[%v]", "3s")
+	e := Newf("xhttp", "request", "timed out timeout=[%v]", "3s")
 	if !strings.Contains(e.Error(), "timeout=[3s]") {
-		t.Errorf("Newf 应格式化消息，got=%q", e.Error())
+		t.Errorf("Newf must format the message, got=%q", e.Error())
 	}
 }
 
 func TestErrorMessage_FrameworkErrorsDoNotRepeatPrefix(t *testing.T) {
-	// 前缀的作用是让错误落进别人的日志时看得出是谁报的。
-	// 模块名本来就是 xone 的那种，再加一次就成了「xone xone init failed」
+	// The prefix exists so an error landing in somebody else's log says who reported it.
+	// For one whose module name is already xone, adding it again would read "xone xone init failed".
 	if got := New("xone", "init", errBase).Error(); strings.HasPrefix(got, "xone xone") {
-		t.Errorf("前缀重复了：%s", got)
+		t.Errorf("the prefix is duplicated: %s", got)
 	}
 	if got := New("xgorm", "init", errBase).Error(); !strings.HasPrefix(got, "xone xgorm") {
-		t.Errorf("其它模块该带前缀：%s", got)
+		t.Errorf("another module must carry the prefix: %s", got)
 	}
 }
 
 func TestIs_ReturnsFalseForNilAndForeignErrors(t *testing.T) {
 	if Is(nil, "xgorm") {
-		t.Error("nil 不属于任何模块")
+		t.Error("nil belongs to no module")
 	}
 	if Is(errBase, "xgorm") {
-		t.Error("不是本包的错误不该被认成某个模块的")
+		t.Error("an error from another package must not be taken for one of a module")
 	}
 }
 
 func TestIs_StopsAtForeignErrorMidChain(t *testing.T) {
-	// 中间裹着一层标准库错误时，外层还是本包的错误，
-	// 遍历要在那一层停下来而不是空转或误判
+	// With a standard-library error wrapped in between, the outer layer is still an error from this package,
+	// and the walk must stop at that layer rather than spinning or getting it wrong.
 	outer := New("xgorm", "query", fmt.Errorf("driver: %w", errBase))
 	if !Is(outer, "xgorm") {
-		t.Error("最外层应当认得出")
+		t.Error("the outermost layer must be recognized")
 	}
 	if Is(outer, "xconfig") {
-		t.Error("链条里没有 xconfig，不该认出来")
+		t.Error("there is no xconfig in the chain, so it must not be recognized")
 	}
 }
 
 func TestIs_errors_JoinFindsEveryBranch(t *testing.T) {
-	// Run 把启动错误和关闭错误 Join 在一起返回。errors.As 只会拿到第一个 *Error，
-	// 再顺着它的 .Err 往里走——Join 里排在后面的兄弟从来没被看过
+	// Run returns the start error and the stop error joined together. errors.As only reaches the first *Error
+	// and then follows its .Err inward -- the siblings later in the Join were never looked at.
 	joined := errors.Join(New("xgin", "start", errBase), New("xgorm", "close", errBase))
 	for _, m := range []string{"xgin", "xgorm"} {
 		if !Is(joined, m) {
-			t.Errorf("Join 里的 %s 该认得出，err=%v", m, joined)
+			t.Errorf("%s inside the Join must be recognized, err=%v", m, joined)
 		}
 	}
 	if Is(joined, "xredis") {
-		t.Error("不在 Join 里的模块不该认出来")
+		t.Error("a module that is not in the Join must not be recognized")
 	}
 }
 
 func TestIs_JoinNestedInsideErrorIsFound(t *testing.T) {
-	// 本包错误裹着一个 Join、Join 的第二个分支里又裹着别的模块：
-	// 两种 Unwrap 交替出现时仍要走遍整棵树
+	// An error from this package wrapping a Join whose second branch wraps another module:
+	// the whole tree must still be walked when the two kinds of Unwrap alternate.
 	inner := fmt.Errorf("partial: %w", errors.Join(errBase, New("xredis", "close", errBase)))
 	outer := New("xone", "stop", inner)
 	if !Is(outer, "xredis") {
-		t.Errorf("树的深处也该认得出，err=%v", outer)
+		t.Errorf("it must be recognized deep in the tree too, err=%v", outer)
 	}
 }
 
 func TestModule_JoinTakesFirstXerror(t *testing.T) {
-	// Run 总是把主因放在 Join 的最前面，所以「谁报的」取深度优先遇到的第一个。
-	// 排在前面的不是本包错误时跳过它，而不是返回空串
+	// Run always puts the main cause first in the Join, so "who reported it" takes the first one found depth-first.
+	// An error from another package in front of it is skipped rather than producing an empty string.
 	joined := errors.Join(errBase, New("xgin", "start", errBase), New("xgorm", "close", errBase))
 	if got := Module(joined); got != "xgin" {
-		t.Errorf("Join 时该取第一个本包错误的模块，got=%q", got)
+		t.Errorf("across a Join it must take the module of the first error from this package, got=%q", got)
 	}
 }
 
-// ---- 一条错误只有一个框 ----
+// ---- one frame per error ----
 
 func TestNewf_SameModuleInnerKeepsOnlyOpAndCause(t *testing.T) {
-	// 从前是 xone xgorm new failed, err=[instance "a": xone xgorm connect failed, err=[...]]：
-	// 模块名说了两遍，使用者要找的原因埋在第二层括号里
+	// It used to read xone xgorm new failed, err=[instance "a": xone xgorm connect failed, err=[...]]:
+	// the module name said twice, and the cause the caller is looking for buried in the second pair of brackets.
 	inner := Newf("xgorm", "connect", "cannot reach %s", "db:3306")
 	outer := Newf("xgorm", "new", "instance %q: %w", "a", inner)
 
@@ -140,7 +140,7 @@ func TestNewf_SameModuleInnerKeepsOnlyOpAndCause(t *testing.T) {
 }
 
 func TestNewf_OtherModuleInnerDropsXonePrefix(t *testing.T) {
-	// 「这是 xone 报的」最外层说一次就够了
+	// "this came from xone" only needs saying once, at the outermost layer.
 	inner := Newf("xconfig", "config", "invalid config %s", "App")
 	outer := Newf("xone", "start", "%s: %w", "xapp.loadConfig", inner)
 
@@ -151,13 +151,13 @@ func TestNewf_OtherModuleInnerDropsXonePrefix(t *testing.T) {
 }
 
 func TestNew_ReturnsSameModuleErrorAsIs(t *testing.T) {
-	// 一个模块边界只有一层框，而且留下的是更具体的那个 op
+	// One module boundary, one frame, and what is kept is the more specific op.
 	inner := Newf("xgorm", "connect", "cannot reach db")
 	if got := New("xgorm", "init", inner); got != inner {
-		t.Errorf("同模块再包一层应原样返回里层，got=%v", got)
+		t.Errorf("wrapping the same module again must return the inner one as it is, got=%v", got)
 	}
 	if got := New("xgin", "init", inner).Error(); strings.Count(got, "xone") != 1 {
-		t.Errorf("跨模块包一层时 xone 只该出现一次，got=%s", got)
+		t.Errorf("across modules xone must appear only once, got=%s", got)
 	}
 }
 
@@ -166,40 +166,40 @@ func TestNewf_ErrorChainSurvivesFolding(t *testing.T) {
 	outer := Newf("xone", "start", "%s: %w", "xgorm.init", Newf("xgorm", "new", "instance %q: %w", "a", inner))
 
 	if !errors.Is(outer, errBase) {
-		t.Error("errors.Is 应穿透折叠后的每一层")
+		t.Error("errors.Is must see through every folded layer")
 	}
 	var xe *Error
 	if !errors.As(outer, &xe) || xe.Module != "xone" {
-		t.Errorf("errors.As 取到的应是最外层，got=%+v", xe)
+		t.Errorf("errors.As must reach the outermost layer, got=%+v", xe)
 	}
 	if !Is(outer, "xgorm") {
-		t.Error("Is 应认得出折叠进里层的模块")
+		t.Error("Is must recognize a module folded into an inner layer")
 	}
 }
 
 func TestNewf_DoesNotMutateCallerArgs(t *testing.T) {
-	// args... 展开传进来时它就是调用方那一个切片，改了它调用方会看到一个陌生的类型
+	// Passing args... hands over the caller's own slice, and modifying it would show them an unfamiliar type.
 	inner := Newf("xgorm", "connect", "x")
 	args := []any{inner}
 	_ = Newf("xgorm", "new", "%w", args...)
 	if args[0] != any(inner) {
-		t.Errorf("调用方的切片被改了，got=%T", args[0])
+		t.Errorf("the caller's slice was modified, got=%T", args[0])
 	}
 }
 
 func TestNew_TypedNilTreatedAsNoCauseNotPanic(t *testing.T) {
-	// var e *Error 从某个函数返回、没判空就被包了一层——这是常见的笔误，
-	// 报错路径上的 panic 会把真正的故障盖掉
+	// A var e *Error returned from some function and wrapped without a nil check -- a common slip, and a panic
+	// on the error path would bury the real failure.
 	var nilErr *Error
 	e := New("xgorm", "init", nilErr)
 	if got, want := e.Error(), "xone xgorm init failed"; got != want {
 		t.Errorf("got=%q want=%q", got, want)
 	}
 	if e.Err != nil {
-		t.Errorf("带类型的 nil 不该被存进 Err，got=%#v", e.Err)
+		t.Errorf("a typed nil must not be stored in Err, got=%#v", e.Err)
 	}
 	if Is(e, "xredis") || !Is(e, "xgorm") || Module(e) != "xgorm" {
-		t.Errorf("Is / Module 应照常工作，got Is(xredis)=%v Is(xgorm)=%v Module=%q",
+		t.Errorf("Is / Module must keep working, got Is(xredis)=%v Is(xgorm)=%v Module=%q",
 			Is(e, "xredis"), Is(e, "xgorm"), Module(e))
 	}
 }
@@ -207,17 +207,17 @@ func TestNew_TypedNilTreatedAsNoCauseNotPanic(t *testing.T) {
 func TestNewf_TypedNilArgRendersAsNilNotPanic(t *testing.T) {
 	var nilErr *Error
 	for _, verb := range []string{"%v", "%w"} {
-		for _, module := range []string{"xgorm", "xredis"} { // 同模块、别的模块两条路都走一遍
+		for _, module := range []string{"xgorm", "xredis"} { // both paths: the same module and another one
 			e := Newf(module, "init", "cause="+verb, nilErr)
 			if got, want := e.Error(), "xone "+module+" init failed, err=[cause=<nil>]"; got != want {
 				t.Errorf("%s/%s got=%q want=%q", verb, module, got, want)
 			}
 			if Is(e, "xhttp") || !Is(e, module) || Module(e) != module {
-				t.Errorf("%s/%s Is / Module 应照常工作", verb, module)
+				t.Errorf("%s/%s Is / Module must keep working", verb, module)
 			}
 		}
 	}
 	if Is(nilErr, "xgorm") || Module(nilErr) != "" {
-		t.Error("带类型的 nil 本身不属于任何模块")
+		t.Error("a typed nil itself belongs to no module")
 	}
 }
