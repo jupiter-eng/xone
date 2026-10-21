@@ -14,10 +14,11 @@ staged initialization, reverse-order shutdown, and the caller gets the **native 
 - Test and benchmark names describe the scenario (`TestNew_FailsFastOnTypo`).
 - Examples in docs and comments use neutral values (`Europe/Berlin`, `prod,eu`), and never describe
   a "previous version / behavior change" that has not been released.
-- **Migration in progress.** Files written before this rule still contain Chinese. Never add new
-  Chinese, and translate what you touch: editing a function means translating its comments in the
-  same change. Generated files (`config_schema.json`) follow their source and are regenerated, not
-  hand-edited.
+- The migration is done and `scripts/check_no_zh.py` fails on any tracked file holding Chinese,
+  with no allowlist to add one to. Text an assertion needs verbatim (a library's translated
+  validation message, say) goes in as `\u` escapes, so the file itself stays clean
+  (`e2e/gin_options_test.go`). Generated files (`config_schema.json`) follow their source and are
+  regenerated, not hand-edited.
 
 ## Writing code
 

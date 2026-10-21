@@ -323,12 +323,12 @@ return xerror.Newf("xgorm", "connect", "cannot reach %s: %w", addr, err)
 slog.Info("xgorm ready", "instances", reg.Names())
 ```
 
-**The migration is not finished.** Files written before this rule still hold Chinese and are listed
-in `scripts/zh_allowlist.txt`, which `scripts/check_no_zh.py` enforces in both directions: a file
-with Chinese that is not on the list fails, and so does a listed file that no longer has any. Never
-add new Chinese, and translate what you touch — editing a function means translating its comments
-in the same change. Generated files (`config_schema.json`) follow their source and are regenerated
-rather than hand-edited.
+**The whole repository is English.** `scripts/check_no_zh.py` fails on any tracked file holding
+Chinese — Han characters, CJK punctuation or fullwidth forms — so nothing slips back in. Where a
+test has to assert on such text, a library's translated validation message for instance, it goes in
+as `\u` escapes: the assertion keeps the exact string and the file itself stays clean
+(`e2e/gin_options_test.go`). Generated files (`config_schema.json`) follow their source and are
+regenerated rather than hand-edited.
 
 Examples in documentation and comments use neutral values (`Europe/Berlin` for a timezone,
 `prod,eu` for profiles), and never describe a "previous version / behavior change" that has not

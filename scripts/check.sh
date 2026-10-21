@@ -192,12 +192,12 @@ $zh"
 echo "✓ the strings that reach run time are English"
 
 # ---- 8.1 No Chinese anywhere in the repository ----
-# The rule is in the Language section of .claude/CLAUDE.md. The files written before the rule landed
-# are listed in scripts/zh_allowlist.txt, and that list only ever shrinks: one translated is one line
-# deleted, and a line left behind (the file holds no Chinese while the list still lists it) is
-# reported just the same, so the list never becomes a dead letter
-python3 scripts/check_no_zh.py || fail "new Chinese appeared in the repository, or the allowlist holds a stale entry (see the list above)"
-echo "✓ no new Chinese in the repository ($(grep -cvE '^\s*(#|$)' scripts/zh_allowlist.txt) files on the allowlist still to translate)"
+# The rule is in the Language section of .claude/CLAUDE.md. Everything predating it has been
+# translated and the allowlist that carried that migration is gone: a file holding Chinese fails
+# here, with nothing to add it to. Text an assertion needs verbatim goes in as \u escapes
+# (e2e/gin_options_test.go)
+python3 scripts/check_no_zh.py || fail "Chinese appeared in the repository (see the list above)"
+echo "✓ no Chinese in the repository"
 
 # ---- 9. config_schema.json agrees with the structs ----
 # The schema is for the editor: completing a field in YAML, flagging a misspelling, showing the
