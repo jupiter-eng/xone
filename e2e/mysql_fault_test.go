@@ -12,14 +12,16 @@ import (
 	"github.com/jupiter-eng/xone/e2e/harness"
 )
 
-// mysqlDriverLogLine go-sql-driver 自带的 logger（标准库 log，前缀 [mysql]）写出来的一行
+// mysqlDriverLogLine is a line written by go-sql-driver's own logger (the standard library log, with the prefix [mysql])
 var mysqlDriverLogLine = regexp.MustCompile(`(?m)^\[mysql\] \d{4}/\d{2}/\d{2} .*$`)
 
-// 运行中 MySQL 进程挂了（端口拒绝连接）：
+// The MySQL process dies while running (the port refuses connections):
 //
-//   - 用到 MySQL 的操作当场报错（新连接被拒不需要等任何超时），错误里有地址
-//   - 另一个实例（PG）和不碰 MySQL 的接口不受影响：多实例各是各的连接池
-//   - MySQL 回来之后不用重启就恢复
+//   - an operation using MySQL fails there and then (a refused connection waits for no timeout),
+//     with the address in the error
+//   - the other instance (PG) and the endpoints that do not touch MySQL are unaffected: several
+//     instances means several pools, each its own
+//   - once MySQL is back it recovers without a restart
 func TestMySQL_RefusedAtRuntime_FailsFast_PGUnaffected_Recovers(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -29,23 +31,23 @@ func TestMySQL_RefusedAtRuntime_FailsFast_PGUnaffected_Recovers(t *testing.T) {
 
 	my.Cut()
 
-	t.Run("用到MySQL的操作当场报错", func(t *testing.T) {
+	t.Run("an operation using MySQL fails there and then", func(t *testing.T) {
 		var took []time.Duration
 		for i := range 5 {
 			r := mysqlDep(p, "", 30*time.Second)
 			if r.ReqErr != nil || r.Status != http.StatusServiceUnavailable {
-				t.Fatalf("第 %d 次：MySQL 拒绝连接时 /dep?target=mysql 应回 503，实际 %v", i+1, r)
+				t.Fatalf("attempt %d: /dep?target=mysql should answer 503 while MySQL refuses connections, got %v", i+1, r)
 			}
 			if !strings.Contains(r.Error, "connection refused") || !strings.Contains(r.Error, my.Addr()) {
-				t.Errorf("第 %d 次：错误应说清连不上哪（%s，connection refused），实际 %q", i+1, my.Addr(), r.Error)
+				t.Errorf("attempt %d: the error should say what it cannot reach (%s, connection refused), got %q", i+1, my.Addr(), r.Error)
 			}
-			// 连接被拒是立即的，上限给 DialTimeout：真等了哪怕一次超时也会超过它
+			// A refused connection is immediate, and DialTimeout is the upper bound: waiting out even one timeout would pass it
 			if r.Server > mysqlDialTimeout {
-				t.Errorf("第 %d 次：新连接被拒不该等任何超时，实际 %v", i+1, r.Server)
+				t.Errorf("attempt %d: a refused connection should wait for no timeout, got %v", i+1, r.Server)
 			}
 			took = append(took, r.Server)
 		}
-		t.Logf("数字：MySQL 拒绝连接时 SELECT 1 依次用了 %v；%s", took, faultSummary(took))
+		t.Logf("numbers: SELECT 1 took %v in turn while MySQL refused connections; %s", took, faultSummary(took))
 
 		for _, c := range []struct {
 			method, path string
@@ -58,51 +60,54 @@ func TestMySQL_RefusedAtRuntime_FailsFast_PGUnaffected_Recovers(t *testing.T) {
 		} {
 			r, took := faultTimed(t, p, c.method, c.path, c.body)
 			if r.Status != http.StatusInternalServerError {
-				t.Errorf("MySQL 不可用时 %s %s 应 500，实际 %v", c.method, c.path, r)
+				t.Errorf("%s %s should answer 500 while MySQL is unavailable, got %v", c.method, c.path, r)
 			}
 			if took > mysqlDialTimeout {
-				t.Errorf("MySQL 拒绝连接时 %s %s 应当场报错，实际用了 %v", c.method, c.path, took)
+				t.Errorf("%s %s should fail there and then while MySQL refuses connections, and it took %v", c.method, c.path, took)
 			}
 		}
 	})
 
-	t.Run("PG和不碰MySQL的接口不受影响", func(t *testing.T) {
+	t.Run("PG and the endpoints that do not touch MySQL are unaffected", func(t *testing.T) {
 		faultQuick(t, p, "GET /ping", "/ping", http.StatusOK)
 		faultQuick(t, p, "GET /dep?target=db", "/dep?target=db", http.StatusOK)
 		pu := createUser(t, p, "pg-while-mysql-cut", "pg@example.com")
-		faultQuick(t, p, "GET /users/:id?cache=off（PG）", fmt.Sprintf("/users/%d?cache=off", pu.ID), http.StatusOK)
+		faultQuick(t, p, "GET /users/:id?cache=off (PG)", fmt.Sprintf("/users/%d?cache=off", pu.ID), http.StatusOK)
 	})
 
-	t.Run("MySQL回来之后自动恢复", func(t *testing.T) {
+	t.Run("it recovers by itself once MySQL is back", func(t *testing.T) {
 		my.Restore()
 		took, n := mysqlWaitDep(t, p, 10*time.Second)
-		t.Logf("数字：MySQL 恢复监听之后 %s（第 %d 次探测）SELECT 1 回到 200", faultMS(took), n)
+		t.Logf("numbers: SELECT 1 was back to 200 %s after MySQL started listening again (probe %d)", faultMS(took), n)
 		fresh, _ := mysqlCreate(t, p, "after", "after@example.com")
 		if r := p.Get(t, fmt.Sprintf("/mysql/users/%d", fresh.ID)); r.Status != http.StatusOK {
-			t.Errorf("恢复后读写应照常，实际 %v", r)
+			t.Errorf("reads and writes should work as usual after the recovery, got %v", r)
 		}
 	})
 }
 
-// 运行中 MySQL 不回话（SetDelay(time.Hour)）、调用方不给截止时间：
-// xgorm/README.md XGorm.MySQL.ReadTimeout「读超时，对应 DSN 的 readTimeout。默认 3s」——
-// 池里的每一条连接都卡在读上，一条查询在 ReadTimeout 失败，不会一直挂住；并发地打也一样。
-// 同一时刻 PG 那个实例照常、而且快：两个实例的连接池互不牵连。
+// MySQL says nothing while running (SetDelay(time.Hour)) and the caller gives no deadline:
+// xgorm/README.md, XGorm.MySQL.ReadTimeout, "the read timeout, matching readTimeout in the DSN. 3s
+// by default" -- every connection in the pool is stuck on a read, a query fails at ReadTimeout and
+// does not hang forever; the same holds under concurrency.
+// At the same time the PG instance is as usual, and fast: the two instances' pools do not drag
+// each other down.
 //
-// 另有一条：go-sql-driver 读超时时会用它自带的 logger 往 stderr 写一行纯文本
-// （[mysql] 2026/09/24 packets.go:58 read tcp …: i/o timeout）。docs/architecture.md
-// 「我们故意跟底层库不一样的地方」里，go-redis、resty、GORM 自带的 logger 都接到了 slog
-// ——「绕开 slog 的日志进不了日志平台」；go-sql-driver 的没接，按同一条原则是 bug
+// And one more: on a read timeout go-sql-driver writes a line of plain text to stderr with its own
+// logger ([mysql] 2026/09/24 packets.go:58 read tcp ...: i/o timeout). In docs/architecture.md,
+// "Where we differ from the underlying library on purpose", the loggers of go-redis, resty and
+// GORM are all wired into slog -- "a log that goes around slog never reaches the logging
+// platform"; go-sql-driver's is not, which by the same principle is a bug
 func TestMySQL_SilentAtRuntime_QueryFailsAtReadTimeout_PGUnaffected(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
 	const conc = 8
 	my := harness.NewProxy(t, harness.MySQLAddr())
 	p := harness.Start(t, harness.Options{MySQLAddr: my.Addr()})
-	// 先把池子撑到 conc 条连接：卡住之后并发的每一条查询各占一条池里的连接
+	// Fill the pool to conc connections first: once it is stuck, each concurrent query holds one connection of the pool
 	for _, r := range faultBurst(p, conc, "mysql", 10*time.Second) {
 		if r.Status != http.StatusOK {
-			t.Fatalf("故障前 SELECT 1 应 200，实际 %v", r)
+			t.Fatalf("SELECT 1 should answer 200 before the fault, got %v", r)
 		}
 	}
 	my.SetDelay(time.Hour)
@@ -110,7 +115,7 @@ func TestMySQL_SilentAtRuntime_QueryFailsAtReadTimeout_PGUnaffected(t *testing.T
 	var pg []faultDepResult
 	var wg sync.WaitGroup
 	wg.Add(1)
-	go func() { // MySQL 那一批卡着的同时，PG 每 100ms 探一次
+	go func() { // while the MySQL batch is stuck, PG is probed every 100ms
 		defer wg.Done()
 		for range 20 {
 			pg = append(pg, faultDep(p, "db", "", 5*time.Second))
@@ -123,58 +128,61 @@ func TestMySQL_SilentAtRuntime_QueryFailsAtReadTimeout_PGUnaffected(t *testing.T
 	var took []time.Duration
 	for i, r := range res {
 		if r.ReqErr != nil || r.Status != http.StatusServiceUnavailable {
-			t.Errorf("第 %d 个：MySQL 不回话时查询应在 ReadTimeout 失败返回 503，实际 %v", i+1, r)
+			t.Errorf("request %d: with MySQL silent the query should fail at ReadTimeout and answer 503, got %v", i+1, r)
 			continue
 		}
 		if r.Server > mysqlReadTimeout+faultSlack || r.Server < mysqlReadTimeout-20*time.Millisecond {
-			t.Errorf("第 %d 个：文档说 MySQL.ReadTimeout 默认 3s，查询应在那时失败，实际 %v：%s", i+1, r.Server, r.Error)
+			t.Errorf("request %d: the documentation says MySQL.ReadTimeout is 3s by default and the query should fail then, got %v: %s", i+1, r.Server, r.Error)
 		}
 		took = append(took, r.Server)
 	}
-	t.Logf("数字：MySQL 不回话、并发 %d、不给截止时间：%s；错误：%s", conc, faultSummary(took), res[0].Error)
+	t.Logf("numbers: MySQL silent, concurrency %d, no deadline: %s; the error: %s", conc, faultSummary(took), res[0].Error)
 
 	var pgTook []time.Duration
 	for i, r := range pg {
 		if r.Status != http.StatusOK || r.Server > faultUnaffected {
-			t.Errorf("第 %d 次：MySQL 卡住时 PG 那个实例应照常而且快，实际 %v", i+1, r)
+			t.Errorf("attempt %d: the PG instance should be as usual, and fast, while MySQL is stuck, got %v", i+1, r)
 		}
 		pgTook = append(pgTook, r.Server)
 	}
-	t.Logf("数字：同一时刻 PG 的 SELECT 1：%s", faultSummary(pgTook))
+	t.Logf("numbers: PG's SELECT 1 at the same moment: %s", faultSummary(pgTook))
 
 	my.SetDelay(0)
 	took2, n := mysqlWaitDep(t, p, 10*time.Second)
-	t.Logf("数字：MySQL 恢复回话之后 %s（第 %d 次探测）回到 200", faultMS(took2), n)
+	t.Logf("numbers: it was back to 200 %s after MySQL started answering again (probe %d)", faultMS(took2), n)
 
-	t.Run("go-sql-driver自己的日志也走slog", func(t *testing.T) {
-		// xgorm/README.md XGorm：go-sql-driver 自己的日志接到了 slog，一条 xgorm go-sql-driver log，级别 WARN，原文在 detail。
-		// 这条原先是 KNOWN BUG：xgorm 没调 mysql.SetLogger，驱动用它自己的 log.New(os.Stderr, "[mysql] ", …)，
-		// 本用例里 8 条读超时就是 stderr 里 8 行 [mysql] … packets.go:58 read tcp …: i/o timeout
+	t.Run("go-sql-driver's own log goes through slog as well", func(t *testing.T) {
+		// xgorm/README.md, XGorm: go-sql-driver's own log is wired into slog as one xgorm go-sql-driver log line at WARN, with the text in detail.
+		// This used to be a KNOWN BUG: xgorm never called mysql.SetLogger, so the driver used its own log.New(os.Stderr, "[mysql] ", ...),
+		// and the 8 read timeouts of this case were 8 [mysql] ... packets.go:58 read tcp ...: i/o timeout lines in stderr
 		if lines := mysqlDriverLogLine.FindAllString(p.Stderr(), -1); len(lines) > 0 {
-			t.Errorf("go-sql-driver 的日志应走 slog，实际 stderr 里有 %d 行纯文本，例：%s", len(lines), lines[0])
+			t.Errorf("go-sql-driver's log should go through slog, and stderr holds %d lines of plain text, for instance: %s", len(lines), lines[0])
 		}
 		ls := p.FindLogs(func(l harness.Log) bool { return l.Msg() == "xgorm go-sql-driver log" })
 		if len(ls) == 0 {
-			t.Fatalf("读超时时驱动会记日志，应当是 xgorm go-sql-driver log，实际一条都没有\n%s", lastLines(p.Stderr(), 10))
+			t.Fatalf("the driver logs on a read timeout and it should be an xgorm go-sql-driver log, and there is not one\n%s", lastLines(p.Stderr(), 10))
 		}
 		for _, l := range ls {
 			if l.Str("level") != "WARN" || !strings.Contains(l.Str("detail"), "packets.go") {
-				t.Errorf("驱动的日志应是 WARN、原文在 detail 里，实际 %s", l.Line)
+				t.Errorf("the driver's log should be WARN with the text in detail, got %s", l.Line)
 				break
 			}
 		}
-		t.Logf("数字：%d 条 xgorm go-sql-driver log，例：%s", len(ls), ls[0].Str("detail"))
+		t.Logf("numbers: %d xgorm go-sql-driver log lines, for instance: %s", len(ls), ls[0].Str("detail"))
 	})
 }
 
-// 启动时 MySQL 不可达，三种不可达：拒绝连接 / 对端不回话 / 主机宕机。
+// MySQL is unreachable at the start, in three ways: connections refused / the far end says nothing
+// / the host is down.
 //
-// docs/config.md、xgorm/README.md：「建连重试：连不上时按 3 次重试」「单次建连探测的预算：MySQL 是 DialTimeout + MySQL.ReadTimeout」，
-// 所以启动最多等 3 × 3.5s + 3s = 13.5s（mysqlStartBudget）；错误要说清连不上的是哪个实例、哪个地址，
-// 不能有密码和 DSN。
+// docs/config.md and xgorm/README.md: "Connect retries: it retries 3 times when it cannot connect"
+// and "the budget of one connect probe: for MySQL it is DialTimeout + MySQL.ReadTimeout", so the
+// start waits 3 x 3.5s + 3s = 13.5s at most (mysqlStartBudget); the error has to say which
+// instance and which address it cannot reach, and may hold no password and no DSN.
 //
-// PG 那个实例是好的，而且名字排在前面、先建（xclient.Build 按名字排序）：
-// MySQL 起不来时它要跟着关掉，进程照样失败退出
+// The PG instance is fine, and its name comes first so it is built first (xclient.Build goes by
+// name): when MySQL will not come up it has to be closed again, and the process exits with a
+// failure all the same
 func TestMySQL_UnreachableAtStartup_FailsInBudget_ErrHasNameAddrNoPassword(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -183,11 +191,11 @@ func TestMySQL_UnreachableAtStartup_FailsInBudget_ErrHasNameAddrNoPassword(t *te
 		name   string
 		inject func(*harness.Proxy)
 		reason string
-		count  bool // 代理数得到尝试次数（连得上代理的只有「对端不回话」）
+		count  bool // the proxy can count the attempts (only "the far end says nothing" reaches the proxy at all)
 	}{
-		{"拒绝连接", func(p *harness.Proxy) { p.Cut() }, "connection refused", false},
-		{"对端不回话", func(p *harness.Proxy) { p.SetDelay(time.Hour) }, "invalid connection", true},
-		{"主机宕机", func(p *harness.Proxy) { p.Blackhole() }, "i/o timeout", false},
+		{"connections refused", func(p *harness.Proxy) { p.Cut() }, "connection refused", false},
+		{"the far end says nothing", func(p *harness.Proxy) { p.SetDelay(time.Hour) }, "invalid connection", true},
+		{"the host is down", func(p *harness.Proxy) { p.Blackhole() }, "i/o timeout", false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
@@ -196,38 +204,42 @@ func TestMySQL_UnreachableAtStartup_FailsInBudget_ErrHasNameAddrNoPassword(t *te
 			exit, p := faultStartFails(t, harness.Options{MySQLAddr: my.Addr()})
 			stderr := p.Stderr()
 			faultMustContain(t, "stderr", stderr, "xgorm connect failed", `instance "mysql"`, my.Addr(), c.reason)
-			mustNotContain(t, "进程的 stdout / stderr", p.Output(), pw, harness.MySQLDSN(my.Addr()))
+			mustNotContain(t, "the process's stdout / stderr", p.Output(), pw, harness.MySQLDSN(my.Addr()))
 			if exit.Uptime > mysqlStartBudget+faultStartSlack {
-				t.Errorf("按文档，MySQL 建连验证最多 %d 次 × %v + 退避上界 %v = %v，实际 %v 才失败退出",
+				t.Errorf("by the documentation the MySQL connect validation takes %d attempts x %v plus the backoff bounds %v = %v, and it failed and exited only after %v",
 					faultPingAttempts, mysqlAttempt, faultPingBackoffs, mysqlStartBudget, exit.Uptime)
 			}
-			// PG 先建好了，MySQL 失败时要关掉它：xgorm connected 只有 default 那一条，没有 xgorm ready
+			// PG was built first and has to be closed when MySQL fails: xgorm connected holds the default line alone, and there is no xgorm ready
 			if n := len(p.FindLogs(func(l harness.Log) bool { return l.Msg() == "xgorm ready" })); n != 0 {
-				t.Errorf("mysql 实例建不起来时 xgorm 不该报 ready，实际 %d 条", n)
+				t.Errorf("xgorm should not report ready when the mysql instance cannot be built, got %d lines", n)
 			}
-			t.Logf("数字：启动时 MySQL %s：%v 后以 %d 退出（预算 %v）；代理收到 %d 个连接；错误：%s",
-				c.name, exit.Uptime.Round(time.Millisecond), exit.Code, mysqlStartBudget, my.Accepted(), lastLine(stderr))
+			t.Logf("numbers: at the start, with MySQL %s: it exited with %d after %v (budget %v); the proxy saw %d connections; the error: %s",
+				c.name, exit.Code, exit.Uptime.Round(time.Millisecond), mysqlStartBudget, my.Accepted(), lastLine(stderr))
 
-			// 这条原先是 KNOWN BUG：代理只收到 1 个连接，进程在 3.0s（= ReadTimeout，握手那一读）后退出，
-			// 错误是 open <addr> failed: invalid connection。GORM 的 MySQL Dialector 在 gorm.Open 里的
-			// Initialize 先查一次 SELECT VERSION()（gorm.io/driver/mysql v1.6.0 mysql.go:130），
-			// 失败了 gorm.Open 直接返回错误，xgorm.New 走不到后面那次带重试的 ping
+			// This used to be a KNOWN BUG: the proxy saw 1 connection alone and the process exited after 3.0s (= ReadTimeout, the handshake read),
+			// with the error open <addr> failed: invalid connection. GORM's MySQL Dialector queries SELECT VERSION() first in
+			// Initialize inside gorm.Open (gorm.io/driver/mysql v1.6.0 mysql.go:130), and when that fails gorm.Open returns the error
+			// outright, so xgorm.New never reaches the ping with the retries behind it
 			if c.count && my.Accepted() != faultPingAttempts {
-				t.Errorf("文档说连不上时按 %d 次重试；MySQL 实际只试了 %d 次（错误：%s）", faultPingAttempts, my.Accepted(), lastLine(stderr))
+				t.Errorf("the documentation says it retries %d times when it cannot connect; MySQL tried only %d (the error: %s)", faultPingAttempts, my.Accepted(), lastLine(stderr))
 			}
 		})
 	}
 }
 
-// 启动时 MySQL 拒绝了这组凭证：docs/behavior.md「启动期建连探测」——认证失败不重试，错误说清是认证失败、不说连不上。
-// 对的密码、错的密码都不能出现在输出里。服务端回的错误（实测 MySQL 8.0.46）：
+// MySQL refuses these credentials at the start: docs/behavior.md, "The connect probe at start" --
+// an authentication failure is not retried, and the error says it is an authentication failure and
+// not that it cannot connect.
+// Neither the right password nor the wrong one may appear in the output. What the server answers
+// (measured on MySQL 8.0.46):
 //
-//	密码错         Error 1045 (28000): Access denied for user 'xone'@…（用户不存在也是 1045）
-//	没有库的权限   Error 1044 (42000): Access denied for user 'xone'@… to database '…'
-//	               （库不存在时，没有全局权限的账号拿到的也是 1044）
+//	a wrong password       Error 1045 (28000): Access denied for user 'xone'@... (a user that does not exist is 1045 as well)
+//	no access to the database  Error 1044 (42000): Access denied for user 'xone'@... to database '...'
+//	                       (where the database does not exist, an account without global privileges is given 1044 as well)
 //
-// 这条原先是 KNOWN BUG：xgorm 只认 PG 的 SQLSTATE 28 类，而 MySQL 的认证错误出在 gorm.Open 里
-// （Dialector.Initialize 查版本是第一次建连），报成了 open <地址> failed: Error 1045 …
+// This used to be a KNOWN BUG: xgorm recognized PG's SQLSTATE class 28 alone, while MySQL's
+// authentication error comes out of gorm.Open (Dialector.Initialize querying the version being the
+// first connect), and it was reported as open <address> failed: Error 1045 ...
 func TestMySQL_BadPasswordOrNoDBAccessAtStartup_AuthFail_NoRetry_NoPassword(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -237,32 +249,32 @@ func TestMySQL_BadPasswordOrNoDBAccessAtStartup_AuthFail_NoRetry_NoPassword(t *t
 		dsn  func(addr, wrong string) string
 		code string
 	}{
-		{"密码错误", mysqlSecretDSN, "Error 1045"},
-		{"没有库的权限", func(a, _ string) string { return mysqlSecretDSN(a, pw) + "_noaccess_" + harness.NewID() }, "Error 1044"},
+		{"a wrong password", mysqlSecretDSN, "Error 1045"},
+		{"no access to the database", func(a, _ string) string { return mysqlSecretDSN(a, pw) + "_noaccess_" + harness.NewID() }, "Error 1044"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			wrong := "wrong-pw-" + harness.NewID()
-			my := harness.NewProxy(t, harness.MySQLAddr()) // 只为数连接
+			my := harness.NewProxy(t, harness.MySQLAddr()) // only to count the connections
 			dsn := c.dsn(my.Addr(), wrong)
 			exit, p := faultStartFails(t, harness.Options{Env: map[string]string{"E2E_MYSQL_DSN": dsn}})
 
 			stderr := p.Stderr()
-			mustNotContain(t, "进程的 stdout / stderr", p.Output(), pw, wrong, dsn)
+			mustNotContain(t, "the process's stdout / stderr", p.Output(), pw, wrong, dsn)
 			faultMustContain(t, "stderr", stderr, "xgorm connect failed", `instance "mysql"`,
 				"authentication to "+my.Addr()+" failed", c.code, "Access denied for user 'xone'")
 			for _, s := range []string{"cannot reach", "open " + my.Addr() + " failed"} {
 				if strings.Contains(stderr, s) {
-					t.Errorf("认证失败不是连不上，不该报 %q：%s", s, lastLine(stderr))
+					t.Errorf("an authentication failure is not a failure to connect and should not report %q: %s", s, lastLine(stderr))
 				}
 			}
 			if exit.Uptime > faultStartSlack {
-				t.Errorf("认证失败不重试，应在 %v 内退出，实际 %v", faultStartSlack, exit.Uptime)
+				t.Errorf("an authentication failure is not retried and should exit within %v, got %v", faultStartSlack, exit.Uptime)
 			}
 			if my.Accepted() != 1 {
-				t.Errorf("认证失败不重试，代理应只收到 1 个连接，实际 %d 个", my.Accepted())
+				t.Errorf("an authentication failure is not retried and the proxy should see 1 connection, got %d", my.Accepted())
 			}
-			t.Logf("数字：启动时 MySQL %s：%v 后以 %d 退出，试了 %d 次；错误：%s", c.name, exit.Uptime.Round(time.Millisecond), exit.Code, my.Accepted(), lastLine(stderr))
+			t.Logf("numbers: at the start, with MySQL %s: it exited with %d after %v in %d attempts; the error: %s", c.name, exit.Code, exit.Uptime.Round(time.Millisecond), my.Accepted(), lastLine(stderr))
 		})
 	}
 }

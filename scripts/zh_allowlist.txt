@@ -9,13 +9,6 @@
 # The two diagrams hold their text as SVG nodes at fixed coordinates. English is wider than
 # Chinese at the same font size, so translating them without rendering the result risks text
 # overflowing its boxes; they need a pass where the rendering can be checked.
-e2e/clickhouse_auth_test.go
-e2e/clickhouse_fault_test.go
-e2e/clickhouse_functional_test.go
-e2e/clickhouse_load_test.go
-e2e/clickhouse_shutdown_test.go
-e2e/clickhouse_test.go
-e2e/clickhouse_tls_test.go
 e2e/client_options_test.go
 e2e/config_loading_test.go
 e2e/cron_test.go
@@ -38,11 +31,6 @@ e2e/load_helpers_test.go
 e2e/load_test.go
 e2e/log_options_test.go
 e2e/metric_options_test.go
-e2e/mysql_fault_test.go
-e2e/mysql_functional_test.go
-e2e/mysql_load_test.go
-e2e/mysql_shutdown_test.go
-e2e/mysql_test.go
 e2e/options_helpers_test.go
 e2e/shutdown_helpers_test.go
 e2e/shutdown_test.go
