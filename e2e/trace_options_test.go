@@ -13,12 +13,14 @@ import (
 	"github.com/jupiter-eng/xone/e2e/harness"
 )
 
-// forwardProxy 一个 HTTP 正向代理桩：服务的 HTTP_PROXY 指向它，于是服务调任何 http://域名/ 都落到这里。
-// 按域名透传的规则要一个真的域名才测得到，而测试环境改不了 DNS / hosts
+// forwardProxy is a stub HTTP forward proxy: the service's HTTP_PROXY points at it, so every
+// http://domain/ the service calls lands here.
+// The per-domain forwarding rules take a real domain name to test, and the test environment cannot
+// change DNS / hosts
 type forwardProxy struct {
 	URL string
 	mu  sync.Mutex
-	got map[string]http.Header // 目标 host → 最后一次收到的请求头
+	got map[string]http.Header // the target host -> the headers of the last request
 }
 
 func newForwardProxy(t *testing.T) *forwardProxy {
@@ -26,7 +28,7 @@ func newForwardProxy(t *testing.T) *forwardProxy {
 	fp := &forwardProxy{got: map[string]http.Header{}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fp.mu.Lock()
-		fp.got[r.URL.Host] = r.Header.Clone() // 经代理的请求是绝对 URI，URL.Host 就是目标
+		fp.got[r.URL.Host] = r.Header.Clone() // a request through a proxy carries an absolute URI, so URL.Host is the target
 		fp.mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -41,22 +43,23 @@ func (fp *forwardProxy) header(t *testing.T, host string) http.Header {
 	defer fp.mu.Unlock()
 	h, ok := fp.got[host]
 	if !ok {
-		t.Fatalf("代理桩没收到发给 %s 的请求", host)
+		t.Fatalf("the proxy stub received no request for %s", host)
 	}
 	return h
 }
 
-// proxyEnv 让服务的出站 HTTP 走 fp。NO_PROXY 设成一个不会命中的值：测试进程的环境里可能带着别的 NO_PROXY
+// proxyEnv sends the service's outbound HTTP through fp. NO_PROXY is set to something that never
+// matches: the test process's own environment may carry a NO_PROXY of its own
 func proxyEnv(fp *forwardProxy) map[string]string {
 	return map[string]string{"HTTP_PROXY": fp.URL, "http_proxy": fp.URL, "NO_PROXY": "no-proxy.invalid", "no_proxy": "no-proxy.invalid"}
 }
 
-// xtrace/README.md XTrace.ForwardHeaderRules：「只发给匹配域名的 Header」。
+// xtrace/README.md, XTrace.ForwardHeaderRules: "the headers go to the matching domains alone".
 //
-//	Domains 只认精确的 api.internal.com 和通配的 *.trusted.com；*.trusted.com 匹配任意层级的子域，
-//	不匹配裸域 trusted.com；其余带 * 的写法启动失败（*trusted.com 原先会匹配 eviltrusted.com）
-//	同一个 header 同时出现在 ForwardHeaders 和 ForwardHeaderRules 里会启动失败
-//	透传只收可信对端（XGin.TrustedProxies）发来的值
+//	Domains takes the exact api.internal.com and the wildcard *.trusted.com alone; *.trusted.com matches a subdomain at any depth
+//	and does not match the bare trusted.com; every other spelling with a * fails the start (*trusted.com used to match eviltrusted.com)
+//	one header appearing in both ForwardHeaders and ForwardHeaderRules fails the start
+//	the forwarding takes the values from a trusted peer alone (XGin.TrustedProxies)
 func TestCoverage_ForwardHeaderRulesMatchingDomainsOnly_AcceptOnlyTrusted(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -70,11 +73,11 @@ func TestCoverage_ForwardHeaderRulesMatchingDomainsOnly_AcceptOnlyTrusted(t *tes
 		t.Helper()
 		r := p.Get(t, "/probe/fwd?url=http://"+host+"/echo", "X-Request-Id", "rid-"+host, "X-Internal-Token", "tok-"+host)
 		if r.Status != http.StatusOK {
-			t.Fatalf("GET /probe/fwd 到 %s：%v", host, r)
+			t.Fatalf("GET /probe/fwd to %s: %v", host, r)
 		}
 	}
 
-	t.Run("可信对端：按域名发", func(t *testing.T) {
+	t.Run("a trusted peer: sent by domain", func(t *testing.T) {
 		t.Parallel()
 		fp := newForwardProxy(t)
 		p := harness.Start(t, harness.Options{Env: proxyEnv(fp), Overlay: "XGin:\n  TrustedProxies: [\"127.0.0.1\"]\n" + rules})
@@ -83,39 +86,38 @@ func TestCoverage_ForwardHeaderRulesMatchingDomainsOnly_AcceptOnlyTrusted(t *tes
 			wantToken bool
 		}{
 			{"api.internal.test", true},
-			{"api.internal.test:8080", true}, // 带端口的照样按域名比
-			{"other.internal.test", false},   // 精确写法不带子域
+			{"api.internal.test:8080", true}, // a port and all, it still compares by domain
+			{"other.internal.test", false},   // the exact spelling takes no subdomain
 			{"a.trusted.test", true},
-			{"a.b.trusted.test", true}, // 任意层级
-			{"trusted.test", false},    // 不含裸域
-			{"eviltrusted.test", false},
+			{"a.b.trusted.test", true}, // any depth
+			{"trusted.test", false},    // the bare domain is not included
 			{"example.test", false},
 		} {
 			send(t, p, c.host)
 			h := fp.header(t, c.host)
 			if got := h.Get("X-Internal-Token"); (got != "") != c.wantToken || (c.wantToken && got != "tok-"+c.host) {
-				t.Errorf("发给 %s：X-Internal-Token 应%s，实际 %q", c.host, map[bool]string{true: "带上", false: "不带"}[c.wantToken], got)
+				t.Errorf("sent to %s: X-Internal-Token should %s, got %q", c.host, map[bool]string{true: "be there", false: "not be there"}[c.wantToken], got)
 			}
-			// ForwardHeaders（service/application.yml 里的 X-Request-Id）发给所有下游
+			// ForwardHeaders (X-Request-Id in service/application.yml) goes to every downstream
 			if got := h.Get("X-Request-Id"); got != "rid-"+c.host {
-				t.Errorf("ForwardHeaders 里的 X-Request-Id 应发给所有下游，发给 %s 的是 %q", c.host, got)
+				t.Errorf("the X-Request-Id of ForwardHeaders should go to every downstream, and the one sent to %s was %q", c.host, got)
 			}
 		}
 	})
 
-	t.Run("不可信对端：规则里的头也不收", func(t *testing.T) {
+	t.Run("an untrusted peer: not even the headers in the rules are taken", func(t *testing.T) {
 		t.Parallel()
 		fp := newForwardProxy(t)
 		p := harness.Start(t, harness.Options{Env: proxyEnv(fp), Overlay: "XGin:\n  TrustedProxies: []\n" + rules})
 		send(t, p, "api.internal.test")
 		h := fp.header(t, "api.internal.test")
 		if h.Get("X-Internal-Token") != "" || h.Get("X-Request-Id") != "" {
-			t.Errorf("TrustedProxies: [] 时什么都不透传，发给 api.internal.test 的却带着 X-Internal-Token=%q X-Request-Id=%q",
+			t.Errorf("with TrustedProxies: [] nothing is forwarded, and what went to api.internal.test carried X-Internal-Token=%q X-Request-Id=%q",
 				h.Get("X-Internal-Token"), h.Get("X-Request-Id"))
 		}
 	})
 
-	t.Run("写错的规则启动失败", func(t *testing.T) {
+	t.Run("a malformed rule fails the start", func(t *testing.T) {
 		t.Parallel()
 		for _, c := range []struct {
 			name, overlay string
@@ -125,18 +127,20 @@ func TestCoverage_ForwardHeaderRulesMatchingDomainsOnly_AcceptOnlyTrusted(t *tes
 				[]string{"xtrace", `domain pattern "*trusted.test" is not supported`}},
 			{"a.*.test", "XTrace:\n  ForwardHeaderRules:\n    - Domains: [\"a.*.test\"]\n      Headers: [X-Internal-Token]\n",
 				[]string{`domain pattern "a.*.test" is not supported`}},
-			{"同一个头两边都写了", "XTrace:\n  ForwardHeaderRules:\n    - Domains: [api.internal.test]\n      Headers: [x-request-id]\n",
+			{"one header written in both places", "XTrace:\n  ForwardHeaderRules:\n    - Domains: [api.internal.test]\n      Headers: [x-request-id]\n",
 				[]string{"X-Request-Id appears in both ForwardHeaders and ForwardHeaderRules"}},
 		} {
 			stderr := covStartupError(t, harness.Options{Overlay: c.overlay})
-			faultMustContain(t, c.name+" 的启动错误", stderr, c.want...)
+			faultMustContain(t, "the start error for "+c.name, stderr, c.want...)
 		}
 	})
 }
 
-// xtrace/README.md XTrace.SampleRatio：「根 Span 的采样率，[0, 1]」，「有上游时一律听上游的 sampled 位（ParentBased）」。
-// 0.5 时根请求大约一半被导出；带着上游 traceparent 的，sampled=01 的全导出、并以 -01 往下游传，
-// sampled=00 的一个都不导出、以 -00 往下游传，和采样率无关
+// xtrace/README.md, XTrace.SampleRatio: "the sampling ratio of a root span, in [0, 1]" and "with
+// an upstream, its sampled bit always wins (ParentBased)".
+// At 0.5 about half of the root requests are exported; of those carrying an upstream traceparent,
+// every sampled=01 one is exported and passed on with -01, and not one sampled=00 one is exported
+// and they are passed on with -00, whatever the sampling ratio
 func TestCoverage_SampleRatioSamplesRoots_FollowsUpstreamWhenPresent(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -158,7 +162,7 @@ func TestCoverage_SampleRatioSamplesRoots_FollowsUpstreamWhenPresent(t *testing.
 		}
 		p.Get(t, "/proxy", "traceparent", "00-"+up+"-"+randomSpanID()+flags)
 		if got := stub.Last(t).Header.Get("Traceparent"); !strings.HasPrefix(got, "00-"+up+"-") || !strings.HasSuffix(got, flags) {
-			t.Errorf("上游 %s 时下游应收到同一条链路、同样的 sampled 位，实际 %q", flags, got)
+			t.Errorf("with the upstream at %s the downstream should receive the same trace and the same sampled bit, got %q", flags, got)
 		}
 		if flags == "-01" {
 			sampledUp[up] = true
@@ -167,9 +171,9 @@ func TestCoverage_SampleRatioSamplesRoots_FollowsUpstreamWhenPresent(t *testing.
 		}
 	}
 
-	// 退出时 xtrace 关掉导出器，之后文件里的就是全部
+	// On exit xtrace closes the exporter, and what is in the file afterwards is all of it
 	if exit := p.Terminate(t, 20*time.Second); exit.Code != 0 {
-		t.Fatalf("SIGTERM 之后应以 0 退出，实际 %v", exit)
+		t.Fatalf("it should exit with 0 after the SIGTERM, got %v", exit)
 	}
 	exported, fromSampled, fromUnsampled := 0, map[string]bool{}, 0
 	for _, s := range p.Spans(t) {
@@ -185,21 +189,21 @@ func TestCoverage_SampleRatioSamplesRoots_FollowsUpstreamWhenPresent(t *testing.
 			fromUnsampled++
 		}
 	}
-	// 二项分布 n=400 p=0.5：标准差 10，给 ±50（5σ），误判的概率约百万分之一
+	// A binomial distribution with n=400 and p=0.5: the standard deviation is 10, and +-50 (5 sigma) makes a false alarm about one in a million
 	if math.Abs(float64(exported)-roots*0.5) > 50 {
-		t.Errorf("SampleRatio: 0.5 时 %d 个根请求应导出约 %d 个服务端 Span（±50），实际 %d", roots, roots/2, exported)
+		t.Errorf("with SampleRatio: 0.5, %d root requests should export about %d server spans (+-50), got %d", roots, roots/2, exported)
 	}
 	if len(fromSampled) != parented {
-		t.Errorf("上游 sampled=01 的 %d 个请求都该导出（ParentBased，不按 0.5 抽），实际导出了 %d 个", parented, len(fromSampled))
+		t.Errorf("all %d requests with the upstream at sampled=01 should be exported (ParentBased, not drawn at 0.5), and %d were", parented, len(fromSampled))
 	}
 	if fromUnsampled != 0 {
-		t.Errorf("上游 sampled=00 的请求一个都不该导出，实际导出了 %d 个", fromUnsampled)
+		t.Errorf("not one request with the upstream at sampled=00 should be exported, and %d were", fromUnsampled)
 	}
-	t.Logf("数字：SampleRatio 0.5，%d 个根请求导出了 %d 个（%.1f%%）；上游 01 导出 %d/%d，上游 00 导出 %d/%d",
+	t.Logf("numbers: with SampleRatio 0.5, %d root requests exported %d (%.1f%%); the upstream at 01 exported %d/%d and at 00 exported %d/%d",
 		roots, exported, float64(exported)*100/roots, len(fromSampled), parented, fromUnsampled, parented)
 }
 
-// xtrace/README.md XTrace.Console：「把 Span 打到标准输出，本地调试用，默认关」
+// xtrace/README.md, XTrace.Console: "it prints the spans to standard output, for local debugging, off by default"
 func TestCoverage_ConsolePrintsSpansToStdout(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -222,18 +226,20 @@ func TestCoverage_ConsolePrintsSpansToStdout(t *testing.T) {
 				}
 				out := p.Stdout()
 				if !strings.Contains(out, want) || !strings.Contains(out, `"Name": "GET /probe/log"`) {
-					t.Errorf("Console: true 时服务端 Span（GET /probe/log，TraceID %s）应打到标准输出，实际没有", tid)
+					t.Errorf("with Console: true the server span (GET /probe/log, TraceID %s) should be printed to standard output, and it is not", tid)
 				}
 			} else if strings.Contains(p.Stdout(), `"SpanContext"`) {
-				t.Errorf("Console 默认关，标准输出里不该有 Span")
+				t.Errorf("Console is off by default and standard output should hold no span")
 			}
 		})
 	}
 }
 
-// xapp/README.md App：「链路的 service.name / service.version 按这个优先级取，后面的压过前面的：
-// OTel 自己的兜底名 unknown_service:<可执行文件名> → App.Name / App.Version → OTEL_RESOURCE_ATTRIBUTES → OTEL_SERVICE_NAME」；
-// XTrace：「OTEL_RESOURCE_ATTRIBUTES 写错一项（其余写对的照常生效）……都不再让服务起不来」
+// xapp/README.md, App: "a trace's service.name / service.version come from these in order, each
+// overriding the one before it: OTel's own fallback name unknown_service:<executable> ->
+// App.Name / App.Version -> OTEL_RESOURCE_ATTRIBUTES -> OTEL_SERVICE_NAME";
+// XTrace: "one malformed item in OTEL_RESOURCE_ATTRIBUTES (where the well-formed ones still take)
+// ... no longer keeps the service from coming up"
 func TestCoverage_service_NameFromAppOverriddenByOTELEnv(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -243,20 +249,20 @@ func TestCoverage_service_NameFromAppOverriddenByOTELEnv(t *testing.T) {
 		env           map[string]string
 		noApp         bool
 		wantName      string
-		wantVersion   any // nil 表示不该有这个属性
+		wantVersion   any // nil means the attribute should not be there
 		wantExtraKey  string
 		wantExtraVal  string
 		wantStartWarn bool
 	}{
-		{name: "只有 App", wantName: "xone.e2e.service", wantVersion: "e2e"},
-		{name: "没有 App：OTel 的兜底名，没有版本", noApp: true, wantName: "unknown_service:service", wantVersion: nil},
-		{name: "OTEL_RESOURCE_ATTRIBUTES 压过 App",
+		{name: "App alone", wantName: "xone.e2e.service", wantVersion: "e2e"},
+		{name: "no App: OTel's fallback name and no version", noApp: true, wantName: "unknown_service:service", wantVersion: nil},
+		{name: "OTEL_RESOURCE_ATTRIBUTES wins over App",
 			env:      map[string]string{"OTEL_RESOURCE_ATTRIBUTES": "service.name=from-attrs,service.version=v-attrs"},
 			wantName: "from-attrs", wantVersion: "v-attrs"},
-		{name: "OTEL_SERVICE_NAME 再压过 OTEL_RESOURCE_ATTRIBUTES",
+		{name: "OTEL_SERVICE_NAME wins over OTEL_RESOURCE_ATTRIBUTES in turn",
 			env:      map[string]string{"OTEL_RESOURCE_ATTRIBUTES": "service.name=from-attrs,service.version=v-attrs", "OTEL_SERVICE_NAME": "from-env"},
 			wantName: "from-env", wantVersion: "v-attrs"},
-		{name: "OTEL_RESOURCE_ATTRIBUTES 写错一项：照常起来，写对的那项生效",
+		{name: "one malformed item in OTEL_RESOURCE_ATTRIBUTES: it comes up as usual and the well-formed one takes",
 			env:      map[string]string{"OTEL_RESOURCE_ATTRIBUTES": "deployment.environment=e2e,broken-item"},
 			wantName: "xone.e2e.service", wantVersion: "e2e", wantExtraKey: "deployment.environment", wantExtraVal: "e2e", wantStartWarn: true},
 	} {
@@ -269,18 +275,18 @@ func TestCoverage_service_NameFromAppOverriddenByOTELEnv(t *testing.T) {
 			p := harness.Start(t, o)
 			srv := serverSpan(t, p, traceIDOf(t, p.Get(t, "/ping")))
 			if got := srv.Resource["service.name"]; got != c.wantName {
-				t.Errorf("service.name 应是 %q，实际 %v", c.wantName, got)
+				t.Errorf("service.name should be %q, got %v", c.wantName, got)
 			}
 			if got, ok := srv.Resource["service.version"]; (c.wantVersion == nil && ok) || (c.wantVersion != nil && got != c.wantVersion) {
-				t.Errorf("service.version 应是 %v，实际 %v（有=%v）", c.wantVersion, got, ok)
+				t.Errorf("service.version should be %v, got %v (present=%v)", c.wantVersion, got, ok)
 			}
 			if c.wantExtraKey != "" && srv.Resource[c.wantExtraKey] != c.wantExtraVal {
-				t.Errorf("写对的 %s=%s 应照常生效，实际 %v", c.wantExtraKey, c.wantExtraVal, srv.Resource[c.wantExtraKey])
+				t.Errorf("the well-formed %s=%s should take as usual, got %v", c.wantExtraKey, c.wantExtraVal, srv.Resource[c.wantExtraKey])
 			}
 			if c.wantStartWarn && !strings.Contains(p.Output(), "xtrace some resource attributes could not be detected") {
-				t.Errorf("OTEL_RESOURCE_ATTRIBUTES 写错时应打一条告警")
+				t.Errorf("a malformed OTEL_RESOURCE_ATTRIBUTES should log a warning")
 			}
-			t.Logf("数字：%s → service.name=%v service.version=%v", c.name, srv.Resource["service.name"], srv.Resource["service.version"])
+			t.Logf("numbers: %s -> service.name=%v service.version=%v", c.name, srv.Resource["service.name"], srv.Resource["service.version"])
 		})
 	}
 }
