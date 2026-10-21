@@ -407,7 +407,7 @@ and its troubleshooting.
 | `XGorm` | Databases | [xgorm/README.md](../xgorm/README.md#configuration) |
 | `XGorm` (`Driver: clickhouse`) | The ClickHouse driver | [xgorm/clickhouse/README.md](../xgorm/clickhouse/README.md#configuration) |
 | `XRedis` | Redis | [xredis/README.md](../xredis/README.md#配置) |
-| `XKafka` | Kafka | [xkafka/README.md](../xkafka/README.md#配置) |
+| `XKafka` | Kafka | [xkafka/README.md](../xkafka/README.md#configuration) |
 | `XCache` | A local cache | [xcache/README.md](../xcache/README.md#configuration) |
 | `XHttp` | Outbound HTTP | [xhttp/README.md](../xhttp/README.md#配置) |
 | `XGin` | A web server | [xgin/README.md](../xgin/README.md#configuration) |

@@ -74,7 +74,7 @@ func TestConsume_OrderedWithinPartition(t *testing.T) {
 	}
 }
 
-// p0 的处理函数等 p1 处理完才返回：分区之间要是串行的，这里就死等
+// p0's handler returns only once p1 has finished: were the partitions serial, this would wait forever.
 func TestConsume_ParallelAcrossPartitions(t *testing.T) {
 	_, cfg := cluster(t, 2, "orders")
 	cl := rawClient(t, cfg, manualPartitioner())
@@ -101,8 +101,8 @@ func TestConsume_ParallelAcrossPartitions(t *testing.T) {
 	eventually(t, func() bool { return rec.count() == 2 }, "both partitions processed, got %v", rec.values())
 }
 
-// 进程崩溃的模拟：处理到第二条时卡住，此刻提交出去的只到第一条（三条都已经 poll 到了）；
-// 停止预算一开始就用完，卡住的那条没标记，重启之后从第二条接着处理
+// Simulating a crash: processing blocks on the second message, so what has been committed by then reaches only the first (all three were already polled);
+// the stop budget runs out at once, the blocked message is never marked, and after a restart processing continues from the second.
 func TestConsume_MarksOnlyAfterProcessing(t *testing.T) {
 	_, cfg := cluster(t, 1, "orders")
 	produce(t, rawClient(t, cfg), "orders", 0, "a", "b", "c")
@@ -112,7 +112,7 @@ func TestConsume_MarksOnlyAfterProcessing(t *testing.T) {
 	c := register(t, m, "orders", "g1", func(ctx context.Context, r *kgo.Record) error {
 		if string(r.Value) == "b" {
 			close(stuck)
-			<-ctx.Done() // 停止预算用完时才取消
+			<-ctx.Done() // cancelled only once the stop budget runs out
 			return ctx.Err()
 		}
 		return nil
@@ -177,8 +177,8 @@ func TestConsume_RetriesThenSucceeds(t *testing.T) {
 	}
 }
 
-// 重试之间有退避，退出时不等它。退避本身（上界逐次翻倍、带抖动）是 xutil.Retry 的，由它的测试钉着。
-// 第一次退避的上界调成 1 小时：抖动落在 [0, 1h]，300ms 内就来第二次的概率约十万分之八
+// There is backoff between retries, and it is not waited for on shutdown. The backoff itself (doubling bounds with jitter) is xutil.Retry's and is pinned down by its tests.
+// The first backoff bound is set to an hour: the jitter falls in [0, 1h], so the chance of a second attempt within 300ms is about 8 in 100 thousand.
 func TestConsume_RetryBackoffWaitsAndStopInterruptsIt(t *testing.T) {
 	_, cfg := cluster(t, 1, "orders")
 	produce(t, rawClient(t, cfg), "orders", 0, "a")
@@ -307,7 +307,7 @@ func TestConsume_DeadLetterDisabledSkipsWithError(t *testing.T) {
 	}
 }
 
-// 死信 topic 不存在（kfake 不自动建）：写不进去就一直重试，不标记、不往下处理；停的时候放弃，这条之后重新投递
+// The dead-letter topic does not exist (kfake does not create it automatically): a failed write is retried forever with nothing marked and nothing processed after it; on shutdown it gives up and the message is redelivered later.
 func TestConsume_DeadLetterFailureBlocksWithoutMarking(t *testing.T) {
 	logs := captureLogs(t)
 	_, cfg := cluster(t, 1, "orders")
@@ -321,7 +321,7 @@ func TestConsume_DeadLetterFailureBlocksWithoutMarking(t *testing.T) {
 			return xutil.Permanent(errors.New("nope"))
 		}
 		return nil
-	}, WithDeadLetter("missing.dlq"), WithTimeout(300*time.Millisecond)) // 每次写死信也受它管：重试来得快些
+	}, WithDeadLetter("missing.dlq"), WithTimeout(300*time.Millisecond)) // each dead-letter write is bounded by it too, which makes the retries come faster
 	start(t, m)
 	eventually(t, func() bool { return len(withMsg(logs(), "kafka dead letter produce failed, retrying")) >= 3 },
 		"dead letter produce retried")
@@ -331,7 +331,7 @@ func TestConsume_DeadLetterFailureBlocksWithoutMarking(t *testing.T) {
 	if err := m.stop(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	// 停的时候放弃了 bad：它后面的 next 也不能处理，处理了就会标记、提交越过 bad
+	// bad was abandoned on shutdown: next, which comes after it, must not be processed either, since processing it would mark and commit an offset past bad.
 	if got := rec.values(); len(got) != 1 {
 		t.Fatalf("records after the abandoned one were processed: %v", got)
 	}
@@ -376,14 +376,14 @@ func TestConsume_TimeoutCancelsHandlerCtx(t *testing.T) {
 		return ctx.Err()
 	}, WithTimeout(50*time.Millisecond), WithRetry(1), WithDeadLetter(""))
 	start(t, m)
-	for range 2 { // 每次重试各有一份超时
+	for range 2 { // each retry has a timeout of its own
 		if err := <-errs; !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("handler ctx ended with %v, want deadline exceeded", err)
 		}
 	}
 }
 
-// 退出时：在途的处理函数的 ctx 不被取消，等它做完、提交之后才停完
+// On shutdown: the ctx of the handler in flight is not cancelled, and it stops only once that has finished and been committed.
 func TestStop_WaitsForInFlightAndCommits(t *testing.T) {
 	_, cfg := cluster(t, 1, "orders")
 	produce(t, rawClient(t, cfg), "orders", 0, "a", "b")
@@ -459,9 +459,9 @@ func TestStop_DeadlineNamesBusyPartitionsAndCancelsHandler(t *testing.T) {
 	}
 }
 
-// 两个组员：第一个先拿到两个分区，处理完；第二个加入，cooperative-sticky 收回一个分区给它。
-// 收回之前提交了标记：第二个从提交的位置接着，不会把第一个处理过的再处理一遍
-// （ResetOffset 是 earliest，没提交的话第二个从头来）
+// Two group members: the first gets both partitions and finishes processing; the second joins and cooperative-sticky revokes one partition for it.
+// The marks were committed before the revocation, so the second continues from the committed position and does not reprocess what the first already did
+// (ResetOffset is earliest, so without the commit the second would start over).
 func TestRebalance_CommitsBeforeRevoke(t *testing.T) {
 	_, cfg := cluster(t, 2, "orders")
 	cl := rawClient(t, cfg, manualPartitioner())
@@ -486,7 +486,7 @@ func TestRebalance_CommitsBeforeRevoke(t *testing.T) {
 		produce(t, cl, "orders", p, fmt.Sprintf("p%d-3", p))
 	}
 	eventually(t, func() bool { return rec1.count()+rec2.count() >= 6 }, "new records processed")
-	time.Sleep(200 * time.Millisecond) // 有重复的话给它时间冒出来
+	time.Sleep(200 * time.Millisecond) // give a duplicate time to surface if there is one
 	seen := map[string]int{}
 	for _, v := range append(rec1.values(), rec2.values()...) {
 		seen[v]++
@@ -499,7 +499,7 @@ func TestRebalance_CommitsBeforeRevoke(t *testing.T) {
 	}
 }
 
-// 分区被收回时等在途的那一条处理完才交出去：新的组员不会和它同时处理、也不会再处理一遍
+// A revoked partition is handed over only once the message in flight has been processed: the new member neither processes it at the same time nor processes it again.
 func TestRebalance_WaitsForInFlightBeforeRevoke(t *testing.T) {
 	_, cfg := cluster(t, 2, "orders")
 	cl := rawClient(t, cfg, manualPartitioner())
@@ -521,8 +521,8 @@ func TestRebalance_WaitsForInFlightBeforeRevoke(t *testing.T) {
 	m2 := testManager(t, cfg)
 	c2 := register(t, m2, "orders", "g1", ok(&rec2))
 	start(t, m2)
-	// 再均衡在等第一个组员：收回分区要等在途的那条处理完，第二个组员这期间分不到它，更不会处理它。
-	// 不等的话第二个组员 1s 内就分到分区、从头处理起（kfake 上的再均衡远快于 3s）
+	// The rebalance waits for the first member: revoking a partition waits for the message in flight to be processed, so the second member is not assigned it in the meantime, let alone processes it.
+	// Without that wait, the second member would be assigned the partition within 1s and start over (a rebalance on kfake is far faster than 3s).
 	for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
 		if rec2.count() != 0 {
 			t.Fatalf("second member processed %v while the first was still handling it", rec2.values())
@@ -548,7 +548,7 @@ func TestResetOffset_LatestSkipsOldRecords(t *testing.T) {
 	c := register(t, m, "orders", "g1", ok(&rec))
 	start(t, m)
 	waitAssigned(t, c, 1)
-	// 分到分区之后，franz-go 还要去 broker 那里查一次「最新」在哪：一直写到它收到为止
+	// After being assigned a partition, franz-go still asks the broker where "latest" is: keep writing until it has received that.
 	eventually(t, func() bool {
 		produce(t, cl, "orders", 0, "new")
 		time.Sleep(50 * time.Millisecond)
@@ -642,7 +642,7 @@ func TestConsume_FailedMessageMarksSpanWithoutErrorText(t *testing.T) {
 	}
 }
 
-// 处理函数里写的日志带着 topic / partition / offset / group（装了 xlog 时）；本模块自己的日志每个字段只有一份
+// A log written inside the handler carries topic / partition / offset / group (with xlog installed); this module's own logs hold each field exactly once.
 func TestConsume_LogFields(t *testing.T) {
 	logs := captureLogs(t)
 	_, cfg := cluster(t, 1, "orders")
@@ -735,7 +735,7 @@ func TestConsume_MetricObserved(t *testing.T) {
 }
 
 func TestConsume_MetricOffRecordsNothing(t *testing.T) {
-	registerMetrics() // 单独跑这一条时也有直方图可记：Metric 关掉的集群不该往里记
+	registerMetrics() // so there is a histogram to record into when this one runs alone: a cluster with Metric off must not record into it
 	_, cfg := cluster(t, 1, "orders")
 	cfg.Metric = false
 	produce(t, rawClient(t, cfg), "orders", 0, "a")
@@ -794,7 +794,7 @@ func TestConsume_DuplicateIsConfigError(t *testing.T) {
 	if !errors.As(err, &xe) || xe.Op != "config" || !strings.Contains(err.Error(), "already registered") {
 		t.Fatalf("duplicate: %v", err)
 	}
-	// 别的组照样可以
+	// Another group may do it as usual.
 	if err := m.add(&consumer{topic: "orders", group: "g2", fn: fn, o: buildOptions("orders", nil)}); err != nil {
 		t.Fatal(err)
 	}
@@ -833,7 +833,7 @@ func TestConsume_UnknownClientFailsStart(t *testing.T) {
 	if !errors.As(err, &xe) || xe.Op != "config" || !strings.Contains(err.Error(), `no Kafka client named "audit"`) {
 		t.Fatalf("start: %v", err)
 	}
-	// 起不来就不再收登记
+	// Once it cannot come up, no further registration is accepted.
 	if err := m.add(&consumer{topic: "x", group: "g", fn: func(context.Context, *kgo.Record) error { return nil }, o: buildOptions("x", nil)}); err == nil {
 		t.Fatal("add after a failed start should fail")
 	}
@@ -888,7 +888,7 @@ func TestInterrupted(t *testing.T) {
 	}
 }
 
-// observations 直方图里标签都对得上 want 的那些序列一共记了几次
+// observations is how many times the series in the histogram whose labels all match want were recorded.
 func observations(h *prometheus.HistogramVec, want map[string]string) uint64 {
 	ch := make(chan prometheus.Metric, 100)
 	go func() { h.Collect(ch); close(ch) }()

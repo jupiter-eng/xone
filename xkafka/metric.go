@@ -10,14 +10,14 @@ import (
 	"github.com/jupiter-eng/xone/xmetric"
 )
 
-// consumeHist 当前生效的消费耗时直方图，没开 Metric 的集群不往里记
+// consumeHist is the consume duration histogram currently in effect; a cluster without Metric does not record into it.
 var consumeHist atomic.Pointer[prometheus.HistogramVec]
 
-// newConsumeHistogram 一条消息从开始处理到有结果（含重试、写死信）的耗时。
+// newConsumeHistogram measures one message from the start of processing to a result (retries and a dead-letter write included).
 //
-// status 是这条消息最后怎样了：ok、dead_letter、skipped、aborted（退出或分区被收回时没处理完，之后重新投递）。
-// 不带分区：分区数乘上去，序列数就跟着 topic 的分区数涨。桶边界用 prometheus 的默认（5ms 到 10s），
-// 与 xmetric 快捷方法建出来的业务直方图同一把刻度
+// status is how that message ended up: ok, dead_letter, skipped, or aborted (unfinished when shutting down or when the partition was revoked, redelivered later).
+// It carries no partition: multiplying by the partition count would make the series count grow with the topic's partitions. The bucket boundaries are prometheus's defaults (5ms to 10s),
+// the same scale as the business histograms the xmetric shortcuts build.
 func newConsumeHistogram() *prometheus.HistogramVec {
 	return prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace:   xmetric.Namespace(),
@@ -28,9 +28,9 @@ func newConsumeHistogram() *prometheus.HistogramVec {
 	}, []string{"topic", "group", "status"})
 }
 
-// registerMetrics 把直方图挂到当前的 Registry 上。每次起消费者都挂、不用 sync.Once，理由同 xredis：
-// xmetric 重装之后是新的 Registry；同一个 Registry 上重复挂由 RegisterAs 交回已有的那个。
-// 不让启动失败：指标导不出去是可观测性问题
+// registerMetrics attaches the histogram to the current Registry. It attaches every time a consumer starts rather than using a sync.Once, for the same reason as in xredis:
+// after xmetric is reinstalled the Registry is a new one, and attaching twice to the same Registry is handled by RegisterAs handing back the existing one.
+// It does not fail startup: metrics not being exported is an observability problem.
 func registerMetrics() {
 	h, err := xmetric.RegisterAs(newConsumeHistogram())
 	if err != nil {
@@ -39,7 +39,7 @@ func registerMetrics() {
 	consumeHist.Store(h)
 }
 
-// observe 记一条消息的耗时，这个集群没开 Metric 就不记
+// observe records one message's duration, and records nothing when this cluster has Metric off.
 func (c *consumer) observe(topic string, res outcome, d time.Duration) {
 	if !c.metric {
 		return

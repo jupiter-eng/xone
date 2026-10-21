@@ -46,12 +46,12 @@ MySQL 8.0.46, Redis 7.0.15, ClickHouse 24.8.14).
 | [`XRedis` handshake on a new connection](../xredis/README.md#行为与实测) | `CLIENT SETINFO` and maintenance notifications both on | Both off | A server older than 7.2 leaves one failing span per connection |
 | [`XRedis.Trace`](../xredis/README.md#行为与实测) | The whole command with its arguments goes into `db.statement` | The command name only | Otherwise the value of a `SET` reaches the tracing backend verbatim |
 | [go-redis's log](../xredis/README.md#行为与实测) | The standard library's log to `os.Stderr` | Routed into slog as WARN | Same as go-sql-driver |
-| [`XKafka` consumer commits](../xkafka/README.md#行为与实测) | Automatically commits "whatever the last poll returned", processed or not | Commits only what was processed (`AutoCommitMarks`) | With one goroutine per partition, messages still queued and unprocessed get committed first and are lost the moment the process dies |
-| [`XKafka.Consumer.ResetOffset`](../xkafka/README.md#行为与实测) | earliest | latest | Otherwise a newly deployed consumer group reprocesses the topic's entire history |
-| [`XKafka` stopping](../xkafka/README.md#行为与实测) | `Close` fails every buffered message | `Flush` first, then `Close` | Otherwise messages handed to `Produce` at the moment of exit are dropped silently |
-| [`XKafka` startup probe](../xkafka/README.md#行为与实测) | `Ping` ignores the ctx for an unresponsive broker and waits the full 10s | Moved into a goroutine that watches the ctx | Otherwise a stop signal during startup waits 10s |
-| [`XKafka`'s franz-go log](../xkafka/README.md#行为与实测) | Not recorded | Routed into slog at WARN and above | Connection failures and rebalance errors would pass in silence |
-| [`XKafka.Trace`](../xkafka/README.md#可观测) | kotel writes the message key onto the span | kotel is not used, and the span holds no key | Keys often hold a user id or a phone number |
+| [`XKafka` consumer commits](../xkafka/README.md#behavior-measured) | Automatically commits "whatever the last poll returned", processed or not | Commits only what was processed (`AutoCommitMarks`) | With one goroutine per partition, messages still queued and unprocessed get committed first and are lost the moment the process dies |
+| [`XKafka.Consumer.ResetOffset`](../xkafka/README.md#behavior-measured) | earliest | latest | Otherwise a newly deployed consumer group reprocesses the topic's entire history |
+| [`XKafka` stopping](../xkafka/README.md#behavior-measured) | `Close` fails every buffered message | `Flush` first, then `Close` | Otherwise messages handed to `Produce` at the moment of exit are dropped silently |
+| [`XKafka` startup probe](../xkafka/README.md#behavior-measured) | `Ping` ignores the ctx for an unresponsive broker and waits the full 10s | Moved into a goroutine that watches the ctx | Otherwise a stop signal during startup waits 10s |
+| [`XKafka`'s franz-go log](../xkafka/README.md#behavior-measured) | Not recorded | Routed into slog at WARN and above | Connection failures and rebalance errors would pass in silence |
+| [`XKafka.Trace`](../xkafka/README.md#observability) | kotel writes the message key onto the span | kotel is not used, and the span holds no key | Keys often hold a user id or a phone number |
 | [`XCache.MaxCost`](../xcache/README.md#behavior-measured) | 56 bytes of internal overhead are counted per entry | Only the cost you give is counted | Otherwise `MaxCost: 2000` really holds 35 entries |
 | [`XCache` stopping](../xcache/README.md#behavior-measured) | `Close` | `Clear` | `Close` running alongside concurrent reads and writes panics |
 | [`XHttp`'s resty log](../xhttp/README.md#行为与实测) | Writes to `os.Stderr` with the URL's query string | Routed into slog with the query string removed | Tokens do not reach disk |
@@ -94,7 +94,7 @@ XGorm, XRedis and XKafka each probe once at startup through one shared implement
 | [xgorm/clickhouse](../xgorm/clickhouse/README.md#behavior-measured) | ClickHouse: timeouts and cancellation, resends, authentication, TLS |
 | [xredis](../xredis/README.md#行为与实测) | go-redis: timeouts, connection retries, the handshake on a new connection, memory |
 | [xcache](../xcache/README.md#behavior-measured) | ristretto: internal overhead, stopping, the cost of metrics, TTL |
-| [xkafka](../xkafka/README.md#行为与实测) | franz-go: automatic commits, offset reset, `Close` and `Flush`, `Ping`, a missing topic, rebalancing and session timeouts |
+| [xkafka](../xkafka/README.md#behavior-measured) | franz-go: automatic commits, offset reset, `Close` and `Flush`, `Ping`, a missing topic, rebalancing and session timeouts |
 | [xhttp](../xhttp/README.md#行为与实测) | The defaults of resty / otelhttp / the standard library's Transport |
 | [xcron](../xcron/README.md#behavior-measured) | cronexpr: field counts, timezone prefixes, DST, specs that never fire; the drift of `@every` |
 | [xgin](../xgin/README.md#behavior-measured) | gin / net/http: proxies, uploads, timeouts, h2c, TLS, graceful shutdown |

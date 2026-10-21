@@ -20,7 +20,7 @@ import (
 	"github.com/jupiter-eng/xone/xerror"
 )
 
-// newProducer 经 New 建一个生产客户端，测试结束时关掉
+// newProducer builds a producing client through New and closes it when the test ends.
 func newProducer(t *testing.T, cfg ClientConfig) *kgo.Client {
 	t.Helper()
 	cl, closer, err := New(context.Background(), cfg)
@@ -56,7 +56,7 @@ func TestNew_ProducesAndInjectsTraceContext(t *testing.T) {
 	if s.SpanKind() != trace.SpanKindProducer || s.Parent().SpanID() != parent.SpanContext().SpanID() {
 		t.Errorf("producer span: kind %v parent %v", s.SpanKind(), s.Parent().SpanID())
 	}
-	// 头里写的是 publish Span 的上下文：消费那一侧挂在它下面
+	// The headers carry the publish Span's context: the consuming side hangs below it.
 	if !strings.Contains(tp, s.SpanContext().SpanID().String()) {
 		t.Errorf("traceparent %q should carry the publish span %s", tp, s.SpanContext().SpanID())
 	}
@@ -140,18 +140,18 @@ func TestNew_UnreachableBrokerFailsWithAddress(t *testing.T) {
 	}
 }
 
-// 对端收下连接不回话：Ping 自己会等 20s（v1.21.7 实测），每次尝试的预算是 2 × DialTimeout
+// The peer accepts the connection and never answers: Ping itself waits 20s (measured on v1.21.7), and each attempt's budget is 2 x DialTimeout.
 func TestNew_SilentBrokerBoundedByDialTimeout(t *testing.T) {
 	cfg := DefaultClientConfig()
 	cfg.Brokers = []string{silentAddr(t)}
 	cfg.DialTimeout = 100 * time.Millisecond
 	start := time.Now()
 	_, _, err := New(context.Background(), cfg)
-	// 这时底层的错误是 context deadline exceeded，里面没有地址：地址只能是 xkafka 自己写上的
+	// The underlying error here is context deadline exceeded, which carries no address: the address can only be the one xkafka wrote itself.
 	if err == nil || !strings.Contains(err.Error(), "cannot reach "+cfg.Brokers[0]) {
 		t.Fatalf("a silent broker should fail the probe naming the address: %v", err)
 	}
-	// 3 次 × 200ms + 两次退避（测试里 10ms、20ms）
+	// 3 x 200ms plus two backoffs (10ms and 20ms in the test)
 	if d := time.Since(start); d > 3*time.Second {
 		t.Fatalf("probe against a silent broker took %v, want about 0.6s", d)
 	}
@@ -170,8 +170,8 @@ func TestNew_ExitSignalAbortsProbe(t *testing.T) {
 	}
 }
 
-// kfake 认证失败时直接断开连接（EOF），不回 SASL_AUTHENTICATION_FAILED：这里只验密码不外泄。
-// 「认证失败不重试、报 authentication failed」由 TestAuthFailed 和 e2e（真 Kafka）钉着
+// kfake closes the connection outright (EOF) on an auth failure instead of replying SASL_AUTHENTICATION_FAILED, so this only verifies that the password does not leak.
+// "an auth failure is not retried and is reported as authentication failed" is pinned down by TestAuthFailed and by e2e (a real Kafka).
 func TestNew_WrongPasswordNotLeaked(t *testing.T) {
 	logs := captureLogs(t)
 	c, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.EnableSASL(), kfake.Superuser("PLAIN", "app", "right-pw"))
@@ -198,7 +198,7 @@ func TestNew_WrongPasswordNotLeaked(t *testing.T) {
 		}
 	}
 
-	// 对的密码能连上
+	// The correct password connects.
 	cfg.SASL.Password = "right-pw"
 	newProducer(t, cfg)
 }
@@ -246,10 +246,10 @@ func TestNew_AppliesProducerSettings(t *testing.T) {
 	}
 }
 
-// 框架建的：停止钩子先 Flush 再 Close，退出那一刻用 Produce（异步）发的消息不丢
+// Built by the framework: the stop hook Flushes before it Closes, so a message sent with Produce (asynchronously) at the moment of exit is not lost.
 func TestCloseXKafka_FlushesBeforeClose(t *testing.T) {
 	_, cfg := cluster(t, 1, "orders")
-	cfg.Producer.Linger = time.Minute // 不 Flush 就一直攒着
+	cfg.Producer.Linger = time.Minute // without a Flush it would just keep accumulating
 	if err := xclient.Build(context.Background(), reg, map[string]ClientConfig{DefaultName: cfg}, build); err != nil {
 		t.Fatal(err)
 	}
@@ -323,7 +323,7 @@ func TestFranzLogger_BridgedToSlogAtWarn(t *testing.T) {
 }
 
 func TestKeyAttrs(t *testing.T) {
-	long := strings.Repeat("é", 200) // 400 字节
+	long := strings.Repeat("\u00e9", 200) // 400 bytes
 	for _, c := range []struct {
 		name string
 		key  []byte
@@ -348,7 +348,7 @@ func TestKeyAttrs(t *testing.T) {
 	}
 }
 
-// 死信带着原消息的头再写一次：Set 追加的话会有两个 traceparent，下游取到哪个说不准
+// A dead letter is written again carrying the original message's headers: appending with Set would give two traceparents and leave the downstream guessing which one it gets.
 func TestHeaderCarrier_SetReplacesAndTrustsPeer(t *testing.T) {
 	r := &kgo.Record{Headers: []kgo.RecordHeader{{Key: "traceparent", Value: []byte("old")}, {Key: "tenant", Value: []byte("acme")}}}
 	c := headerCarrier{r: r}

@@ -40,7 +40,7 @@ section("生产")
 mutate("链路上下文写进消息头", "xkafka/hook.go", "./xkafka", "TestNew_ProducesAndInjectsTraceContext|TestConsume_TraceContinuesFromProducer",
        swap('\totel.GetTextMapPropagator().Inject(ctx, headerCarrier{r: r})\n', ''))
 mutate("Trace 关着也注入", "xkafka/hook.go", "./xkafka", "TestNew_TraceOffStillInjectsContext",
-       swap('\t\tr.Context = ctx // 结果出来时从这里取回 Span\n\t}\n\t// Trace 关着也注入', '\t\tr.Context = ctx // 结果出来时从这里取回 Span\n\t} else {\n\t\treturn\n\t}\n\t// Trace 关着也注入'))
+       swap('\t\tr.Context = ctx // the Span is taken back from here once the result arrives\n\t}\n\t// Injected even with Trace off', '\t\tr.Context = ctx // the Span is taken back from here once the result arrives\n\t} else {\n\t\treturn\n\t}\n\t// Injected even with Trace off'))
 # 死信带着原消息的头再写一次：追加的话有两个 traceparent
 mutate("消息头同名覆盖不追加", "xkafka/hook.go", "./xkafka", "TestHeaderCarrier",
        swap('\t\tif h.Key == key {\n\t\t\tc.r.Headers[i].Value = []byte(value)', '\t\tif false && h.Key == key {\n\t\t\tc.r.Headers[i].Value = []byte(value)'))
@@ -100,7 +100,7 @@ section("消费：退出与再均衡")
 # 退出时取消在途处理函数的 ctx：它里面的每一次写库、调下游都会一进去就被拒绝
 mutate("退出时不取消在途处理函数的 ctx", "xkafka/worker.go", "./xkafka", "TestStop_WaitsForInFlightAndCommits",
        swap('\tdefer context.AfterFunc(c.hard, cancel)()\n', '\tdefer context.AfterFunc(w0(attempt), cancel)()\n')
-       , swap('// panicked 把 recover', 'func w0(ctx context.Context) context.Context { return ctx }\n\n// panicked 把 recover'))
+       , swap('// panicked turns a recovered value', 'func w0(ctx context.Context) context.Context { return ctx }\n\n// panicked turns a recovered value'))
 mutate("停止预算用完时取消在途处理函数", "xkafka/worker.go", "./xkafka", "TestStop_DeadlineNamesBusyPartitionsAndCancelsHandler",
        swap('\tdefer context.AfterFunc(c.hard, cancel)()\n', ''))
 mutate("停止预算用完时点名还在处理的分区", "xkafka/consume.go", "./xkafka", "TestStop_DeadlineNamesBusyPartitionsAndCancelsHandler",

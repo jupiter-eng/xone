@@ -23,50 +23,50 @@ import (
 	"github.com/jupiter-eng/xone/xutil"
 )
 
-// 死信消息在原消息的头之外多带的几个头
+// The headers a dead-letter message carries on top of the original message's.
 const (
-	HeaderDLQTopic     = "xkafka-dlq-topic"     // 原 topic
-	HeaderDLQPartition = "xkafka-dlq-partition" // 原分区，十进制
-	HeaderDLQOffset    = "xkafka-dlq-offset"    // 原 offset，十进制
-	HeaderDLQGroup     = "xkafka-dlq-group"     // 处理失败的消费组
-	HeaderDLQError     = "xkafka-dlq-error"     // 最后一次的错误文本，截到 maxDLQError 字节
+	HeaderDLQTopic     = "xkafka-dlq-topic"     // the original topic
+	HeaderDLQPartition = "xkafka-dlq-partition" // the original partition, in decimal
+	HeaderDLQOffset    = "xkafka-dlq-offset"    // the original offset, in decimal
+	HeaderDLQGroup     = "xkafka-dlq-group"     // the consumer group that failed to process it
+	HeaderDLQError     = "xkafka-dlq-error"     // the last error text, cut to maxDLQError bytes
 )
 
-// maxDLQError 死信头里的错误文本最多这么多字节。
+// maxDLQError is how many bytes of error text a dead-letter header carries at most.
 //
-// 错误文本是处理函数返回的，里面可能带着 SQL、下游的响应、消息里的字段——会和消息一起落进死信 topic，
-// 谁能读死信谁就能看到。截短只是让它不至于撑大消息头，挡不住内容：死信 topic 本来就装着原消息的 value，
-// 它的读权限要和原 topic 一样收紧。别把凭证拼进错误里
+// The error text comes from the handler and may hold SQL, a downstream response or fields from the message -- all of which land in the dead-letter topic with it, visible to anybody who can read it.
+// Cutting it short only keeps the headers from growing and does not keep anything out: a dead-letter topic holds the
+// original message's value anyway, so its read permissions have to be as tight as the original topic's. Do not put credentials into an error.
 const maxDLQError = 256
 
 var (
-	// retryInterval 处理函数两次尝试之间第一次退避的上界，之后翻倍（xutil.Retry）。变量只为让测试调短
+	// retryInterval is the upper bound on the first backoff between two handler attempts, doubling after that (xutil.Retry). It is a variable only so tests can shorten it
 	retryInterval = time.Second
 
-	// dlqInterval 死信写不进去时第一次退避的上界，之后翻倍、带抖动，最多 dlqMaxInterval。变量理由同上
+	// dlqInterval is the upper bound on the first backoff when a dead-letter write fails, doubling with jitter after that, capped at dlqMaxInterval. A variable for the same reason
 	dlqInterval    = time.Second
 	dlqMaxInterval = 30 * time.Second
 )
 
-// worker 一个分区的协程：按顺序一条一条处理派给它的消息
+// worker is one partition's goroutine: it processes the messages dispatched to it one at a time, in order.
 type worker struct {
 	c         *consumer
 	partition int32
 	recs      chan []*kgo.Record
 
-	// stopping 分区被收回、或者消费者在停：不再处理下一条、不再发起下一次重试、不再等死信重试。
-	// 在途的那一次处理函数调用不受它影响
+	// stopping means the partition was revoked or the consumer is stopping: no next message is processed, no next retry
+	// is started and no dead-letter retry is waited for. The handler call in flight is unaffected by it.
 	stopping context.Context
 	quit     context.CancelFunc
 	done     chan struct{}
 
-	// inflight 正在处理的消息的 offset + 1，空闲时为 0。停止预算用完时点名用
+	// inflight is the offset + 1 of the message being processed, 0 when idle. It is used to name it when the stop budget runs out.
 	inflight atomic.Int64
 }
 
 func newWorker(c *consumer, partition int32) *worker {
 	w := &worker{c: c, partition: partition, recs: make(chan []*kgo.Record, workerQueue), done: make(chan struct{})}
-	// 停止预算用完（hard）时也算：那时 revokedFn 可能还没来得及收回分区
+	// The stop budget running out (hard) counts too: revokedFn may not have had time to revoke the partition by then.
 	w.stopping, w.quit = context.WithCancel(c.hard)
 	return w
 }
@@ -81,11 +81,11 @@ func (w *worker) run() {
 	for {
 		select {
 		case <-w.stopping.Done():
-			return // 队列里还没处理的不管了：没标记，下一个拿到这个分区的从这里接着处理
+			return // whatever is still queued is dropped: nothing was marked, so whoever gets this partition next continues from here
 		case batch := <-w.recs:
 			for _, r := range batch {
 				if w.stopping.Err() != nil || !w.process(r) {
-					// 没处理完的这一条没标记；它后面的也不能再处理——标记了后面的，提交的 offset 就越过了它
+					// This unfinished message was not marked, and the ones after it must not be processed either -- marking them would commit an offset past it
 					return
 				}
 			}
@@ -93,25 +93,25 @@ func (w *worker) run() {
 	}
 }
 
-// outcome 一条消息最后怎样了，也是指标的 status 标签
+// outcome is how a message ended up, and is also the metric's status label.
 type outcome string
 
 const (
 	outcomeOK         outcome = "ok"
 	outcomeDeadLetter outcome = "dead_letter"
 	outcomeSkipped    outcome = "skipped"
-	outcomeAborted    outcome = "aborted" // 退出、分区被收回时还没处理完，不标记，之后重新投递
+	outcomeAborted    outcome = "aborted" // unfinished when shutting down or when the partition was revoked; not marked, redelivered later
 )
 
-// process 处理一条消息：调处理函数（带重试），失败的写死信或跳过，然后标记。
-// 返回 false 表示没处理完就被叫停了（没有标记）
+// process handles one message: it calls the handler (with retries), writes a dead letter or skips on failure, and then marks it.
+// It returns false when it was stopped before finishing (and nothing was marked).
 func (w *worker) process(r *kgo.Record) bool {
 	c := w.c
 	w.inflight.Store(r.Offset + 1)
 	defer w.inflight.Store(0)
 	start := time.Now()
 
-	// 链路接着生产方：父 Span 从消息头里取。base 不随退出取消，在途的消息要处理完
+	// The trace continues from the producer: the parent Span comes from the message headers. base is not cancelled on shutdown, so a message in flight is finished.
 	ctx := otel.GetTextMapPropagator().Extract(c.base, headerCarrier{r: r})
 	if c.trace {
 		var span trace.Span
@@ -128,8 +128,8 @@ func (w *worker) process(r *kgo.Record) bool {
 		defer span.End()
 	}
 
-	// 本模块自己的日志把字段写在每一行上（没装 xlog 也带着）；处理函数拿到的 ctx 里放的是同样几个字段的作用域，
-	// 装了 xlog 时它里面写的每一行日志都带上。两处用不同的 ctx：同一行日志里写两遍就是两个同名的 key
+	// This module's own logs write the fields onto every line (carried even without xlog installed); the ctx the handler receives holds a scope with the same fields,
+	// so with xlog installed every line it writes carries them. The two use different ctxs: writing them twice in one line would be two keys of the same name.
 	fields := []any{"topic", r.Topic, "partition", r.Partition, "offset", r.Offset, "group", c.group}
 	fields = append(fields, keyAttrs(r.Key)...)
 	hctx := logext.WithKV(ctx, map[string]any{"topic": r.Topic, "partition": r.Partition, "offset": r.Offset, "group": c.group})
@@ -150,11 +150,11 @@ func (w *worker) process(r *kgo.Record) bool {
 	return true
 }
 
-// handle 调处理函数，失败了重试，重试用完写死信或者跳过
+// handle calls the handler, retries on failure, and writes a dead letter or skips once the retries are used up.
 func (w *worker) handle(ctx, hctx context.Context, r *kgo.Record, fields []any) outcome {
 	c := w.c
 	attempts := 0
-	var last error // 最后一次处理函数返回的错误，原样（可能包着 xutil.Permanent）
+	var last error // the error the handler returned last, as it is (possibly wrapped in xutil.Permanent)
 	err := xutil.Retry(w.stopping, c.o.retries+1, c.o.timeout, retryInterval, func(attempt context.Context) error {
 		attempts++
 		start := time.Now()
@@ -185,17 +185,17 @@ func (w *worker) handle(ctx, hctx context.Context, r *kgo.Record, fields []any) 
 	return outcomeDeadLetter
 }
 
-// interrupted xutil.Retry 是不是被 stopping 叫停的：那时它返回的既不是最后一次的错误，
-// 也不是那个错误 Permanent 里包着的（xutil.Retry 去掉了 Permanent 那一层）
+// interrupted reports whether xutil.Retry was stopped by stopping: in that case what it returns is neither the last
+// error nor the one wrapped inside that error's Permanent (xutil.Retry strips the Permanent layer).
 func interrupted(err, last error) bool {
 	return err != last && !errors.Is(last, err)
 }
 
-// call 调一次处理函数。
+// call makes one call to the handler.
 //
-// ctx 的截止时间是这一次尝试的（WithTimeout），但不跟着 attempt 取消：attempt 的父亲是 stopping，
-// 退出、分区被收回时它被取消，而在途的处理要做完。只有停止预算用完（hard）时才取消。
-// panic 被接住，当成一次失败；栈记一条 ERROR
+// The ctx deadline is this attempt's (WithTimeout) but it is not cancelled with attempt: attempt's parent is stopping,
+// which is cancelled on shutdown and on revocation, while the work in flight has to finish. Only the stop budget running out (hard) cancels it.
+// A panic is caught and counted as one failure, with the stack recorded at ERROR.
 func (c *consumer) call(hctx, attempt context.Context, r *kgo.Record, fields []any) (err error) {
 	ctx, cancel := context.WithCancel(hctx)
 	if dl, ok := attempt.Deadline(); ok {
@@ -214,20 +214,20 @@ func (c *consumer) call(hctx, attempt context.Context, r *kgo.Record, fields []a
 	return c.fn(ctx, r)
 }
 
-// deadLetter 把原消息（key、value、头）写进死信 topic，多带几个头说明它从哪来、为什么失败。
+// deadLetter writes the original message (key, value, headers) into the dead-letter topic with a few extra headers saying where it came from and why it failed.
 //
-// 写不进去就一直重试（退避翻倍、带抖动，最多 30s 一次），不标记、不往下处理：丢掉它是静默丢消息，
-// 跳过它去处理下一条的话，提交的 offset 就越过了它。退出、分区被收回时放弃（在写的那一次也当场取消），
-// 返回 false——这条消息没标记，之后重新投递
+// A failed write is retried forever (backing off with doubling and jitter, capped at 30s), with nothing marked and nothing processed after it: dropping it would be losing a message silently,
+// and skipping it to process the next one would commit an offset past it. On shutdown or revocation it gives up (cancelling the write in flight on the spot) and
+// returns false -- this message was not marked and is redelivered later.
 func (w *worker) deadLetter(ctx context.Context, r *kgo.Record, cause error, fields []any) bool {
 	c := w.c
 	for wait := dlqInterval; ; wait = min(wait*2, dlqMaxInterval) {
 		if w.stopping.Err() != nil {
-			return false // 最后一次重试赶上了退出：不再开始写，重启之后这条从头来
+			return false // the last retry met the shutdown: no write is started, and after a restart this message starts over
 		}
-		// 这一次写也随 stopping 取消：它是本模块自己的 I/O，不是处理函数在做的事。
-		// 写到一半被叫停的，这条没标记，之后重新投递（死信 topic 里可能因此多一份）。
-		// franz-go v1.21.7 往不存在的 topic 写，第一次约 1s 报错，之后每次要等约 10s（kfake 实测），不能干等它
+		// This write is cancelled with stopping too: it is this module's own I/O, not something the handler is doing.
+		// One stopped halfway leaves the message unmarked and redelivered later (which may leave a duplicate in the dead-letter topic).
+		// Writing to a topic that does not exist, franz-go v1.21.7 reports an error after about 1s the first time and takes about 10s per attempt after that (measured on kfake), which cannot just be waited out.
 		pctx, cancel := context.WithTimeout(ctx, c.o.timeout)
 		stop := context.AfterFunc(w.stopping, cancel)
 		err := c.cl.ProduceSync(pctx, dlqRecord(r, c.o.dlq, c.group, cause)).FirstErr()
@@ -246,8 +246,8 @@ func (w *worker) deadLetter(ctx context.Context, r *kgo.Record, cause error, fie
 	}
 }
 
-// dlqRecord 死信消息：原消息的 key、value、头原样带着，另加 HeaderDLQ* 那几个头。
-// 每次重试新建一个：franz-go 会改写交给它的 Record（分区、offset、ctx）
+// dlqRecord is the dead-letter message: the original message's key, value and headers as they are, plus the HeaderDLQ* headers.
+// A new one is built for each retry: franz-go rewrites the Record handed to it (partition, offset, ctx).
 func dlqRecord(r *kgo.Record, topic, group string, cause error) *kgo.Record {
 	headers := slices.Clone(r.Headers)
 	headers = append(headers,
@@ -260,7 +260,7 @@ func dlqRecord(r *kgo.Record, topic, group string, cause error) *kgo.Record {
 	return &kgo.Record{Topic: topic, Key: r.Key, Value: r.Value, Headers: headers}
 }
 
-// panicked 把 recover 到的值变成 error，本身是 error 的用 %w 接住，同 xcron
+// panicked turns a recovered value into an error, catching one that is already an error with %w, as in xcron.
 func panicked(p any) error {
 	if err, ok := p.(error); ok {
 		return fmt.Errorf("panicked: %w", err)

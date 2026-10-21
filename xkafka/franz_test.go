@@ -13,9 +13,9 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 )
 
-// 这一组钉住的是 franz-go v1.21.7 自己的行为，不是本模块的：本模块的选择（换掉自动提交、默认 latest、
-// 停止时先 Flush、探测带截止时间）都是冲着这些默认值做的，写进了注释和 README「行为与实测」。
-// 升级 franz-go 之后这里红了，就是那些注释和文档里的数字要重新量。
+// This group pins down franz-go v1.21.7's own behavior, not this module's: this module's choices (replacing the automatic commit, defaulting to latest,
+// Flushing before stopping, probing with a deadline) were all made against these defaults and are written into the comments and the README's "Behavior (measured)".
+// Whatever goes red here after a franz-go upgrade is a number in those comments and docs that has to be measured again.
 
 func TestFranzDefault_Values(t *testing.T) {
 	cl, err := kgo.NewClient()
@@ -46,7 +46,7 @@ func TestFranzDefault_Values(t *testing.T) {
 		{"HeartbeatInterval", kgo.HeartbeatInterval, 3 * time.Second},
 		{"ConsumeResetOffset", kgo.ConsumeResetOffset, kgo.NewOffset().AtStart()},
 	} {
-		// 比文本：franz-go 里同一个数有的存成 int、有的存成 int64
+		// Comparing text: franz-go stores the same number as an int in some places and an int64 in others.
 		got := cl.OptValue(c.opt)
 		if fmt.Sprint(got) != fmt.Sprint(c.want) {
 			t.Errorf("%s: franz-go default = %v, the docs say %v", c.name, got, c.want)
@@ -61,8 +61,8 @@ func TestFranzDefault_Values(t *testing.T) {
 	}
 }
 
-// 本模块换成 AutoCommitMarks 的理由：默认的自动提交提交「上一次 poll 取到的」，不管处理完没有。
-// poll 和处理不在一个协程里时（每个分区一个协程），再 poll 一次之后，还排在队列里的消息就算提交了
+// Why this module switches to AutoCommitMarks: the default automatic commit commits "whatever the last poll returned", processed or not.
+// With polling and processing in different goroutines (one per partition), another poll commits the messages still queued.
 func TestFranzDefault_AutocommitCommitsPolledButUnprocessed(t *testing.T) {
 	_, cfg := cluster(t, 1, "t")
 	produce(t, rawClient(t, cfg), "t", 0, "a", "b", "c")
@@ -74,11 +74,11 @@ func TestFranzDefault_AutocommitCommitsPolledButUnprocessed(t *testing.T) {
 	if n := cl.PollFetches(ctx).NumRecords(); n != 3 {
 		t.Fatalf("polled %d, want 3", n)
 	}
-	// 一条都没处理，又 poll 了一次（派发协程就是这么做的）
+	// Nothing was processed and it polled again (which is exactly what the dispatch goroutine does).
 	short, cancelShort := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	cl.PollFetches(short)
 	cancelShort()
-	cl.Close() // 默认的 OnPartitionsRevoked 在离开时提交
+	cl.Close() // the default OnPartitionsRevoked commits on the way out
 
 	if got := committed(t, cfg, "g", "t", 0); got != 3 {
 		t.Fatalf("committed = %d: franz-go's default autocommit no longer commits polled-but-unprocessed records, revisit the docs", got)
@@ -123,8 +123,8 @@ func TestFranzDefault_ProduceSyncHonorsCtxDeadline(t *testing.T) {
 	}
 }
 
-// topic 不存在、不让自动建（AllowAutoTopicCreation 默认关）：ProduceSync 试满 UnknownTopicRetries（4 次）就报错，
-// 不是一直等。kfake 上约 1s
+// The topic does not exist and automatic creation is off (AllowAutoTopicCreation is off by default): ProduceSync retries UnknownTopicRetries times (4) and then reports an error,
+// rather than waiting forever. About 1s on kfake.
 func TestFranzDefault_ProduceToMissingTopicFails(t *testing.T) {
 	_, cfg := cluster(t, 1, "t")
 	cl := rawClient(t, cfg)
@@ -136,14 +136,14 @@ func TestFranzDefault_ProduceToMissingTopicFails(t *testing.T) {
 	}
 }
 
-// Producer.Acks 配 leader / none 时本模块替使用者关掉幂等写的理由
+// Why this module turns idempotent writes off on the caller's behalf when Producer.Acks is leader or none.
 func TestFranzDefault_NonAllAcksRequireIdempotenceOff(t *testing.T) {
 	if _, err := kgo.NewClient(kgo.RequiredAcks(kgo.LeaderAck())); err == nil {
 		t.Fatal("franz-go now accepts leader acks with idempotent writes on, the explicit DisableIdempotentWrite may be unnecessary")
 	}
 }
 
-// refusedAddr 一个没人在听的本机地址：连上去立刻被拒绝
+// refusedAddr is a local address nobody is listening on: connecting to it is refused immediately.
 func refusedAddr(t *testing.T) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -155,7 +155,7 @@ func refusedAddr(t *testing.T) string {
 	return addr
 }
 
-// silentAddr 收下连接、从不回话的地址
+// silentAddr is an address that accepts the connection and never answers.
 func silentAddr(t *testing.T) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

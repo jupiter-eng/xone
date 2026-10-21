@@ -26,7 +26,7 @@ import (
 	"github.com/jupiter-eng/xone/xlog"
 )
 
-// TestMain 调短各种退避，并把 slog 默认 logger 接到丢弃里（要看日志的用例自己 capture）
+// TestMain shortens the various backoffs and routes the slog default logger into a discard (a case that wants logs captures them itself).
 func TestMain(m *testing.M) {
 	pingInterval = 10 * time.Millisecond
 	retryInterval = 10 * time.Millisecond
@@ -36,10 +36,10 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// wait 给异步的事一个宽裕的上限：kfake 上一次入组、分配要几百毫秒，CI 的机器还更慢
+// wait is a generous upper bound for something asynchronous: joining a group and being assigned takes a few hundred milliseconds on kfake, and a CI machine is slower still.
 const wait = 20 * time.Second
 
-// cluster 起一个内存里的 Kafka（kfake），每个 topic 建好 partitions 个分区。测试结束时关掉
+// cluster starts an in-memory Kafka (kfake) with partitions partitions per topic. It is closed when the test ends.
 func cluster(t *testing.T, partitions int32, topics ...string) (*kfake.Cluster, ClientConfig) {
 	t.Helper()
 	c, err := kfake.NewCluster(kfake.NumBrokers(1), kfake.SeedTopics(partitions, topics...))
@@ -49,11 +49,11 @@ func cluster(t *testing.T, partitions int32, topics ...string) (*kfake.Cluster, 
 	t.Cleanup(c.Close)
 	cfg := DefaultClientConfig()
 	cfg.Brokers = c.ListenAddrs()
-	cfg.Consumer.ResetOffset = "earliest" // 先写后消费的用例不用等入组；latest 另有用例
+	cfg.Consumer.ResetOffset = "earliest" // so cases that produce before consuming need not wait to join the group; latest has cases of its own
 	return c, cfg
 }
 
-// rawClient 测试自己用来写、读的客户端，不带本模块的任何钩子
+// rawClient is the client the tests use to write and read themselves, without any of this module's hooks.
 func rawClient(t *testing.T, cfg ClientConfig, opts ...kgo.Opt) *kgo.Client {
 	t.Helper()
 	cl, err := kgo.NewClient(append([]kgo.Opt{kgo.SeedBrokers(cfg.Brokers...)}, opts...)...)
@@ -64,7 +64,7 @@ func rawClient(t *testing.T, cfg ClientConfig, opts ...kgo.Opt) *kgo.Client {
 	return cl
 }
 
-// produce 往 topic 的 partition 里按顺序写 values
+// produce writes values into topic's partition, in order.
 func produce(t *testing.T, cl *kgo.Client, topic string, partition int32, values ...string) {
 	t.Helper()
 	for _, v := range values {
@@ -75,10 +75,10 @@ func produce(t *testing.T, cl *kgo.Client, topic string, partition int32, values
 	}
 }
 
-// manualPartitioner 让 produce 写进 Record.Partition 指定的分区
+// manualPartitioner makes produce write into the partition named by Record.Partition.
 func manualPartitioner() kgo.Opt { return kgo.RecordPartitioner(kgo.ManualPartitioner()) }
 
-// readAll 从头读 topic 里的全部消息，直到 n 条或者超时
+// readAll reads every message in topic from the beginning, until n of them or a timeout.
 func readAll(t *testing.T, cfg ClientConfig, topic string, n int) []*kgo.Record {
 	t.Helper()
 	cl := rawClient(t, cfg, kgo.ConsumeTopics(topic), kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()))
@@ -95,7 +95,7 @@ func readAll(t *testing.T, cfg ClientConfig, topic string, n int) []*kgo.Record 
 	return out
 }
 
-// committed 消费组在 topic/partition 上提交的 offset，没提交过是 -1
+// committed is the offset the consumer group committed on topic/partition, or -1 when it never committed.
 func committed(t *testing.T, cfg ClientConfig, group, topic string, partition int32) int64 {
 	t.Helper()
 	cl := rawClient(t, cfg)
@@ -127,8 +127,8 @@ func committed(t *testing.T, cfg ClientConfig, group, topic string, partition in
 	return -1
 }
 
-// testManager 一个独立的消费者管理器，集群用 cfg（名字 default，多给的 extra 按名字），
-// 测试结束时停掉。不碰全局的 std
+// testManager is a consumer manager of its own, with cfg as the cluster (named default, plus any extra by name),
+// stopped when the test ends. It does not touch the global std.
 func testManager(t *testing.T, cfg ClientConfig, extra ...map[string]ClientConfig) *manager {
 	t.Helper()
 	clusters := map[string]ClientConfig{DefaultName: cfg}
@@ -149,7 +149,7 @@ func testManager(t *testing.T, cfg ClientConfig, extra ...map[string]ClientConfi
 	return m
 }
 
-// register 同 Consume，但登记进 m
+// register is Consume, but registering into m.
 func register(t *testing.T, m *manager, topic, group string, fn func(context.Context, *kgo.Record) error, opts ...Option) *consumer {
 	t.Helper()
 	c := &consumer{topic: topic, group: group, fn: fn, o: buildOptions(topic, opts)}
@@ -162,7 +162,7 @@ func register(t *testing.T, m *manager, topic, group string, fn func(context.Con
 	return c
 }
 
-// start 起 m，失败就 Fatal
+// start brings m up and Fatals on failure.
 func start(t *testing.T, m *manager) {
 	t.Helper()
 	if err := m.start(context.Background()); err != nil {
@@ -170,7 +170,7 @@ func start(t *testing.T, m *manager) {
 	}
 }
 
-// waitAssigned 等 c 分到 n 个分区
+// waitAssigned waits for c to be assigned n partitions.
 func waitAssigned(t *testing.T, c *consumer, n int) {
 	t.Helper()
 	eventually(t, func() bool {
@@ -180,7 +180,7 @@ func waitAssigned(t *testing.T, c *consumer, n int) {
 	}, "consumer %s assigned %d partitions", c, n)
 }
 
-// eventually 每 10ms 看一次 cond，wait 之内不成立就 Fatal
+// eventually checks cond every 10ms and Fatals when it does not hold within wait.
 func eventually(t *testing.T, cond func() bool, format string, args ...any) {
 	t.Helper()
 	deadline := time.Now().Add(wait)
@@ -192,7 +192,7 @@ func eventually(t *testing.T, cond func() bool, format string, args ...any) {
 	}
 }
 
-// recorder 收集处理函数看到的消息，线程安全
+// recorder collects the messages the handler saw, safely across goroutines.
 type recorder struct {
 	mu   sync.Mutex
 	seen []string // partition:value
@@ -216,11 +216,11 @@ func (r *recorder) count() int {
 	return len(r.seen)
 }
 
-// logLine 一行 JSON 日志
+// logLine is one JSON log line.
 type logLine map[string]any
 
-// captureLogs 把默认 logger 换成真的 xlog（作用域字段、trace_id 是它的 handler 从 ctx 里取的），
-// 级别开到 debug；返回的函数随时读出到目前为止的全部日志
+// captureLogs swaps the default logger for a real xlog (whose handler takes the scope fields and the trace_id out of the ctx)
+// with the level at debug; the function returned reads out every log so far at any time.
 func captureLogs(t *testing.T) func() []logLine {
 	t.Helper()
 	dir := t.TempDir()
@@ -258,7 +258,7 @@ func captureLogs(t *testing.T) func() []logLine {
 	}
 }
 
-// withMsg 只留 msg 是这个的日志
+// withMsg keeps only the logs whose msg is this one.
 func withMsg(lines []logLine, msg string) []logLine {
 	var out []logLine
 	for _, l := range lines {
@@ -269,7 +269,7 @@ func withMsg(lines []logLine, msg string) []logLine {
 	return out
 }
 
-// tracing 装一个记在内存里的 TracerProvider 和 W3C 的 Propagator，测试结束时换回去
+// tracing installs an in-memory TracerProvider and the W3C Propagator, restoring the previous ones when the test ends.
 func tracing(t *testing.T) *tracetest.SpanRecorder {
 	t.Helper()
 	rec := tracetest.NewSpanRecorder()
@@ -281,7 +281,7 @@ func tracing(t *testing.T) *tracetest.SpanRecorder {
 	return rec
 }
 
-// spansNamed 已结束的、名字是 name 的 Span
+// spansNamed are the finished Spans named name.
 func spansNamed(rec *tracetest.SpanRecorder, name string) []sdktrace.ReadOnlySpan {
 	var out []sdktrace.ReadOnlySpan
 	for _, s := range rec.Ended() {
@@ -292,7 +292,7 @@ func spansNamed(rec *tracetest.SpanRecorder, name string) []sdktrace.ReadOnlySpa
 	return out
 }
 
-// header 消息头里 key 的值
+// header is the value of key in the message headers.
 func header(r *kgo.Record, key string) string {
 	for _, h := range r.Headers {
 		if h.Key == key {
@@ -302,13 +302,13 @@ func header(r *kgo.Record, key string) string {
 	return ""
 }
 
-// useConfig 用 yml 当配置文件，测试结束时清掉
+// useConfig uses yml as the config file and clears it when the test ends.
 func useConfig(t *testing.T, yml string) {
 	t.Helper()
 	testkit.UseConfigEnv(t, yml)
 }
 
-// runHook 按名字跑一个已登记的启动钩子
+// runHook runs one registered start hook by name.
 func runHook(t *testing.T, name string) {
 	t.Helper()
 	for _, e := range hook.Start() {

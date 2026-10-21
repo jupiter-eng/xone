@@ -64,7 +64,7 @@ Each module's own logs are under "Observability" in its README:
 [xgorm](../xgorm/README.md#logs) (`xgorm connected`, SQL logs) ·
 [xredis](../xredis/README.md#日志) (`xredis connected`, `redis command`, `redis pipeline`) ·
 [xhttp](../xhttp/README.md#日志) (`xhttp ready`, `http request`) ·
-[xcache](../xcache/README.md#logs) · [xkafka](../xkafka/README.md#日志)
+[xcache](../xcache/README.md#logs) · [xkafka](../xkafka/README.md#logs)
 (`kafka produce failed`, `kafka message failed` / `kafka message dead-lettered` /
 `kafka message skipped, …` / `kafka handler panicked`, with the handler's logs carrying `topic` /
 `partition` / `offset` / `group`) · [xcron](../xcron/README.md#logs) (`cron job finished` /
@@ -83,7 +83,7 @@ Every metric the framework ships carries `XMetric.ConstLabels`; apart from clien
 | [xhttp](../xhttp/README.md#指标) | `http_client_request_duration_seconds` |
 | [xgorm](../xgorm/README.md#metrics) | `db_pool_*` |
 | [xredis](../xredis/README.md#指标) | `redis_pool_*` |
-| [xkafka](../xkafka/README.md#指标) | `kafka_consume_duration_seconds` |
+| [xkafka](../xkafka/README.md#metrics) | `kafka_consume_duration_seconds` |
 | [xcache](../xcache/README.md#metrics) | `cache_*` |
 | [xmetric](../xmetric/README.md#metrics) | `log_errors_total`, `go_*` / `process_*`, and the business's own instrumentation |
 
@@ -120,7 +120,7 @@ Each module's span names and key attributes are under "Observability · Tracing"
 | [xgorm](../xgorm/README.md#tracing) | One per SQL statement, with attributes following OTel's database semantic conventions |
 | [xredis](../xredis/README.md#链路) | One per command |
 | [xcron](../xcron/README.md#tracing) | One root span `cron <name>` per execution |
-| [xkafka](../xkafka/README.md#链路) | `<topic> publish` when producing and `<topic> process` when consuming, with consumption joining the trace from the message headers |
+| [xkafka](../xkafka/README.md#tracing) | `<topic> publish` when producing and `<topic> process` when consuming, with consumption joining the trace from the message headers |
 | [xflow](../xflow/README.md#tracing) | Opens no spans |
 
 The status is marked as an error only for a server-side 5xx (xgin, xecho), a failing SQL statement
@@ -160,6 +160,6 @@ Three things are accepted inbound and sent outbound, under different trust rules
   treated as trusted; otherwise baggage and forwarded headers are not accepted at all. xkafka
   treats Kafka message headers as trusted when consuming (whoever can write to a topic holds the
   cluster's credentials); the reasoning and the exceptions are in
-  [xkafka "链路"](../xkafka/README.md#链路).
+  [xkafka "链路"](../xkafka/README.md#tracing).
 - To read a forwarded value in business code:
   `xtrace.ForwardHeaderFromContext(ctx, "X-Request-Id")`.
