@@ -6,7 +6,6 @@
 # instead of quietly staying forever. Nothing is ever added except during this migration.
 #
 # Generated once from the state of the repository at the time the rule landed.
-config_schema.json
 # The two diagrams hold their text as SVG nodes at fixed coordinates. English is wider than
 # Chinese at the same font size, so translating them without rendering the result risks text
 # overflowing its boxes; they need a pass where the rendering can be checked.
@@ -116,12 +115,6 @@ internal/config/merge_test.go
 internal/config/profile_test.go
 internal/config/source.go
 internal/config/strict.go
-internal/schemagen/doc.go
-internal/schemagen/docs.go
-internal/schemagen/main.go
-internal/schemagen/schema.go
-internal/schemagen/schema_test.go
-internal/schemagen/validate.go
 internal/web/accesslog.go
 internal/web/accesslog_test.go
 internal/web/config.go
@@ -134,10 +127,6 @@ internal/web/request.go
 internal/web/request_test.go
 internal/web/server.go
 internal/web/server_test.go
-internal/xclient/probe.go
-internal/xclient/probe_test.go
-internal/xclient/xclient.go
-internal/xclient/xclient_test.go
 scripts/check.sh
 scripts/check_zh.py
 scripts/e2e.sh

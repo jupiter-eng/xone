@@ -10,37 +10,46 @@ import (
 	"github.com/jupiter-eng/xone/xutil"
 )
 
-// ProbePolicy 启动期建连探测怎么试：试几次、每次多久、第一次退避多久、哪些错误不必再试
+// ProbePolicy is how the connection probe at startup goes about it: how many attempts, how long
+// each one gets, how long the first backoff is, and which errors need no further attempt
 type ProbePolicy struct {
-	// Attempts 最多试几次，<1 按 1 次算
+	// Attempts is how many attempts at most; anything below 1 counts as 1
 	Attempts int
 
-	// Timeout 单次尝试的预算
+	// Timeout is one attempt's budget
 	Timeout time.Duration
 
-	// Interval 第一次退避的上界，之后逐次翻倍、带抖动，规则见 xutil.Retry
+	// Interval is the ceiling of the first backoff, doubling each time afterwards with jitter; the
+	// rules are in xutil.Retry
 	Interval time.Duration
 
-	// AuthFailed 服务端是否已经明确拒绝了这组凭证。可以留空，留空就是一律重试。
+	// AuthFailed reports whether the server has refused these credentials outright. It may be left
+	// empty, which means everything is retried.
 	//
-	// 认得出来的不再重试：密码错了再试几次也是错，只是把同一个错误多等几轮退避
-	// （默认最多 3s）才报出来，还会在服务端多留几条认证失败的记录。
+	// What it recognizes is not retried: a wrong password stays wrong however many attempts are
+	// made, and only delays the same error by a few more backoffs (3s at most by default) while
+	// leaving a few more authentication failures in the server's own records.
 	AuthFailed func(error) bool
 }
 
-// Probe 按 p 反复调用 fn，直到成功、认证被拒、试满次数或 ctx 被取消。
+// Probe calls fn again and again as p says, until it succeeds, authentication is refused, the
+// attempts run out, or the ctx is cancelled.
 //
-// fn 收到的 ctx 带着这一次尝试的截止时间，fn 要尊重它——Probe 不会替 fn 把
-// 一个卡住的调用丢下不管：sql.DB 的 Close 会等在途的查询，丢下的协程并不会
-// 因为连接池关了就返回。驱动本身不理 ctx 的（go-redis 只认截止时间、不认取消）
-// 由调用方自己在 fn 里处理。
+// The ctx fn receives carries this attempt's deadline and fn has to honour it -- Probe does not
+// abandon a stuck call on fn's behalf: sql.DB's Close waits for the queries in flight, and an
+// abandoned goroutine does not return just because the pool was closed. A driver that ignores the
+// ctx itself (go-redis goes by the deadline and not by cancellation) is the caller's to handle
+// inside fn.
 //
-// 返回值：
-//   - 成功时 nil；
-//   - 认证被拒、或者 TLS 握手因为证书被拒时（见 tlsRejected），就是 fn 返回的那个错误，一次都不多试；
-//   - 其余情况同 xutil.Retry：最后一次的错误，ctx 被取消时还同时满足 errors.Is(err, ctx.Err())。
+// What it returns:
+//   - nil on success;
+//   - the very error fn returned, without one further attempt, when authentication was refused or
+//     the TLS handshake failed because the certificate was rejected (see tlsRejected);
+//   - otherwise what xutil.Retry returns: the last attempt's error, which also satisfies
+//     errors.Is(err, ctx.Err()) when the ctx was cancelled.
 //
-// 调用方拿 p.AuthFailed 再问一次，就能决定报「认证失败」还是「连不上」。
+// Asking p.AuthFailed once more lets the caller decide between reporting "authentication failed"
+// and "cannot connect".
 func Probe(ctx context.Context, p ProbePolicy, fn func(context.Context) error) error {
 	return xutil.Retry(ctx, p.Attempts, p.Timeout, p.Interval, func(ctx context.Context) error {
 		err := fn(ctx)
@@ -51,16 +60,20 @@ func Probe(ctx context.Context, p ProbePolicy, fn func(context.Context) error) e
 	})
 }
 
-// tlsRejected 握手因为证书被明确拒绝了：我们不认对端的证书（CA 不对、名字对不上、过期），
-// 或者对端不认我们的（没带客户端证书、不是它认的 CA 签的）。
+// tlsRejected: the handshake failed because a certificate was refused outright -- either we do not
+// accept the peer's certificate (the wrong CA, a name that does not match, an expired one) or the
+// peer does not accept ours (no client certificate sent, or one not signed by a CA it accepts).
 //
-// 和密码错一样，再试几次还是同一张证书、同一个结论，所以不重试。
+// As with a wrong password, another attempt means the same certificate and the same verdict, so it
+// is not retried.
 //
-// 对端的拒绝是它发来的 TLS 告警。TCP 上 crypto/tls 把它包成 Op 为 "remote error" 的
-// *net.OpError，里面的告警类型没有导出（tls.AlertError 只给 QUIC 用），所以按告警的文字认：
-// bad_certificate、unknown_ca、certificate_required（TLS 1.3 下没带客户端证书时服务端发的）。
-// 实测 go-redis v9.22.0 连 tls-auth-clients yes 的 Redis 7.0.15，不带证书是
-// remote error: tls: certificate required，带着别的 CA 签的是 remote error: tls: unknown certificate authority。
+// The peer's refusal is a TLS alert it sends. Over TCP, crypto/tls wraps it into a *net.OpError
+// whose Op is "remote error", and the alert type inside is not exported (tls.AlertError is for QUIC
+// alone), so it is recognized by the alert's text: bad_certificate, unknown_ca and
+// certificate_required (what a server sends under TLS 1.3 when no client certificate was sent).
+// Measured with go-redis v9.22.0 against a Redis 7.0.15 with tls-auth-clients yes: without a
+// certificate it is remote error: tls: certificate required, and with one signed by another CA it
+// is remote error: tls: unknown certificate authority.
 func tlsRejected(err error) bool {
 	var verr *tls.CertificateVerificationError
 	if errors.As(err, &verr) {

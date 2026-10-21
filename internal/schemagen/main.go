@@ -1,20 +1,23 @@
-// schemagen 从各模块的 Config 结构体生成 config_schema.json。
+// schemagen generates config_schema.json from the modules' Config structs.
 //
-//	go run ./internal/schemagen            # 写到 config_schema.json
-//	go run ./internal/schemagen -check     # 只比对，不一致就非零退出
+//	go run ./internal/schemagen            # writes config_schema.json
+//	go run ./internal/schemagen -check     # compares only, exiting non-zero on a difference
 //
-// 两条命令都在仓库根目录跑（走 go.work）。配置文档对照 schema 的检查是
-// TestCheckDocs，见 checkDocs。
+// Both run in the repository root (through go.work). Checking the configuration documentation
+// against the schema is TestCheckDocs, see checkDocs.
 //
-// 为什么生成而不是手写：schema 有上百个字段，手写的那份迟早和结构体对不上，
-// 而对不上的表现是 IDE 里补全出一个根本不存在的字段——比没有 schema 更糟。
-// 字段说明直接取结构体上的注释，于是注释、文档、schema 是同一个来源。
+// Why it is generated rather than written by hand: the schema holds hundreds of fields, a
+// hand-written one sooner or later disagrees with the structs, and a disagreement shows up as an
+// editor completing a field that does not exist at all -- worse than having no schema.
+// The field descriptions are taken straight from the comments on the structs, so the comments, the
+// documentation and the schema all come from one source.
 //
-// 用 go/ast 纯解析源码，不 import 各模块：它们是独立的 Go module，
-// 这里 import 不到，而解析源码本来就不需要。
+// It parses the source with go/ast alone and imports no module: they are Go modules of their own
+// and cannot be imported here, which parsing the source never needed anyway.
 //
-// 它自己也是一个独立的 module（只给仓库内部用，release.sh 不发布它）：
-// 校验 YAML 示例用的 jsonschema-go 不该算进核心的依赖足迹（check.sh 第 1 步）。
+// It is a module of its own as well (for use inside the repository alone; release.sh does not
+// release it): jsonschema-go, which validates the YAML examples, must not count towards the core's
+// dependency footprint (check.sh, step 1).
 package main
 
 import (
@@ -35,18 +38,18 @@ import (
 const outFile = "config_schema.json"
 
 func main() {
-	check := flag.Bool("check", false, "只比对已签入的文件，不写")
+	check := flag.Bool("check", false, "compare against the checked-in file instead of writing it")
 	flag.Parse()
 
 	schema, err := build(".")
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "生成失败:", err)
+		fmt.Fprintln(os.Stderr, "generating failed:", err)
 		os.Exit(1)
 	}
 
 	out, err := json.MarshalIndent(schema, "", "  ")
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "序列化失败:", err)
+		fmt.Fprintln(os.Stderr, "serializing failed:", err)
 		os.Exit(1)
 	}
 	out = append(out, '\n')
@@ -54,40 +57,41 @@ func main() {
 	if *check {
 		have, err := os.ReadFile(outFile)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "读 %s 失败: %v\n", outFile, err)
+			fmt.Fprintf(os.Stderr, "reading %s failed: %v\n", outFile, err)
 			os.Exit(1)
 		}
 		if !bytes.Equal(have, out) {
-			fmt.Fprintf(os.Stderr, "%s 与结构体对不上了，跑一次 go run ./internal/schemagen\n", outFile)
+			fmt.Fprintf(os.Stderr, "%s no longer agrees with the structs; run go run ./internal/schemagen\n", outFile)
 			os.Exit(1)
 		}
 		return
 	}
 	if err := os.WriteFile(outFile, out, 0o644); err != nil {
-		fmt.Fprintln(os.Stderr, "写文件失败:", err)
+		fmt.Fprintln(os.Stderr, "writing the file failed:", err)
 		os.Exit(1)
 	}
-	fmt.Printf("%s 已更新（%d 个顶层 key）\n", outFile, len(schema.Properties))
+	fmt.Printf("%s updated (%d top-level keys)\n", outFile, len(schema.Properties))
 }
 
-// ---- schema 结构 ----
+// ---- The schema's structure ----
 
 type node struct {
-	// Type 一个类型名，或者几个类型名的列表（如 ["integer", "string"]）
+	// Type is one type name, or a list of them (["integer", "string"], say)
 	Type        any              `json:"type,omitempty"`
 	Description string           `json:"description,omitempty"`
 	Properties  map[string]*node `json:"properties,omitempty"`
 	Required    []string         `json:"required,omitempty"`
-	// AdditionalProperties map 的 value 的 schema，或者 false（结构体：不认识的字段是错误）
+	// AdditionalProperties is the schema of a map's values, or false (a struct: an unknown field is
+	// an error)
 	AdditionalProperties any     `json:"additionalProperties,omitempty"`
 	MinProperties        int     `json:"minProperties,omitempty"`
 	Items                *node   `json:"items,omitempty"`
 	Pattern              string  `json:"pattern,omitempty"`
 	OneOf                []*node `json:"oneOf,omitempty"`
 
-	// duration 标记这个字段是时长。时长是这里最多的一种字段（三十多个），
-	// 而 YAML 里写的是 30s / 1500ms 这种字符串，不提示的话
-	// 补全出一个 "string" 等于没说
+	// duration marks this field as a duration. Durations are the most common kind of field here
+	// (over thirty of them) and are written in YAML as strings such as 30s / 1500ms, so without a
+	// hint, completing a "string" says nothing at all
 	duration bool
 }
 
@@ -99,16 +103,17 @@ type root struct {
 	Properties map[string]*node `json:"properties"`
 }
 
-// ---- 解析 ----
+// ---- Parsing ----
 
-// pkg 一个模块的包信息：结构体定义和 ConfigKey
+// pkg is what is known about one module's package: the struct definitions and the ConfigKey
 type pkg struct {
 	structs   map[string]*ast.StructType
-	aliases   map[string]ast.Expr          // 具名标量，如 type Driver string
-	docs      map[string]*ast.CommentGroup // 类型上的注释
+	aliases   map[string]ast.Expr          // named scalars, type Driver string for one
+	docs      map[string]*ast.CommentGroup // the comments on the types
 	configKey string
 
-	// shared 仓库里别的包，按包名。字段的类型写成 xtls.Config 这样跨包的，去这里找
+	// shared holds the repository's other packages by package name. A field whose type crosses
+	// packages, such as xtls.Config, is looked up here
 	shared map[string]*pkg
 }
 
@@ -120,7 +125,8 @@ func build(repo string) (*root, error) {
 
 	props := map[string]*node{}
 
-	// 先全部解一遍：配置块的字段可以引用别的包里的结构体（各模块共用的 xtls.Config）
+	// Everything is parsed first: a configuration block's field may refer to a struct in another
+	// package (xtls.Config, which the modules share)
 	pkgs := make([]*pkg, 0, len(dirs))
 	shared := map[string]*pkg{}
 	for _, dir := range dirs {
@@ -136,7 +142,7 @@ func build(repo string) (*root, error) {
 	for i, dir := range dirs {
 		p := pkgs[i]
 		if p.configKey == "" {
-			continue // 没有 ConfigKey 的包不是配置块
+			continue // a package with no ConfigKey is not a configuration block
 		}
 		n, err := configNode(p)
 		if err != nil {
@@ -145,34 +151,40 @@ func build(repo string) (*root, error) {
 		props[p.configKey] = n
 	}
 
-	// XApp.Profiles / XApp.Import 由加载器自己消费，不在 xapp.Config 里，所以在这里补上
+	// XApp.Profiles / XApp.Import are consumed by the loader itself and are not in xapp.Config, so
+	// they are added here
 	app, ok := props["XApp"]
 	if !ok {
 		return nil, fmt.Errorf("no XApp block: xapp.ConfigKey changed? Profiles and Import live under it")
 	}
 	app.Properties["Profiles"] = &node{Type: stringOrList, Items: &node{Type: "string"},
-		Description: "激活哪些 profile，对应 Spring 的 spring.profiles.active：一个名字、逗号分隔的字符串或列表，靠后的压过靠前的。" +
-			"优先级低于 --profile 和 XONE_PROFILE；只能写在主配置文件里"}
+		Description: "Which profiles are active, as Spring's spring.profiles.active is: one name, a " +
+			"comma-separated string, or a list, where a later one overrides an earlier one. It ranks " +
+			"below --profile and XONE_PROFILE, and may be written in the main configuration file only"}
 	app.Properties["Import"] = &node{Type: stringOrList, Items: &node{Type: "string"},
-		Description: "引入别的配置文件，对应 Spring 的 spring.config.import。引进来的压过引它的那个文件；" +
-			"相对路径按引它的文件所在目录解析；optional: 前缀表示文件不存在就跳过"}
+		Description: "Imports other configuration files, as Spring's spring.config.import does. An " +
+			"imported file overrides the one importing it; a relative path resolves against the " +
+			"directory of the file importing it; an optional: prefix skips a file that does not exist"}
 
-	// 顶层不设 additionalProperties: false：业务自己的配置块（见 docs/guide.md
-	// 「读自己的配置」）也写在顶层，schema 不可能认识它们。
-	// 顶层拼错由运行时的「没人认领的块直接失败」拦住
+	// No additionalProperties: false at the top level: the business's own configuration blocks (see
+	// docs/guide.md, "Reading a configuration of your own") are written at the top level too, and
+	// the schema cannot possibly know them.
+	// A misspelling at the top level is caught at run time by "a block nobody claims fails
+	// outright".
 	//
-	// $schema 必须带结尾的 #：draft-07 元 schema 的标准 URI 就是这么写的，
-	// jsonschema-go v0.4.3 实测只认带 # 的那一个，不带就报 cannot validate version
+	// $schema has to carry the trailing #: that is how the standard URI of the draft-07 meta schema
+	// is written, and jsonschema-go v0.4.3 was measured accepting only the one with the #,
+	// reporting cannot validate version without it
 	return &root{
 		Schema:     "http://json-schema.org/draft-07/schema#",
 		ID:         "https://github.com/jupiter-eng/xone",
-		Title:      "XOne 配置",
+		Title:      "XOne configuration",
 		Type:       "object",
 		Properties: props,
 	}, nil
 }
 
-// configDirs 找出所有可能声明了配置块的目录
+// configDirs finds every directory that may declare a configuration block
 func configDirs(repo string) ([]string, error) {
 	var out []string
 	err := filepath.WalkDir(repo, func(path string, d os.DirEntry, err error) error {
@@ -183,8 +195,9 @@ func configDirs(repo string) ([]string, error) {
 			return nil
 		}
 		name := d.Name()
-		// 跳过不放配置块的目录。example 是示例、internal 是框架内部、
-		// 隐藏目录和 testdata 与配置无关
+		// The directories that hold no configuration block are skipped. example holds the examples,
+		// internal is the framework's inside, and the hidden directories and testdata have nothing to
+		// do with the configuration
 		if path != repo && (strings.HasPrefix(name, ".") || name == "example" ||
 			name == "internal" || name == "testdata") {
 			return filepath.SkipDir
@@ -220,8 +233,8 @@ func parsePkg(dir string) (*pkg, error) {
 				for _, spec := range gd.Specs {
 					switch s := spec.(type) {
 					case *ast.TypeSpec:
-						// 类型注释可能挂在 TypeSpec 上，也可能挂在外层的
-						// GenDecl 上（`type X struct` 单独声明时是后者）
+						// A type's comment may hang off the TypeSpec, or off the GenDecl around it (the
+						// latter when `type X struct` is declared on its own)
 						if d := s.Doc; d != nil {
 							p.docs[s.Name.Name] = d
 						} else if gd.Doc != nil && len(gd.Specs) == 1 {
@@ -244,7 +257,7 @@ func parsePkg(dir string) (*pkg, error) {
 	return p, nil
 }
 
-// configKeyOf 从 `const ConfigKey = "XGorm"` 取出那个字符串
+// configKeyOf takes the string out of `const ConfigKey = "XGorm"`
 func configKeyOf(s *ast.ValueSpec) string {
 	for i, name := range s.Names {
 		if name.Name != "ConfigKey" || i >= len(s.Values) {
