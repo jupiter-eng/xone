@@ -1,28 +1,31 @@
-// Package clickhouse 给 xgorm 加上 ClickHouse 驱动。
+// Package clickhouse adds the ClickHouse driver to xgorm.
 //
-// 匿名 import 即可，不需要写任何代码：
+// An anonymous import is all it takes, with no code to write:
 //
 //	import (
 //		"github.com/jupiter-eng/xone/xgorm"
 //		_ "github.com/jupiter-eng/xone/xgorm/clickhouse"
 //	)
 //
-// 然后配置里写 Driver: clickhouse，拿到的还是原生的 *gorm.DB：
+// Then write Driver: clickhouse in the configuration, and what you get is still a native *gorm.DB:
 //
 //	XGorm:
 //	  Driver: clickhouse
 //	  DSN: "${CH_DSN}"     # clickhouse://user:pass@host:9000/db
-//	  TLS: {Enable: true, CAFile: /etc/ssl/ch-ca.pem}   # 可选：native 与 https:// 都走它，见 tls.go
+//	  TLS: {Enable: true, CAFile: /etc/ssl/ch-ca.pem}   # optional: both native and https:// use it, see tls.go
 //
-// 为什么是独立的 module：实测一个只 import xgorm 的应用模块图是 68 个（不含应用自己），
-// 加上这个包变成 131 个（go list -deps 里的非标准库包 165 → 208；clickhouse-go v2.48.0）。
-// 多出来的大头是 Docker（moby）和 testcontainers —— clickhouse-go 用它们跑集成测试，
-// 而 go.mod 分不出「只测试用」，所以它们落在主 require 块里，一路传给每个使用者。
-// Go 的 MVS 按模块图强加版本要求，不用 ClickHouse 的人不该为它付这个钱。
+// Why it is its own module: measured, an application importing only xgorm has a module graph of 68
+// (excluding the application itself), and adding this package takes it to 131 (the
+// non-standard-library packages in go list -deps go from 165 to 208; clickhouse-go v2.48.0).
+// Most of the difference is Docker (moby) and testcontainers — clickhouse-go uses them for its
+// integration tests, and since go.mod cannot tell "test only" apart they sit in the main require
+// block and travel to every caller. Go's MVS imposes version requirements through the module
+// graph, and whoever does not use ClickHouse should not pay for it.
 //
-// 驱动版本要盯着：gorm.io/driver/clickhouse v0.6.1 的 go.mod 里还积着
-// 126 个 cloud.google.com/* 的陈年 indirect 项，用它模块图是 733 个；
-// 升到 v0.7.0 直接降到 146（那时 clickhouse-go 是 v2.30.0，升到 v2.48.0 又降到 128；xgorm 带上 xtrace 之后是 132）。
+// The driver version is worth watching: the go.mod of gorm.io/driver/clickhouse v0.6.1 still
+// carried 126 stale cloud.google.com/* indirect entries, giving a module graph of 733; v0.7.0
+// dropped it straight to 146 (clickhouse-go was v2.30.0 then, and v2.48.0 brought it to 128; with
+// xtrace, xgorm makes it 132).
 package clickhouse
 
 import (
@@ -44,21 +47,23 @@ import (
 	"github.com/jupiter-eng/xone/xgorm"
 )
 
-// Driver 配置里 Driver 那一项要写的值
+// Driver is the value the configuration's Driver has to hold
 const Driver xgorm.Driver = "clickhouse"
 
-// dialTimeoutKey ClickHouse DSN 里建连超时对应的 query 参数
+// dialTimeoutKey is the query parameter a ClickHouse DSN uses for the connect timeout
 const dialTimeoutKey = "dial_timeout"
 
-// driverDialTimeout dial_timeout 为 0 时驱动用的值（clickhouse-go v2.48.0 clickhouse_options.go setDefaults，
-// Open / OpenDB / Connector 都先过它）。升级驱动时对一下
+// driverDialTimeout is what the driver uses when dial_timeout is 0 (clickhouse-go v2.48.0
+// clickhouse_options.go setDefaults, which Open / OpenDB / Connector all go through). Check it
+// against the driver when upgrading.
 const driverDialTimeout = 30 * time.Second
 
-// schemes 驱动认的 URL scheme。http / https 走 HTTP 协议，其余走 native
+// schemes are the URL schemes the driver recognizes. http / https use the HTTP protocol and the
+// rest use native.
 var schemes = []string{"clickhouse://", "tcp://", "http://", "https://"}
 
-// DSN 解不出来时报的错。一律不回显 DSN：url.Parse 和驱动的解析错误里
-// 都带着 DSN 片段，而 DSN 多半带着密码
+// The errors reported when a DSN cannot be parsed. The DSN is never echoed back: both url.Parse's
+// and the driver's parse errors carry DSN fragments, and a DSN usually carries a password.
 var (
 	errNotURL = errors.New("DSN must be a URL starting with clickhouse://, tcp://, http:// or https:// " +
 		"(details omitted to keep credentials out of logs)")
@@ -68,7 +73,8 @@ var (
 		" (a literal % in a password must be written as %25; details omitted to keep credentials out of logs)")
 )
 
-// dialect 注册进 xgorm 的那一份。单独成变量，测试才看得到它接的是哪几个函数
+// dialect is the one registered into xgorm. It is a variable of its own so tests can see which
+// functions it wired up.
 var dialect = xgorm.Dialect{
 	Name:       Driver,
 	Open:       open,
@@ -79,31 +85,36 @@ var dialect = xgorm.Dialect{
 	ErrorCode:  errorCode,
 }
 
-// init 只注册，不初始化。真正建连由 xgorm 在框架的 StageClient 里做。
+// init only registers and initializes nothing. The actual connecting is done by xgorm in the
+// framework's StageClient.
 func init() { xgorm.RegisterDialect(dialect) }
 
-// open 造 Dialector，并关掉它在 Initialize 里那次查版本。
+// open builds the Dialector and turns off the version query it runs inside Initialize.
 //
-// 那次 SELECT version() 用的是写死的 context.Background()
-// （gorm.io/driver/clickhouse v0.7.0 的 Initialize），而且就在 gorm.Open 里：
-// 实测对一个收下连接却不回话的地址，ctx 早已取消也要等满 dial_timeout
-// 才返回（300ms 配 300ms），失败了直接报错——xgorm 的三次建连重试一次都
-// 没轮上，一次抖动就让服务起不来。
+// That SELECT version() uses a hard-coded context.Background() (Initialize in
+// gorm.io/driver/clickhouse v0.7.0) and runs inside gorm.Open: measured against an address that
+// accepts the connection and never answers, it waited out the full dial_timeout before returning
+// even with the ctx long cancelled (300ms configured, 300ms waited), and a failure was reported
+// outright — none of xgorm's three connection retries was ever reached, so one hiccup kept the
+// service from starting.
 //
-// 版本号本身还要：驱动靠它决定老版本上改不改得了列名（< 20.4）、
-// 列类型带不带精度（< 21.11），不查的话迁移会在老集群上生成它不认的 DDL。
-// 所以这次查询挪到 probeVersion，由 xgorm 在建连验证里做：受 ctx 管，跟着重试。
+// The version itself is still needed: the driver uses it to decide whether column names can be
+// renamed on older versions (< 20.4) and whether column types carry precision (< 21.11), and
+// without the query a migration generates DDL an older cluster does not accept.
+// So that query moves into probeVersion and is done by xgorm during the connection check: governed
+// by the ctx and retried along with it.
 func open(dsn string) gorm.Dialector {
 	return clickhouse.New(clickhouse.Config{DSN: dsn, SkipInitializeWithVersion: true})
 }
 
-// probeVersion 查服务端版本，按驱动自己的规则设好那两个开关。
+// probeVersion queries the server's version and sets those two switches by the driver's own rules.
 //
-// 规则抄自 v0.7.0 的 Initialize，升级驱动时要对一遍。
+// The rules are copied from v0.7.0's Initialize and have to be checked against it when upgrading
+// the driver.
 func probeVersion(ctx context.Context, db *gorm.DB) error {
 	d, ok := db.Dialector.(*clickhouse.Dialector)
 	if !ok {
-		return nil // 不是我们造的 Dialector，没有开关可设
+		return nil // not a Dialector we built, so there is no switch to set
 	}
 	var v string
 	if err := db.ConnPool.QueryRowContext(ctx, "SELECT version()").Scan(&v); err != nil {
@@ -114,11 +125,11 @@ func probeVersion(ctx context.Context, db *gorm.DB) error {
 	return nil
 }
 
-// applyVersion 按版本号设老版本不支持的两项
+// applyVersion sets the two options older versions do not support, by version
 func applyVersion(c *clickhouse.Config, v string) {
 	parsed, err := version.NewVersion(v)
 	if err != nil {
-		return // 解不出来就按新版本处理，与驱动一致
+		return // unparsable means treating it as a new version, as the driver does
 	}
 	noRename, _ := version.NewConstraint("< 20.4")
 	noPrecision, _ := version.NewConstraint("< 21.11")
@@ -130,14 +141,16 @@ func applyVersion(c *clickhouse.Config, v string) {
 	}
 }
 
-// resolve 把配置里的建连超时注入 DSN，并解出可安全记录的连接信息
+// resolve injects the configured connect timeout into the DSN and parses out the connection
+// information that is safe to record.
 //
-// 只认 URL 形式（clickhouse://user:pass@host:9000/db?k=v），别的一律拒绝。
-// 驱动并不接受裸的 host:port（实测 clickhouse.ParseDSN("10.255.255.1:9000")
-// 报 first path segment in URL cannot contain colon），而原样透传的话，
-// 驱动建连时的解析错误会连同整串 DSN、包括明文密码一起进日志。
-// scheme 拼错（clickhous://）驱动倒是认，但会跳过这里的超时注入，
-// 前面多一个空格则又是一次带着整串 DSN 的解析错误——都在这里挡掉。
+// Only the URL form is accepted (clickhouse://user:pass@host:9000/db?k=v) and everything else is
+// rejected. The driver does not accept a bare host:port either (measured,
+// clickhouse.ParseDSN("10.255.255.1:9000") reports
+// first path segment in URL cannot contain colon), and passing it through unchanged would put the
+// driver's parse error, with the whole DSN and its plaintext password, into the log. A misspelled
+// scheme (clickhous://) the driver does accept, but it then skips the timeout injection here, and
+// a leading space is another parse error carrying the whole DSN — all of them are stopped here.
 func resolve(c xgorm.ClientConfig) (string, xgorm.ConnInfo, error) {
 	if !isURL(c.DSN) {
 		return "", xgorm.ConnInfo{}, errNotURL
@@ -145,13 +158,15 @@ func resolve(c xgorm.ClientConfig) (string, xgorm.ConnInfo, error) {
 
 	u, err := url.Parse(c.DSN)
 	if err != nil {
-		// 不回传原始错误：url.Parse 的错误里带着整串 DSN，而错误会被记下来
+		// The original error is not passed on: url.Parse's error carries the whole DSN, and errors get recorded
 		return "", xgorm.ConnInfo{}, errMalformedDSN
 	}
 
-	// 显式 ParseQuery 而不是 u.Query()：后者会把错误吞掉，只返回解得出的那部分。
-	// 于是密码里带一个字面 % （构成非法的百分号转义）时，那一项会被静默丢掉，
-	// 回写之后 DSN 里就没有密码了——服务报「认证失败」，而配置文件里密码明明写着。
+	// An explicit ParseQuery rather than u.Query(): the latter swallows the error and returns only
+	// the part it could parse. So a password containing a literal % (forming an invalid percent
+	// escape) would have that entry silently dropped, and after writing it back the DSN holds no
+	// password at all — the service reports "authentication failed" while the config file plainly
+	// holds one.
 	q, err := url.ParseQuery(u.RawQuery)
 	if err != nil {
 		return "", xgorm.ConnInfo{}, errMalformedQuery
@@ -162,37 +177,48 @@ func resolve(c xgorm.ClientConfig) (string, xgorm.ConnInfo, error) {
 		}
 	}
 
-	// 使用者在 DSN 里显式写了的，一律不覆盖——配置里的值只是默认值。
-	// DialTimeout 为 0 不注入；写成 ClickHouse 认的时长字符串（300ms、5s）。
-	// 接在原 query 后面，使用者写的那部分一个字节都不动（同 xgorm 的 injectPostgresURL）：
-	// 解开再 q.Encode() 的话参数按 key 重排，a,b/c 成了 a%2Cb%2Fc
+	// What the caller wrote explicitly in the DSN is never overwritten — the configuration only
+	// provides defaults.
+	// A DialTimeout of 0 injects nothing; it is written as a duration string ClickHouse accepts
+	// (300ms, 5s).
+	// It is appended after the original query, leaving what the caller wrote untouched to the byte
+	// (as xgorm's injectPostgresURL does): parsing and re-encoding with q.Encode() would reorder the
+	// parameters by key and turn a,b/c into a%2Cb%2Fc.
 	if c.DialTimeout > 0 && !q.Has(dialTimeoutKey) {
 		u.RawQuery = appendQuery(u.RawQuery, dialTimeoutKey, c.DialTimeout.String())
 	}
 	dsn := u.String()
 
-	// 用驱动自己的解析器再过一遍：它的错误同样可能带着凭证（http_proxy 解析失败时
-	// 回显的是整个代理地址），留到建连时才报就是原样进日志。
-	// 这里报出来的只有一句不带内容的话；常见的是 https:// 没配 secure=true（开了 TLS 块时不必配，见 parseDSN）
+	// Run it through the driver's own parser as well: its errors can likewise carry credentials (a
+	// failed http_proxy parse echoes the whole proxy address back), and leaving it until connecting
+	// time puts it into the log verbatim.
+	// What is reported here is one sentence with no content; the common case is https:// without
+	// secure=true (which is not needed with the TLS block on, see parseDSN).
 	opts, err := parseDSN(dsn, c.TLS.Enable)
 	if err != nil {
 		return "", xgorm.ConnInfo{}, errMalformedDSN
 	}
 
-	// 预算按驱动读出来的 dial_timeout 算：DSN 里写了更长的，xgorm 建连验证的预算
-	// 才会跟着放宽。驱动拿它管 TCP 建连，握手阶段又拿它设整条连接的 deadline
-	// （v2.48.0 conn_handshake.go），往返没有单独可依的配置，按同一量级再给一份。
-	// 两处都没写时 ParseDSN 读出来是 0，驱动建连时才补成 driverDialTimeout：预算也按补完的算，
-	// 按 0 算的话 xgorm 只剩 1s 兜底，驱动还愿意等的慢握手被建连验证先判了超时
+	// The budget is computed from the dial_timeout the driver read: a longer one written in the DSN
+	// is what widens xgorm's connection check budget. The driver uses it for the TCP connection and,
+	// during the handshake, as the deadline of the whole connection (v2.48.0 conn_handshake.go);
+	// there is no separate setting for a round trip, so one more of the same magnitude is added.
+	// With neither written, ParseDSN reads 0 and the driver fills in driverDialTimeout when
+	// connecting: the budget follows the filled-in value, since taking 0 would leave xgorm with its
+	// 1s fallback and let the connection check time out a slow handshake the driver was still
+	// willing to wait for.
 	//
-	// 地址取驱动解出来的第一个：多主机写法 clickhouse://u:p@h1:9000,h2:9000/db 里
-	// URL 的 Host 是整串 "h1:9000,h2:9000"，驱动按逗号切开、依次去连（默认 in_order）。
-	// 整串当地址的话 Span 的 server.address 是整串、没有 server.port（SplitHostPort 解不开），
-	// 建连日志里也不是一个「主机:端口」。和 PostgreSQL 的多主机一样记第一个。
-	// ParseDSN 在 Host 为空时报错，走到这里 Addr 至少有一项。
+	// The address is the first one the driver parsed: in the multi-host form
+	// clickhouse://u:p@h1:9000,h2:9000/db the URL's Host is the whole "h1:9000,h2:9000", which the
+	// driver splits on the comma and connects to in turn (in_order by default). Taking the whole
+	// string as the address would make the span's server.address that whole string with no
+	// server.port (SplitHostPort cannot parse it), and the connection log would not hold a
+	// "host:port" either. As with PostgreSQL's multi-host form, the first one is recorded.
+	// ParseDSN errors on an empty Host, so by this point Addr holds at least one entry.
 	//
-	// 库名也取驱动解出来的：路径和 ?database= 两处都能写，query 里的盖掉路径
-	// （v2.48.0 clickhouse_options.go fromDSN），只看路径的话日志里的 db 不是真正连上的那个
+	// The database name likewise comes from the driver: it can be written in the path and in
+	// ?database=, and the query overrides the path (v2.48.0 clickhouse_options.go fromDSN), so going
+	// by the path alone would put a db in the log that is not the one actually connected to.
 	return dsn, xgorm.ConnInfo{
 		Driver:       string(Driver),
 		Addr:         opts.Addr[0],
@@ -201,7 +227,7 @@ func resolve(c xgorm.ClientConfig) (string, xgorm.ConnInfo, error) {
 	}, nil
 }
 
-// appendQuery 在 raw query 后面接一个 key=value，raw 原样保留
+// appendQuery appends one key=value after the raw query, leaving raw as it is
 func appendQuery(raw, key, value string) string {
 	pair := url.QueryEscape(key) + "=" + url.QueryEscape(value)
 	if raw == "" {
@@ -210,15 +236,19 @@ func appendQuery(raw, key, value string) string {
 	return raw + "&" + pair
 }
 
-// authCodes 服务端拒绝凭证时的错误码，取自 ch-go 的类型化常量（与服务端
-// src/Common/ErrorCodes.cpp 同名）：新版本的服务端密码错、用户不存在一律报
-// 516 AUTHENTICATION_FAILED，192 / 193 / 194 是老版本分开报的三种。
+// authCodes are the error codes for a server rejecting the credentials, taken from ch-go's typed
+// constants (named as in the server's src/Common/ErrorCodes.cpp): a newer server reports a wrong
+// password and a missing user both as 516 AUTHENTICATION_FAILED, while 192 / 193 / 194 are the
+// three an older one reported separately.
 //
-// native 协议握手时服务端回 Exception 包，驱动原样返回 *clickhouse.Exception（v2.48.0 conn.go 的
-// exception()），错误链上 errors.As 得到。HTTP 协议下驱动把非 200 的响应解析成 *clickhouse.HTTPError，
-// 里面包着同一个 *clickhouse.Exception（v2.48.0 conn_http_errors.go），同样认得出。
-// 实测（e2e，ClickHouse 24.8.14）两种协议下密码错、用户不存在都是 code: 516，只试 1 次
-// （HTTP 的状态码是 403）；库不存在是 81，不在这里。v2.30.0 的 HTTP 错误只是一段拼好的文本，认不出
+// During the native protocol's handshake the server answers with an Exception packet, which the
+// driver returns as a *clickhouse.Exception as it is (exception() in v2.48.0 conn.go), reachable
+// with errors.As on the chain. Over HTTP the driver parses a non-200 response into a
+// *clickhouse.HTTPError wrapping that same *clickhouse.Exception (v2.48.0 conn_http_errors.go),
+// which is recognized just as well.
+// Measured (e2e, ClickHouse 24.8.14), a wrong password and a missing user are code: 516 under both
+// protocols and are tried once (HTTP's status is 403); a missing database is 81 and is not here.
+// v2.30.0's HTTP error was a single assembled string and was not recognized.
 var authCodes = []chproto.Error{
 	chproto.ErrAuthenticationFailed, // 516
 	chproto.ErrUnknownUser,          // 192
@@ -226,16 +256,18 @@ var authCodes = []chproto.Error{
 	chproto.ErrRequiredPassword,     // 194
 }
 
-// authFailed 服务端是否拒绝了这组凭证，见 authCodes
+// authFailed reports whether the server rejected these credentials, see authCodes
 func authFailed(err error) bool {
 	var ex *chgo.Exception
 	return errors.As(err, &ex) && slices.Contains(authCodes, chproto.Error(ex.Code))
 }
 
-// errorCode 服务端报的错误码。原文（Exception.Message）里可能就有参数值，
-// 比如解析不了的输入会被原样引出来，所以日志和 Span 只记码。
-// HTTP 协议下错误链上同样有 *clickhouse.Exception（见 authCodes）；解析不出来的（比如代理回的 502）
-// 交给 xgorm 按客户端的错处理：网络错误、ctx 取消这类照原文记，其余只说原文收掉了
+// errorCode is the error code the server reported. The text (Exception.Message) may hold parameter
+// values — an input it could not parse is quoted back verbatim — so the log and the span record the
+// code alone.
+// Over HTTP the chain holds a *clickhouse.Exception as well (see authCodes); anything unparsable (a
+// 502 from a proxy, say) is left to xgorm to treat as a client-side error: network errors and ctx
+// cancellation are recorded verbatim and the rest only says the text was withheld.
 func errorCode(err error) string {
 	var ex *chgo.Exception
 	if errors.As(err, &ex) {
@@ -244,7 +276,7 @@ func errorCode(err error) string {
 	return ""
 }
 
-// isURL 判断是不是驱动认的 URL 形式
+// isURL reports whether this is the URL form the driver recognizes
 func isURL(dsn string) bool {
 	return slices.ContainsFunc(schemes, func(p string) bool { return strings.HasPrefix(dsn, p) })
 }

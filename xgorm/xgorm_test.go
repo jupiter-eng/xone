@@ -29,13 +29,13 @@ import (
 	"github.com/jupiter-eng/xone/xonetest"
 )
 
-// TestMain 调短重试间隔：连不上的用例要跑满整轮重试，按一秒算一次就是几十秒
+// TestMain shortens the retry interval: the cases that cannot connect run through a full round of retries, which would take tens of seconds at one second each.
 func TestMain(m *testing.M) {
 	pingInterval = 10 * time.Millisecond
 	os.Exit(m.Run())
 }
 
-// deadAddr 返回一个没人监听的地址：建连必定失败，且失败得很快
+// deadAddr returns an address nobody is listening on: connecting is certain to fail, and to fail fast.
 func deadAddr(t *testing.T) string {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -43,16 +43,16 @@ func deadAddr(t *testing.T) string {
 		t.Fatal(err)
 	}
 	addr := l.Addr().String()
-	l.Close() // 立刻关掉，端口就没人监听了
+	l.Close() // closed right away, so nothing is listening on the port any more
 	return addr
 }
 
 func TestNew_NoGoroutineLeakWhenUnreachable(t *testing.T) {
-	// New 失败之后不该留下活着的连接池：database/sql 的 opener 协程
-	// 只在 Close 时退出，漏一个就是一个再也不会走的常驻协程。
+	// A failed New must not leave a live connection pool behind: the opener goroutine of database/sql
+	// only exits on Close, so every leaked pool is a goroutine that will never go away.
 	//
-	// gorm v1.31 起会在自己的失败路径上把池子关掉，所以这条现在主要盯的是
-	// gorm.Open 之后那几步——设连接池参数、Ping、挂链路——出错时的收尾。
+	// Since gorm v1.31 it closes the pool on its own failure paths, so what this mainly watches now is
+	// the cleanup when the steps after gorm.Open fail -- setting pool parameters, Ping, attaching tracing.
 	c := DefaultClientConfig()
 	c.Driver = DriverMySQL
 	c.DSN = "u:p@tcp(" + deadAddr(t) + ")/app"
@@ -65,17 +65,17 @@ func TestNew_NoGoroutineLeakWhenUnreachable(t *testing.T) {
 		db, closer, err := New(context.Background(), c)
 		if err == nil {
 			reg.Close()
-			t.Fatal("连不上时应当报错")
+			t.Fatal("failing to connect must be an error")
 		}
 		if db != nil || closer != nil {
-			t.Error("失败时不该返回半成品")
+			t.Error("nothing half-built may be returned on failure")
 		}
 	}
 
-	// 必须等协程真正退出再数：连接池关闭后它的 opener 协程是异步退出的，
-	// 立刻去数会把「正在退出」当成「泄漏」，也会把真泄漏淹没在噪声里
+	// The goroutines must have really exited before counting: after a pool is closed its opener goroutine
+	// exits asynchronously, so counting immediately would read "exiting" as "leaked" and drown a real leak in noise.
 	if after := testkit.SettleTo(before); after > before+1 {
-		t.Errorf("建连失败 %d 次后协程数从 %d 涨到 %d，说明连接池没被关掉", rounds, before, after)
+		t.Errorf("after %d failed connections the goroutine count rose from %d to %d, so the pool was not closed", rounds, before, after)
 	}
 }
 
@@ -89,80 +89,80 @@ func TestNew_ErrorHasAddrButNoPassword(t *testing.T) {
 
 	_, _, err := New(context.Background(), c)
 	if err == nil {
-		t.Fatal("连不上时应当报错")
+		t.Fatal("failing to connect must be an error")
 	}
 	if strings.Contains(err.Error(), secret) {
-		t.Fatalf("错误信息里出现了密码：%v", err)
+		t.Fatalf("the password appeared in the error message: %v", err)
 	}
 	if !strings.Contains(err.Error(), addr) {
-		t.Errorf("错误信息里应有地址，否则排查不了连的是谁：%v", err)
+		t.Errorf("the error must carry the address, otherwise there is no way to tell what was connected to: %v", err)
 	}
 }
 
 func TestNew_NoConnectOnBadConfig(t *testing.T) {
-	c := DefaultClientConfig() // 没有 DSN
+	c := DefaultClientConfig() // no DSN
 	_, _, err := New(context.Background(), c)
 	if err == nil {
-		t.Fatal("DSN 为空应当报错")
+		t.Fatal("an empty DSN must be rejected")
 	}
 	if !strings.Contains(err.Error(), "DSN") {
-		t.Errorf("错误该说清楚是哪儿的问题，got=%v", err)
+		t.Errorf("the error must say plainly where the problem is, got=%v", err)
 	}
 }
 
 func TestProbeTimeout(t *testing.T) {
-	// 不能只用建连超时：探测是建连加一个往返，
-	// 拿建连预算当整体预算，连接刚建成就会被判超时
+	// The dial timeout alone is not enough: the probe is a connection plus one round trip,
+	// so spending the dial budget on the whole thing would time out just as the connection comes up.
 	c := mysqlCfg("u:p@tcp(h:3306)/d")
 	c.DialTimeout = time.Second
 	c.MySQL.ReadTimeout = 2 * time.Second
 	if got := resolvedProbeTimeout(t, c); got != 3*time.Second {
-		t.Errorf("MySQL 的探测预算应为建连 + 读超时，got=%v", got)
+		t.Errorf("the MySQL probe budget must be dial + read timeout, got=%v", got)
 	}
 
-	// 配 0 是「驱动不限时」，不是「这一段不花时间」：那一段按另一段的量级给，
-	// 和方言推算不出来时的 2 × DialTimeout 同一个道理。只给建连超时的话，
-	// ReadTimeout: 0 时连接刚建成、登录包还没回来就被判超时
+	// A 0 means "no limit in the driver", not "this step costs nothing": that step gets a budget of the same
+	// order as the other one, for the same reason as the 2 x DialTimeout used when the dialect cannot work it out.
+	// With only the dial timeout, ReadTimeout: 0 would time out just after the connection comes up, before the login packet arrives.
 	for _, z := range []struct {
 		name       string
 		dial, read time.Duration
 		want       time.Duration
 	}{
-		{"ReadTimeout 为 0", time.Second, 0, 2 * time.Second},
-		{"DialTimeout 为 0", 0, 2 * time.Second, 4 * time.Second},
-		{"两个都是 0 用兜底值", 0, 0, fallbackPingTimeout},
+		{"ReadTimeout is 0", time.Second, 0, 2 * time.Second},
+		{"DialTimeout is 0", 0, 2 * time.Second, 4 * time.Second},
+		{"both 0 falls back", 0, 0, fallbackPingTimeout},
 	} {
 		c := mysqlCfg("u:p@tcp(h:3306)/d")
 		c.DialTimeout, c.MySQL.ReadTimeout = z.dial, z.read
 		if got := resolvedProbeTimeout(t, c); got != z.want {
-			t.Errorf("%s：MySQL 的探测预算 want %v，got %v", z.name, z.want, got)
+			t.Errorf("%s: MySQL probe budget want %v, got %v", z.name, z.want, got)
 		}
 	}
 
-	// PG 注入的 connect_timeout 是向上取整的整秒，管的是整个建连（TCP、TLS、认证）。
-	// 预算比它短的话，一次慢一点但合法的握手会在 pgx 放弃之前就被我们判超时
+	// The connect_timeout PG injects is a whole number of seconds rounded up and covers the entire connection (TCP, TLS, auth).
+	// A shorter budget would time out a slow but legal handshake before pgx itself gives up.
 	c = pgCfg("host=h dbname=d")
 	c.DialTimeout = 500 * time.Millisecond
 	if got := resolvedProbeTimeout(t, c); got != time.Second+500*time.Millisecond {
-		t.Errorf("PG 的预算要盖住注入的 connect_timeout（1s）再加一个往返，got=%v", got)
+		t.Errorf("the PG budget must cover the injected connect_timeout (1s) plus one round trip, got=%v", got)
 	}
 
-	// 方言推算不出来的（没有 Resolve），按 2 × DialTimeout；DialTimeout 也是 0 就用兜底值
+	// A dialect that cannot work it out (no Resolve) gets 2 x DialTimeout; if DialTimeout is 0 too, the fallback is used.
 	c = DefaultClientConfig()
 	c.DialTimeout = 300 * time.Millisecond
 	if got := probeTimeout(c, ConnInfo{}); got != 600*time.Millisecond {
-		t.Errorf("方言没给预算时应是 2 × DialTimeout，got=%v", got)
+		t.Errorf("without a budget from the dialect it must be 2 x DialTimeout, got=%v", got)
 	}
 	c.DialTimeout = 0
 	if got := probeTimeout(c, ConnInfo{}); got != fallbackPingTimeout {
-		t.Errorf("推算不出预算时该用兜底值，got=%v", got)
+		t.Errorf("the fallback must be used when no budget can be worked out, got=%v", got)
 	}
 	if got := probeTimeout(c, ConnInfo{ProbeTimeout: 7 * time.Second}); got != 7*time.Second {
-		t.Errorf("方言给了预算就用它，got=%v", got)
+		t.Errorf("a budget given by the dialect must be used, got=%v", got)
 	}
 }
 
-// resolvedProbeTimeout 走一遍方言的 Resolve，取 New 真正会用的那个预算
+// resolvedProbeTimeout runs the dialect's Resolve and returns the budget New would really use.
 func resolvedProbeTimeout(t *testing.T, c ClientConfig) time.Duration {
 	t.Helper()
 	_, info, err := resolveDSN(c)
@@ -173,8 +173,8 @@ func resolvedProbeTimeout(t *testing.T, c ClientConfig) time.Duration {
 }
 
 func TestProbeTimeout_DSNLongerTimeoutWidensBudget(t *testing.T) {
-	// 配置里的超时只是注入 DSN 的默认值。DSN 里写了更长的，驱动就会等那么久，
-	// 预算还按配置算的话，一次慢但合法的建连会在驱动放弃之前被我们判超时
+	// The timeouts in the config are only defaults injected into the DSN. If the DSN says something longer the driver
+	// waits that long, and a budget still computed from the config would time out a slow but legal connection before the driver gives up.
 	for _, c := range []struct {
 		name string
 		cfg  ClientConfig
@@ -186,14 +186,14 @@ func TestProbeTimeout_DSNLongerTimeoutWidensBudget(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if got := resolvedProbeTimeout(t, c.cfg); got < c.min {
-				t.Errorf("预算要盖住 DSN 里写的 %v，got=%v", c.min, got)
+				t.Errorf("the budget must cover the %v written in the DSN, got=%v", c.min, got)
 			}
 		})
 	}
 }
 
 func TestProbe_FailsAfterRetries(t *testing.T) {
-	// 重试要真的重试，也要在预算内结束——启动期卡死比连不上更难查
+	// Retries must really retry, and must finish within the budget -- hanging at startup is harder to diagnose than failing to connect.
 	pool, err := sql.Open("mysql", "u:p@tcp("+deadAddr(t)+")/app?timeout=30ms")
 	if err != nil {
 		t.Fatal(err)
@@ -211,18 +211,18 @@ func TestProbe_FailsAfterRetries(t *testing.T) {
 
 	start := time.Now()
 	if err := xclient.Probe(context.Background(), policy, probe(pool, nil)); err == nil {
-		t.Fatal("连不上时应当返回错误")
+		t.Fatal("failing to connect must return an error")
 	}
-	// 只盯上界。退避带抖动之后每次等待是 [0, 当前退避] 之间的随机值，
-	// 可以短到接近零，所以「至少等了多久」不再是重试次数的有效代理
-	// 退避的等待上界是 interval + 2*interval = 3*interval，留到 4 倍够宽
+	// Only the upper bound is checked. With jitter each wait is a random value in [0, current backoff] and can be
+	// close to zero, so "how long it waited at least" is no longer a valid proxy for the number of retries.
+	// The upper bound on backoff waiting is interval + 2*interval = 3*interval; 4x leaves enough room.
 	ceiling := pingAttempts*policy.Timeout + 4*pingInterval + 2*time.Second
 	if elapsed := time.Since(start); elapsed > ceiling {
-		t.Errorf("重试超出了预算，用了 %v", elapsed)
+		t.Errorf("the retries went over budget, took %v", elapsed)
 	}
 }
 
-// ---- 全局实例 ----
+// ---- global instances ----
 
 func withClients(t *testing.T, m map[string]*gorm.DB) {
 	t.Helper()
@@ -233,7 +233,7 @@ func withClients(t *testing.T, m map[string]*gorm.DB) {
 	publish(t, insts)
 }
 
-// publish 把一组现成的实例经 xclient.Build 发布出去，测试结束后清空
+// publish hands a set of ready-made instances to xclient.Build and clears them again when the test ends.
 func publish(t *testing.T, insts map[string]instance) {
 	t.Helper()
 	keep := func(_ context.Context, _ string, v instance) (instance, io.Closer, error) { return v, nil, nil }
@@ -244,31 +244,31 @@ func publish(t *testing.T, insts map[string]instance) {
 }
 
 func TestC_PanicsWhenMissing(t *testing.T) {
-	// 返回 nil 只是把同一个 panic 推迟到调用方第一次用它的时候，
-	// 那里的栈里只剩 invalid memory address，看不出根因是配置没配
+	// Returning nil only defers the same panic to the caller's first use, where the stack holds nothing but
+	// invalid memory address and gives no hint that the root cause is a missing config block.
 	withClients(t, map[string]*gorm.DB{})
 
 	defer func() {
 		r := recover()
 		if r == nil {
-			t.Fatal("取不到实例应当 panic")
+			t.Fatal("asking for an instance that does not exist must panic")
 		}
 		msg := fmt.Sprint(r)
 		if !strings.Contains(msg, ConfigKey) {
-			t.Errorf("一个都没配时该提示去看配置块，got=%v", msg)
+			t.Errorf("with nothing configured it must point at the config block, got=%v", msg)
 		}
 	}()
 	C()
 }
 
 func TestC_PanicListsConfiguredInstances(t *testing.T) {
-	// 名字写错和整块没配是两个不同的问题，列出实际配了哪些，两者一眼可分
+	// A typo in the name and a missing config block are two different problems; listing what is actually configured tells them apart at a glance.
 	withClients(t, map[string]*gorm.DB{"main": {}, "report": {}})
 
 	defer func() {
 		msg := fmt.Sprint(recover())
 		if !strings.Contains(msg, "main") || !strings.Contains(msg, "report") {
-			t.Errorf("应列出已配置的实例名，got=%v", msg)
+			t.Errorf("the configured instance names must be listed, got=%v", msg)
 		}
 	}()
 	C("typo")
@@ -278,19 +278,19 @@ func TestHasNames(t *testing.T) {
 	withClients(t, map[string]*gorm.DB{"report": {}, "main": {}})
 
 	if !Has("main") || Has("nope") {
-		t.Error("Has 应如实反映是否配过")
+		t.Error("Has must report truthfully whether something was configured")
 	}
 	if got := Names(); len(got) != 2 || got[0] != "main" || got[1] != "report" {
-		t.Errorf("Names 应按名字排序，got=%v", got)
+		t.Errorf("Names must be sorted by name, got=%v", got)
 	}
 	if Has() {
-		t.Error("没有 default 时 Has() 应为 false")
+		t.Error("Has() must be false when there is no default")
 	}
 }
 
 func TestRegister_MatchesFramework(t *testing.T) {
-	// 这是本包和框架之间唯一的一根线：钩子漏登记、档位挂错，
-	// 表现是「配置不生效」或者「实例比用它的东西晚就绪」，别处都测不出来
+	// This is the only wire between this package and the framework: a missing hook registration or a wrong stage
+	// shows up as "the config has no effect" or "the instance is ready later than what uses it", and nothing else catches it.
 	var got *hook.Entry
 	for _, e := range hook.Start() {
 		if e.Pkg == "github.com/jupiter-eng/xone/xgorm" {
@@ -299,10 +299,10 @@ func TestRegister_MatchesFramework(t *testing.T) {
 		}
 	}
 	if got == nil {
-		t.Fatal("没有登记启动钩子")
+		t.Fatal("no start hook was registered")
 	}
 	if got.Stage != hook.StageClient {
-		t.Errorf("数据库要在业务之前就绪（StageClient），got=%v", got.Stage)
+		t.Errorf("the database must be ready before business code (StageClient), got=%v", got.Stage)
 	}
 
 	var stopped bool
@@ -310,31 +310,31 @@ func TestRegister_MatchesFramework(t *testing.T) {
 		if e.Pkg == "github.com/jupiter-eng/xone/xgorm" {
 			stopped = true
 			if e.Stage != hook.StageClient {
-				// 启动和停止不在同一档的话，业务还在用的时候它就被关了
-				t.Errorf("停止钩子也该在 StageClient，got=%v", e.Stage)
+				// If start and stop are not on the same stage, it is closed while business code is still using it.
+				t.Errorf("the stop hook must be on StageClient too, got=%v", e.Stage)
 			}
 		}
 	}
 	if true != stopped {
-		t.Errorf("停止钩子登记情况不对，got=%v", stopped)
+		t.Errorf("the stop hook registration is wrong, got=%v", stopped)
 	}
 }
 
 func TestInitAll_NoopWithoutConfig(t *testing.T) {
 	err := initComponent(t, DefaultConfig())
 	if err != nil {
-		t.Fatalf("没配 XGorm 不该报错：%v", err)
+		t.Fatalf("no XGorm configured must not be an error: %v", err)
 	}
 	if err := reg.Close(); err != nil {
-		t.Errorf("关闭不该报错：%v", err)
+		t.Errorf("closing must not be an error: %v", err)
 	}
 	if len(Names()) != 0 {
-		t.Errorf("不该建出实例，got=%v", Names())
+		t.Errorf("no instance may be built, got=%v", Names())
 	}
 }
 
 func TestInitAll_OneFailureRollsBackAll(t *testing.T) {
-	// Init 返回错误时框架拿不到 closer，已经建好的必须自己收拾，否则漏连接池
+	// When Init returns an error the framework never gets the closer, so whatever was already built must clean itself up or the pools leak.
 	bad := DefaultClientConfig()
 	bad.Driver, bad.DSN = DriverMySQL, "u:p@tcp("+deadAddr(t)+")/app"
 	bad.DialTimeout, bad.MySQL.ReadTimeout = 30*time.Millisecond, 30*time.Millisecond
@@ -343,19 +343,19 @@ func TestInitAll_OneFailureRollsBackAll(t *testing.T) {
 	before := testkit.Stabilize()
 	err := initComponent(t, cfg)
 	if err == nil {
-		t.Fatal("连不上时应当报错")
+		t.Fatal("failing to connect must be an error")
 	}
 	if !strings.Contains(err.Error(), `"a"`) {
-		t.Errorf("错误里应点名是哪个实例，got=%v", err)
+		t.Errorf("the error must name the instance, got=%v", err)
 	}
 	if after := testkit.SettleTo(before); after > before+1 {
-		t.Errorf("回滚不干净，协程数从 %d 涨到 %d", before, after)
+		t.Errorf("the rollback was not clean, the goroutine count rose from %d to %d", before, after)
 	}
 }
 
 func TestInstallPoolMetrics_RegistersOnceWhenCalledTwice(t *testing.T) {
-	// 每个开了指标的实例都会调它一次，而 collector 是进程级的一个：
-	// 第二次注册 Prometheus 会报 duplicate，这套指标从此一个都导不出去
+	// Every instance with metrics enabled calls it once, while the collector is a single process-wide object:
+	// a second registration makes Prometheus report a duplicate and none of these metrics is ever exported again.
 	m, closer, err := xmetric.New(xmetric.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -372,23 +372,23 @@ func TestInstallPoolMetrics_RegistersOnceWhenCalledTwice(t *testing.T) {
 	installPoolMetrics()
 
 	if strings.Contains(buf.String(), "failed to register") {
-		t.Errorf("挂第二次应当复用已有的那个，而不是让 Prometheus 报重复注册\n实际=\n%s", buf.String())
+		t.Errorf("attaching a second time must reuse the existing one instead of making Prometheus report a duplicate registration\ngot=\n%s", buf.String())
 	}
 }
 
 func TestCWithCtx(t *testing.T) {
-	// GORM 必须这样传 ctx，不像 go-redis 每个方法都收 ctx
+	// GORM requires the ctx to be passed this way, unlike go-redis where every method takes a ctx.
 	withClients(t, map[string]*gorm.DB{DefaultName: {Config: &gorm.Config{}, Statement: &gorm.Statement{}}})
 	db := CWithCtx(context.Background())
 	if db == nil {
-		t.Fatal("应返回实例")
+		t.Fatal("an instance must be returned")
 	}
 }
 
 func TestSettle_DetectsLeakedPool(t *testing.T) {
-	// 先验证这把尺子是准的：上一版读数没等协程退出、阈值又放到 +2，
-	// 于是「不漏协程」那条测试怎么改都通过——一条永远不会失败的测试
-	// 比没有测试更糟，它让人以为查过了。
+	// First prove the measuring stick is accurate: the previous version read the count without waiting for goroutines to exit
+	// and used a threshold of +2, so the "no goroutine leak" test passed no matter what was changed -- a test that can never
+	// fail is worse than no test, because it makes people believe the thing was checked.
 	addr := deadAddr(t)
 	before := testkit.Stabilize()
 
@@ -400,29 +400,29 @@ func TestSettle_DetectsLeakedPool(t *testing.T) {
 			t.Fatal(err)
 		}
 		pool.SetMaxIdleConns(1)
-		// 碰一下让 opener 协程真正起来
+		// Touch it so the opener goroutine really starts.
 		pool.PingContext(context.Background())
 		pools = append(pools, pool)
 	}
 
-	// 判「涨了没有」用 ClimbTo：SettleTo 的判据是「回落到 target 以内」，
-	// 漏着的池子永远回落不了，它必然烧满整个 10 秒才返回。每个池子至少一个 opener 协程
+	// ClimbTo is used to decide "did it rise": SettleTo waits for a fall back to within target, and a leaked
+	// pool never falls back, so it would burn the full 10 seconds every time. Each pool has at least one opener goroutine.
 	if during := testkit.ClimbTo(before+leaked, 3*time.Second); during < before+leaked {
-		t.Fatalf("漏了 %d 个连接池却没看出协程增长（%d -> %d），这把尺子是坏的", leaked, before, during)
+		t.Fatalf("%d leaked pools produced no visible goroutine growth (%d -> %d), so this measuring stick is broken", leaked, before, during)
 	}
 	for _, p := range pools {
 		p.Close()
 	}
 	if after := testkit.SettleTo(before); after > before+1 {
-		t.Errorf("全关掉之后应当回落，got %d -> %d", before, after)
+		t.Errorf("it must fall back once everything is closed, got %d -> %d", before, after)
 	}
 }
 
 func TestNew_CtxCanceledAbortsFirstConnect(t *testing.T) {
-	// GORM 自带的那次 ping 用的是它自己的 context，我们的退出信号管不到。
-	// 开着的话，连一个不可达地址时这里会先干等满 DSN 的 connect_timeout
+	// The ping GORM does by itself uses its own context, which our shutdown signal cannot reach.
+	// Left on, connecting to an unreachable address would first wait out the full connect_timeout from the DSN.
 	c := DefaultClientConfig()
-	c.DSN = "postgres://u:p@10.255.255.1:5432/db" // 黑洞地址，连接会一直挂着
+	c.DSN = "postgres://u:p@10.255.255.1:5432/db" // a black-hole address; the connection just hangs
 	c.DialTimeout = 3 * time.Second
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -431,19 +431,18 @@ func TestNew_CtxCanceledAbortsFirstConnect(t *testing.T) {
 	start := time.Now()
 	_, _, err := New(ctx, c)
 	if err == nil {
-		t.Fatal("ctx 已取消时不该建连成功")
+		t.Fatal("connecting must not succeed once the ctx is cancelled")
 	}
 	if elapsed := time.Since(start); elapsed > time.Second {
-		t.Errorf("该当场放弃，实际等了 %v（说明首次建连没走我们的 ctx）", elapsed)
+		t.Errorf("it must give up immediately, waited %v (so the first connection did not use our ctx)", elapsed)
 	}
 }
 
 func TestNew_LogOffKeepsSQLErrorsOffStdout(t *testing.T) {
-	// 不给 gormCfg.Logger 的话，gorm.Open 会补上 logger.Default，
-	// 而那个默认实现是「带 ANSI 颜色地往 os.Stdout 写」：
-	// 慢 SQL 和执行错误照样打，只是绕开了 slog——没有级别、没有 TraceID、
-	// 不是 JSON，一行彩色文本直接插进日志流里。
-	// Log=false 要的是不打，不是换个地方打
+	// Without a gormCfg.Logger, gorm.Open fills in logger.Default, whose implementation writes to
+	// os.Stdout with ANSI colors: slow queries and execution errors are still printed, they just bypass
+	// slog -- no level, no TraceID, not JSON, a line of colored text spliced straight into the log stream.
+	// Log=false means do not print, not print somewhere else.
 	var leaked bytes.Buffer
 	old := logger.Default
 	logger.Default = logger.New(log.New(&leaked, "", 0), logger.Config{LogLevel: logger.Info})
@@ -460,15 +459,15 @@ func TestNew_LogOffKeepsSQLErrorsOffStdout(t *testing.T) {
 	c := DefaultClientConfig()
 	c.Driver, c.DSN, c.Log = "logprobe", "logprobe://h:1/d", false
 	if _, _, err := New(context.Background(), c); !errors.Is(err, sentinel) {
-		t.Fatalf("应该用注册进来的 Open，got=%v", err)
+		t.Fatalf("the registered Open must be used, got=%v", err)
 	}
 	if leaked.Len() > 0 {
-		t.Errorf("Log=false 时 GORM 不该往它自己的默认输出写，实际写了: %q", leaked.String())
+		t.Errorf("with Log=false GORM must not write to its own default output, but it wrote: %q", leaked.String())
 	}
 }
 
-// loggingDialector 在 Initialize 里用 GORM 解出来的那个 Logger 写一条，
-// 借此看清 Log=false 时最终生效的到底是谁
+// loggingDialector writes one line in Initialize through the Logger GORM resolved,
+// which makes visible which logger is actually in effect when Log=false.
 type loggingDialector struct{ err error }
 
 func (d loggingDialector) Initialize(db *gorm.DB) error {
@@ -486,15 +485,15 @@ func (d loggingDialector) QuoteTo(clause.Writer, string)                 {}
 func (d loggingDialector) Explain(sql string, _ ...any) string           { return sql }
 
 func TestResolveDSN_PGParamNameInPasswordNotMistaken(t *testing.T) {
-	// 曾经用正则扫 key= 判断写没写过，于是密码里出现 connect_timeout= 就能骗过它，
-	// DialTimeout 这项配置悄悄失效——没有任何迹象
+	// The old code scanned for key= with a regexp to decide whether something was set, so a connect_timeout= inside
+	// the password was enough to fool it and the DialTimeout setting quietly stopped working -- with no sign of it anywhere.
 	cases := []struct {
 		name, dsn string
-		want      bool // 期望注入 connect_timeout
+		want      bool // connect_timeout is expected to be injected
 	}{
-		{"密码里含参数名", "host=h dbname=d password='a connect_timeout=99 b'", true},
-		{"普通密码", "host=h dbname=d password=plain", true},
-		{"真的配过了", "host=h dbname=d connect_timeout=9", false},
+		{"the password contains a parameter name", "host=h dbname=d password='a connect_timeout=99 b'", true},
+		{"an ordinary password", "host=h dbname=d password=plain", true},
+		{"really already set", "host=h dbname=d connect_timeout=9", false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -508,14 +507,14 @@ func TestResolveDSN_PGParamNameInPasswordNotMistaken(t *testing.T) {
 			}
 			injected := cfg.ConnectTimeout == time.Second
 			if injected != c.want {
-				t.Errorf("注入=%v want=%v\n入：%s\n出：%s", injected, c.want, c.dsn, got)
+				t.Errorf("injected=%v want=%v\nin:  %s\nout: %s", injected, c.want, c.dsn, got)
 			}
 		})
 	}
 }
 
-// initComponent 走一遍框架真正会走的路径：按这份配置把实例挨个建出来。
-// 多实例的建法（排序、失败回滚、panic 隔离）全在那条路上。
+// initComponent walks the path the framework really takes: build the instances one by one from this config.
+// Everything about building several of them (ordering, rollback on failure, panic isolation) lives on that path.
 func initComponent(t *testing.T, c Config) error {
 	t.Helper()
 	t.Cleanup(func() { _ = reg.Close() })
@@ -523,15 +522,15 @@ func initComponent(t *testing.T, c Config) error {
 }
 
 func TestInitXGorm_NoSectionConnectsNothing(t *testing.T) {
-	// xgorm 是可选依赖：没配不该让服务起不来，更不该去连一个默认地址
+	// xgorm is an optional dependency: not configuring it must not keep the service from starting, and must certainly not connect to some default address.
 	t.Cleanup(func() { _ = closeXGorm(context.Background()) })
 	xonetest.UseConfigYAML(t, "XApp:\n  Name: demo\n")
 
 	if err := initXGorm(context.Background()); err != nil {
-		t.Fatalf("没配不该报错：%v", err)
+		t.Fatalf("not configuring it must not be an error: %v", err)
 	}
 	if got := Names(); len(got) != 0 {
-		t.Errorf("不该建出实例，got=%v", got)
+		t.Errorf("no instance may be built, got=%v", got)
 	}
 }
 
@@ -540,10 +539,10 @@ func TestInitXGorm_EmptySectionConnectsNothing(t *testing.T) {
 	xonetest.UseConfigYAML(t, "XGorm:\n")
 
 	if err := initXGorm(context.Background()); err != nil {
-		t.Fatalf("空块不该报错：%v", err)
+		t.Fatalf("an empty block must not be an error: %v", err)
 	}
 	if got := Names(); len(got) != 0 {
-		t.Errorf("不该建出实例，got=%v", got)
+		t.Errorf("no instance may be built, got=%v", got)
 	}
 }
 
@@ -552,29 +551,29 @@ func TestInitXGorm_BadConfigFailsStartup(t *testing.T) {
 	xonetest.UseConfigYAML(t, "XGorm:\n  DS: \"host=127.0.0.1\"\n")
 
 	if err := initXGorm(context.Background()); err == nil {
-		t.Fatal("字段拼错应当让启动失败，否则使用者会一直以为自己配上了")
+		t.Fatal("a misspelled field must fail startup, otherwise the caller keeps believing the setting took")
 	}
 	if got := Names(); len(got) != 0 {
-		t.Errorf("失败时不该留下实例，got=%v", got)
+		t.Errorf("no instance may be left behind on failure, got=%v", got)
 	}
 }
 
 func TestInitXGorm_ConfigAppliedToInstance(t *testing.T) {
-	// 连不上是预期的——这里要的是错误里出现配置文件里写的那个实例名和地址，
-	// 证明这一段配置确实走到了建连那一步，而不是在哪里被丢掉了
+	// Failing to connect is expected -- what matters here is that the error carries the instance name and address from the
+	// config file, proving this config section really reached the connect step instead of being dropped somewhere.
 	t.Cleanup(func() { _ = closeXGorm(context.Background()) })
 	addr := deadAddr(t)
 	xonetest.UseConfigYAML(t, "XGorm:\n  Clients:\n    report:\n      Driver: mysql\n      DialTimeout: 30ms\n      DSN: \"u:p@tcp("+addr+")/app\"\n")
 
 	err := initXGorm(context.Background())
 	if err == nil {
-		t.Fatal("连不上应当报错")
+		t.Fatal("failing to connect must be an error")
 	}
 	if !strings.Contains(err.Error(), `"report"`) {
-		t.Errorf("错误里要点名是哪个实例，got=%v", err)
+		t.Errorf("the error must name the instance, got=%v", err)
 	}
 	if got := Names(); len(got) != 0 {
-		t.Errorf("失败时不该留下实例，got=%v", got)
+		t.Errorf("no instance may be left behind on failure, got=%v", got)
 	}
 }
 
@@ -585,8 +584,8 @@ func TestCloseXGorm_SafeWithoutBuild(t *testing.T) {
 }
 
 func TestPoolCloser_ClosesUnderlyingPool(t *testing.T) {
-	// Closer 直接持有 *sql.DB，不绕回 gorm.DB.DB()：后者在实例已经出问题时
-	// 会返回错误，于是连接池就再也关不掉了
+	// The Closer holds the *sql.DB directly instead of going back through gorm.DB.DB(): the latter returns an error
+	// once the instance is already broken, and then the pool could never be closed.
 	pool, err := sql.Open("mysql", "u:p@tcp(127.0.0.1:1)/app")
 	if err != nil {
 		t.Fatal(err)
@@ -594,15 +593,15 @@ func TestPoolCloser_ClosesUnderlyingPool(t *testing.T) {
 	c := &poolCloser{pool: pool, info: ConnInfo{Addr: "127.0.0.1:1"}}
 
 	if err := c.Close(); err != nil {
-		t.Fatalf("关闭不该报错：%v", err)
+		t.Fatalf("closing must not be an error: %v", err)
 	}
 	if err := pool.PingContext(context.Background()); err == nil {
-		t.Error("底层连接池没被关掉")
+		t.Error("the underlying pool was not closed")
 	}
 }
 
 func TestPoolCloser_CloseErrorHasAddrButNoPassword(t *testing.T) {
-	// 出错信息会进日志和告警，凭证不能跟着出去
+	// Error messages reach logs and alerts, so credentials must not travel with them.
 	pool, err := sql.Open("mysql", "u:p@tcp(127.0.0.1:1)/app")
 	if err != nil {
 		t.Fatal(err)
@@ -612,31 +611,31 @@ func TestPoolCloser_CloseErrorHasAddrButNoPassword(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// database/sql 的 Close 是幂等的，构造不出真实的失败；
-	// 这里直接确认文案模板里带的是地址而不是 DSN
+	// database/sql's Close is idempotent, so a real failure cannot be constructed;
+	// this simply confirms that the message template carries the address rather than the DSN.
 	msg := xerror.Newf("xgorm", "close", "close %s failed: %w", c.info.Addr, errors.New("boom")).Error()
 	if !strings.Contains(msg, "127.0.0.1:1") {
-		t.Errorf("错误里要有地址才知道是哪个库，got=%v", msg)
+		t.Errorf("the error must carry the address so it is clear which database it is, got=%v", msg)
 	}
 	if strings.Contains(msg, "u:p@") {
-		t.Errorf("凭证不该出现在错误里，got=%v", msg)
+		t.Errorf("credentials must not appear in the error, got=%v", msg)
 	}
 }
 
-// assertOneFrame 断言错误恰好是一层本模块的 xerror，op 是期望的那个。
-// 一个模块边界一个 xerror：每层都包的话模块名重复出现，真正的 op 被压进里层
+// assertOneFrame asserts the error is exactly one xerror frame from this module with the expected op.
+// One module boundary, one xerror: wrapping at every level repeats the module name and buries the real op inside.
 func assertOneFrame(t *testing.T, err error, module, op string) {
 	t.Helper()
 	var xe *xerror.Error
 	if !errors.As(err, &xe) {
-		t.Fatalf("应当是 xerror，got %v", err)
+		t.Fatalf("must be an xerror, got %v", err)
 	}
 	if xe.Module != module || xe.Op != op {
-		t.Errorf("want module=%s op=%s，got module=%s op=%s（%v）", module, op, xe.Module, xe.Op, err)
+		t.Errorf("want module=%s op=%s, got module=%s op=%s (%v)", module, op, xe.Module, xe.Op, err)
 	}
 	var inner *xerror.Error
 	if errors.As(xe.Err, &inner) {
-		t.Errorf("同一个模块只该有一层 xerror，got %v", err)
+		t.Errorf("there must be only one xerror frame per module, got %v", err)
 	}
 }
 
@@ -644,12 +643,12 @@ func TestNew_ErrorWrappedOnceWithAccurateOp(t *testing.T) {
 	c := DefaultClientConfig()
 	assertOneFrame(t, func() error { _, _, err := New(context.Background(), c); return err }(), "xgorm", "config")
 
-	c.Driver, c.DSN = DriverMySQL, "u:p@tcp(127.0.0.1:1/app" // 括号没闭合，驱动解析不了
+	c.Driver, c.DSN = DriverMySQL, "u:p@tcp(127.0.0.1:1/app" // unbalanced parenthesis, the driver cannot parse it
 	assertOneFrame(t, func() error { _, _, err := New(context.Background(), c); return err }(), "xgorm", "config")
 }
 
 func TestInstall_ErrorWrappedOnceWithAccurateOp(t *testing.T) {
-	// 经 Build 出来的错误要点名实例，但不能再套一层 new 把 config / connect 压下去
+	// An error coming out of Build must name the instance, but must not add another frame of new that buries config / connect.
 	bad := DefaultClientConfig()
 	bad.Driver, bad.DSN = DriverMySQL, "u:p@tcp(127.0.0.1:1/app"
 	err := initComponent(t, Config{Clients: map[string]ClientConfig{"a": bad}})
@@ -661,13 +660,13 @@ func TestInstall_ErrorWrappedOnceWithAccurateOp(t *testing.T) {
 	err = initComponent(t, Config{Clients: map[string]ClientConfig{"b": dead}})
 	assertOneFrame(t, err, "xgorm", "connect")
 	if !strings.Contains(err.Error(), `"b"`) {
-		t.Errorf("错误里要点名实例，got %v", err)
+		t.Errorf("the error must name the instance, got %v", err)
 	}
 }
 
 func TestInitXGorm_CSaysNotConfiguredRatherThanTooEarly(t *testing.T) {
-	// 没配也要让注册表知道启动钩子跑过了。否则 C() 会把「没配」说成「调早了」，
-	// 使用者会去查调用时机，而真正该查的是配置文件
+	// Even with nothing configured the registry must know the start hook ran. Otherwise C() would report "not configured"
+	// as "called too early", sending the caller to look at call timing when the config file is what needs checking.
 	t.Cleanup(func() { _ = closeXGorm(context.Background()) })
 	xonetest.UseConfigYAML(t, "XApp:\n  Name: demo\n")
 	if err := initXGorm(context.Background()); err != nil {
@@ -676,14 +675,14 @@ func TestInitXGorm_CSaysNotConfiguredRatherThanTooEarly(t *testing.T) {
 	defer func() {
 		msg := fmt.Sprint(recover())
 		if !strings.Contains(msg, "none is configured") {
-			t.Errorf("没配时要说没配，got=%v", msg)
+			t.Errorf("when nothing is configured it must say so, got=%v", msg)
 		}
 	}()
 	C()
 }
 
 func TestInstall_ConnectLogNamesInstance(t *testing.T) {
-	// 多实例时 addr / db 分不出是哪一个（report 和 default 可能连的是同一个库）
+	// With several instances, addr / db cannot tell them apart (report and default may be connected to the same database).
 	withDialect(t, Dialect{Name: "namedb", Open: func(string) gorm.Dialector { return okDialector{} }})
 	c := DefaultClientConfig()
 	c.Driver, c.DSN = "namedb", "namedb://h/d"
@@ -703,13 +702,13 @@ func TestInstall_ConnectLogNamesInstance(t *testing.T) {
 		}
 	}
 	if connected["name"] != "report" {
-		t.Errorf("xgorm connected 应写上实例名 report，got=%v", connected)
+		t.Errorf("xgorm connected must carry the instance name report, got=%v", connected)
 	}
 	if fmt.Sprint(ready["instances"]) != "[report]" {
-		t.Errorf("xgorm ready 应列出实例名，got=%v", ready)
+		t.Errorf("xgorm ready must list the instance names, got=%v", ready)
 	}
 
-	// 直接调 New 的没有名字，不写一个空的 name
+	// A direct call to New has no name, and no empty name field is written.
 	lines = capture(t)
 	_, closer, err := New(context.Background(), c)
 	if err != nil {
@@ -718,14 +717,14 @@ func TestInstall_ConnectLogNamesInstance(t *testing.T) {
 	closer.Close()
 	for _, l := range lines() {
 		if _, ok := l["name"]; ok && l["msg"] == "xgorm connected" {
-			t.Errorf("直接调 New 时不该有 name 字段，got=%v", l)
+			t.Errorf("a direct call to New must have no name field, got=%v", l)
 		}
 	}
 }
 
 func TestNew_DialectDecidesAuthFailureRecognition(t *testing.T) {
-	// 认证失败的识别挪进了各自的方言：没提供 AuthFailed 的方言，
-	// 同一个 28P01 照常重试、报连不上——核心里不再有按驱动名分支的判断
+	// Recognizing an auth failure moved into the individual dialects: a dialect that provides no AuthFailed
+	// retries the same 28P01 as usual and reports it as unreachable -- the core no longer branches on driver name.
 	rejected := &pgconn.PgError{Severity: "FATAL", Code: "28P01", Message: "password authentication failed"}
 	calls := 0
 	withDialect(t, Dialect{
@@ -737,12 +736,12 @@ func TestNew_DialectDecidesAuthFailureRecognition(t *testing.T) {
 	c.Driver, c.DSN = "noauthdb", "noauthdb://h/d"
 	_, _, err := New(context.Background(), c)
 	if calls != pingAttempts || !strings.Contains(fmt.Sprint(err), "cannot reach ") {
-		t.Errorf("方言认不出就照常重试，calls=%d err=%v", calls, err)
+		t.Errorf("a dialect that does not recognize it must retry as usual, calls=%d err=%v", calls, err)
 	}
 }
 
 func TestNew_GormOptionsReachGorm(t *testing.T) {
-	// 这几项原样交给 gorm.Config：不配是 GORM 的默认，配了就是配的那个值
+	// These items are passed to gorm.Config as they are: unset means GORM's default, set means exactly what was set.
 	for _, on := range []bool{false, true} {
 		t.Run(fmt.Sprint(on), func(t *testing.T) {
 			var got *gorm.Config
@@ -758,11 +757,11 @@ func TestNew_GormOptionsReachGorm(t *testing.T) {
 			}
 			New(context.Background(), c)
 			if got == nil {
-				t.Fatal("dialector 没被调到")
+				t.Fatal("the dialector was never called")
 			}
 			if got.DisableForeignKeyConstraintWhenMigrating != on || got.SkipDefaultTransaction != on ||
 				got.PrepareStmt != on || got.CreateBatchSize != c.CreateBatchSize {
-				t.Errorf("配置该原样交给 GORM：DisableForeignKeyConstraintWhenMigrating=%v SkipDefaultTransaction=%v PrepareStmt=%v CreateBatchSize=%d，want %v / %v / %v / %d",
+				t.Errorf("the config must be passed to GORM as is: DisableForeignKeyConstraintWhenMigrating=%v SkipDefaultTransaction=%v PrepareStmt=%v CreateBatchSize=%d, want %v / %v / %v / %d",
 					got.DisableForeignKeyConstraintWhenMigrating, got.SkipDefaultTransaction, got.PrepareStmt, got.CreateBatchSize,
 					on, on, on, c.CreateBatchSize)
 			}
@@ -770,7 +769,7 @@ func TestNew_GormOptionsReachGorm(t *testing.T) {
 	}
 }
 
-// configDialector 在 Initialize 里记下 GORM 最终拿到的配置，然后让 Open 失败
+// configDialector records in Initialize the config GORM finally received, then makes Open fail.
 type configDialector struct {
 	loggingDialector
 	seen **gorm.Config

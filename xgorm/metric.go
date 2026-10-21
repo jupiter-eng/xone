@@ -6,10 +6,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// poolMetric 一个连接池指标的定义
+// poolMetric is the definition of one connection pool metric.
 //
-// 用表驱动而不是给每个指标开一个字段：后者要在常量、字段、构造函数、
-// Collect 四处各写一遍，加一个指标就得同步改四个地方。
+// A table rather than a field per metric: the latter means writing each one four times — the
+// constant, the field, the constructor and Collect — so adding a metric means changing four
+// places in step.
 type poolMetric struct {
 	name  string
 	help  string
@@ -17,7 +18,7 @@ type poolMetric struct {
 	value func(sql.DBStats) float64
 }
 
-// poolMetrics 指标表，名字按 Prometheus 约定带基准单位
+// poolMetrics is the metric table, with names carrying the base unit as Prometheus conventions ask.
 var poolMetrics = []poolMetric{
 	{"db_pool_open", "Open connections right now (in use + idle)", prometheus.GaugeValue,
 		func(s sql.DBStats) float64 { return float64(s.OpenConnections) }},
@@ -37,17 +38,19 @@ var poolMetrics = []poolMetric{
 		func(s sql.DBStats) float64 { return float64(s.MaxLifetimeClosed) }},
 }
 
-// poolCollector 被抓取时才读连接池状态
+// poolCollector reads the connection pool's state when it is scraped.
 //
-// 实现 prometheus.Collector 而不是定时把值推进 Gauge：连接池状态是瞬时量，
-// 推模式下采集间隔和推送间隔一错开就会读到过期值，还得多一个后台协程。
+// It implements prometheus.Collector rather than pushing values into a Gauge on a timer: a pool's
+// state is instantaneous, and under a push model the moment the scrape interval and the push
+// interval drift apart a stale value is read — plus it needs one more background goroutine.
 type poolCollector struct {
-	descs []*prometheus.Desc // 与 poolMetrics 一一对应
+	descs []*prometheus.Desc // one per entry of poolMetrics, in the same order
 	stats func() map[string]sql.DBStats
 }
 
-// newPoolCollector 前缀和常量标签由调用方传进来，不在这里读全局：
-// 读全局的话，测试里造一套独立的指标设施就没法验证前缀有没有生效。
+// newPoolCollector takes the prefix and the constant labels from the caller rather than reading
+// the globals here: reading globals would leave a test that builds its own metrics setup unable to
+// verify the prefix took effect.
 func newPoolCollector(ns string, labels prometheus.Labels, stats func() map[string]sql.DBStats) *poolCollector {
 	descs := make([]*prometheus.Desc, len(poolMetrics))
 	for i, m := range poolMetrics {

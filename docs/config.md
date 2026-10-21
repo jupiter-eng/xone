@@ -404,8 +404,8 @@ and its troubleshooting.
 | `XLog` | Logging | [xlog/README.md](../xlog/README.md#配置) |
 | `XTrace` | Tracing | [xtrace/README.md](../xtrace/README.md#配置) |
 | `XMetric` | Metrics | [xmetric/README.md](../xmetric/README.md#配置) |
-| `XGorm` | Databases | [xgorm/README.md](../xgorm/README.md#配置) |
-| `XGorm` (`Driver: clickhouse`) | The ClickHouse driver | [xgorm/clickhouse/README.md](../xgorm/clickhouse/README.md#配置) |
+| `XGorm` | Databases | [xgorm/README.md](../xgorm/README.md#configuration) |
+| `XGorm` (`Driver: clickhouse`) | The ClickHouse driver | [xgorm/clickhouse/README.md](../xgorm/clickhouse/README.md#configuration) |
 | `XRedis` | Redis | [xredis/README.md](../xredis/README.md#配置) |
 | `XKafka` | Kafka | [xkafka/README.md](../xkafka/README.md#配置) |
 | `XCache` | A local cache | [xcache/README.md](../xcache/README.md#配置) |

@@ -61,7 +61,7 @@ Each module's own logs are under "Observability" in its README:
 [xgin](../xgin/README.md#observability) (the access log, `xgin listening`,
 `xgin http server error`) · [xecho](../xecho/README.md#observability) (the access log,
 `xecho listening`, `echo internal log`, `xecho http server error`) ·
-[xgorm](../xgorm/README.md#日志) (`xgorm connected`, SQL logs) ·
+[xgorm](../xgorm/README.md#logs) (`xgorm connected`, SQL logs) ·
 [xredis](../xredis/README.md#日志) (`xredis connected`, `redis command`, `redis pipeline`) ·
 [xhttp](../xhttp/README.md#日志) (`xhttp ready`, `http request`) ·
 [xcache](../xcache/README.md#日志) · [xkafka](../xkafka/README.md#日志)
@@ -81,7 +81,7 @@ Every metric the framework ships carries `XMetric.ConstLabels`; apart from clien
 |---|---|
 | [xgin](../xgin/README.md#metrics) · [xecho](../xecho/README.md#metrics) | `http_requests_total`, `http_request_duration_seconds` (identical names and labels on both sides, so one dashboard serves both) |
 | [xhttp](../xhttp/README.md#指标) | `http_client_request_duration_seconds` |
-| [xgorm](../xgorm/README.md#指标) | `db_pool_*` |
+| [xgorm](../xgorm/README.md#metrics) | `db_pool_*` |
 | [xredis](../xredis/README.md#指标) | `redis_pool_*` |
 | [xkafka](../xkafka/README.md#指标) | `kafka_consume_duration_seconds` |
 | [xcache](../xcache/README.md#指标) | `cache_*` |
@@ -117,7 +117,7 @@ Each module's span names and key attributes are under "Observability · Tracing"
 | [xgin](../xgin/README.md#tracing) | Inbound, one per request; see also [the X-Trace-Id response header](../xgin/README.md#the-x-trace-id-response-header) and [499](../xgin/README.md#499-aborted-requests) |
 | [xecho](../xecho/README.md#tracing) | Inbound, with span names and attributes identical to xgin's and the error attribute called `echo.errors` |
 | [xhttp](../xhttp/README.md#链路) | Outbound |
-| [xgorm](../xgorm/README.md#链路) | One per SQL statement, with attributes following OTel's database semantic conventions |
+| [xgorm](../xgorm/README.md#tracing) | One per SQL statement, with attributes following OTel's database semantic conventions |
 | [xredis](../xredis/README.md#链路) | One per command |
 | [xcron](../xcron/README.md#链路) | One root span `cron <name>` per execution |
 | [xkafka](../xkafka/README.md#链路) | `<topic> publish` when producing and `<topic> process` when consuming, with consumption joining the trace from the message headers |

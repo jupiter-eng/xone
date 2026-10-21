@@ -1,20 +1,20 @@
 # xgorm
 
-数据库客户端：拿到的是原生 `*gorm.DB`，框架按配置建好、退出时关掉。
+The database client: what you get is a native `*gorm.DB`, built by the framework from the configuration and closed on shutdown.
 
-- 内置 MySQL / PostgreSQL，ClickHouse 驱动在 [`xgorm/clickhouse`](clickhouse/README.md)
-- 单实例、多实例都行，`xgorm.C("name")` 按名字取
-- 每条 SQL 一个 Span，属性按 OTel 数据库语义约定 v1.43.0
-- 连接池指标 `db_pool_*`，按实例开关
-- SQL 日志默认关；日志和 Span 里只有带占位符的 SQL，不记参数值
-- 启动时探一次，连不上直接启动失败
+- MySQL / PostgreSQL built in; the ClickHouse driver lives in [`xgorm/clickhouse`](clickhouse/README.md)
+- One instance or several; `xgorm.C("name")` fetches one by name
+- One Span per SQL statement, with attributes following OTel's database semantic conventions v1.43.0
+- Connection-pool metrics `db_pool_*`, switchable per instance
+- SQL logging is off by default; logs and Spans carry only the SQL with its placeholders, never parameter values
+- One probe at startup: if the database cannot be reached, startup fails
 
-## 快速上手
+## Quick start
 
 ```yaml
 # conf/application.yml
 XGorm:
-  DSN: "${DB_DSN}"   # postgres://app:secret@db:5432/app，Driver 默认 postgres
+  DSN: "${DB_DSN}"   # postgres://app:secret@db:5432/app, Driver defaults to postgres
 ```
 
 ```go
@@ -24,49 +24,49 @@ import (
 	"github.com/jupiter-eng/xone/xgorm"
 )
 
-// ctx 一定要带，截止时间、链路才传得下去。Web 请求里传 c.Request.Context()
+// The ctx is required: deadlines and traces only travel with it. In a web request pass c.Request.Context()
 var a Account
-err := xgorm.CWithCtx(ctx).First(&a, id).Error // 没查到是 gorm.ErrRecordNotFound
+err := xgorm.CWithCtx(ctx).First(&a, id).Error // no row found is gorm.ErrRecordNotFound
 
-// 事务：回调返回错误就回滚，返回 nil 就提交
+// A transaction: the callback returning an error rolls back, returning nil commits
 err = xgorm.CWithCtx(ctx).Transaction(func(tx *gorm.DB) error {
 	return tx.Create(&order).Error
 })
 ```
 
-`xgorm.CWithCtx(ctx, "report")` 就是 `xgorm.C("report").WithContext(ctx)` 的简写。
+`xgorm.CWithCtx(ctx, "report")` is shorthand for `xgorm.C("report").WithContext(ctx)`.
 
-## 配置
+## Configuration
 
-`mysql` / `postgres` 内置，ClickHouse 见[其它驱动](clickhouse/README.md#配置)。
+`mysql` and `postgres` are built in; for ClickHouse see [the other driver](clickhouse/README.md#configuration).
 
 ```yaml
 XGorm:
-  Driver: postgres         # mysql / postgres，默认 postgres
-  DSN: "${DB_DSN}"         # 必填
-  DialTimeout: 500ms       # 建连超时，注入 DSN（MySQL 的 timeout、PG 的 connect_timeout）；0 = 不注入
-  MaxOpenConns: 50         # 必须 > 0
-  MaxIdleConns: 50         # 0 = 一条空闲连接都不留
-  MaxLifetime: 5m          # 0 = 不限
-  MaxIdleTime: 5m          # 0 = 不限
-  Log: false               # 把 SQL 接到 slog，默认关；只记占位符，不记参数值
-  SlowThreshold: 3s        # 超过就记 warn，需 Log 开启；0 = 不记
-  IgnoreNotFound: false    # true：「没查到记录」不记 SQL failed 日志（Log 开着时）；返回的错误不变
-  DisableForeignKeyConstraintWhenMigrating: false  # true：AutoMigrate 建表时不建外键约束；查询、Preload 不受影响
-  SkipDefaultTransaction: false  # true：单条 Create / Update / Delete 不自动包事务
-  PrepareStmt: false       # true：缓存预编译语句；经 PgBouncer 这类连接池时先量过再开
-  CreateBatchSize: 0       # Create 切片时每条 INSERT 最多几行，0 = 整个切片一条
-  Trace: true              # 每条 SQL 一个 Span
-  Metric: true             # 连接池指标 db_pool_*，按实例生效
-  MySQL:                   # 仅 Driver: mysql 生效
-    ReadTimeout: 3s        # 等一次回包的上限，0 = 不注入（驱动不限时）
+  Driver: postgres         # mysql / postgres, defaults to postgres
+  DSN: "${DB_DSN}"         # required
+  DialTimeout: 500ms       # connection timeout, injected into the DSN (MySQL's timeout, PG's connect_timeout); 0 = not injected
+  MaxOpenConns: 50         # must be > 0
+  MaxIdleConns: 50         # 0 = keep no idle connection at all
+  MaxLifetime: 5m          # 0 = no limit
+  MaxIdleTime: 5m          # 0 = no limit
+  Log: false               # route SQL into slog, off by default; only placeholders are recorded, never parameter values
+  SlowThreshold: 3s        # anything slower is logged at warn, requires Log; 0 = not logged
+  IgnoreNotFound: false    # true: "no row found" produces no SQL failed log (while Log is on); the returned error is unchanged
+  DisableForeignKeyConstraintWhenMigrating: false  # true: AutoMigrate creates no foreign-key constraints; queries and Preload are unaffected
+  SkipDefaultTransaction: false  # true: a single Create / Update / Delete is not wrapped in a transaction
+  PrepareStmt: false       # true: cache prepared statements; measure first when going through a pooler such as PgBouncer
+  CreateBatchSize: 0       # maximum rows per INSERT when creating from a slice, 0 = the whole slice in one
+  Trace: true              # one Span per SQL statement
+  Metric: true             # connection-pool metrics db_pool_*, per instance
+  MySQL:                   # only with Driver: mysql
+    ReadTimeout: 3s        # upper bound on waiting for one reply, 0 = not injected (no limit in the driver)
     WriteTimeout: 5s
-  Postgres:                # 仅 Driver: postgres 生效，随建连发给服务端成为会话级参数
-    StatementTimeout: 0s   # 服务端计时，默认不限；管不到网络那头不回话
+  Postgres:                # only with Driver: postgres; sent with the connection and applied as session parameters
+    StatementTimeout: 0s   # timed by the server, unlimited by default; cannot help when the far end never answers
     LockTimeout: 0s
     IdleInTxTimeout: 0s
-    Params: {}             # 任意 PG 运行时参数 / pgx 连接参数，同名时以它为准
-  TLS:                     # 规则见 xtls；空 ServerName = DSN 里的主机名
+    Params: {}             # any PG runtime parameter or pgx connection parameter; on a name clash this wins
+  TLS:                     # rules in xtls; an empty ServerName = the host name from the DSN
     Enable: false
     CAFile: ""
     CertFile: ""
@@ -74,7 +74,7 @@ XGorm:
     ServerName: ""
 ```
 
-**多实例**写在 `Clients` 下，每个实例的字段同上，没写的用上面的默认值：
+**Several instances** go under `Clients`, each with the same fields as above; anything left out uses the defaults above:
 
 ```yaml
 XGorm:
@@ -83,230 +83,260 @@ XGorm:
     report:  {DSN: "${REPORT_DSN}", Driver: mysql, MaxOpenConns: 5} # report:secret@tcp(report-db:3306)/report
 ```
 
-`xgorm.C()` 取 `default`，`xgorm.C("report")` 取另一个。两种写法不能混用。
+`xgorm.C()` fetches `default` and `xgorm.C("report")` the other one. The two forms cannot be mixed.
 
-- **DSN 里写了的参数以 DSN 为准**，配置里的超时只是默认值。时长、`MaxIdleConns`、`CreateBatchSize` 都不能为负。
-- 单次建连探测的预算，按 DSN 里最终生效的值算（理由见[「行为与实测」](#行为与实测)）：
+- **What the DSN sets wins**; the timeouts in the configuration are only defaults. Durations, `MaxIdleConns` and `CreateBatchSize` must not be negative.
+- The budget for one connection probe is computed from the values that end up in effect in the DSN (reasons in ["Behavior (measured)"](#behavior-measured)):
 
-  | 驱动 | 预算 | 默认配置下 |
+  | Driver | Budget | With the default configuration |
   |---|---|---|
-  | MySQL | `timeout + readTimeout`；一个是 0 时按另一个算两份，都是 0 用 1s | 3.5s |
+  | MySQL | `timeout + readTimeout`; when one is 0, twice the other; when both are 0, 1s | 3.5s |
   | PostgreSQL | `connect_timeout + DialTimeout` | 1.5s |
-| ClickHouse | `2 × dial_timeout`；都没写时按驱动自己的 30s 算 | 1s |
-  | 其余驱动 | 方言自己推算；推算不出是 `2 × DialTimeout` | — |
+| ClickHouse | `2 x dial_timeout`; with neither set, the driver's own 30s | 1s |
+  | Other drivers | Worked out by the dialect itself; when it cannot, `2 x DialTimeout` | — |
 
 ## API
 
-| 函数 | 说明 |
+| Function | Description |
 |---|---|
-| `C(name ...string) *gorm.DB` | 取实例，不带参数取 `default`。取不到直接 panic，消息里说清是调早了、没配还是名字写错 |
-| `CWithCtx(ctx, name ...string) *gorm.DB` | 取实例并绑定 ctx，即 `C(name...).WithContext(ctx)`；GORM 只能这样传 ctx |
-| `Has(name ...string) bool` | 实例配了没有，可选依赖先判断 |
-| `Names() []string` | 配了哪些实例 |
-| `New(ctx, cfg) (*gorm.DB, io.Closer, error)` | 纯构造器：不碰全局、不读配置文件，离开框架也能用；`io.Closer` 关闭底层连接池 |
-| `RegisterDialect(d Dialect)` | 注册别的驱动，同名重复注册直接 panic；`Dialect` 提供了 `OpenTLS` 才收 TLS 块 |
-| `Drivers() []Driver` | 已注册的驱动名，按字母序 |
+| `C(name ...string) *gorm.DB` | Fetch an instance; without an argument, `default`. If there is none it panics, and the message says plainly whether it was called too early, never configured, or the name is misspelled |
+| `CWithCtx(ctx, name ...string) *gorm.DB` | Fetch an instance bound to a ctx, that is `C(name...).WithContext(ctx)`; GORM has no other way to pass a ctx |
+| `Has(name ...string) bool` | Whether an instance is configured, for checking an optional dependency first |
+| `Names() []string` | Which instances are configured |
+| `New(ctx, cfg) (*gorm.DB, io.Closer, error)` | The pure constructor: touches no globals, reads no config file, usable outside the framework; the `io.Closer` closes the underlying pool |
+| `RegisterDialect(d Dialect)` | Register another driver; registering the same name twice panics. A TLS block is only accepted when the `Dialect` provides `OpenTLS` |
+| `Drivers() []Driver` | The registered driver names, in alphabetical order |
 
-## 注意事项
+## Notes
 
-- **ctx 一定要带，后台任务一定要给截止时间。** PostgreSQL 没有读超时：对端不回话时只有 ctx 的截止时间管得住查询
-  （`StatementTimeout` 是服务端计时，救不了这一段）。见[「PostgreSQL」](#postgresql)。
-- **MySQL 的 DSN 没写 `parseTime` 时补成 `parseTime=true`**，`DATETIME` 扫得进 `time.Time`，时区跟着驱动的 `loc`（默认 UTC）。
-  见[「MySQL」](#mysql)。
-- **SQL 日志默认关**（`Log: false` 就是真的不写，不是 GORM 那个带颜色写 stdout 的默认）。日志和 Span 里只有带占位符的 SQL；
-  服务端报错只记错误码，客户端的错只有认得出不带参数值的几类才记原文。返回给你的错误原样不变，
-  `errors.As` 照样取得到 `*mysql.MySQLError` / `*pgconn.PgError`。见[「通用」](#通用)。
-- **TLS 写在 `TLS:` 块里**，证书一律校验、不会退回明文。开着它时 DSN 里不能再写 TLS 参数（PG 的 `sslmode`、`sslrootcert`
-  等 `ssl*`，MySQL 的 `tls=`、`allowFallbackToPlaintext=`），也不能走 Unix socket。
-  不开时 pgx 默认的 `sslmode=prefer` 连上了也**不校验证书**。见 [xtls](../xtls/README.md)。
-- **经 PgBouncer（事务池）** 要改 `default_query_exec_mode`，否则并发下成批报 `prepared statement … already exists`。
-  见[「PostgreSQL」](#postgresql)。
-- **启动探测**：每个实例探一次，最多试 3 次；密码错不重试，报 `authentication to <addr> failed`。见
-  [behavior.md「启动期建连探测」](../docs/behavior.md#the-startup-connection-probe)。
+- **Always pass the ctx, and always give background jobs a deadline.** PostgreSQL has no read timeout: when the far end
+  never answers, only the ctx deadline can stop the query (`StatementTimeout` is timed by the server and cannot help here).
+  See ["PostgreSQL"](#postgresql).
+- **When a MySQL DSN does not set `parseTime`, `parseTime=true` is added**, so `DATETIME` scans into `time.Time` with the
+  time zone following the driver's `loc` (UTC by default). See ["MySQL"](#mysql).
+- **SQL logging is off by default** (`Log: false` really prints nothing; it is not GORM's colored stdout default). Logs and
+  Spans carry only the SQL with its placeholders; a server error is recorded as its error code alone, and a client error is
+  recorded verbatim only for the few kinds known to carry no parameter values. The error returned to the caller is unchanged,
+  and `errors.As` still reaches `*mysql.MySQLError` / `*pgconn.PgError`. See ["General"](#general).
+- **TLS goes in the `TLS:` block**, certificates are always verified and there is no fallback to plaintext. While it is on, the
+  DSN must not set TLS parameters of its own (PG's `sslmode`, `sslrootcert` and the other `ssl*`; MySQL's `tls=` and
+  `allowFallbackToPlaintext=`), and a Unix socket cannot be used. While it is off, pgx's default `sslmode=prefer` connects
+  **without verifying the certificate**. See [xtls](../xtls/README.md).
+- **Behind PgBouncer (transaction pooling)** `default_query_exec_mode` has to be changed, otherwise concurrent traffic
+  produces batches of `prepared statement ... already exists`. See ["PostgreSQL"](#postgresql).
+- **The startup probe**: one per instance, at most 3 attempts; a wrong password is not retried and is reported as
+  `authentication to <addr> failed`. See
+  [behavior.md "The startup connection probe"](../docs/behavior.md#the-startup-connection-probe).
 
-## 可观测
+## Observability
 
-### 日志
+### Logs
 
-| 消息 | 级别 | 字段 |
+| Message | Level | Fields |
 |---|---|---|
-| `xgorm connected` | INFO | `name`、`driver`、`addr`、`db`、`tls`、`max_open_conns`、`max_idle_conns` |
+| `xgorm connected` | INFO | `name`, `driver`, `addr`, `db`, `tls`, `max_open_conns`, `max_idle_conns` |
 | `xgorm ready` | INFO | `instances` |
-| `SQL` / `slow SQL` / `SQL failed` | INFO / WARN / ERROR | `sql`（带占位符）、`elapsed_ms`、`rows_affected`（行数未知时不带）；失败时 `error`、`error_code`；慢查询时 `threshold_ms`（需 `XGorm.Log: true`） |
-| `xgorm go-sql-driver log` | WARN | `detail`：go-sql-driver 自己的日志原文，不带 trace_id（见[「MySQL」](#mysql)） |
+| `SQL` / `slow SQL` / `SQL failed` | INFO / WARN / ERROR | `sql` (with placeholders), `elapsed_ms`, `rows_affected` (omitted when the row count is unknown); on failure `error` and `error_code`; for a slow query `threshold_ms` (requires `XGorm.Log: true`) |
+| `xgorm go-sql-driver log` | WARN | `detail`: go-sql-driver's own log text, without a trace_id (see ["MySQL"](#mysql)) |
 
-日志的全局约定（`trace_id` 注入、`xlog.AddKV`、框架的启停日志）见 [`docs/observability.md`](../docs/observability.md#logs)。
+The global logging conventions (`trace_id` injection, `xlog.AddKV`, the framework's start and stop logs) are in
+[`docs/observability.md`](../docs/observability.md#logs).
 
-### 指标
+### Metrics
 
-| 指标 | 类型 | 标签 | 来源 |
+| Metric | Type | Labels | Source |
 |---|---|---|---|
-| `db_pool_open` / `db_pool_in_use` / `db_pool_idle` / `db_pool_max_open` | gauge | `name`（实例名） | xgorm，`XGorm.Metric`，按实例 |
+| `db_pool_open` / `db_pool_in_use` / `db_pool_idle` / `db_pool_max_open` | gauge | `name` (the instance name) | xgorm, `XGorm.Metric`, per instance |
 | `db_pool_wait_total` / `db_pool_wait_duration_seconds_total` / `db_pool_closed_max_idle_total` / `db_pool_closed_max_lifetime_total` | counter | `name` | xgorm |
 
-指标名的前缀、常量标签和几条通用规则见 [`docs/observability.md`「指标」](../docs/observability.md#metrics)。
+The metric name prefix, the constant labels and a few general rules are in
+[`docs/observability.md` "Metrics"](../docs/observability.md#metrics).
 
-### 链路
+### Tracing
 
-| 来源 | Span 名 | 关键属性 |
+| Source | Span name | Key attributes |
 |---|---|---|
-| xgorm | `gorm.create` / `gorm.query` / `gorm.update` / `gorm.delete` / `gorm.row` / `gorm.raw` | 见下 |
+| xgorm | `gorm.create` / `gorm.query` / `gorm.update` / `gorm.delete` / `gorm.row` / `gorm.raw` | below |
 
-属性按 OTel 数据库语义约定 v1.43.0（Tracer 带着这一版的 schema URL）：
+The attributes follow OTel's database semantic conventions v1.43.0 (the Tracer carries that version's schema URL):
 
-| 属性 | 值 |
+| Attribute | Value |
 |---|---|
-| `db.system.name` | `postgresql` / `mysql` / `clickhouse`（其余驱动按驱动名） |
-| `db.namespace` | 库名 |
-| `server.address` / `server.port` | 从 DSN 解出的主机、端口（多主机时是第一个） |
-| `db.query.text` | 带占位符的 SQL，不含参数值 |
-| `db.operation.name` | 发出去的语句的第一个关键字，原样大小写：`SELECT`、`INSERT`……（软删除发出去的是 `UPDATE`） |
-| `db.rows_affected` | 影响行数（ClickHouse 上永远是 0） |
-| `db.response.status_code` / `error.type` | 服务端报错时的错误码（MySQL 错误号 / PG 的 SQLSTATE）；其余错误 `error.type` 是 `_OTHER` |
+| `db.system.name` | `postgresql` / `mysql` / `clickhouse` (other drivers use the driver name) |
+| `db.namespace` | The database name |
+| `server.address` / `server.port` | The host and port resolved from the DSN (with several hosts, the first one) |
+| `db.query.text` | The SQL with its placeholders, without parameter values |
+| `db.operation.name` | The first keyword of the statement as sent, in its original case: `SELECT`, `INSERT`, ... (a soft delete sends `UPDATE`) |
+| `db.rows_affected` | The number of rows affected (always 0 on ClickHouse) |
+| `db.response.status_code` / `error.type` | The error code when the server reports one (the MySQL error number or PG's SQLSTATE); for other errors `error.type` is `_OTHER` |
 
-`gorm.ErrRecordNotFound` 不把 Span 标成错误。链路的全貌、传播与信任边界见 [`docs/observability.md`「链路」](../docs/observability.md#tracing)。
+`gorm.ErrRecordNotFound` does not mark the Span as an error. The whole tracing picture, propagation and the trust boundary are
+in [`docs/observability.md` "Tracing"](../docs/observability.md#tracing).
 
-## 行为与实测
+## Behavior (measured)
 
-实测环境和跨模块的总表见 [`docs/behavior.md`](../docs/behavior.md)。
+The measurement environment and the cross-module summary table are in [`docs/behavior.md`](../docs/behavior.md).
 
-### 通用
+### General
 
-GORM v1.31.2。
+GORM v1.31.2.
 
-**`gorm.Open` 自己 ping 一次**，用它自己的 context：退出信号和重试都管不到。这里关掉（`DisableAutomaticPing`），
-改走框架的建连探测。
+**`gorm.Open` pings once on its own**, using its own context, which neither the stop signal nor the retries can reach. It is
+turned off here (`DisableAutomaticPing`) in favor of the framework's connection probe.
 
-**不给 Logger 不等于不打日志**：GORM 会补上它自己的默认实现，带 ANSI 颜色直写 `os.Stdout`。
-`Log: false` 时这里换成什么都不写的 Logger。
+**Not supplying a Logger does not mean nothing is logged**: GORM fills in its own default implementation, which writes to
+`os.Stdout` with ANSI colors. With `Log: false` that is replaced by a Logger that writes nothing.
 
-**`AutoMigrate` 默认按关联建外键。** 实测 PostgreSQL 16，`Owner` has many `Order` 两张表建出 `fk_owners_orders`，
-插一条 `owner_id` 不存在的 `order` 被拒。`DisableForeignKeyConstraintWhenMigrating: true` 时不建外键，这条照样插进去，
-`Preload("Orders")` 照常查得出来。它只管建表那一刻，已经建好的外键不会被删。
+**`AutoMigrate` creates foreign keys for associations by default.** Measured on PostgreSQL 16, `Owner` has many `Order`
+creates `fk_owners_orders` across the two tables, and inserting an `order` whose `owner_id` does not exist is rejected. With
+`DisableForeignKeyConstraintWhenMigrating: true` no foreign key is created, that row is inserted, and `Preload("Orders")`
+still returns it. This only affects the moment of table creation; foreign keys already created are not dropped.
 
-**三个性能相关的开关**（本机回环，量级参考，不是基准）：
+**Three performance-related switches** (local loopback, orders of magnitude for reference, not a benchmark):
 
-- `SkipDefaultTransaction`：500 次单条 Create，PostgreSQL 16 每次约 500µs → 230µs，MySQL 8.0 约 1.0ms → 0.9ms
-  （省掉 `BEGIN` / `COMMIT` 两个来回）。默认不开，因为省下的来回是拿正确性换的：`AfterCreate` 钩子返回错误时，
-  默认的事务把插入回滚了（0 行），跳过之后那一行留了下来。只在热点路径上跳过，用
-  `xgorm.C().Session(&gorm.Session{SkipDefaultTransaction: true})`。
-- `PrepareStmt`：2000 次同一条带参数的查询，MySQL 约 180µs → 94µs（不开时驱动每条 prepare / execute / close 三个来回），
-  PostgreSQL 约 100µs → 85µs（pgx 本来就缓存语句）。缓存上限和过期用 GORM 的默认（不限条数、1h）。
-- `CreateBatchSize: 3` 插 10 行：两种数据库都发 4 条 INSERT；默认 0 是 1 条。
+- `SkipDefaultTransaction`: 500 single-row Creates, about 500µs → 230µs each on PostgreSQL 16 and about 1.0ms → 0.9ms on
+  MySQL 8.0 (saving the `BEGIN` / `COMMIT` round trips). It is off by default, because the saved round trips are paid for in
+  correctness: when an `AfterCreate` hook returns an error the default transaction rolls the insert back (0 rows), while with
+  it skipped that row stays. Skip it only on hot paths, with
+  `xgorm.C().Session(&gorm.Session{SkipDefaultTransaction: true})`.
+- `PrepareStmt`: 2000 runs of the same parameterized query, about 180µs → 94µs on MySQL (without it the driver does
+  prepare / execute / close, three round trips per statement) and about 100µs → 85µs on PostgreSQL (pgx caches statements
+  anyway). The cache size and expiry use GORM's defaults (unlimited, 1h).
+- `CreateBatchSize: 3` inserting 10 rows: both databases receive 4 INSERTs; the default of 0 sends 1.
 
-**GORM 其余的默认值原样保留**（量过）：
+**GORM's other defaults are kept as they are** (measured):
 
-- `NowFunc`：`time.Now().Local()`。PG 上 GORM 给 `time.Time` 建的列是 `timestamptz`，存的是时刻，不受影响；MySQL 见 `parseTime`。
-- `TranslateError: false`：打开之后 MySQL 的 1062 变成 `gorm.ErrDuplicatedKey`，但原来的 `*mysql.MySQLError`
-  被整个换掉，按错误号判断的代码会静默失效。
+- `NowFunc`: `time.Now().Local()`. On PG, GORM creates `timestamptz` columns for `time.Time`, which store an instant and are
+  unaffected; on MySQL see `parseTime`.
+- `TranslateError: false`: turning it on turns MySQL's 1062 into `gorm.ErrDuplicatedKey`, but the original
+  `*mysql.MySQLError` is replaced wholesale and code that branches on the error number silently stops working.
 
-**SQL 日志里的参数值。** GORM 的 Logger 不实现 `ParamsFilter` 时把真实参数代进 SQL。
-xgorm 的 Logger 实现了它，记的是带占位符的 SQL（MySQL 是 `?`，PostgreSQL 是 `$1`；
-GORM 的 PG 方言没参数可代时会写成 `$1$`，这里改回去了）。
+**Parameter values in SQL logs.** When GORM's Logger does not implement `ParamsFilter`, the real parameters are interpolated
+into the SQL. The xgorm Logger does implement it, and what is recorded is the SQL with its placeholders (`?` on MySQL, `$1` on
+PostgreSQL; GORM's PG dialect writes `$1$` when it has no parameters to substitute, which is undone here).
 
-**`Scan` 走的是另一条路。** `Raw(...).Scan(...)`、`Table(...).Select(...).Scan(...)` 执行期间 GORM 把实例的 Logger
-换成 `logger.Recorder`（`finisher_api.go:539`），它不问 `ParamsFilter`，只认进程级的
-`logger.RecorderParamsFilter`，而那个变量的默认值原样返回参数。实测 `WHERE name = ?` 记成了
-`WHERE name = 'sql-3fa9c1d2b7e4'`，三种数据库一样。所以 xgorm 的 `init` 把这个变量换成同一个不交出参数的过滤器。
-它是进程级的：使用者自己 `gorm.Open` 的实例也吃这一条；要换就在 `main` 里重新赋值。
+**`Scan` takes another path.** During `Raw(...).Scan(...)` and `Table(...).Select(...).Scan(...)`, GORM replaces the
+instance's Logger with `logger.Recorder` (`finisher_api.go:539`), which does not consult `ParamsFilter` and only honors the
+process-wide `logger.RecorderParamsFilter`, whose default returns the parameters as they are. Measured, `WHERE name = ?` was
+recorded as `WHERE name = 'sql-3fa9c1d2b7e4'` on all three databases. So xgorm's `init` replaces that variable with the same
+filter that hands out no parameters. It is process-wide: instances the caller opened with `gorm.Open` are covered too, and
+changing it means assigning it again in `main`.
 
-**服务端的错误原文带着参数值**，SQL 只记占位符也就白记了：
+**A server's error text carries parameter values**, which would defeat recording only placeholders in the SQL:
 
-| 服务端 | 错误 | 原文 |
+| Server | Error | Text |
 |---|---|---|
 | MySQL 8.0.46 | 1062 | `Error 1062 (23000): Duplicate entry 'a@b.com' for key 'm_err.email'` |
 | MySQL 8.0.46 | 1366 | `Incorrect integer value: 'notanint' for column 'n' at row 1` |
 | MySQL 8.0.46 | 1292 | `Incorrect datetime value: 'secret-date' for column 'd' at row 1` |
-| PG 16（pgx v5.10.0） | 22P02 | `ERROR: invalid input syntax for type integer: "notanint" (SQLSTATE 22P02)` |
-| PG 16 | 23505 | `Error()` 里没有值，但 `PgError.Detail` 是 `Key (email)=(a@b.com) already exists.` |
-| PG 16 | 23514 | `Detail` 是 `Failing row contains (3, chk@y, 500, null, null).` |
+| PG 16 (pgx v5.10.0) | 22P02 | `ERROR: invalid input syntax for type integer: "notanint" (SQLSTATE 22P02)` |
+| PG 16 | 23505 | `Error()` carries no value, but `PgError.Detail` is `Key (email)=(a@b.com) already exists.` |
+| PG 16 | 23514 | `Detail` is `Failing row contains (3, chk@y, 500, null, null).` |
 
-所以日志的 `error` 字段和 Span 的状态描述只写 `mysql error 1062 (message omitted, it may contain parameter values)`，
-错误码另记（字段见[「链路」](#链路)），不调 `RecordError`。
+So the log's `error` field and the Span's status description only say
+`mysql error 1062 (message omitted, it may contain parameter values)`, the error code is recorded separately (the fields are
+in ["Tracing"](#tracing)), and `RecordError` is not called.
 
-**客户端一侧的错也带参数值**，所以按白名单放行，和 xredis 同一个做法：
+**Client-side errors carry parameter values too**, so they pass an allowlist, the same approach as in xredis:
 
-| 来源 | 原文 |
+| Source | Text |
 |---|---|
-| pgx v5.10.0 编码不了的参数（`%#v`） | `failed to encode args[0]: unable to encode xgorm.rvSecret{Token:"hunter2"} into text format for text (OID 25): cannot find encode plan` |
-| `database/sql` 扫描失败（`%q`） | `converting driver.Value type string ("abc-secret") to a int: invalid syntax` |
+| A parameter pgx v5.10.0 cannot encode (`%#v`) | `failed to encode args[0]: unable to encode xgorm.rvSecret{Token:"hunter2"} into text format for text (OID 25): cannot find encode plan` |
+| A failed `database/sql` scan (`%q`) | `converting driver.Value type string ("abc-secret") to a int: invalid syntax` |
 
-照原文记的只有：网络错误（`net.Error`，地址、超时，排查正要看这个）、ctx 取消 / 超时、`io.EOF`，
-以及 `database/sql`、go-sql-driver、GORM 自己那些文案固定的哨兵错误（`sql.ErrConnDone`、`driver.ErrBadConn`、
-`mysql.ErrInvalidConn`、`gorm.ErrRecordNotFound`……）。记的是错误链上认出来的**那一个**，不是整条链的原文：
-GORM 的 `AddError` 用 `"%v; %w"` 把前一个错误的原文拼在前面，只看链上有没有安全的错误的话，前一个带着的值照样出去。
-其余一律写 `client error (message omitted, it may contain parameter values)`，Span 上不调 `RecordError`
-（实测 PG 16 上 `Exec("SELECT ?::text", rvSecret{...})`：不这么做时 `SQL failed` 的 `error` 字段、Span 的状态描述和
-`exception.message` 里都是上面那句带着 `hunter2` 的原文）。
+What is recorded verbatim is only: network errors (`net.Error`, with the address and the timeout, which is exactly what an
+investigation needs), ctx cancellation and deadlines, `io.EOF`, and the sentinel errors with fixed text from `database/sql`,
+go-sql-driver and GORM itself (`sql.ErrConnDone`, `driver.ErrBadConn`, `mysql.ErrInvalidConn`, `gorm.ErrRecordNotFound`, ...).
+What is recorded is **the one** error recognized on the chain, not the text of the whole chain: GORM's `AddError` uses
+`"%v; %w"` to prepend the previous error's text, so merely checking whether the chain contains a safe error would let the
+values carried by the previous one out anyway. Everything else is written as
+`client error (message omitted, it may contain parameter values)` and `RecordError` is not called on the Span (measured on
+PG 16 with `Exec("SELECT ?::text", rvSecret{...})`: without this, the `error` field of `SQL failed`, the Span's status
+description and `exception.message` all held the text above, `hunter2` included).
 
-两种情况下返回给调用方的错误都原样不变。
+In both cases the error returned to the caller is unchanged.
 
-**时长不收负数**：底下每一处都会把负数静默变成「不限」——go-sql-driver v1.10.1 的 `FormatDSN` 只写 > 0 的
-`timeout` / `readTimeout` / `writeTimeout`；`database/sql` 把负的存活时间当成 0；PG 的 `connect_timeout` 和几个 GUC
-在注入时同样被跳过。
+**Durations do not accept negative values**: every layer below would silently turn a negative into "no limit" --
+go-sql-driver v1.10.1's `FormatDSN` only writes `timeout` / `readTimeout` / `writeTimeout` when they are > 0; `database/sql`
+treats a negative lifetime as 0; and PG's `connect_timeout` and the GUCs are likewise skipped during injection.
 
 ### MySQL
 
-go-sql-driver v1.10.1、`gorm.io/driver/mysql` v1.6.0、MySQL 8.0.46。
+go-sql-driver v1.10.1, `gorm.io/driver/mysql` v1.6.0, MySQL 8.0.46.
 
-**`parseTime` 默认补成 `true`。** 驱动默认 `false`：`DATETIME` / `TIMESTAMP` 读出来是 `[]byte`，
-带 `CreatedAt` 的模型 `First` 一次就报 `unsupported Scan, storing driver.Value type []uint8 into type *time.Time`。
-DSN 里写了的（哪怕是 `parseTime=false`）以 DSN 为准；判断照抄驱动的解析规则（最后一个 `/`、第一个 `?` 之后），
-密码里的 `?parseTime=false` 不算数。
+**`parseTime` defaults to `true` here.** The driver defaults to `false`: `DATETIME` / `TIMESTAMP` come back as `[]byte`, and a
+model with `CreatedAt` fails on the first `First` with
+`unsupported Scan, storing driver.Value type []uint8 into type *time.Time`. What the DSN says wins (even
+`parseTime=false`), and the check follows the driver's own parsing rules (after the last `/` and the first `?`), so a
+`?parseTime=false` inside the password does not count.
 
-打开之后时区跟着驱动的 `loc`（默认 `UTC`）：写入前转成 `loc`、读出来按 `loc` 解释，同一个时刻来回不变。
-例如写 `2024-01-02 03:04:05 +01:00`，库里存 `2024-01-02 02:04:05`，读回来是 `02:04:05 UTC`，`Equal` 为 true。
+Once it is on, the time zone follows the driver's `loc` (`UTC` by default): values are converted to `loc` before writing and
+interpreted in `loc` when read, so the same instant survives the round trip. Writing `2024-01-02 03:04:05 +01:00`, for
+example, stores `2024-01-02 02:04:05` and reads back as `02:04:05 UTC`, with `Equal` true.
 
-- 库里的墙上时间要给别的系统按本地时间读：DSN 里写 `loc=Local`（或 `loc=Europe%2FBerlin`）。
-- 把 `DATETIME` 扫进 `string` 拿到的是 RFC 3339（`2024-01-02T02:04:05Z`）；要原样文本就在 DSN 里写 `parseTime=false`。
+- To have another system read the stored wall-clock time as local time: set `loc=Local` (or `loc=Europe%2FBerlin`) in the DSN.
+- Scanning a `DATETIME` into a `string` yields RFC 3339 (`2024-01-02T02:04:05Z`); for the raw text, set `parseTime=false` in
+  the DSN.
 
-**`Initialize` 里的版本查询。** Dialector 初始化时查一次 `SELECT VERSION()`，写死了 `context.Background()`，
-而且它就是第一次建连，发生在 `gorm.Open` 里、建连重试之前。原样用的话实测（对端收下连接却不回话）：
-只试 1 次、3.0s 后失败；启动期间的 SIGTERM 要等握手那一读撞上 `MySQL.ReadTimeout`，信号之后 2.95s 进程才退。
-这里关掉（`SkipInitializeWithVersion`），改在建连探测里、每次 Ping 成功之后查。同一场景实测：试满 3 次、
-9.6–11.1s 后失败（预算 13.5s）；SIGTERM 之后 7–20ms 退出。版本号照样设进 Dialector，驱动靠它决定的行为
-（MariaDB / MySQL 5.x 的改索引名、改列名、`FOR SHARE`、`DROP CONSTRAINT`，MariaDB 10.5+ 的 `RETURNING`）不变。
+**The version query in `Initialize`.** When the Dialector initializes it runs one `SELECT VERSION()` with a hard-coded
+`context.Background()`, and that is also the first connection, made inside `gorm.Open` before the connection retries. Left as
+it is, measured against a far end that accepts the connection and never answers: 1 attempt only, failing after 3.0s, and a
+SIGTERM during startup has to wait for that handshake read to hit `MySQL.ReadTimeout`, so the process exits 2.95s after the
+signal. It is turned off here (`SkipInitializeWithVersion`) and run inside the connection probe instead, after each successful
+Ping. Measured in the same scenario: all 3 attempts, failing after 9.6-11.1s (with a budget of 13.5s), and exiting 7-20ms
+after SIGTERM. The version is still set on the Dialector, so the behavior the driver derives from it is unchanged (renaming
+indexes and columns, `FOR SHARE` and `DROP CONSTRAINT` on MariaDB / MySQL 5.x, and `RETURNING` on MariaDB 10.5+).
 
-**单次探测预算**是 `DialTimeout + MySQL.ReadTimeout`（按 DSN 里最终生效的 `timeout` / `readTimeout` 算）。
-驱动拿 `timeout` 管拨号、`readTimeout` 管之后的每一读（握手、认证、`SELECT VERSION()`）。其中一个是 0（驱动不限时）的，
-按另一个算两份：`ReadTimeout: 0`、`DialTimeout: 500ms` 的预算是 1s，不是只剩拨号的 500ms；两个都是 0 用 1s 兜底。
+**The budget for one probe** is `DialTimeout + MySQL.ReadTimeout` (computed from the `timeout` / `readTimeout` that end up in
+effect in the DSN). The driver uses `timeout` for dialing and `readTimeout` for every read after it (handshake,
+authentication, `SELECT VERSION()`). When one of them is 0 (no limit in the driver), twice the other is used: with
+`ReadTimeout: 0` and `DialTimeout: 500ms` the budget is 1s, not the 500ms of dialing alone; when both are 0, 1s is the
+fallback.
 
-**开了 TLS 块就不会退回明文。** go-sql-driver v1.10.1 的 `allowFallbackToPlaintext=true`（`tls=preferred` 也会打开它）
-在服务端的问候包里没有 `CLIENT_SSL` 时丢掉 TLS、改发明文的登录包（`packets.go` `readHandshakePacket`）。
-这一位是明文传过来的，中间人清掉它就够了。实测（一个问候包不带 `CLIENT_SSL` 的假服务端）：TLS 块加上
-DSN 里的 `allowFallbackToPlaintext=true`，登录包明文发了出去。所以开着 TLS 块时 DSN 里写了这个参数（写成什么值都算）
-直接启动失败，交给驱动的连接配置里也钉死成 false，服务端不肯 TLS 时报 `TLS requested but server does not support TLS`。
+**With a TLS block there is no fallback to plaintext.** go-sql-driver v1.10.1's `allowFallbackToPlaintext=true` (which
+`tls=preferred` also turns on) drops TLS and sends the login packet in plaintext when the server's greeting carries no
+`CLIENT_SSL` (`packets.go` `readHandshakePacket`). That bit arrives in plaintext, so clearing it is all a man in the middle
+has to do. Measured against a fake server whose greeting omits `CLIENT_SSL`: with a TLS block plus
+`allowFallbackToPlaintext=true` in the DSN, the login packet went out in plaintext. So while a TLS block is on, setting that
+parameter in the DSN (to any value at all) fails startup, the connection config handed to the driver pins it to false as
+well, and a server unwilling to do TLS is reported as `TLS requested but server does not support TLS`.
 
-**取消与截止时间。** 客户端有读超时兜底：对端不回话、调用方又没给截止时间时，查询在 `ReadTimeout`
-失败（实测 3.0s，`invalid connection`）。调用方的 ctx 管得更细：
+**Cancellation and deadlines.** The client has a read timeout as a backstop: when the far end never answers and the caller
+gave no deadline, the query fails at `ReadTimeout` (measured 3.0s, `invalid connection`). The caller's ctx is finer grained:
 
-- 给了截止时间就在那一刻返回——池里卡在读上的连接和主机宕机时卡在拨号上的新连接都一样（给 200ms 就是 200ms）；
-- ctx 被取消时 go-sql-driver 当场关掉那条连接，查询返回 `context canceled`：客户端放弃之后 0.3ms handler 就返回了。
-  被取消的那条连接不还回池里。
+- with a deadline it returns at that moment -- both for a pooled connection stuck on a read and for a new connection stuck on
+  dialing because the host is down (give it 200ms and it is 200ms);
+- when the ctx is cancelled, go-sql-driver closes that connection on the spot and the query returns `context canceled`: the
+  handler returned 0.3ms after the caller gave up. The cancelled connection is not returned to the pool.
 
-新建连接的拨号受 `DialTimeout`（DSN 的 `timeout`）管：主机宕机时 500ms 失败；DSN 里写了 `timeout=1500ms` 的以 DSN 为准。
+Dialing a new connection is governed by `DialTimeout` (the DSN's `timeout`): with the host down it fails after 500ms, and a
+`timeout=1500ms` in the DSN wins.
 
-**`interpolateParams` 默认 `false`，不改**：带参数的查询是 PREPARE、EXECUTE、CLOSE 三次写、两个往返（实测一次 `First` 3 次写）。
+**`interpolateParams` stays at its default `false`**: a parameterized query is prepare, execute and close -- three writes and
+two round trips (measured, one `First` makes 3 writes).
 
-**go-sql-driver 的日志**默认 `log.New(os.Stderr, "[mysql] ", …)` 写纯文本
-（`[mysql] 2026/09/24 10:00:00 packets.go:58 read tcp …: i/o timeout`）。xgorm 的 `init` 把它接到 slog：
-一条 `xgorm go-sql-driver log`，级别 WARN，原文在 `detail`。驱动不给 ctx，这些日志不带 trace_id。
-实测对端不回话、8 条查询读超时，就是 8 条这样的日志，stderr 里一行 `[mysql]` 都没有。
-想换成自己的就在 `main` 里、框架启动之前调 `mysql.SetLogger`：驱动在解析 DSN 时把当时的 logger 抄进连接配置，
-而 xgorm 在启动钩子里才解析 DSN。
+**go-sql-driver's log** defaults to `log.New(os.Stderr, "[mysql] ", ...)` writing plain text
+(`[mysql] 2026/09/24 10:00:00 packets.go:58 read tcp ...: i/o timeout`). xgorm's `init` routes it into slog: one
+`xgorm go-sql-driver log` record at WARN, with the original text in `detail`. The driver passes no ctx, so these records carry
+no trace_id. Measured with a far end that never answers and 8 queries hitting the read timeout: 8 such records, and not a
+single `[mysql]` line on stderr. To use your own instead, call `mysql.SetLogger` in `main` before the framework starts: the
+driver copies whichever logger is current into the connection config while parsing the DSN, and xgorm parses the DSN in a
+start hook.
 
 ### PostgreSQL
 
-pgx v5.10.0、`gorm.io/driver/postgres` v1.6.3、PG 16。
+pgx v5.10.0, `gorm.io/driver/postgres` v1.6.3, PG 16.
 
-**单次探测预算**是「注入的 `connect_timeout`（`DialTimeout` 向上取整到整秒）+ `DialTimeout`」，默认 1.5s。
-pgx 拿 `connect_timeout` 管每个主机的整个建连（TLS 握手、startup、认证都在里面；pgconn 源码注释原话
-"restricts the whole connection process"；实测 startup 不回话的服务端，`connect_timeout=1` 等满 1.0s）。
-预算比它短的话，一次慢一点但合法的握手会在 pgx 放弃之前被判超时。
+**The budget for one probe** is the injected `connect_timeout` (`DialTimeout` rounded up to whole seconds) plus
+`DialTimeout`, which is 1.5s by default. pgx uses `connect_timeout` for the whole connection to each host (TLS handshake,
+startup and authentication are all inside it; the pgconn source comment says it "restricts the whole connection process", and
+measured against a server that never answers the startup message, `connect_timeout=1` waited the full 1.0s). A shorter budget
+would time out a slow but legal handshake before pgx gives up.
 
-**没有读超时。** 连接池里的连接遇上不回话的对端，调用方的 ctx 又没有截止时间，查询就一直等。
-`StatementTimeout` 救不了这一段——它是服务端的计时：实测对端吞掉全部字节、`StatementTimeout: 1s`，
-一条 `SELECT 1` 30s 后仍没返回。能管住它的只有调用方的截止时间（实测给 200ms 就在 200ms 返回）：
+**There is no read timeout.** When a pooled connection meets a far end that never answers and the caller's ctx has no
+deadline, the query waits forever. `StatementTimeout` cannot help here, because it is timed by the server: measured with a far
+end that swallows every byte and `StatementTimeout: 1s`, a `SELECT 1` had still not returned after 30s. Only the caller's
+deadline governs this (measured, 200ms returns in 200ms):
 
 ```go
 ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -314,44 +344,52 @@ defer cancel()
 xgorm.CWithCtx(ctx).First(&u, id)
 ```
 
-Web 请求里用 `c.Request.Context()` 也行；后台任务、定时任务**一定要自己给截止时间**。
+In a web request `c.Request.Context()` does the job; background and scheduled jobs **must supply a deadline of their own**.
 
-**经 PgBouncer：`default_query_exec_mode`。** pgx 默认 `cache_statement`：每条语句第一次执行时建一个具名预备语句。
-PgBouncer 的事务池会把下一条语句派到另一个服务端连接上，具名语句就对不上了。实测 PgBouncer 1.22.0
-`pool_mode = transaction`、`default_pool_size = 2`，20 个协程各跑 50 条带参数的查询：
+**Behind PgBouncer: `default_query_exec_mode`.** pgx defaults to `cache_statement`: the first execution of each statement
+creates a named prepared statement. PgBouncer's transaction pooling sends the next statement to a different server
+connection, where that named statement no longer exists. Measured with PgBouncer 1.22.0, `pool_mode = transaction`,
+`default_pool_size = 2`, and 20 goroutines each running 50 parameterized queries:
 
-| `default_query_exec_mode` | `max_prepared_statements = 0` | `= 100` | 直连 PG 每条耗时 | 每条写几次 |
+| `default_query_exec_mode` | `max_prepared_statements = 0` | `= 100` | Per statement against PG directly | Writes per statement |
 |---|---|---|---|---|
-| `cache_statement`（pgx 默认） | **701 条失败**：`prepared statement "stmtcache_…" already exists (SQLSTATE 42P05)` | 0 | 59–82µs | 1 |
-| `cache_describe` | 0 | 0 | 61–79µs | 1 |
-| `describe_exec` | 6 条失败：`unnamed prepared statement does not exist (SQLSTATE 26000)` | 16 条失败 | 68–105µs | 2 |
-| `exec` | 0 | 0 | 97–104µs | 1 |
-| `simple_protocol` | 0 | 0 | 89–102µs | 1 |
+| `cache_statement` (pgx's default) | **701 failures**: `prepared statement "stmtcache_..." already exists (SQLSTATE 42P05)` | 0 | 59-82µs | 1 |
+| `cache_describe` | 0 | 0 | 61-79µs | 1 |
+| `describe_exec` | 6 failures: `unnamed prepared statement does not exist (SQLSTATE 26000)` | 16 failures | 68-105µs | 2 |
+| `exec` | 0 | 0 | 97-104µs | 1 |
+| `simple_protocol` | 0 | 0 | 89-102µs | 1 |
 
-默认值不改：直连 PG 的是大多数。经 PgBouncer 的，二选一：PgBouncer 升到 1.21+ 并把 `max_prepared_statements`
-配成非 0（1.24 起默认 200），或者在 DSN 里写 `default_query_exec_mode=exec`（写进 `Postgres.Params` 也生效）。
+The default is not changed: connecting to PG directly is the common case. Behind PgBouncer there are two options: upgrade
+PgBouncer to 1.21+ and set `max_prepared_statements` to a non-zero value (the default is 200 from 1.24 on), or set
+`default_query_exec_mode=exec` in the DSN (writing it into `Postgres.Params` works too).
 
-**DSN 的几个细节**（pgx v5.10.0）：
+**A few DSN details** (pgx v5.10.0):
 
-- key=value 形式里默认值垫在 DSN 前面，pgx 同一个 key 取最后一次，所以 DSN 里写了的自然作数。
-- 时区是例外：gorm 的 postgres 驱动另用正则取 DSN 里第一处 `timezone=` / `TimeZone=` / `time_zone=`，
-  而且不解码——`TimeZone=Europe/Berlin` 被编码成 `Europe%2FBerlin` 的话每条连接都设不上时区。
-  所以 URL 形式里补的参数接在原 query 后面，使用者写的部分原样保留，补进去的值里的 `/` 也不编码。
-- 预检用 `pgx.ParseConfig`（比 `pgconn.ParseConfig` 多校验 `default_query_exec_mode` 等三项）。
-  pgx 的错误原文是整串 DSN、只遮得住 `password=x` 这种规整写法（`password = hunter2` 原样带出），所以不回传它。
-- 多主机 URL 里 IPv6 地址不能排在第一个：`postgres://u:p@[::1]:1,h2:1/db` 会被 `url.Parse` 和 pgx 同时拒绝。
-  挪到后面，或者改用 key=value 形式 `host=::1,h2 port=1,1`。
+- In key=value form the defaults are placed before the DSN, and pgx takes the last occurrence of a key, so what the DSN sets
+  naturally wins.
+- The time zone is the exception: gorm's postgres driver separately picks the first `timezone=` / `TimeZone=` / `time_zone=`
+  in the DSN with a regexp, and does not decode it -- a `TimeZone=Europe/Berlin` encoded as `Europe%2FBerlin` would leave
+  every connection without its time zone. So in URL form the added parameters are appended after the original query, what the
+  caller wrote is kept as it is, and a `/` inside an added value is not encoded either.
+- The pre-check uses `pgx.ParseConfig` (which validates three more items than `pgconn.ParseConfig`, among them
+  `default_query_exec_mode`). pgx's error text is the whole DSN and masks only the tidy spelling `password=x`
+  (`password = hunter2` is carried out as it is), so it is not passed back.
+- In a multi-host URL an IPv6 address must not come first: `postgres://u:p@[::1]:1,h2:1/db` is rejected by both `url.Parse`
+  and pgx. Move it later, or use the key=value form `host=::1,h2 port=1,1`.
 
-## 排错
+## Troubleshooting
 
 ### `unknown Driver="clickhouse", registered: [mysql postgres]`
 
-`Driver` 写错了，或者没 import 驱动的 module（`_ "github.com/jupiter-eng/xone/xgorm/clickhouse"`）。
-驱动的用法见 [xgorm/clickhouse](clickhouse/README.md)。
+Either `Driver` is misspelled, or the driver's module was not imported
+(`_ "github.com/jupiter-eng/xone/xgorm/clickhouse"`). How to use the driver is in
+[xgorm/clickhouse](clickhouse/README.md).
 
 ### `the DSN sets allowFallbackToPlaintext while the TLS block is enabled`
 
-开了 `TLS:` 块，MySQL 的 DSN 里又写了 `allowFallbackToPlaintext=`。TLS 块从不退回明文，把这个参数从 DSN 里删掉；
-真要「服务端不支持就明文」的，别开 TLS 块、在 DSN 里写 `tls=preferred`，并且清楚它挡不住中间人。
+The `TLS:` block is on and the MySQL DSN also sets `allowFallbackToPlaintext=`. A TLS block never falls back to plaintext, so
+remove that parameter from the DSN. If "plaintext when the server does not support TLS" is really what is wanted, leave the
+TLS block off, set `tls=preferred` in the DSN, and be clear that it does not stop a man in the middle.
 
-TLS 相关的报错见 [xtls「排错」](../xtls/README.md#排错)；建连失败见 [`docs/troubleshooting.md`「建连」](../docs/troubleshooting.md#connecting)。
+TLS errors are in [xtls "排错"](../xtls/README.md#排错); connection failures are in
+[`docs/troubleshooting.md` "Connecting"](../docs/troubleshooting.md#connecting).

@@ -5,7 +5,7 @@ Look it up by the error text. The framework's errors all have the shape
 and what follows is the keyword from inside the brackets, which is what to search the logs for.
 
 These are the cross-module errors; anything belonging to one module is under "Troubleshooting" in
-its README: [xgorm](../xgorm/README.md#排错) (`unknown Driver=…`) ·
+its README: [xgorm](../xgorm/README.md#troubleshooting) (`unknown Driver=…`) ·
 [xtls](../xtls/README.md#排错) (client-side TLS) ·
 [xgin](../xgin/README.md#troubleshooting) (server certificates) ·
 [xecho](../xecho/README.md#troubleshooting) (server certificates, an XGin block copied over).
@@ -110,7 +110,7 @@ file, the line and the field, so fix exactly that spot. The common ones: a negat
 
 ### `unknown Driver="clickhouse", registered: [mysql postgres]`
 
-See [xgorm "排错"](../xgorm/README.md#排错).
+See [xgorm "Troubleshooting"](../xgorm/README.md#troubleshooting).
 
 ## Taking an instance: C()
 

@@ -19,16 +19,17 @@ import (
 	"gorm.io/gorm"
 )
 
-// rvSecret 一个 pgx 编码不了的参数类型：pgx 报错时用 %#v 把它整个写进错误
+// rvSecret is a parameter type pgx cannot encode: pgx writes it whole into the error with %#v
 type rvSecret struct{ Token string }
 
-// pgxEncodeError pgx 自己造出来的那条编码错误，和建连之后 Exec 报的是同一句
-// （pgx v5.10.0 pgtype.go newEncodeError，外面再包一层 extended_query_builder.go 的 failed to encode args[0]）
+// pgxEncodeError is the encoding error pgx produces itself, the same sentence an Exec reports
+// after connecting (pgx v5.10.0 pgtype.go newEncodeError, wrapped once more by
+// extended_query_builder.go's failed to encode args[0])
 func pgxEncodeError(t *testing.T) error {
 	t.Helper()
 	_, err := pgtype.NewMap().Encode(pgtype.TextOID, pgtype.TextFormatCode, rvSecret{Token: secret}, nil)
 	if err == nil || !strings.Contains(err.Error(), secret) {
-		t.Fatalf("前提：pgx 的编码错误里该带着参数值，got=%v", err)
+		t.Fatalf("precondition: pgx's encoding error should carry the parameter value, got=%v", err)
 	}
 	return fmt.Errorf("failed to encode args[0]: %w", err)
 }
@@ -38,33 +39,33 @@ func TestRedactedError_ClientErrors(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		err  error
-		want string // 该记下的原文；空串表示该收掉
+		want string // the text that should be recorded; an empty string means it should be withheld
 	}{
-		{"pgx 编码参数失败", pgxEncodeError(t), ""},
-		// database/sql 的 convertAssign 用 %q 写出读回来的值
-		{"Scan 转换失败", fmt.Errorf(`sql: Scan error on column index 0, name "n": converting driver.Value type []uint8 (%q) to a int: invalid syntax`, secret), ""},
-		// gorm 的 AddError 用 "%v; %w" 拼：后一个是安全的也不能把前一个的原文带出去
-		{"gorm 拼起来的两个错误", fmt.Errorf("%v; %w", pgxEncodeError(t), gorm.ErrInvalidData), gorm.ErrInvalidData.Error()},
-		{"网络错误", fmt.Errorf("failed to connect: %w", opErr), opErr.Error()},
-		{"ctx 超时", fmt.Errorf("timeout: %w", context.DeadlineExceeded), context.DeadlineExceeded.Error()},
-		{"ctx 取消", context.Canceled, context.Canceled.Error()},
-		{"没查到记录", gorm.ErrRecordNotFound, gorm.ErrRecordNotFound.Error()},
-		{"连接池已关", sql.ErrConnDone, sql.ErrConnDone.Error()},
-		{"坏连接", driver.ErrBadConn, driver.ErrBadConn.Error()},
-		{"MySQL 连接失效", mysqldriver.ErrInvalidConn, mysqldriver.ErrInvalidConn.Error()},
+		{"pgx failed to encode a parameter", pgxEncodeError(t), ""},
+		// database/sql's convertAssign writes the value it read back with %q
+		{"Scan conversion failed", fmt.Errorf(`sql: Scan error on column index 0, name "n": converting driver.Value type []uint8 (%q) to a int: invalid syntax`, secret), ""},
+		// gorm's AddError joins with "%v; %w": a safe second error must not carry the first one's text out
+		{"two errors joined by gorm", fmt.Errorf("%v; %w", pgxEncodeError(t), gorm.ErrInvalidData), gorm.ErrInvalidData.Error()},
+		{"a network error", fmt.Errorf("failed to connect: %w", opErr), opErr.Error()},
+		{"ctx timeout", fmt.Errorf("timeout: %w", context.DeadlineExceeded), context.DeadlineExceeded.Error()},
+		{"ctx cancelled", context.Canceled, context.Canceled.Error()},
+		{"no record found", gorm.ErrRecordNotFound, gorm.ErrRecordNotFound.Error()},
+		{"the pool is closed", sql.ErrConnDone, sql.ErrConnDone.Error()},
+		{"a bad connection", driver.ErrBadConn, driver.ErrBadConn.Error()},
+		{"an invalid MySQL connection", mysqldriver.ErrInvalidConn, mysqldriver.ErrInvalidConn.Error()},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			for _, d := range []Dialect{pgDialect(), mysqlDialect(), {Name: "custom"}} {
 				text, code := d.redactedError(c.err)
 				if code != "" {
-					t.Errorf("%s：客户端的错没有错误码，got=%q", d.Name, code)
+					t.Errorf("%s: a client-side error has no error code, got=%q", d.Name, code)
 				}
 				want := cmpOr(c.want, clientErrorOmitted)
 				if text != want {
-					t.Errorf("%s：want %q，got %q", d.Name, want, text)
+					t.Errorf("%s: want %q, got %q", d.Name, want, text)
 				}
 				if strings.Contains(text, secret) {
-					t.Errorf("%s：参数值进了错误文本：%s", d.Name, text)
+					t.Errorf("%s: a parameter value reached the error text: %s", d.Name, text)
 				}
 			}
 		})
@@ -78,27 +79,28 @@ func cmpOr(a, b string) string {
 	return b
 }
 
-// 日志和 Span 两个出口各验一次：调用点上都得用收过的文本
+// Both exits are checked, the log and the span: every call site has to use the withheld text
 func TestLogger_ClientErrorKeepsParamValuesOut(t *testing.T) {
 	lines := capture(t)
 	traceOnce(newGormLogger(DefaultClientConfig(), pgDialect(), postgres.Dialector{}), pgxEncodeError(t), 0)
 	got := lines()
 	if len(got) != 1 || got[0]["msg"] != "SQL failed" {
-		t.Fatalf("该记一条 SQL failed，got=%v", got)
+		t.Fatalf("one SQL failed line is expected, got=%v", got)
 	}
 	if strings.Contains(fmt.Sprint(got[0]), secret) {
-		t.Errorf("参数值进了日志：%v", got[0])
+		t.Errorf("a parameter value reached the log: %v", got[0])
 	}
 	if got[0]["error"] != clientErrorOmitted {
-		t.Errorf("error 该是 %q，got=%v", clientErrorOmitted, got[0]["error"])
+		t.Errorf("error should be %q, got=%v", clientErrorOmitted, got[0]["error"])
 	}
 }
 
 func TestSpan_ClientErrorKeepsParamValuesOut(t *testing.T) {
 	for name, err := range map[string]error{
-		"pgx 编码参数失败": pgxEncodeError(t),
-		// 认得出后一个是 ErrInvalidData，exception.message 也只能记它，不能记整条链
-		"gorm 拼起来的两个错误": fmt.Errorf("%v; %w", pgxEncodeError(t), gorm.ErrInvalidData),
+		"pgx failed to encode a parameter": pgxEncodeError(t),
+		// Recognizing ErrInvalidData as the second one means exception.message may record it alone,
+		// never the whole chain
+		"two errors joined by gorm": fmt.Errorf("%v; %w", pgxEncodeError(t), gorm.ErrInvalidData),
 	} {
 		t.Run(name, func(t *testing.T) {
 			spans := recording(t)
@@ -109,17 +111,18 @@ func TestSpan_ClientErrorKeepsParamValuesOut(t *testing.T) {
 
 			s := spans()[0]
 			if s.Status().Code != codes.Error {
-				t.Errorf("出错应标成 Error，got=%v", s.Status())
+				t.Errorf("a failure should be marked as Error, got=%v", s.Status())
 			}
 			if blob := spanText(s); strings.Contains(blob, secret) {
-				t.Errorf("参数值进了 Span：%s", blob)
+				t.Errorf("a parameter value reached the span: %s", blob)
 			}
 		})
 	}
 }
 
-// 真的 PostgreSQL：参数值编码不了时，日志和 Span 里都没有它。
-// 只在 XONE_E2E=1 时跑，连接参数和 scripts/e2e.sh 的同名环境变量一致
+// Against a real PostgreSQL: when a parameter cannot be encoded, neither the log nor the span
+// holds it. It runs only with XONE_E2E=1, and the connection parameters match the environment
+// variables of scripts/e2e.sh.
 func TestNew_PG_ClientEncodeErrorKeepsParamValuesOut(t *testing.T) {
 	if os.Getenv("XONE_E2E") != "1" {
 		t.Skip("needs a real PostgreSQL; set XONE_E2E=1 (see scripts/e2e.sh)")
@@ -139,7 +142,7 @@ func TestNew_PG_ClientEncodeErrorKeepsParamValuesOut(t *testing.T) {
 	lines := capture(t)
 	err = db.Exec("SELECT ?::text", rvSecret{Token: secret}).Error
 	if err == nil || !strings.Contains(err.Error(), secret) {
-		t.Fatalf("前提：返回给调用方的错误原样带着 pgx 的原文，got=%v", err)
+		t.Fatalf("precondition: the error returned to the caller carries pgx's text as it is, got=%v", err)
 	}
 	var failed []map[string]any
 	for _, l := range lines() {
@@ -148,23 +151,24 @@ func TestNew_PG_ClientEncodeErrorKeepsParamValuesOut(t *testing.T) {
 		}
 	}
 	if len(failed) != 1 || strings.Contains(fmt.Sprint(failed[0]), secret) || failed[0]["error"] != clientErrorOmitted {
-		t.Errorf("SQL failed 日志不该带参数值，got=%v", failed)
+		t.Errorf("the SQL failed line must not carry the parameter value, got=%v", failed)
 	}
 	var found bool
 	for _, s := range spans() {
 		if s.Status().Code == codes.Error {
 			found = true
 			if blob := spanText(s); strings.Contains(blob, secret) {
-				t.Errorf("参数值进了 Span：%s", blob)
+				t.Errorf("a parameter value reached the span: %s", blob)
 			}
 		}
 	}
 	if !found {
-		t.Error("前提：该有一个出错的 Span")
+		t.Error("precondition: there should be one failing span")
 	}
 }
 
-// spanText Span 的状态描述、属性和事件属性拼成一段，查有没有漏出去的值
+// spanText joins the span's status description, attributes and event attributes into one blob, to
+// look for any value that leaked
 func spanText(s sdktrace.ReadOnlySpan) string {
 	blob := s.Status().Description
 	for _, kv := range s.Attributes() {

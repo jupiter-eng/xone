@@ -1,9 +1,10 @@
-// Package xgorm 按配置装好 GORM，使用者拿到的是原生的 *gorm.DB。
+// Package xgorm assembles GORM from configuration; the caller gets the native *gorm.DB.
 //
 //	err := xgorm.CWithCtx(ctx).First(&u, id).Error
 //
-// 支持 MySQL 与 PostgreSQL，连接池、超时、慢查询日志、链路、连接池指标
-// 全部由配置决定，业务代码里没有任何初始化。
+// MySQL and PostgreSQL are supported, and the connection pool, the timeouts, the slow query log,
+// tracing and the pool metrics are all decided by configuration, with no initialization in
+// business code.
 package xgorm
 
 import (
@@ -17,13 +18,13 @@ import (
 	"github.com/jupiter-eng/xone/xtls"
 )
 
-// ConfigKey 本模块在配置文件里的顶层 key
+// ConfigKey is this module's top-level key in the config file.
 const ConfigKey = "XGorm"
 
-// DefaultName C() 不带参数时取的那个实例的名字
+// DefaultName is the instance C() takes without arguments.
 const DefaultName = xconfig.DefaultClientName
 
-// Driver 数据库驱动
+// Driver is the database driver.
 type Driver string
 
 const (
@@ -31,169 +32,194 @@ const (
 	DriverPostgres Driver = "postgres"
 )
 
-// Config 本模块的配置。两种写法：
+// Config is this module's configuration. Two forms:
 //
-//	XGorm:                  # 单实例，直接写字段，名字就是 default
+//	XGorm:                  # a single instance: write the fields directly and the name is default
 //	  DSN: "${DB_DSN}"
 //
-//	XGorm:                  # 多实例，按名字写
+//	XGorm:                  # several instances, written by name
 //	  Clients:
 //	    default: {DSN: "${DB_DSN}"}
 //	    report:  {DSN: "${REPORT_DSN}", MaxOpenConns: 5}
 type Config struct {
-	// Clients 按名字组织的实例。单实例写法会被规整成一个名为 default 的实例。
+	// Clients holds the instances by name. The single-instance form is normalized into one instance
+	// named default.
 	Clients map[string]ClientConfig
 }
 
-// ClientConfig 一个数据库实例的配置
+// ClientConfig is the configuration of one database instance.
 type ClientConfig struct {
-	// Driver 驱动：mysql / postgres。默认 postgres。
+	// Driver is the driver: mysql / postgres. Defaults to postgres.
 	//
-	// 其余驱动住在自己的 module 里，匿名 import 即可注册：
+	// Other drivers live in modules of their own and register themselves on an anonymous import:
 	//
 	//	import _ "github.com/jupiter-eng/xone/xgorm/clickhouse"
 	Driver Driver `yaml:"Driver"`
 
-	// DSN 连接串，必填。
+	// DSN is the connection string. Required.
 	//
-	// 建议写成 "${DB_DSN}"：凭证不该进版本库，漏配时启动就失败。
+	// Writing it as "${DB_DSN}" is recommended: credentials do not belong in version control, and a
+	// missing one then fails startup.
 	//
-	// MySQL 的 DSN 里没写 parseTime 的，补成 parseTime=true：驱动默认 false，
-	// DATETIME 扫不进 time.Time（实测 go-sql-driver v1.10.1，带 CreatedAt 的模型
-	// First 一次就报 unsupported Scan）。写了的以 DSN 为准。
+	// A MySQL DSN that does not write parseTime gets parseTime=true: the driver defaults to false
+	// and a DATETIME cannot be scanned into a time.Time (measured with go-sql-driver v1.10.1, one
+	// First on a model with CreatedAt reports unsupported Scan). A DSN that writes it wins.
 	DSN string `yaml:"DSN"`
 
-	// DialTimeout 建连超时。默认 500ms。
+	// DialTimeout is the connect timeout. Defaults to 500ms.
 	//
-	// MySQL 注入 DSN 的 timeout，PostgreSQL 注入 connect_timeout（向上取整为秒）。
-	// 配 0 就不注入、用驱动自己的（两个驱动都是不限时）。不能为负，下面的时长都是。
+	// It is injected as timeout for MySQL and as connect_timeout for PostgreSQL (rounded up to whole
+	// seconds). At 0 nothing is injected and the driver's own applies (both drivers: no limit). It
+	// must not be negative, and neither may any duration below.
 	DialTimeout time.Duration `yaml:"DialTimeout"`
 
-	// MySQL 仅在 Driver 为 mysql 时生效
+	// MySQL applies only when Driver is mysql.
 	MySQL MySQLConfig `yaml:"MySQL"`
 
-	// Postgres 仅在 Driver 为 postgres 时生效
+	// Postgres applies only when Driver is postgres.
 	Postgres PostgresConfig `yaml:"Postgres"`
 
-	// TLS 连库时走不走 TLS。默认不走（DSN 里自己写的 TLS 参数照旧生效）。
-	// 字段和规则各模块共用，见 xtls.Config。
+	// TLS decides whether the database connection uses TLS. Off by default (TLS parameters written
+	// in the DSN still apply). The fields and rules are shared by the modules, see xtls.Config.
 	//
-	// 开着时 TLS 全由这一块决定：证书一律校验，**不会退回明文**。DSN 里再写 TLS 参数
-	// （PostgreSQL 的 sslmode、sslrootcert 等 ssl 开头的那几个，MySQL 的 tls）
-	// 是配置错误——两处说法不一，哪处作数都会让另一处白写。
-	// 驱动怎么接、量出来的行为见 xtls/README.md「行为与实测」。
+	// With it on, TLS is decided entirely by this block: certificates are always verified and there
+	// is **no fallback to plaintext**. Writing TLS parameters in the DSN as well (PostgreSQL's
+	// sslmode, sslrootcert and the other ssl-prefixed ones, MySQL's tls) is a configuration error —
+	// two places saying different things means whichever wins makes the other pointless.
+	// How the drivers take it, and the measured behavior, are in xtls/README.md.
 	TLS xtls.Config `yaml:"TLS"`
 
-	// MaxOpenConns 最大连接数。默认 50。
+	// MaxOpenConns is the maximum number of connections. Defaults to 50.
 	MaxOpenConns int `yaml:"MaxOpenConns"`
 
-	// MaxIdleConns 最大空闲连接数。默认 50。
+	// MaxIdleConns is the maximum number of idle connections. Defaults to 50.
 	//
-	// 配 0 是「一条空闲连接都不留」，每次查询都要重新建连，通常不是你想要的。
-	// 比 MaxOpenConns 大也没关系，database/sql 会自己压到 MaxOpenConns。
+	// 0 means "keep not one idle connection", so every query reconnects, which is usually not what
+	// you want. Larger than MaxOpenConns is fine, since database/sql caps it at MaxOpenConns itself.
 	MaxIdleConns int `yaml:"MaxIdleConns"`
 
-	// MaxLifetime 连接最长存活时间。默认 5m，配 0 不限。
+	// MaxLifetime is how long a connection may live. Defaults to 5m, and 0 means no limit.
 	MaxLifetime time.Duration `yaml:"MaxLifetime"`
 
-	// MaxIdleTime 空闲连接最长存活时间。默认 5m，配 0 不限。
+	// MaxIdleTime is how long an idle connection may live. Defaults to 5m, and 0 means no limit.
 	MaxIdleTime time.Duration `yaml:"MaxIdleTime"`
 
-	// Log 是否把 GORM 的 SQL 日志接到 slog 上。默认关闭。
+	// Log routes GORM's SQL log into slog. Off by default.
 	//
-	// SQL 执行失败时 error 字段只记服务端的错误码（另有 error_code 字段），
-	// 不记原文：实测 MySQL 8.0 的 1062 原文是 Duplicate entry 'a@b.com' for key …，
-	// 参数值就在里面。返回给调用方的错误不变。
+	// When a statement fails, the error field records the server's error code alone (with a separate
+	// error_code field) and never its text: measured, MySQL 8.0's 1062 reads
+	// Duplicate entry 'a@b.com' for key …, with the parameter value right in it. The error returned
+	// to the caller is unchanged.
 	Log bool `yaml:"Log"`
 
-	// SlowThreshold 超过这个耗时的 SQL 记一条 warn 日志。默认 3s，需 Log 开启，配 0 不记。
+	// SlowThreshold logs a warn line for any statement slower than this. Defaults to 3s, needs Log
+	// on, and 0 records none.
 	SlowThreshold time.Duration `yaml:"SlowThreshold"`
 
-	// IgnoreNotFound 是否不把「没查到记录」当错误记日志。默认 false。
+	// IgnoreNotFound decides whether "no record found" is logged as an error. false by default.
 	IgnoreNotFound bool `yaml:"IgnoreNotFound"`
 
-	// DisableForeignKeyConstraintWhenMigrating AutoMigrate 建表时不建外键约束。默认 false，即 GORM 的默认：按模型里的关联建外键。
+	// DisableForeignKeyConstraintWhenMigrating keeps AutoMigrate from creating foreign key
+	// constraints. false by default, which is GORM's default: foreign keys are created from the
+	// associations in the models.
 	//
-	// 只影响迁移建表，查询和关联照常：实测 GORM v1.31.2 + PostgreSQL 16，Owner has many Order 的两张表，
-	// 默认建出 fk_owners_orders，插一条 owner_id 不存在的 order 被拒；开着时不建外键，这条照样插进去，
-	// Preload("Orders") 照常查得出来。引用完整性从此由你的代码保证。已经建好的外键不会被删。
+	// It affects migration only, and queries and associations are unchanged: measured with GORM
+	// v1.31.2 and PostgreSQL 16 on the two tables of Owner has many Order, the default creates
+	// fk_owners_orders and an order with a nonexistent owner_id is rejected; with it on no foreign
+	// key is created, that row inserts fine, and Preload("Orders") still finds it. Referential
+	// integrity is your code's business from then on. Foreign keys already created are not dropped.
 	DisableForeignKeyConstraintWhenMigrating bool `yaml:"DisableForeignKeyConstraintWhenMigrating"`
 
-	// SkipDefaultTransaction 单条的 Create / Update / Delete 不再自动包一层事务。默认 false（GORM 的默认：包）。
+	// SkipDefaultTransaction stops wrapping a single Create / Update / Delete in a transaction.
+	// false by default (GORM's default: it wraps).
 	//
-	// 省掉的是 BEGIN / COMMIT 两个来回：实测本机回环、500 次单条 Create，PostgreSQL 16 每次约 500µs → 230µs，
-	// MySQL 8.0 约 1.0ms → 0.9ms。代价是 BeforeCreate 这类钩子里的写和主语句不再同进退；显式的 Transaction 不受影响。
+	// What it saves is the BEGIN / COMMIT round trips: measured on local loopback over 500 single
+	// Creates, PostgreSQL 16 went from about 500µs to 230µs each and MySQL 8.0 from about 1.0ms to
+	// 0.9ms. The cost is that writes inside hooks such as BeforeCreate no longer share the main
+	// statement's fate; an explicit Transaction is unaffected.
 	SkipDefaultTransaction bool `yaml:"SkipDefaultTransaction"`
 
-	// PrepareStmt 把执行过的 SQL 缓存成预编译语句，后面同样的 SQL 直接复用。默认 false。
+	// PrepareStmt caches executed SQL as prepared statements and reuses them for the same SQL later.
+	// false by default.
 	//
-	// 实测本机回环、2000 次同一条带参数的查询：MySQL 8.0 每次约 180µs → 94µs（不开时驱动每条都要
-	// prepare / execute / close 三个来回），PostgreSQL 16 约 100µs → 85µs（pgx 本来就缓存语句，差别不大）。
-	// 缓存上限和过期用 GORM 的默认值（不限条数、1h）。经 PgBouncer 这类连接池中间件时（尤其 transaction 模式），先在那套环境里量过再开。
+	// Measured on local loopback over 2000 runs of the same parameterized query: MySQL 8.0 went from
+	// about 180µs to 94µs each (without it the driver does prepare / execute / close, three round
+	// trips per statement) and PostgreSQL 16 from about 100µs to 85µs (pgx caches statements anyway,
+	// so the difference is small). The cache size and expiry use GORM's defaults (unlimited, 1h).
+	// Behind a connection pooler such as PgBouncer (transaction mode especially), measure in that
+	// environment before turning it on.
 	PrepareStmt bool `yaml:"PrepareStmt"`
 
-	// CreateBatchSize Create 一个切片时每条 INSERT 最多带几行。默认 0：整个切片一条 INSERT。
+	// CreateBatchSize is how many rows one INSERT carries when Creating a slice. 0 by default: the
+	// whole slice in one INSERT.
 	//
-	// 实测 10 行、配 3：PostgreSQL 和 MySQL 都发 4 条 INSERT（3+3+3+1），10 行都写进去。
-	// 切片很大时用它避开单条 SQL 的参数上限（PostgreSQL 65535 个）和包大小上限（MySQL max_allowed_packet）。
+	// Measured with 10 rows and a setting of 3: both PostgreSQL and MySQL sent 4 INSERTs (3+3+3+1)
+	// and all 10 rows were written. Use it for a large slice to stay under the parameter limit of one
+	// statement (65535 on PostgreSQL) and the packet size limit (MySQL's max_allowed_packet).
 	CreateBatchSize int `yaml:"CreateBatchSize"`
 
-	// Trace 是否挂 OpenTelemetry 插件。默认开启。
+	// Trace decides whether the OpenTelemetry plugin is attached. On by default.
 	//
-	// 没装链路时它产出的是 noop Span，代价可以忽略，所以默认就开着。
-	// 属性按 OTel 数据库语义约定 v1.43.0 写（db.system.name、db.namespace、
-	// db.query.text、db.operation.name、server.address / server.port），
-	// db.query.text 带占位符、不带参数值；服务端报错时只记错误码（db.response.status_code）。
+	// Without tracing installed it produces noop spans at negligible cost, which is why it is on by
+	// default. The attributes follow OTel's database semantic conventions v1.43.0 (db.system.name,
+	// db.namespace, db.query.text, db.operation.name, server.address / server.port).
+	// db.query.text carries placeholders and no parameter values; a server-side error records the
+	// error code alone (db.response.status_code).
 	Trace bool `yaml:"Trace"`
 
-	// Metric 是否导出连接池指标 db_pool_*（连接数、等待次数、等待时长等），标签 name 是实例名。默认开启。
+	// Metric decides whether the db_pool_* connection pool metrics are exported (connection counts,
+	// wait counts, wait durations and so on), labelled with the instance name. On by default.
 	//
-	// 指标在被抓取时才读 sql.DB.Stats()，不额外占协程。
-	// 按实例生效：配了 Metric: false 的实例不出现在 /metrics 里。
+	// The metrics read sql.DB.Stats() when they are scraped and occupy no goroutine.
+	// It applies per instance: an instance with Metric: false does not appear in /metrics.
 	Metric bool `yaml:"Metric"`
 }
 
-// MySQLConfig MySQL 特有的配置
+// MySQLConfig is the MySQL-specific configuration.
 type MySQLConfig struct {
-	// ReadTimeout 读超时，对应 DSN 的 readTimeout。默认 3s，配 0 不注入（驱动不限时）。
+	// ReadTimeout is the read timeout, the DSN's readTimeout. Defaults to 3s, and 0 injects nothing
+	// (so the driver has no limit).
 	ReadTimeout time.Duration `yaml:"ReadTimeout"`
 
-	// WriteTimeout 写超时，对应 DSN 的 writeTimeout。默认 5s，配 0 不注入（驱动不限时）。
+	// WriteTimeout is the write timeout, the DSN's writeTimeout. Defaults to 5s, and 0 injects
+	// nothing (so the driver has no limit).
 	WriteTimeout time.Duration `yaml:"WriteTimeout"`
 }
 
-// PostgresConfig PostgreSQL 特有的配置
+// PostgresConfig is the PostgreSQL-specific configuration.
 //
-// 这些值在建连时随 startup message 发给服务端，成为会话级 GUC。
-// DSN 里已经显式写了同名 key 的话，以 DSN 为准。
+// These values are sent to the server with the startup message when connecting and become
+// session-level GUCs. When the DSN already writes a key of the same name explicitly, the DSN wins.
 type PostgresConfig struct {
-	// StatementTimeout 单条 SQL 最长执行时间。默认不限制。
+	// StatementTimeout is how long one statement may run. No limit by default.
 	//
-	// 它是服务端的计时，管的是服务端收到语句之后执行了多久。PG 客户端这一侧
-	// 没有 MySQL 那样的读超时：连接池里的连接遇上不回话的对端（卡死的进程、
-	// 半路断掉的网络），调用方的 ctx 没有截止时间的话，查询一直等到调用方放弃。
-	// 实测把这里配成 1s 照样等：30s 后仍没返回——语句根本没到服务端，它无从计时。
-	// 管住这一段的只有调用方的截止时间：用 CWithCtx 传一个带 deadline 的 ctx，
-	// 实测给 200ms 就在 200ms 返回。
+	// It is the server's clock and governs how long the server has been executing a statement it
+	// received. The PG client side has no read timeout the way MySQL does: when a pooled connection
+	// meets an unresponsive peer (a stuck process, a network broken midway) and the caller's ctx has
+	// no deadline, the query waits until the caller gives up. Measured, setting this to 1s still
+	// waited: 30s later it had not returned — the statement never reached the server, which
+	// therefore had nothing to time. The only thing governing that stretch is the caller's deadline:
+	// pass a ctx with one through CWithCtx, and measured with 200ms it returned in 200ms.
 	StatementTimeout time.Duration `yaml:"StatementTimeout"`
 
-	// LockTimeout 等锁的最长时间。默认不限制。
+	// LockTimeout is how long to wait for a lock. No limit by default.
 	LockTimeout time.Duration `yaml:"LockTimeout"`
 
-	// IdleInTxTimeout 事务中空闲多久就断连。默认不限制。
+	// IdleInTxTimeout disconnects after this long idle inside a transaction. No limit by default.
 	IdleInTxTimeout time.Duration `yaml:"IdleInTxTimeout"`
 
-	// Params 其它任意 PG 运行时参数，原样拼进 DSN。
+	// Params holds any other PG runtime parameters, appended to the DSN as they are.
 	//
-	// pgx 自己的连接参数也写在这里，比如经 PgBouncer 的事务池连库时要写
-	// default_query_exec_mode: exec——pgx 默认的 cache_statement 用具名预备语句，
-	// 实测 PgBouncer 1.22 事务池（max_prepared_statements 为 0，1.24 之前的默认值）
-	// 20 个协程并发 1000 条查询，701 条报 prepared statement "stmtcache_…" already exists
-	// （42P05）。细节和各模式的代价见 xgorm/README.md「PostgreSQL」。
+	// pgx's own connection parameters go here too, such as default_query_exec_mode: exec when
+	// connecting through PgBouncer's transaction pooling — pgx's default cache_statement uses named
+	// prepared statements, and measured against PgBouncer 1.22 in transaction pooling
+	// (max_prepared_statements at 0, the default before 1.24), 20 goroutines running 1000 queries
+	// produced 701 reports of prepared statement "stmtcache_…" already exists (42P05). The details
+	// and the cost of each mode are in xgorm/README.md under "PostgreSQL".
 	Params map[string]string `yaml:"Params"`
 }
 
-// DefaultClientConfig 单个实例的全部默认值集中在这里
+// DefaultClientConfig gathers every default of one instance in one place.
 func DefaultClientConfig() ClientConfig {
 	return ClientConfig{
 		Driver:        DriverPostgres,
@@ -209,20 +235,22 @@ func DefaultClientConfig() ClientConfig {
 	}
 }
 
-// DefaultConfig 默认没有任何实例——没配 XGorm 就不该连任何数据库
+// DefaultConfig has no instance at all — without an XGorm block no database should be connected.
 func DefaultConfig() Config { return Config{} }
 
-// loadConfig 读配置文件里的这一块。单实例和多实例两种写法都收，
-// 每个实例先铺上 DefaultClientConfig 再解，规则见 xconfig.UnmarshalClients
+// loadConfig reads this block of the config file. Both the single- and multi-instance forms are
+// accepted, with DefaultClientConfig laid under each instance before decoding; the rules are in
+// xconfig.UnmarshalClients.
 func loadConfig() (Config, error) {
 	clients, err := xconfig.UnmarshalClients(ConfigKey, DefaultClientConfig)
 	return Config{Clients: clients}, err
 }
 
-// Validate 检查整块配置：每个实例各查一遍，报错时说清是哪个实例。
+// Validate checks the whole block, one instance at a time, naming the instance in the error.
 //
-// 按配置文件读的时候用不着它：xconfig.UnmarshalClients 每解完一个实例就调一次
-// ClientConfig.Validate，报错带着文件和行号。自己拼出一份 Config 的，可以用它先查一遍。
+// Reading from the config file does not need it: xconfig.UnmarshalClients calls
+// ClientConfig.Validate after decoding each instance, and the error carries the file and the line.
+// Code assembling a Config by hand can use this to check it first.
 func (c Config) Validate() error {
 	var errs []error
 	for _, name := range slices.Sorted(maps.Keys(c.Clients)) {
@@ -233,11 +261,13 @@ func (c Config) Validate() error {
 	return errors.Join(errs...)
 }
 
-// Validate 检查一个实例的配置本身说不通的地方，在建连之前就失败。
+// Validate reports the ways one instance's configuration contradicts itself, failing before any
+// connection is made.
 //
-// 读配置文件时 xconfig.UnmarshalClients 每解完一个实例就调它，配错的值在读配置时
-// 就失败、带着文件和行号，一个实例都还没连；直接调 New 的，New 也会调一次。
-// 返回普通 error，由调它的那一层包一次 xerror。
+// While reading the config file, xconfig.UnmarshalClients calls it after decoding each instance,
+// so a wrong value fails during reading with the file and the line, before a single instance has
+// connected; code calling New directly has New call it once as well.
+// It returns a plain error, which the layer calling it wraps in one xerror.
 func (c ClientConfig) Validate() error {
 	if c.DSN == "" {
 		return fmt.Errorf("DSN must not be empty")
@@ -261,12 +291,14 @@ func (c ClientConfig) Validate() error {
 	if c.CreateBatchSize < 0 {
 		return fmt.Errorf("CreateBatchSize must not be negative, got=%d", c.CreateBatchSize)
 	}
-	// 负的时长没有一个说得通的含义，而且底下每一处都把它静默变成「不限」：
-	// database/sql 把负的 MaxLifetime / MaxIdleTime 当成与 0 相同的「不按时长关连接」；
-	// go-sql-driver v1.10.1 的 FormatDSN 只写 > 0 的 timeout / readTimeout / writeTimeout，
-	// 负数注进去就从 DSN 里消失了，对端不回话时查询一直挂着；PG 的 connect_timeout
-	// 与几个 GUC 在注入时同样被跳过。一个减号换来一个静默消失的超时，配置文件看上去
-	// 毫无问题。0 各有文档写明的含义（不注入 / 不限），不在此列
+	// A negative duration has no meaning that holds up, and every layer underneath turns it
+	// silently into "no limit": database/sql treats a negative MaxLifetime / MaxIdleTime the same as
+	// 0, "do not close connections by age"; go-sql-driver v1.10.1's FormatDSN only writes a timeout /
+	// readTimeout / writeTimeout greater than 0, so a negative one disappears from the DSN and a
+	// query hangs forever against an unresponsive peer; PG's connect_timeout and the GUCs are
+	// likewise skipped during injection. One minus sign buys a silently vanished timeout while the
+	// config file looks perfectly fine. A 0 has a documented meaning in each case (inject nothing /
+	// no limit) and is not covered here
 	for _, f := range []struct {
 		name string
 		val  time.Duration

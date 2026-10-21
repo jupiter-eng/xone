@@ -20,19 +20,21 @@ import (
 	"gorm.io/gorm"
 )
 
-// 配置里的 TLS 块怎么交给两个内置驱动。
+// How the TLS block of the configuration reaches the two built-in drivers.
 //
-// 两边都不经 DSN 传：DSN 只说得出驱动认得的那几个参数，说不出「校验时比对这个名字」
-// （pgx 没有这个参数，verify-full 只拿 host 比对），也就接不住 xtls.Config 的 ServerName；
-// 而 MySQL 要经 DSN 传就得先把 *tls.Config 用 RegisterTLSConfig 登记成一个进程级的名字，
-// 每个实例一个、关的时候还得注销。这里直接把 *tls.Config 交给驱动的连接配置：
-// DSN 一个字节不动，也不碰任何全局。
+// Neither goes through the DSN: a DSN can only express the parameters the driver knows and cannot
+// say "verify against this name" (pgx has no such parameter, and verify-full compares against the
+// host alone), so it cannot carry xtls.Config's ServerName; and passing one to MySQL through the
+// DSN would mean registering the *tls.Config under a process-wide name with RegisterTLSConfig,
+// one per instance, to be deregistered on close. Here the *tls.Config is handed straight to the
+// driver's connection configuration: the DSN is untouched to the byte and no global is involved.
 
-// openPostgresTLS PostgreSQL 的 OpenTLS。
+// openPostgresTLS is PostgreSQL's OpenTLS.
 //
-// DSN 照旧交给 gorm 的 postgres 驱动去解（时区那套处理就还是它的），
-// 只在每次建连之前把 pgx 连接配置里的 TLS 换成我们的（stdlib.OptionBeforeConnect，
-// 拿到的是一份浅拷贝，改它不影响别的连接）。
+// The DSN is still parsed by gorm's postgres driver (so its timezone handling stays its own), and
+// the only change is replacing the TLS in pgx's connection configuration with ours before each
+// connection (stdlib.OptionBeforeConnect, which hands over a shallow copy, so modifying it affects
+// no other connection).
 func openPostgresTLS(dsn string, cfg *tls.Config) (gorm.Dialector, error) {
 	return postgres.New(postgres.Config{
 		DSN: dsn,
@@ -43,13 +45,14 @@ func openPostgresTLS(dsn string, cfg *tls.Config) (gorm.Dialector, error) {
 	}), nil
 }
 
-// usePostgresTLS 让每个主机都只走 cfg 给出的 TLS。
+// usePostgresTLS makes every host use nothing but the TLS cfg gives.
 //
-// pgx 把 sslmode 翻译成「主机 × TLS 配置」的一串候选（pgconn v5.10.0 configTLS）：
-// 默认的 prefer 是每个主机先试一次不校验证书的 TLS、再试一次明文，allow 反过来。
-// 这里按主机去重，每个主机只留一条、TLS 换成 cfg——明文的那条就没了，
-// 服务端不肯 TLS 时 pgx 报 server refused TLS connection，而不是悄悄改走明文。
-// ServerName 没配时按主机名补，和 verify-full 一样。
+// pgx translates sslmode into a list of "host × TLS configuration" candidates (pgconn v5.10.0
+// configTLS): the default, prefer, tries TLS without certificate verification once per host and
+// then plaintext, and allow is the other way round. Here the hosts are deduplicated with one entry
+// each and the TLS replaced by cfg — the plaintext entry is gone, so when the server refuses TLS
+// pgx reports "server refused TLS connection" rather than quietly falling back to plaintext.
+// An unset ServerName is filled in from the host name, as verify-full does.
 func usePostgresTLS(c *pgconn.Config, cfg *tls.Config) {
 	type target struct {
 		host string
@@ -71,12 +74,13 @@ func usePostgresTLS(c *pgconn.Config, cfg *tls.Config) {
 	c.Fallbacks = hosts[1:]
 }
 
-// postgresHosts 连接配置里的全部主机：主地址在前，之后是 pgx 生成的候选（Fallbacks）
+// postgresHosts are all the hosts in a connection configuration: the primary address first,
+// followed by the candidates pgx generated (Fallbacks).
 func postgresHosts(c *pgconn.Config) []*pgconn.FallbackConfig {
 	return append([]*pgconn.FallbackConfig{{Host: c.Host, Port: c.Port}}, c.Fallbacks...)
 }
 
-// checkPostgresTLSParams 开了 TLS 块时，DSN 里不许再写 TLS 参数
+// checkPostgresTLSParams: with the TLS block on, the DSN must not write TLS parameters as well.
 func checkPostgresTLSParams(dsn string) error {
 	key, err := postgresTLSParam(dsn)
 	if err != nil {
@@ -89,8 +93,9 @@ func checkPostgresTLSParams(dsn string) error {
 	return nil
 }
 
-// checkPostgresTCP 开了 TLS 块时，每个主机都得走 TCP：pgx 在 Unix socket 上不做 TLS
-// （pgconn v5.10.0 ParseConfig，照 libpq）。pc 是这串 DSN 解出来的连接配置
+// checkPostgresTCP: with the TLS block on, every host has to go over TCP, since pgx does no TLS on
+// a Unix socket (pgconn v5.10.0 ParseConfig, following libpq). pc is the connection configuration
+// parsed out of this DSN.
 func checkPostgresTCP(pc *pgconn.Config) error {
 	for _, h := range postgresHosts(pc) {
 		if network, _ := pgconn.NetworkAddress(h.Host, h.Port); network == "unix" {
@@ -100,20 +105,24 @@ func checkPostgresTCP(pc *pgconn.Config) error {
 	return nil
 }
 
-// disallowedKey pgconn 报「这个 key 不在允许列表里」时的那句话，key 用 %q 写在末尾
-// （pgconn v5.10.0 ParseConfigWithOptions）
+// disallowedKey is what pgconn says when a key is not in the allowed list, with the key written
+// at the end as %q.
+// (pgconn v5.10.0 ParseConfigWithOptions)
 var disallowedKey = regexp.MustCompile(`connection string key (".*") is not in ConnStringAllowedKeys$`)
 
-// postgresTLSParam DSN 里写了的第一个 TLS 参数（ssl 开头的 key），没写是空串。
+// postgresTLSParam is the first TLS parameter written in the DSN (a key starting with ssl), or an
+// empty string when there is none.
 //
-// 读 DSN 用的是 pgx 自己的解析器，不在这里照抄一遍它的引号与转义规则（理由见
-// prependPostgresKV）：ConnStringAllowedKeys 让 pgx 在遇到不在列表里的 key 时报出它的名字，
-// 而且是在读任何文件之前。从空列表开始，每报出一个不是 ssl 开头的 key 就放进列表再解，
-// 直到解得通（没写 TLS 参数）或报出一个 ssl 开头的。key 本身不含凭证，可以写进错误；
-// 错误里的其余部分（整串 DSN）不回传。
+// The DSN is read with pgx's own parser rather than copying its quoting and escaping rules here
+// (the reasoning is under prependPostgresKV): ConnStringAllowedKeys makes pgx report the name of
+// any key outside the list, and it does so before reading any file. Starting from an empty list,
+// every reported key that does not start with ssl is added and parsing is retried, until it either
+// parses (no TLS parameter written) or reports one starting with ssl. The key itself carries no
+// credentials and may go into the error; the rest of the error (the whole DSN) is not passed on.
 //
-// 环境变量（PGSSLMODE 等）和 service 文件里的 TLS 设置不算：它们不在 DSN 里，
-// 开了 TLS 块时一律被这一块盖掉（见 usePostgresTLS）。
+// Environment variables (PGSSLMODE and friends) and TLS settings in a service file do not count:
+// they are not in the DSN, and with the TLS block on they are all overridden by it (see
+// usePostgresTLS).
 func postgresTLSParam(dsn string) (string, error) {
 	allowed := []string{}
 	for {
@@ -123,7 +132,8 @@ func postgresTLSParam(dsn string) (string, error) {
 		}
 		key, ok := disallowed(err)
 		if !ok || slices.Contains(allowed, key) {
-			// 这串 DSN parsePostgres 已经解通过了，走到这里只可能是 pgx 换了那句话的写法
+			// parsePostgres already parsed this DSN successfully, so reaching here can only mean pgx
+			// changed the wording of that message
 			return "", errors.New("cannot tell whether the DSN sets TLS parameters (details omitted to keep credentials out of logs)")
 		}
 		if strings.HasPrefix(key, "ssl") {
@@ -133,7 +143,7 @@ func postgresTLSParam(dsn string) (string, error) {
 	}
 }
 
-// disallowed 从 pgconn 的错误里取出被拒的那个 key
+// disallowed extracts the rejected key out of pgconn's error.
 func disallowed(err error) (string, bool) {
 	var pce *pgconn.ParseConfigError
 	if !errors.As(err, &pce) {
@@ -147,12 +157,14 @@ func disallowed(err error) (string, bool) {
 	return key, uerr == nil
 }
 
-// checkMySQLTLS 开了 TLS 块时，DSN 里不许再写 tls= 和 allowFallbackToPlaintext=，也不能走 Unix socket。
+// checkMySQLTLS: with the TLS block on, the DSN must not write tls= or
+// allowFallbackToPlaintext= either, and must not use a Unix socket.
 //
-// allowFallbackToPlaintext=true 的意思是「服务端的问候包里没有 CLIENT_SSL 就改走明文」
-// （go-sql-driver v1.10.1 packets.go readHandshakePacket）。这一位是明文发过来的，
-// 中间人清掉它，客户端就把登录包连同之后的每条 SQL 明文交出去——开了 TLS 块也一样。
-// 写成 false 也拒：这个参数和 tls= 一样只该在一处配
+// allowFallbackToPlaintext=true means "fall back to plaintext when the server's handshake packet
+// does not carry CLIENT_SSL" (go-sql-driver v1.10.1 packets.go readHandshakePacket). That bit
+// arrives in plaintext, so a man in the middle clearing it makes the client hand over the login
+// packet and every SQL statement after it in the clear — even with the TLS block on. Writing false
+// is rejected too: like tls=, this parameter belongs in exactly one place.
 func checkMySQLTLS(dsn string, cfg *mysqldriver.Config) error {
 	if mysqlParamSet(dsn, "tls") {
 		return fmt.Errorf("the DSN sets tls while the TLS block is enabled; configure TLS in one place only " +
@@ -168,21 +180,24 @@ func checkMySQLTLS(dsn string, cfg *mysqldriver.Config) error {
 	return nil
 }
 
-// openMySQLTLS MySQL 的 OpenTLS：解开 DSN、把 cfg 放进驱动的连接配置，用 connector 建连接池。
+// openMySQLTLS is MySQL's OpenTLS: parse the DSN, put cfg into the driver's connection
+// configuration, and build the pool through a connector.
 //
-// ServerName 没配时由驱动按 Addr 的主机部分补上（go-sql-driver v1.10.1 Config.normalize，
-// NewConnector 会调它）。版本探测照旧挪到 Ready，理由见 openMySQL。
+// An unset ServerName is filled in by the driver from the host part of Addr (go-sql-driver
+// v1.10.1 Config.normalize, which NewConnector calls). Version detection still moves to Ready, for
+// the reason given under openMySQL.
 //
-// 连接池在这里就建出来了：gorm.Open 的 Initialize 失败时会替我们关掉它，
-// 之后的每一步失败由 open 关（和 Open 那条路一样经 db.DB() 取到的就是它）。
+// The pool is built right here: when gorm.Open's Initialize fails it closes it for us, and any
+// failure after that is closed by open (the same one db.DB() returns, as on the Open path).
 func openMySQLTLS(dsn string, cfg *tls.Config) (gorm.Dialector, error) {
 	dc, err := mysqldriver.ParseDSN(dsn)
 	if err != nil {
-		return nil, errMalformedDSN // 不回传驱动的错误，理由见 resolveMySQL
+		return nil, errMalformedDSN // the driver's error is not passed on, for the reason given under resolveMySQL
 	}
 	dc.TLS = cfg.Clone()
-	// 兜底：checkMySQLTLS 已经拒了 DSN 里的这个参数，这里再钉死一次，
-	// 服务端（或中间人）不给 CLIENT_SSL 时报 ErrNoTLS，不改走明文
+	// A backstop: checkMySQLTLS already rejected this parameter in the DSN, and pinning it here
+	// again means that when the server (or a man in the middle) withholds CLIENT_SSL the result is
+	// ErrNoTLS rather than a fallback to plaintext
 	dc.AllowFallbackToPlaintext = false
 	connector, err := mysqldriver.NewConnector(dc)
 	if err != nil {

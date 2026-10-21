@@ -18,7 +18,7 @@ var configDocs = map[string]docSection{
 	"XLog":        {"xlog/README.md", "配置"},
 	"XTrace":      {"xtrace/README.md", "配置"},
 	"XMetric":     {"xmetric/README.md", "配置"},
-	"XGorm":       {"xgorm/README.md", "配置"},
+	"XGorm":       {"xgorm/README.md", "Configuration"},
 	"XRedis":      {"xredis/README.md", "配置"},
 	"XKafka":      {"xkafka/README.md", "配置"},
 	"XCache":      {"xcache/README.md", "配置"},
@@ -33,7 +33,7 @@ var configDocs = map[string]docSection{
 // exampleDocs 自己没有配置块、却写了 YAML 示例的节：只校验示例。
 // xgorm/clickhouse 的示例写的是 XGorm 块；docs/config.md 的 Profiles、Import 两节讲的是 XApp 的两项
 var exampleDocs = []docSection{
-	{"xgorm/clickhouse/README.md", "配置"},
+	{"xgorm/clickhouse/README.md", "Configuration"},
 	{"docs/config.md", "Profiles"},
 	{"docs/config.md", "Import"},
 }

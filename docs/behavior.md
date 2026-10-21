@@ -34,13 +34,13 @@ MySQL 8.0.46, Redis 7.0.15, ClickHouse 24.8.14).
 | [`XEcho` group fallback routes](../xecho/README.md#behavior-measured) | A group with middleware quietly registers `RouteNotFound` and `c.Path()` becomes `/api/v1/*` | Anything landing on a fallback is recorded as `unmatched` | Otherwise a 404 shows up on the dashboard as `/api/v1/*` and does not match xgin |
 | [`XEcho`'s `e.Pre`](../xecho/README.md#behavior-measured) | Middleware on `e.Use` cannot see requests that ended inside Pre and cannot catch panics there | The built-in middleware sits on `e.Pre`, touches no request there, keeps the ctx on `echo.Context` and swaps it onto the request after routing | Auth, rate limiting and 301s in Pre reach neither the log nor the metrics; replacing the request in Pre breaks `MethodOverride` |
 | [`http.Server.ErrorLog`](../xgin/README.md#logs) | nil: writes through the standard library's log (INFO through slog, with a different message per line) | Routed into slog as WARN, with the message `<module> http server error` | Errors such as a failed TLS handshake cannot be searched or alerted on by message |
-| [`XGorm.Log: false`](../xgorm/README.md#行为与实测) | Replaced by GORM's own stdout logger | Really prints nothing | That default implementation writes ANSI colors straight to `os.Stdout` |
-| [`XGorm.Log: true`](../xgorm/README.md#行为与实测) | Parameter values are interpolated into the SQL before logging | Only the SQL with its placeholders is logged | Otherwise `WHERE password = ?` is logged with the real password |
-| [`XGorm` connecting](../xgorm/README.md#行为与实测) | `gorm.Open` pings once on its own | Turned off, in favor of the framework's ctx-aware probe | It uses its own context, beyond the reach of the stop signal and the retries |
-| [`XGorm` MySQL / ClickHouse version query](../xgorm/README.md#行为与实测) | Queried inside `Initialize` with `context.Background()` | Moved into the connection probe | That is the first connection, and it neither retries nor honors the stop signal |
-| [`XGorm` MySQL `parseTime`](../xgorm/README.md#行为与实测) | `false` | `true` is added when the DSN does not say | Otherwise a `DATETIME` cannot be scanned into a `time.Time` |
-| [`XGorm` server error text](../xgorm/README.md#行为与实测) | Logged and put on the span as is | Only the error code is recorded | The text carries parameter values |
-| [go-sql-driver's log](../xgorm/README.md#行为与实测) | The standard library's log to `os.Stderr` | Routed into slog as WARN | Plain text bypassing slog never reaches the logging platform |
+| [`XGorm.Log: false`](../xgorm/README.md#behavior-measured) | Replaced by GORM's own stdout logger | Really prints nothing | That default implementation writes ANSI colors straight to `os.Stdout` |
+| [`XGorm.Log: true`](../xgorm/README.md#behavior-measured) | Parameter values are interpolated into the SQL before logging | Only the SQL with its placeholders is logged | Otherwise `WHERE password = ?` is logged with the real password |
+| [`XGorm` connecting](../xgorm/README.md#behavior-measured) | `gorm.Open` pings once on its own | Turned off, in favor of the framework's ctx-aware probe | It uses its own context, beyond the reach of the stop signal and the retries |
+| [`XGorm` MySQL / ClickHouse version query](../xgorm/README.md#behavior-measured) | Queried inside `Initialize` with `context.Background()` | Moved into the connection probe | That is the first connection, and it neither retries nor honors the stop signal |
+| [`XGorm` MySQL `parseTime`](../xgorm/README.md#behavior-measured) | `false` | `true` is added when the DSN does not say | Otherwise a `DATETIME` cannot be scanned into a `time.Time` |
+| [`XGorm` server error text](../xgorm/README.md#behavior-measured) | Logged and put on the span as is | Only the error code is recorded | The text carries parameter values |
+| [go-sql-driver's log](../xgorm/README.md#behavior-measured) | The standard library's log to `os.Stderr` | Routed into slog as WARN | Plain text bypassing slog never reaches the logging platform |
 | [`XRedis` command timeout](../xredis/README.md#行为与实测) | Honors `ReadTimeout` only | Honors the caller's ctx deadline | Otherwise a request with a 200ms budget waits out the whole `ReadTimeout` |
 | [`XRedis` connecting](../xredis/README.md#行为与实测) | Redials 5 times internally per connection | Dials once | Otherwise one command takes 11.7s when the host is down |
 | [`XRedis` handshake on a new connection](../xredis/README.md#行为与实测) | `CLIENT SETINFO` and maintenance notifications both on | Both off | A server older than 7.2 leaves one failing span per connection |
@@ -90,8 +90,8 @@ XGorm, XRedis and XKafka each probe once at startup through one shared implement
 | Module | Measurements |
 |---|---|
 | [xtls](../xtls/README.md#行为与实测) | Client-side TLS: each driver's errors and timings, and the driver defaults without a TLS block |
-| [xgorm](../xgorm/README.md#行为与实测) | GORM in general, MySQL, PostgreSQL |
-| [xgorm/clickhouse](../xgorm/clickhouse/README.md#行为与实测) | ClickHouse: timeouts and cancellation, resends, authentication, TLS |
+| [xgorm](../xgorm/README.md#behavior-measured) | GORM in general, MySQL, PostgreSQL |
+| [xgorm/clickhouse](../xgorm/clickhouse/README.md#behavior-measured) | ClickHouse: timeouts and cancellation, resends, authentication, TLS |
 | [xredis](../xredis/README.md#行为与实测) | go-redis: timeouts, connection retries, the handshake on a new connection, memory |
 | [xcache](../xcache/README.md#行为与实测) | ristretto: internal overhead, stopping, the cost of metrics, TTL |
 | [xkafka](../xkafka/README.md#行为与实测) | franz-go: automatic commits, offset reset, `Close` and `Flush`, `Ping`, a missing topic, rebalancing and session timeouts |

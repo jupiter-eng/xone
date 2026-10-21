@@ -32,11 +32,11 @@ import (
 	"github.com/jupiter-eng/xone/xtls"
 )
 
-// tlsSecret 测试 DSN 里的密码，断言「错误里没有密码」时拿它比对
+// tlsSecret is the password in the test DSNs, used for comparison when asserting that an error carries no password.
 const tlsSecret = "tls-unit-secret"
 
-// testPKI 测试时现造的 CA 和它签的服务端证书（只写 localhost，不写 IP：
-// 按 IP 连、或者按别的主机名比对都必须失败）、客户端证书
+// testPKI is the CA built for the test together with the server certificate it signs (which names only localhost and no IP,
+// so connecting by IP or verifying against another host name must fail) and a client certificate.
 type testPKI struct {
 	caFile, otherCAFile, certFile, keyFile string
 	server                                 tls.Certificate
@@ -97,15 +97,15 @@ func newTestPKI(t *testing.T) testPKI {
 	return p
 }
 
-// handshakes 桩服务端看到的每一条连接
+// handshakes records every connection the stub server saw.
 type handshakes struct {
 	mu        sync.Mutex
-	tls       int      // 握手成功的 TLS 连接
-	plaintext int      // 第一个字节就不是 TLS 握手的连接
-	sni       []string // 每次握手客户端报的 ServerName
-	clientCrt bool     // 见过客户端证书
-	users     []string // HTTPS 请求头里的 X-ClickHouse-User
-	rawQuery  []string // HTTPS 请求的查询串
+	tls       int      // TLS connections that completed the handshake
+	plaintext int      // connections whose first byte was not a TLS handshake
+	sni       []string // the ServerName the client announced on each handshake
+	clientCrt bool     // a client certificate was seen
+	users     []string // the X-ClickHouse-User header of the HTTPS requests
+	rawQuery  []string // the query string of the HTTPS requests
 }
 
 func (h *handshakes) snapshot() (tlsN, plain int, sni []string) {
@@ -123,9 +123,9 @@ func (h *handshakes) record(c *tls.Conn) {
 	h.clientCrt = h.clientCrt || len(st.PeerCertificates) > 0
 }
 
-// fakeNativeTLS 一个只收 TLS 的 native 协议桩：握手之后读掉客户端的 Hello，回一个
-// 516 AUTHENTICATION_FAILED 的 Exception 包（native 握手阶段服务端就是这样拒绝凭证的）。
-// 回 516 是为了让 xgorm 只试一次就返回，用例不必等满三轮重试
+// fakeNativeTLS is a native-protocol stub that accepts TLS only: after the handshake it reads the client Hello and replies with a
+// 516 AUTHENTICATION_FAILED Exception packet (which is how a server rejects credentials during the native handshake).
+// Replying 516 makes xgorm return after a single attempt, so the test does not have to wait out all three retries.
 func fakeNativeTLS(t *testing.T, srv *tls.Config) (string, *handshakes) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -150,7 +150,7 @@ func fakeNativeTLS(t *testing.T, srv *tls.Config) (string, *handshakes) {
 				if err != nil {
 					return
 				}
-				if first[0] != 0x16 { // TLS 记录层的 handshake 类型
+				if first[0] != 0x16 { // the handshake type of the TLS record layer
 					h.mu.Lock()
 					h.plaintext++
 					h.mu.Unlock()
@@ -173,7 +173,7 @@ func fakeNativeTLS(t *testing.T, srv *tls.Config) (string, *handshakes) {
 	return ln.Addr().String(), h
 }
 
-// peekedConn 先读完 bufio 里预读的字节再读底下的连接
+// peekedConn reads the bytes buffered by bufio before continuing with the underlying connection.
 type peekedConn struct {
 	net.Conn
 	r *bufio.Reader
@@ -181,7 +181,7 @@ type peekedConn struct {
 
 func (c *peekedConn) Read(p []byte) (int, error) { return c.r.Read(p) }
 
-// exceptionPacket native 协议的 ServerException 包（clickhouse-go v2.48.0 lib/proto/exception.go 的解码顺序）
+// exceptionPacket is the native protocol's ServerException packet (field order from clickhouse-go v2.48.0 lib/proto/exception.go).
 func exceptionPacket(code int32, name, msg string) []byte {
 	b := []byte{2} // proto.ServerException
 	b = binary.LittleEndian.AppendUint32(b, uint32(code))
@@ -192,7 +192,7 @@ func exceptionPacket(code int32, name, msg string) []byte {
 	return append(b, 0) // nested = false
 }
 
-// fakeHTTPS 一个 HTTPS 桩：每个请求都回 403 + 516，形状同服务端拒绝凭证时的 HTTP 响应
+// fakeHTTPS is an HTTPS stub that answers every request with 403 + 516, the shape of the HTTP response a server sends when it rejects credentials.
 func fakeHTTPS(t *testing.T, srv *tls.Config) (string, *handshakes) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -220,14 +220,14 @@ func fakeHTTPS(t *testing.T, srv *tls.Config) (string, *handshakes) {
 			_, _ = w.Write([]byte("Code: 516. DB::Exception: xone: Authentication failed. (AUTHENTICATION_FAILED)\n"))
 		}),
 		TLSConfig: cfg,
-		ErrorLog:  log.New(io.Discard, "", 0), // 握手失败正是要测的，不往 stderr 打
+		ErrorLog:  log.New(io.Discard, "", 0), // handshake failures are exactly what is being tested, so they do not go to stderr
 	}
 	go func() { _ = s.ServeTLS(ln, "", "") }()
 	t.Cleanup(func() { _ = s.Close() })
 	return ln.Addr().String(), h
 }
 
-// localhost 把 127.0.0.1:port 写成 localhost:port：服务端证书上只有 localhost
+// localhost rewrites 127.0.0.1:port as localhost:port: the server certificate names only localhost.
 func localhost(addr string) string {
 	_, port, _ := net.SplitHostPort(addr)
 	return net.JoinHostPort("localhost", port)
@@ -249,7 +249,7 @@ func TestNew_TLSBlockApplies_NativeAndHTTPSOnlyUseTLS(t *testing.T) {
 		fake   func(*testing.T, *tls.Config) (string, *handshakes)
 	}{
 		{"native", "clickhouse", fakeNativeTLS},
-		// https:// 在 DSN 里不写 secure=true：开了 TLS 块就不必写（写了是冲突）
+		// https:// without secure=true in the DSN: with a TLS block it is unnecessary (and writing it is a conflict).
 		{"https", "https", fakeHTTPS},
 	} {
 		for _, c := range []struct {
@@ -258,44 +258,44 @@ func TestNew_TLSBlockApplies_NativeAndHTTPSOnlyUseTLS(t *testing.T) {
 			ok      bool
 			wantSNI string
 		}{
-			{"CAFile 认得服务端证书_ServerName按主机名补", xtls.Config{Enable: true, CAFile: p.caFile}, true, "localhost"},
-			{"ServerName 按证书上的名字填", xtls.Config{Enable: true, CAFile: p.caFile, ServerName: "localhost"}, true, "localhost"},
-			{"不填 CAFile 用系统根证书_自签的过不了", xtls.Config{Enable: true}, false, ""},
-			{"CA 不对", xtls.Config{Enable: true, CAFile: p.otherCAFile}, false, ""},
-			{"ServerName 对不上证书", xtls.Config{Enable: true, CAFile: p.caFile, ServerName: "other.internal"}, false, ""},
+			{"CAFile_recognizes_the_server_certificate_ServerName_filled_from_the_host", xtls.Config{Enable: true, CAFile: p.caFile}, true, "localhost"},
+			{"ServerName_set_to_the_name_on_the_certificate", xtls.Config{Enable: true, CAFile: p.caFile, ServerName: "localhost"}, true, "localhost"},
+			{"without_CAFile_the_system_roots_are_used_and_a_self_signed_certificate_fails", xtls.Config{Enable: true}, false, ""},
+			{"wrong_CA", xtls.Config{Enable: true, CAFile: p.otherCAFile}, false, ""},
+			{"ServerName_does_not_match_the_certificate", xtls.Config{Enable: true, CAFile: p.caFile, ServerName: "other.internal"}, false, ""},
 		} {
 			t.Run(proto.name+"_"+c.name, func(t *testing.T) {
 				addr, h := proto.fake(t, srv)
 				dsn := proto.scheme + "://xone:" + tlsSecret + "@" + localhost(addr) + "/db"
 				_, _, err := xgorm.New(context.Background(), tlsCfg(dsn, c.tls))
 				if err == nil {
-					t.Fatal("桩服务端一律回 516，不该建连成功")
+					t.Fatal("the stub server always replies 516, so connecting must not succeed")
 				}
 				if strings.Contains(err.Error(), tlsSecret) {
-					t.Errorf("错误里带着密码：%v", err)
+					t.Errorf("the error carries the password: %v", err)
 				}
-				t.Logf("错误：%v", err)
+				t.Logf("error: %v", err)
 				n, plain, sni := h.snapshot()
 				if plain != 0 {
-					t.Errorf("开了 TLS 块不该有明文连接，got=%d", plain)
+					t.Errorf("with a TLS block there must be no plaintext connection, got=%d", plain)
 				}
 				if c.ok {
-					// 握手过了、服务端的 516 经 TLS 传回来：认成认证失败，只试一次
+					// The handshake passed and the server's 516 came back over TLS: recognized as an auth failure, so only one attempt.
 					if !strings.Contains(err.Error(), "authentication to "+localhost(addr)+" failed") {
-						t.Errorf("TLS 握手过了、服务端回 516，该报认证失败，got=%v", err)
+						t.Errorf("the TLS handshake passed and the server replied 516, which must be reported as an auth failure, got=%v", err)
 					}
 					if n != 1 || len(sni) != 1 || sni[0] != c.wantSNI {
-						t.Errorf("该只有一次 TLS 握手、ServerName=%q，got=%d 次 sni=%q", c.wantSNI, n, sni)
+						t.Errorf("there must be exactly one TLS handshake with ServerName=%q, got=%d handshakes sni=%q", c.wantSNI, n, sni)
 					}
 					return
 				}
-				// 证书不对：服务端那一侧握手失败，客户端报证书错误，而且不重试（xclient.tlsRejected）
+				// Wrong certificate: the handshake fails on the server side, the client reports a certificate error, and it is not retried (xclient.tlsRejected).
 				if !strings.Contains(err.Error(), "certificate") {
-					t.Errorf("证书不对该报证书错误，got=%v", err)
+					t.Errorf("a wrong certificate must be reported as a certificate error, got=%v", err)
 				}
 				var verr *tls.CertificateVerificationError
 				if !errors.As(err, &verr) {
-					t.Errorf("错误链上该有 *tls.CertificateVerificationError，got=%v", err)
+					t.Errorf("the error chain must contain a *tls.CertificateVerificationError, got=%v", err)
 				}
 			})
 		}
@@ -303,8 +303,8 @@ func TestNew_TLSBlockApplies_NativeAndHTTPSOnlyUseTLS(t *testing.T) {
 }
 
 func TestNew_TLSBlock_HTTPSCredentialsInHeaderNotURL(t *testing.T) {
-	// 驱动在有 TLS 时把用户名、密码放进 X-ClickHouse-User / X-ClickHouse-Key 请求头，
-	// 没有 TLS 时放进 URL 的 user:password（v2.48.0 conn_http.go applyOptionsToRequest）
+	// With TLS the driver puts the user name and password into the X-ClickHouse-User / X-ClickHouse-Key headers,
+	// and without TLS into the URL as user:password (v2.48.0 conn_http.go applyOptionsToRequest).
 	p := newTestPKI(t)
 	addr, h := fakeHTTPS(t, &tls.Config{Certificates: []tls.Certificate{p.server}})
 	dsn := "https://xone:" + tlsSecret + "@" + localhost(addr) + "/db"
@@ -312,11 +312,11 @@ func TestNew_TLSBlock_HTTPSCredentialsInHeaderNotURL(t *testing.T) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if len(h.users) == 0 || h.users[0] != "xone" {
-		t.Fatalf("HTTPS 请求该带 X-ClickHouse-User，got=%q", h.users)
+		t.Fatalf("the HTTPS request must carry X-ClickHouse-User, got=%q", h.users)
 	}
 	for _, q := range h.rawQuery {
 		if strings.Contains(q, "secure") {
-			t.Errorf("为解析补的 secure=true 不该变成请求参数（服务端会把它当成一个设置），got=%q", q)
+			t.Errorf("the secure=true added for parsing must not become a request parameter (the server would read it as a setting), got=%q", q)
 		}
 	}
 }
@@ -329,23 +329,23 @@ func TestNew_TLSBlock_MutualAuthSendsClientCert(t *testing.T) {
 
 	if _, _, err := xgorm.New(context.Background(), tlsCfg(dsn, xtls.Config{Enable: true, CAFile: p.caFile})); err == nil ||
 		strings.Contains(err.Error(), "authentication to") {
-		t.Fatalf("服务端要客户端证书而没带，握手就该失败，got=%v", err)
+		t.Fatalf("the handshake must fail when the server requires a client certificate and none is sent, got=%v", err)
 	}
 	_, _, err := xgorm.New(context.Background(), tlsCfg(dsn,
 		xtls.Config{Enable: true, CAFile: p.caFile, CertFile: p.certFile, KeyFile: p.keyFile}))
 	if err == nil || !strings.Contains(err.Error(), "authentication to") {
-		t.Fatalf("带上客户端证书握手该过，随后收到 516，got=%v", err)
+		t.Fatalf("with a client certificate the handshake must pass and 516 must follow, got=%v", err)
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if !h.clientCrt {
-		t.Error("服务端该看到客户端证书")
+		t.Error("the server must have seen the client certificate")
 	}
 }
 
 func TestNew_TLSBlock_MultiHostVerifiesCertOfConnectedHost(t *testing.T) {
-	// 第一台连不上，驱动按 in_order 去连第二台：ServerName 没配时要按第二台的名字比对，
-	// 而不是钉死成第一台的。第一台写成 127.0.0.1，证书上没有这个 IP，钉死的话握手必败
+	// The first host is unreachable, so the driver moves on to the second under in_order: with no ServerName configured,
+	// verification must use the second host's name, not the first's. The first is written as 127.0.0.1, which the certificate does not name, so pinning would fail the handshake.
 	p := newTestPKI(t)
 	addr, h := fakeNativeTLS(t, &tls.Config{Certificates: []tls.Certificate{p.server}})
 	closed, err := net.Listen("tcp", "127.0.0.1:0")
@@ -358,15 +358,15 @@ func TestNew_TLSBlock_MultiHostVerifiesCertOfConnectedHost(t *testing.T) {
 	dsn := "clickhouse://xone:" + tlsSecret + "@" + dead + "," + localhost(addr) + "/db"
 	_, _, err = xgorm.New(context.Background(), tlsCfg(dsn, xtls.Config{Enable: true, CAFile: p.caFile}))
 	if err == nil || !strings.Contains(err.Error(), "authentication to") {
-		t.Fatalf("第二台的证书对得上，握手该过、随后收到 516，got=%v", err)
+		t.Fatalf("the second host's certificate matches, so the handshake must pass and 516 must follow, got=%v", err)
 	}
 	if n, _, sni := h.snapshot(); n != 1 || sni[0] != "localhost" {
-		t.Errorf("该按第二台的名字 localhost 握手，got=%d 次 sni=%q", n, sni)
+		t.Errorf("the handshake must use the second host's name localhost, got=%d handshakes sni=%q", n, sni)
 	}
 }
 
 func TestNew_TLSBlockFailsOnPlaintextPort(t *testing.T) {
-	// 服务端只说明文：TLS 握手失败，不会退回明文
+	// The server speaks plaintext only: the TLS handshake fails and there is no fallback to plaintext.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -378,20 +378,20 @@ func TestNew_TLSBlockFailsOnPlaintextPort(t *testing.T) {
 			if err != nil {
 				return
 			}
-			// 明文服务端对 ClientHello 回的是它自己的协议字节，这里回一个 Exception 包
+			// A plaintext server answers a ClientHello with its own protocol bytes; here that is an Exception packet.
 			_, _ = c.Write(exceptionPacket(102, "DB::Exception", "Unexpected packet"))
 			c.Close()
 		}
 	}()
 	p := newTestPKI(t)
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond) // 不等满三轮重试
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond) // do not wait out all three retries
 	defer cancel()
 	_, _, err = xgorm.New(ctx, tlsCfg("clickhouse://xone:"+tlsSecret+"@"+localhost(ln.Addr().String())+"/db",
 		xtls.Config{Enable: true, CAFile: p.caFile}))
 	if err == nil || !strings.Contains(err.Error(), "tls") {
-		t.Fatalf("明文端口上 TLS 握手该失败，got=%v", err)
+		t.Fatalf("the TLS handshake must fail on a plaintext port, got=%v", err)
 	}
-	t.Logf("错误：%v", err)
+	t.Logf("error: %v", err)
 }
 
 func TestResolve_TLSBlockConflictsWithDSNTLSParams(t *testing.T) {
@@ -406,26 +406,26 @@ func TestResolve_TLSBlockConflictsWithDSNTLSParams(t *testing.T) {
 	} {
 		_, _, err := resolve(tlsCfg(dsn, on))
 		if err == nil || !strings.Contains(err.Error(), "configure TLS in one place") {
-			t.Errorf("%s：TLS 块开着时 DSN 里再写 TLS 参数该报冲突，got=%v", dsn, err)
+			t.Errorf("%s: writing TLS parameters in the DSN while a TLS block is on must be a conflict, got=%v", dsn, err)
 			continue
 		}
 		if strings.Contains(err.Error(), tlsSecret) {
-			t.Errorf("错误里带着密码：%v", err)
+			t.Errorf("the error carries the password: %v", err)
 		}
 	}
-	// 没开 TLS 块时 DSN 里的 TLS 参数照旧生效
+	// Without a TLS block the TLS parameters in the DSN keep working as before.
 	if _, _, err := resolve(tlsCfg("https://u:p@h:8443/db?secure=true&skip_verify=true", xtls.Config{})); err != nil {
-		t.Errorf("没开 TLS 块时 secure / skip_verify 照旧可以写：%v", err)
+		t.Errorf("without a TLS block secure / skip_verify may still be written: %v", err)
 	}
 }
 
 func TestResolve_TLSBlockRejectsHTTP(t *testing.T) {
 	_, _, err := resolve(tlsCfg("http://u:"+tlsSecret+"@h:8123/db", xtls.Config{Enable: true}))
 	if err == nil || !strings.Contains(err.Error(), "http:// never runs TLS") {
-		t.Fatalf("http:// 配 TLS 块会悄悄走明文，该报配置错误，got=%v", err)
+		t.Fatalf("http:// with a TLS block would quietly go plaintext and must be a configuration error, got=%v", err)
 	}
 	if strings.Contains(err.Error(), tlsSecret) {
-		t.Errorf("错误里带着密码：%v", err)
+		t.Errorf("the error carries the password: %v", err)
 	}
 }
 
@@ -433,33 +433,33 @@ func TestResolve_TLSBlockHTTPSNeedsNoSecureAndDSNUnchanged(t *testing.T) {
 	const in = "https://u:p@h:8443/db?max_execution_time=5"
 	dsn, info, err := resolve(tlsCfg(in, xtls.Config{Enable: true}))
 	if err != nil {
-		t.Fatalf("开了 TLS 块时 https:// 不写 secure 该能解：%v", err)
+		t.Fatalf("with a TLS block, https:// without secure must parse: %v", err)
 	}
 	if strings.Contains(dsn, "secure") {
-		t.Errorf("为解析补的 secure 不该写回 DSN，got=%q", dsn)
+		t.Errorf("the secure added for parsing must not be written back into the DSN, got=%q", dsn)
 	}
 	if info.Addr != "h:8443" || info.DB != "db" {
-		t.Errorf("连接信息不对，got=%+v", info)
+		t.Errorf("wrong connection info, got=%+v", info)
 	}
-	// 没开 TLS 块时驱动的规矩不变：https:// 必须写 secure=true
+	// Without a TLS block the driver's rule is unchanged: https:// must carry secure=true.
 	if _, _, err := resolve(tlsCfg(in, xtls.Config{})); err == nil {
-		t.Error("没开 TLS 块时 https:// 不写 secure 该照驱动的规矩报错")
+		t.Error("without a TLS block, https:// without secure must be rejected by the driver's rule")
 	}
 }
 
 func TestParseDSN_HttpsNeedsSecureToKeepScheme(t *testing.T) {
-	// 驱动建 HTTP 连接时按解析时记下的 scheme 拼地址；按 http:// 解的话手里有 TLS 也发明文
+	// When opening an HTTP connection the driver builds the address from the scheme recorded at parse time; parsed as http:// it would send plaintext even with TLS in hand.
 	opts, err := parseDSN("https://u:p@h:8443/db", true)
 	if err != nil || opts.Protocol != chgo.HTTP {
-		t.Fatalf("https:// 该解成 HTTP 协议，got=%v err=%v", opts, err)
+		t.Fatalf("https:// must resolve to the HTTP protocol, got=%v err=%v", opts, err)
 	}
 	if opts, err := parseDSN("clickhouse://u:p@h:9440/db", true); err != nil || opts.Protocol != chgo.Native || opts.TLS != nil {
-		t.Errorf("native 的 DSN 原样解，TLS 留给 openTLS 设，got=%+v err=%v", opts, err)
+		t.Errorf("a native DSN is parsed as is and TLS is left for openTLS to set, got=%+v err=%v", opts, err)
 	}
 }
 
 func TestOpenTLS_DoesNotPassDSNToGORMDriver(t *testing.T) {
-	// gorm 的 clickhouse 驱动拿到 DSN 会自己解一份 Options，UpdateLocalTable 按它直连每台主机、不带 TLS 块
+	// Given a DSN, gorm's clickhouse driver parses its own Options; UpdateLocalTable then connects to each host directly, without the TLS block.
 	d, err := openTLS("clickhouse://u:p@h:9440/db", &tls.Config{})
 	if err != nil {
 		t.Fatal(err)
@@ -467,19 +467,19 @@ func TestOpenTLS_DoesNotPassDSNToGORMDriver(t *testing.T) {
 	cd := d.(*clickhouse.Dialector)
 	t.Cleanup(func() { _ = cd.Conn.(interface{ Close() error }).Close() })
 	if cd.DSN != "" || cd.Conn == nil || !cd.SkipInitializeWithVersion {
-		t.Errorf("该只给连接池、关掉 Initialize 里的查版本，got DSN=%q Conn=%v Skip=%v", cd.DSN, cd.Conn, cd.SkipInitializeWithVersion)
+		t.Errorf("only the pool must be handed over, with the version query in Initialize turned off, got DSN=%q Conn=%v Skip=%v", cd.DSN, cd.Conn, cd.SkipInitializeWithVersion)
 	}
-	// 驱动解析 http_proxy 失败时回显整个代理地址（见 TestResolve_RejectsDriverUnparsableDSNWithoutEcho）
+	// When the driver fails to parse http_proxy it echoes the whole proxy address (see TestResolve_RejectsDriverUnparsableDSNWithoutEcho).
 	bad := "clickhouse://h:9440/db?http_proxy=" + url.QueryEscape("http://u:"+tlsSecret+"@proxy:3128/%zz")
 	if _, err := openTLS(bad, &tls.Config{}); err == nil || strings.Contains(err.Error(), tlsSecret) {
-		t.Errorf("解析失败该报错且不回显 DSN，got=%v", err)
+		t.Errorf("a parse failure must be an error and must not echo the DSN, got=%v", err)
 	}
 }
 
 func TestRegister_OpenTLSIsOpenTLS(t *testing.T) {
-	// 打在注册的方言上：没接的话配了 TLS 块会被 xgorm 以「不支持」拒掉
+	// Aimed at the registered dialect: without it, a configured TLS block would be rejected by xgorm as unsupported.
 	c := tlsCfg("clickhouse://u:p@h:9440/db", xtls.Config{Enable: true})
 	if err := c.Validate(); err != nil {
-		t.Errorf("clickhouse 该收 TLS 块：%v", err)
+		t.Errorf("clickhouse must accept a TLS block: %v", err)
 	}
 }
