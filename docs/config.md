@@ -409,7 +409,7 @@ and its troubleshooting.
 | `XRedis` | Redis | [xredis/README.md](../xredis/README.md#配置) |
 | `XKafka` | Kafka | [xkafka/README.md](../xkafka/README.md#configuration) |
 | `XCache` | A local cache | [xcache/README.md](../xcache/README.md#configuration) |
-| `XHttp` | Outbound HTTP | [xhttp/README.md](../xhttp/README.md#配置) |
+| `XHttp` | Outbound HTTP | [xhttp/README.md](../xhttp/README.md#configuration) |
 | `XGin` | A web server | [xgin/README.md](../xgin/README.md#configuration) |
 | `XGinSwagger` | API documentation | [xginswagger/README.md](../xginswagger/README.md#configuration) |
 | `XEcho` | A web server (Echo) | [xecho/README.md](../xecho/README.md#configuration) |

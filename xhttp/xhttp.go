@@ -28,38 +28,38 @@ import (
 	"github.com/jupiter-eng/xone/xtrace"
 )
 
-// fallbackTimeout 初始化之前或关闭之后，兜底 client 的超时
+// fallbackTimeout is the timeout of the fallback client, used before initialization and after shutdown.
 //
-// 零值超时是「永不超时」而不是「有个默认值」：对端不响应时请求会一直挂着。
-// 最难受的是关闭阶段——某个组件在关闭时发一个这样的请求，
-// 整个进程的退出流程就被卡在那里了。
+// A zero timeout means "never time out", not "there is some default": with an unresponsive peer the request hangs
+// forever. The worst of it is during shutdown -- one component sending such a request while closing would leave the
+// whole process stuck there.
 const fallbackTimeout = 30 * time.Second
 
-// New 按配置建一个 HTTP 客户端，不碰本包的全局实例。
+// New builds an HTTP client from the configuration and does not touch this package's global instance.
 //
-// 一个例外：cfg.Metric 开着时（默认开着）耗时直方图要注册到 xmetric
-// 的全局 Registry —— 指标本来就只有一份，注册到别处就导不出去。
-// 不想碰它就把 cfg.Metric 关掉。注册失败（比如同名指标已被注册成别的类型）
-// 不让 New 失败，只记一条错误日志，那组指标导不出去。
+// One exception: with cfg.Metric on (which is the default), the duration histogram has to be registered on xmetric's
+// global Registry -- there is only one set of metrics anyway, and registering elsewhere means they are never exported.
+// To avoid that, turn cfg.Metric off. A failed registration (a metric of that name already registered as another
+// type, say) does not fail New; one error log is recorded and that group of metrics is not exported.
 //
-// 返回的 io.Closer 释放连接池里的空闲连接。
+// The io.Closer returned releases the idle connections in the pool.
 func New(cfg Config) (*resty.Client, io.Closer, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, nil, xerror.Newf("xhttp", "config", "invalid config: %w", err)
 	}
 
-	// 自己抓住连接池那一层，不指望 http.Client.CloseIdleConnections 找得到它。
+	// The connection pool layer is held directly rather than hoping http.Client.CloseIdleConnections finds it.
 	//
-	// 那个方法是靠类型断言往下找的：链路开着时中间隔着 otelhttp.Transport，
-	// 而它没有实现这个方法，断言到那里就断了——整条调用变成空操作，
-	// 而链路默认是开着的。自己持有，关的时候直接关它。
+	// That method searches downwards by type assertion: with tracing on there is an otelhttp.Transport in between,
+	// which does not implement the method, so the assertion stops there -- the whole call becomes a no-op,
+	// and tracing is on by default. Held directly, it is simply closed when closing.
 	tlsCfg, err := cfg.TLS.Build()
 	if err != nil {
 		return nil, nil, xerror.Newf("xhttp", "config", "invalid TLS config: %w", err)
 	}
 	pool := tunedTransport(cfg, tlsCfg)
 	if _, ok := pool.(*http.Transport); tlsCfg != nil && !ok {
-		// 交不进去就别假装配上了：照样发出去的请求用的是系统根证书、不带客户端证书
+		// Rather than pretend it was configured: requests would still go out, on the system roots and without a client certificate.
 		return nil, nil, xerror.Newf("xhttp", "config", "http.DefaultTransport has been replaced by %T, the TLS block cannot be applied", pool)
 	}
 	client := newResty(&http.Client{
@@ -77,12 +77,12 @@ func New(cfg Config) (*resty.Client, io.Closer, error) {
 	}
 
 	if cfg.Metric {
-		// 用 RegisterAs 的返回值：重复注册时它给的是已有那个实例，
-		// 记到新建的那个上会永远导不出去。
+		// Use RegisterAs's return value: on a duplicate registration it hands back the existing instance,
+		// and recording into the newly built one would never be exported.
 		//
-		// 注册失败只记日志、照常交回客户端，与 xgin / xgorm / xredis 一致：
-		// 指标导不出去是可观测性问题，不该让所有出站调用跟着起不来。
-		// 出错时 RegisterAs 交回的是新建的那个，照常打点，只是导不出去
+		// A failed registration is only logged and the client is handed back as usual, as in xgin / xgorm / xredis:
+		// metrics not being exported is an observability problem and must not keep every outbound call from working.
+		// On an error RegisterAs hands back the newly built one, which records as usual and simply is not exported.
 		hist, err := xmetric.RegisterAs(newDurationHistogram())
 		if err != nil {
 			slog.Error("xhttp failed to register the request duration metric, values recorded through it will not be exported", "error", err)
@@ -96,30 +96,30 @@ func New(cfg Config) (*resty.Client, io.Closer, error) {
 	return client, &clientCloser{pool: pool}, nil
 }
 
-// newResty 用给定的 http.Client 建 resty，并把 resty 自己的日志接到 slog 上。
+// newResty builds a resty from the given http.Client and routes resty's own logs into slog.
 //
-// 一律走 NewWithClient 而不是 resty.New()：后者自带一个 cookie jar，
-// 同一个 client 发出的所有请求共享它——A 服务种下的会话 cookie
-// 会被带给之后每一次毫不相干的调用。配置出来的实例本来就没有 jar，
-// 兜底实例曾经是 resty.New()，于是两者行为不一致（实测会串 cookie）。
+// NewWithClient is always used rather than resty.New(): the latter brings a cookie jar, shared by every request this
+// client sends -- a session cookie set by service A would be carried into every unrelated call afterwards.
+// A configured instance never had a jar, while the fallback instance used to be a resty.New(), so the two behaved
+// differently (measured: cookies did bleed across).
 //
-// quiet 是 Config.Log：请求日志开着时，resty 重试路径上那两种日志由请求日志的一行代替（见 restyLogger）。
-// 设在 client 的 logger 上而不是每个请求上：使用者自己 SetLogger 的话就整个换掉，照 resty 的规矩来。
+// quiet is Config.Log: with the request log on, resty's two kinds of retry-path logs are replaced by that one line (see restyLogger).
+// It is set on the client's logger rather than per request: a SetLogger of your own replaces the whole thing and follows resty's rules.
 func newResty(hc *http.Client, quiet bool) *resty.Client {
 	return resty.NewWithClient(hc).SetLogger(restyLogger{quiet: quiet})
 }
 
-// traced 在连接池外面包上链路那几层
+// traced wraps the tracing layers around the connection pool.
 //
-//	Trace 开着：client → xtrace.Transport → otelhttp.Transport → scrubURL → 调好参数的 http.Transport
-//	Trace 关着：client → xtrace.Transport → propagateOnly → 调好参数的 http.Transport
+//	Trace on:  client → xtrace.Transport → otelhttp.Transport → scrubURL → the tuned http.Transport
+//	Trace off: client → xtrace.Transport → propagateOnly → the tuned http.Transport
 //
-// xtrace.Transport 把目标 host 写进 ctx，按域名透传 Header 的规则才能生效。
-// otelhttp 无论链路是否采样都会调用全局 Propagator 注入（本包的测试钉着）。
+// xtrace.Transport writes the target host into the ctx, which is what lets the per-domain header forwarding rules match.
+// otelhttp calls the global Propagator to inject whether or not the trace is sampled (pinned down by this package's tests).
 //
-// Trace 只管「开不开出站 Span」。traceparent、baggage、透传 Header 带不带给下游
-// 是另一件事：原先关掉 Trace 连 xtrace.Transport 一起摘了，X-Request-Id 这类
-// 透传头和上游的链路标识就悄悄断在这一跳。所以关着时换成只注入、不开 Span 的那一层。
+// Trace only governs "is an outbound Span opened". Whether traceparent, baggage and the forwarded headers travel
+// downstream is a different question: turning Trace off used to remove xtrace.Transport with it, and a forwarded
+// header such as X-Request-Id and the upstream trace identifiers died quietly at this hop. So with it off, a layer that only injects and opens no Span takes its place.
 func traced(cfg Config, pool http.RoundTripper) http.RoundTripper {
 	next := http.RoundTripper(propagateOnly{next: pool})
 	if cfg.Trace {
@@ -128,33 +128,33 @@ func traced(cfg Config, pool http.RoundTripper) http.RoundTripper {
 	return &xtrace.Transport{Next: next}
 }
 
-// propagateOnly 用全局 Propagator 把 ctx 里的链路标识和透传 Header 写进请求头，
-// 不开 Span。Trace 关着时顶替 otelhttp 做它注入的那一半。
+// propagateOnly writes the trace identifiers and forwarded headers from the ctx into the request headers through the
+// global Propagator, without opening a Span. With Trace off it does the injecting half that otelhttp would have done.
 type propagateOnly struct{ next http.RoundTripper }
 
-// RoundTrip 按 RoundTripper 的约定不改入参：注入写在克隆出来的请求上
+// RoundTrip does not modify its argument, by the RoundTripper contract: the injection is written on a clone.
 func (p propagateOnly) RoundTrip(r *http.Request) (*http.Response, error) {
 	r = r.Clone(r.Context())
 	otel.GetTextMapPropagator().Inject(r.Context(), propagation.HeaderCarrier(r.Header))
 	return p.next.RoundTrip(r)
 }
 
-// CloseIdleConnections 转给连接池，理由见 xtrace.Transport 的同名方法
+// CloseIdleConnections passes through to the connection pool; the reasoning is on xtrace.Transport's method of the same name.
 func (p propagateOnly) CloseIdleConnections() {
 	if c, ok := p.next.(interface{ CloseIdleConnections() }); ok {
 		c.CloseIdleConnections()
 	}
 }
 
-// scrubURL 把 otelhttp 写在 Span 上的 url.full 换成不带查询串的版本。
+// scrubURL replaces the url.full otelhttp writes onto the Span with a version carrying no query string.
 //
-// otelhttp（v0.71）只去掉 URL 里的 user:password，查询串原样写进 url.full——
-// 而查询串里常有令牌和签名，它们会跟着 Span 进链路后端。otelhttp 没有
-// 改写属性的选项；它是在开好 Span、调下一层之前 SetAttributes 的，
-// 所以在它下面这一层用同一个 key 再写一次就覆盖掉了（SDK 对同名属性取后写的）。
-// 路径保留：它不进 Span 名，只是一个属性，排查时要用。
+// otelhttp (v0.71) only removes user:password from the URL and writes the query string into url.full as it is --
+// and a query string often holds a token or a signature, which would reach the tracing backend with the Span.
+// otelhttp has no option for rewriting the attribute; it calls SetAttributes after opening the Span and before
+// calling the next layer, so writing the same key again in the layer below it overwrites it (the SDK takes the later write for a duplicate attribute).
+// The path is kept: it does not go into the Span name, it is only an attribute, and an investigation needs it.
 //
-// 不记录的 Span（没采样、链路关着）丢掉一切属性，就不必再拼这个 URL。
+// A Span that is not recorded (not sampled, tracing off) discards every attribute, so there is no need to assemble this URL at all.
 type scrubURL struct{ next http.RoundTripper }
 
 func (s scrubURL) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -164,25 +164,25 @@ func (s scrubURL) RoundTrip(r *http.Request) (*http.Response, error) {
 	return s.next.RoundTrip(r)
 }
 
-// tunedTransport 从 DefaultTransport 克隆再改。
+// tunedTransport is cloned from DefaultTransport and then adjusted.
 //
-// 没改的那些就是接受了标准库的默认值，逐个量过（Go 1.25）：
+// Whatever is not adjusted is an accepted standard library default, measured one by one (Go 1.25):
 //
-//   - Proxy: ProxyFromEnvironment。设了 HTTP_PROXY / HTTPS_PROXY 就全部出站都走代理
-//     （实测 http:// 的请求连同查询串原样交给代理），回环地址除外，NO_PROXY 可以排除。
-//     环境变量在进程里第一次用到时读一次就缓存了：之后再改（哪怕 unset）不生效。
-//   - TLSHandshakeTimeout: 10s。对端收下 TCP 连接不回握手，实测 10.0s 报 TLS handshake timeout。
-//   - ResponseHeaderTimeout: 0，传输层不限等响应头的时间，由 Timeout 管住整次尝试；
-//     Timeout 也配成 0 的话，一个收下请求不回话的对端会让请求永远挂着。
-//   - MaxConnsPerHost: 0，不限；可配，见 Config.MaxConnsPerHost。
-//   - ForceAttemptHTTP2: true，https 的下游协商成 HTTP/2 后一条连接多路复用。
-//   - 重定向：resty v2.17 不设 CheckRedirect，于是是标准库的默认，最多跟 10 次，第 11 次报
-//     stopped after 10 redirects。跨 host 跳转时标准库只去掉 Authorization、Cookie 这几个，
-//     自定义的凭证头（实测 X-Api-Key）照样带给新 host；302 把 POST 变成不带 body 的 GET，
-//     307 保留方法和 body。要改就在原生 client 上 SetRedirectPolicy。
+//   - Proxy: ProxyFromEnvironment. With HTTP_PROXY / HTTPS_PROXY set, every outbound request goes through the proxy
+//     (measured: an http:// request is handed to the proxy with its query string as it is), loopback excepted, and NO_PROXY can exclude more.
+//     The environment variables are read once on first use in the process and cached: changing them later (even unsetting) has no effect.
+//   - TLSHandshakeTimeout: 10s. With the peer accepting the TCP connection and never handshaking, measured at 10.0s with TLS handshake timeout.
+//   - ResponseHeaderTimeout: 0, so the transport does not bound the wait for response headers and Timeout governs the whole attempt;
+//     with Timeout at 0 as well, a peer that accepts the request and never answers leaves it hanging forever.
+//   - MaxConnsPerHost: 0, unlimited; configurable, see Config.MaxConnsPerHost.
+//   - ForceAttemptHTTP2: true, so an https downstream negotiating HTTP/2 multiplexes over one connection.
+//   - Redirects: resty v2.17 sets no CheckRedirect, so the standard library's default applies, following at most 10 and reporting
+//     stopped after 10 redirects on the 11th. Across hosts the standard library only drops Authorization and Cookie,
+//     while a custom credential header (measured with X-Api-Key) is still carried to the new host; a 302 turns a POST into a GET with no body,
+//     and a 307 keeps the method and the body. To change that, SetRedirectPolicy on the native client.
 //
-// tlsCfg 不为 nil 时换掉 TLSClientConfig（配置里的 TLS 块）。换了之后 HTTP/2 照旧：
-// ForceAttemptHTTP2 让标准库在自定义的 TLSClientConfig 上也补上 h2（实测协商出 HTTP/2.0）。
+// When tlsCfg is non-nil it replaces TLSClientConfig (the TLS block from the configuration). HTTP/2 is unaffected:
+// ForceAttemptHTTP2 makes the standard library add h2 on a custom TLSClientConfig too (measured: HTTP/2.0 negotiated).
 func tunedTransport(cfg Config, tlsCfg *tls.Config) http.RoundTripper {
 	t, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
@@ -202,39 +202,39 @@ func tunedTransport(cfg Config, tlsCfg *tls.Config) http.RoundTripper {
 	return t
 }
 
-// spanName 出站 Span 只用方法命名。
+// spanName names an outbound Span by the method alone.
 //
-// 入站那边用的是路由模板（GET /users/:id），出站这边没有模板可用——
-// 真实路径 /users/42、/users/43 各是一个 Span 名，基数随用户数增长，
-// 链路后端按名字建的索引会被撑爆。OTel 的语义约定在没有模板时也是
-// 只用方法。要看具体打到哪，看 url.full 和 server.address 属性。
+// The inbound side uses the route template (GET /users/:id), and the outbound side has no template to use --
+// the real paths /users/42 and /users/43 would each be a Span name, the cardinality would grow with the number of
+// users, and the tracing backend's index by name would burst. OTel's semantic conventions also use the method alone
+// when there is no template. To see what was actually called, look at the url.full and server.address attributes.
 func spanName(_ string, r *http.Request) string {
 	return r.Method
 }
 
-// restyLogger 把 resty 自己的日志接到 slog 上。
+// restyLogger routes resty's own logs into slog.
 //
-// resty 的默认 logger 在建 client 那一刻抓住 os.Stderr，绕开 slog 直接写。
-// 实测（resty v2.17，RetryCount=2，目标端口没人监听）是三行 WARN 一行 ERROR：
+// resty's default logger grabs os.Stderr the moment the client is built and writes past slog.
+// Measured (resty v2.17, RetryCount=2, nothing listening on the target port): three WARN lines and one ERROR:
 //
 //	WARN RESTY Get "http://host/x?token=…": dial tcp …: connection refused, Attempt 1
-//	…Attempt 2、Attempt 3…
+//	…Attempt 2, Attempt 3…
 //	ERROR RESTY Get "http://host/x?token=…": dial tcp …: connection refused
 //
-// RetryCount=0 时这条路径不打日志。另一类是配置调用被忽略时的 ERROR，
-// 比如链路开着时 transport 不是 *http.Transport，SetTLSClientConfig 就只打一行错误、
-// 什么也不做——那是使用者唯一能看到的信号，所以级别照搬，不往下降。
-// 不进 slog 就不进日志平台、格式和其余日志对不上；查询串里的令牌还原样落盘。
-// 这里接到 slog，消息里的 URL 去掉查询串、片段和 userinfo（参数里的错误按结构去，见 scrubError）。
+// With RetryCount=0 this path logs nothing. The other kind is an ERROR when a configuration call is ignored:
+// with tracing on the transport is not an *http.Transport, so SetTLSClientConfig only logs one error and
+// does nothing -- which is the only signal the caller gets, so its level is kept rather than lowered.
+// Not going into slog means not going into the logging platform, in a format that does not match the other logs; and a token in the query string would land on disk as it is.
+// Routed into slog here, the URLs in the message have their query string, fragment and userinfo removed (an error among the arguments is handled by structure, see scrubError).
 //
-// 调试模式（SetDebug(true)）是例外：resty 把整个请求（请求行带着查询串、全部 Header）
-// 拼成一段文本交给 Debugf，请求行里的路径不带 http://、也不在引号里，这里认不出来，照原样进日志。
+// Debug mode (SetDebug(true)) is the exception: resty assembles the whole request (the request line with its query string, every header)
+// into one piece of text for Debugf, where the path in the request line carries no http:// and is not quoted, so it is not recognized here and reaches the log as it is.
 //
-// quiet（Config.Log 开着）时不打重试路径上的那两种，它们就是请求日志那一行的 error。
-// resty v2.17.2 打的日志里，每次失败的尝试是 Warnf("%v, Attempt %v")，按格式串认；
-// 重试用完是 (*Request).Execute 里的 Errorf("%v")，而配置调用被忽略时（比如 SetTLSClientConfig
-// 碰上不是 *http.Transport 的 transport）的 Errorf 格式串也是 "%v"——那是使用者唯一能看到的信号，
-// 不能一起吞掉，所以按调用方认：只挑掉 Execute 里打的那一行。
+// With quiet (Config.Log on) the two retry-path kinds are not printed; they are exactly the error on the request log line.
+// In resty v2.17.2, each failed attempt is a Warnf("%v, Attempt %v"), recognized by format string;
+// the one when retries are used up is an Errorf("%v") inside (*Request).Execute, while an ignored configuration call
+// (SetTLSClientConfig meeting a transport that is not an *http.Transport, say) uses the format string "%v" too -- and that is the only signal the caller gets,
+// so it must not be swallowed with it. Hence it is recognized by caller: only the line Execute logs is dropped.
 type restyLogger struct{ quiet bool }
 
 func (l restyLogger) Errorf(format string, v ...any) {
@@ -264,10 +264,10 @@ func logResty(level slog.Level, format string, v []any) {
 	slog.Log(context.Background(), level, "xhttp resty log", "detail", scrubText(fmt.Sprintf(format, args...)))
 }
 
-// restyExecute resty 发请求、重试的那个方法（v2.17.2）。重试用完的那行 Errorf 就在它里面
+// restyExecute is resty's send-and-retry method (v2.17.2). The Errorf for used-up retries is inside it.
 const restyExecute = "github.com/go-resty/resty/v2.(*Request).Execute"
 
-// calledFromExecute 报告调 restyLogger 的是不是 restyExecute。跳过本包自己的栈帧，看第一个外面的
+// calledFromExecute reports whether restyLogger was called from restyExecute. It skips this package's own frames and looks at the first one outside.
 func calledFromExecute() bool {
 	pcs := make([]uintptr, 8)
 	frames := runtime.CallersFrames(pcs[:runtime.Callers(2, pcs)])
@@ -282,46 +282,46 @@ func calledFromExecute() bool {
 	}
 }
 
-// idempotentMethods 可以安全重试的方法（RFC 9110 的幂等方法）
+// idempotentMethods are the methods that can safely be retried (RFC 9110's idempotent methods).
 var idempotentMethods = map[string]struct{}{
 	http.MethodGet: {}, http.MethodHead: {}, http.MethodOptions: {},
 	http.MethodTrace: {}, http.MethodPut: {}, http.MethodDelete: {},
 }
 
-// retryPolicy 哪些请求可以重试。两道关：
+// retryPolicy decides which requests may be retried. Two gates:
 //
-//   - condition：挂成重试条件。只有传输层的错才重试（理由见下），body 发得了第二次才重试，
-//     onlyIdempotent 时还得是幂等方法。
-//   - veto：挂成 RetryAfter，重试之前的最后一道关。resty 的条件是「或」（v2.17.2 retry.go Backoff：
-//     一个返回 true 就不看后面的），使用者自己 AddRetryCondition 挂的条件会把 condition 的 false 盖掉；
-//     RetryAfter 在决定重试之后、等待之前调用，返回错误就不再重试。
+//   - condition: attached as a retry condition. Only a transport-layer error is retried (the reasoning is below), only
+//     when the body can be sent a second time, and with onlyIdempotent also only for an idempotent method.
+//   - veto: attached as RetryAfter, the last gate before a retry. resty's conditions are an "or" (v2.17.2 retry.go Backoff:
+//     one returning true means the rest are not consulted), so a condition the caller added with AddRetryCondition would override condition's false;
+//     RetryAfter is called after the decision to retry and before the wait, and returning an error stops the retry.
 //
-// veto 返回的错误只在「这一次没有错误」时才交到调用方手里（Backoff：if err == nil { err = err2 }），
-// 有错误时调用方拿到的仍是原来那个。所以它只在两种情况下否决：
+// The error veto returns only reaches the caller when "this attempt had no error" (Backoff: if err == nil { err = err2 });
+// with an error, the caller still gets the original one. So it vetoes in two cases only:
 //
-//   - 没拿到响应（RawResponse 为 nil，一定是传输层错误）而方法不幂等：那正是 RetryOnlyIdempotent 防的
-//     「分不出请求到没到」，调用方拿到的是原来的传输层错误；
-//   - body 是读过的 io.Reader：再发就是一个空 body，服务端回 200 就是一次静默的数据丢失，
-//     拿到了响应也照样否决（这时调用方拿到 errBodyNotRewindable 和那个响应）。
+//   - no response arrived (RawResponse is nil, necessarily a transport-layer error) and the method is not idempotent: exactly what
+//     RetryOnlyIdempotent guards against, "cannot tell whether the request arrived", and the caller gets the original transport error;
+//   - the body is an io.Reader already read: resending it would send an empty body, and a 200 from the server would be a silent loss of data,
+//     so it is vetoed even when a response did arrive (the caller then gets errBodyNotRewindable and that response).
 //
-// 拿到了响应、方法不幂等、body 发得了第二次的，否决的代价是把一个 503 换成我们编出来的错误，
-// 所以不否决：使用者按状态码重试的条件照旧生效，自己判断方法。使用者 SetRetryAfter 会换掉 veto。
+// When a response did arrive, the method is not idempotent and the body can be sent again, vetoing would cost replacing a 503 with an error we invented,
+// so it does not: a caller's condition retrying on status codes keeps working and checks the method itself. A caller's SetRetryAfter replaces veto.
 type retryPolicy struct{ onlyIdempotent bool }
 
-// condition 挂上任何一个重试条件，resty 自己的判断就整个作废，只听条件的
-// （resty v2.17.2 retry.go 的 Backoff）。它自己不重试的那些——请求前的中间件
-// 失败、响应已经完整收到之后的解析失败——传进条件时已经剥掉了「不重试」
-// 的标记，看上去和传输层错误一样。从前这里对幂等方法一律返回 true，实测
-// SetResult 遇上 200 + 坏 JSON、RetryCount=3，同一个请求发了 4 次，
-// 不挂条件时 resty 只发 1 次。所以这里先自己认一遍「是不是传输层的错」。
+// condition: attaching any retry condition voids resty's own judgment entirely and only the conditions are consulted
+// (resty v2.17.2 retry.go Backoff). The ones it would not retry itself -- a failing middleware before the request,
+// a parse failure after the response was fully received -- arrive at the condition with the "do not retry" mark
+// already stripped, looking just like a transport-layer error. This used to return true for any idempotent method, and measured,
+// a SetResult meeting a 200 with broken JSON and RetryCount=3 sent the same request 4 times,
+// while resty with no condition attached sends it once. So "is this a transport-layer error" is recognized here first.
 func (p retryPolicy) condition(resp *resty.Response, err error) bool {
 	if !isTransportError(err) {
-		return false // 拿到响应、或者错在拿到响应之后，都不重试，与 resty 的默认条件一致
+		return false // a response arrived, or the error came after one did: not retried, matching resty's default condition
 	}
 	return p.refusal(resp) == nil
 }
 
-// veto 见 retryPolicy。返回 0 是交给 resty 按退避算等多久
+// veto: see retryPolicy. Returning 0 leaves the wait to resty's backoff.
 func (p retryPolicy) veto(_ *resty.Client, resp *resty.Response) (time.Duration, error) {
 	err := p.refusal(resp)
 	if err == nil || errors.Is(err, errNotIdempotent) && resp != nil && resp.RawResponse != nil {
@@ -331,8 +331,8 @@ func (p retryPolicy) veto(_ *resty.Client, resp *resty.Response) (time.Duration,
 }
 
 var (
-	// errNotIdempotent 不会交到调用方手里：只在没拿到响应时否决，那时调用方拿到的是原来的传输层错误。
-	// 不是 xerror：它只在 resty 的重试判断里流转
+	// errNotIdempotent never reaches the caller: it only vetoes when no response arrived, and the caller then gets the original transport error.
+	// It is not an xerror: it only travels inside resty's retry decision.
 	errNotIdempotent = errors.New("not retrying a non-idempotent method")
 
 	errBodyNotRewindable = xerror.Newf("xhttp", "execute",
@@ -340,10 +340,10 @@ var (
 			"(pass []byte or string to make the request retryable)")
 )
 
-// refusal 这个请求为什么不能重试，能重试是 nil
+// refusal is why this request cannot be retried, or nil when it can.
 func (p retryPolicy) refusal(resp *resty.Response) error {
 	if resp == nil || resp.Request == nil {
-		return errNotIdempotent // 认不出方法时保守地不重试
+		return errNotIdempotent // an unrecognized method is conservatively not retried
 	}
 	if consumedReader(resp.Request) {
 		return errBodyNotRewindable
@@ -357,32 +357,32 @@ func (p retryPolicy) refusal(resp *resty.Response) error {
 	return errNotIdempotent
 }
 
-// consumedReader body 是不是一个读过就没了的 io.Reader。
+// consumedReader reports whether the body is an io.Reader that is gone once read.
 //
-// resty v2.17.2 每次尝试都拿 Request.Body 重新建 http.Request（middleware.go createHTTPRequest）：
-// []byte、string、结构体每次重新序列化，是完整的；io.Reader 在第一次尝试就读到了头，
-// 实测 PUT strings.NewReader(…)、第一次连接被掐断，第二次发出去 0 字节，服务端回 200。
-// resty 不替它倒回去（RetryResetReaders 只管 multipart）。例外是 SetContentLength(true)：
-// resty 把 io.Reader 读进缓冲、Body 置 nil，之后每次都发那份缓冲（实测照样完整）。
-// http.NoBody 是 resty 给没有 body 的 PUT / POST 补的，空的，发几次都一样
+// resty v2.17.2 rebuilds the http.Request from Request.Body on every attempt (middleware.go createHTTPRequest):
+// a []byte, a string and a struct are re-serialized each time and are complete; an io.Reader was read to the end on the first attempt,
+// and measured, a PUT strings.NewReader(…) whose first connection was cut sent 0 bytes the second time and the server answered 200.
+// resty does not rewind it (RetryResetReaders only covers multipart). The exception is SetContentLength(true):
+// resty reads the io.Reader into a buffer and sets Body to nil, sending that buffer every time afterwards (measured complete).
+// http.NoBody is what resty fills in for a PUT / POST with no body; it is empty and sending it again changes nothing.
 func consumedReader(r *resty.Request) bool {
 	_, ok := r.Body.(io.Reader)
 	return ok && r.Body != http.NoBody
 }
 
-// isTransportError 报告 err 是不是 resty 默认会重试的那种传输层错误
+// isTransportError reports whether err is the kind of transport-layer error resty retries by default.
 //
-// 建连、发送、等响应时出的错，http.Client.Do 一律包成 *url.Error，
-// 它实现了 net.Error；读响应体时连接被重置、超时也都是 net.Error。
-// 响应体读到一半连接断了是 io.ErrUnexpectedEOF，resty 同样重试
-// （实测 Content-Length 100 只发 10 字节就断开，不挂条件时共发 4 次）。
-// JSON 解析失败、中间件返回的错误都不在其中。
+// An error while connecting, sending or waiting for the response is always wrapped by http.Client.Do into a *url.Error,
+// which implements net.Error; a connection reset or a timeout while reading the response body is a net.Error too.
+// A connection dropped halfway through the response body is io.ErrUnexpectedEOF, which resty likewise retries
+// (measured: a Content-Length of 100 with only 10 bytes sent before the drop was sent 4 times with no condition attached).
+// A JSON parse failure and an error returned by middleware are not among them.
 func isTransportError(err error) bool {
 	var ne net.Error
 	return errors.As(err, &ne) || errors.Is(err, io.ErrUnexpectedEOF)
 }
 
-// clientCloser 持有连接池本身，而不是外面那个 http.Client
+// clientCloser holds the connection pool itself rather than the http.Client around it.
 type clientCloser struct{ pool http.RoundTripper }
 
 func (c *clientCloser) Close() error {
@@ -392,23 +392,23 @@ func (c *clientCloser) Close() error {
 	return nil
 }
 
-// ---- 全局实例 ----
+// ---- global instance ----
 
-// fallback 初始化之前、以及关闭之后用的兜底 client，带超时。建一次就不再变。
-// 与配置出来的实例一样不带 cookie jar，理由见 newResty
+// fallback is the client used before initialization and after shutdown, with a timeout. It is built once and never changes.
+// Like a configured instance it carries no cookie jar; the reasoning is in newResty.
 var fallback = newResty(&http.Client{Timeout: fallbackTimeout}, false)
 
 var (
 	mu      sync.RWMutex
-	current *resty.Client // nil 表示还没起来、或者已经关掉了
+	current *resty.Client // nil means not up yet, or already closed
 )
 
-// C 取 resty client。
+// C fetches the resty client.
 //
-// 不像 xgorm / xredis 那样取不到就 panic：HTTP 客户端不连任何外部资源，
-// 没配也能用，所以这里任何时候都返回一个可用的实例。
-// 初始化之前、关闭之后拿到的都是带 30s 超时的兜底实例——关闭阶段仍可能有
-// 组件发请求，让它带着超时失败，好过拿到一个已经关掉的客户端。
+// Unlike xgorm / xredis it does not panic when there is none: an HTTP client connects to no external resource and
+// works unconfigured, so this always returns a usable instance.
+// Before initialization and after shutdown what comes back is the fallback instance with its 30s timeout -- a
+// component may still send a request while shutting down, and failing with a timeout beats getting a closed client.
 func C() *resty.Client {
 	mu.RLock()
 	defer mu.RUnlock()
@@ -418,31 +418,31 @@ func C() *resty.Client {
 	return fallback
 }
 
-// R 开一个绑定了 ctx 的请求，链路和超时才能传到下游。
+// R opens a request bound to a ctx, which is what carries the trace and the timeout downstream.
 //
 //	resp, err := xhttp.R(ctx).SetResult(&out).Get(url)
 func R(ctx context.Context) *resty.Request { return C().R().SetContext(ctx) }
 
-// RawClient 取底层的原生 *http.Client。
+// RawClient fetches the underlying native *http.Client.
 //
-// 用于需要自己处理响应体的场景，比如 SSE 这类流式请求——
-// resty 会把响应整个读进内存，那对流式接口是不对的。
+// It is for cases that handle the response body themselves, a streaming request such as SSE for example --
+// resty reads the whole response into memory, which is wrong for a streaming endpoint.
 //
-// 初始化之前返回兜底实例内部的那个，而不是 http.DefaultClient：
-// 后者的超时是 0，请求可以永久挂住。
+// Before initialization it returns the one inside the fallback instance rather than http.DefaultClient:
+// the latter has a timeout of 0 and a request can hang forever.
 //
-// 直接从 C() 取而不是另存一份：两份关联状态要同步维护，
-// 而 resty 的 GetClient 返回的就是它一直在用的那个，取值一致、生命周期一致。
+// It is taken from C() rather than stored separately: two pieces of related state would have to be kept in step,
+// while resty's GetClient returns the very one it has been using, consistent in value and in lifetime.
 func RawClient() *http.Client { return C().GetClient() }
 
-// ---- 登记 ----
+// ---- registration ----
 
 func init() {
 	xhook.BeforeStart(initXHttp, xhook.At(xhook.StageClient))
-	xhook.BeforeStop(closeXHttp) // 档位跟着上面那个启动钩子
+	xhook.BeforeStop(closeXHttp) // the stage follows the start hook above
 }
 
-// liveCloser 由 initXHttp 填好，closeXHttp 用它收尾
+// liveCloser is filled in by initXHttp and used by closeXHttp to clean up.
 var liveCloser io.Closer
 
 func initXHttp(context.Context) error {
@@ -453,7 +453,7 @@ func initXHttp(context.Context) error {
 	return install(c)
 }
 
-// install 按配置建好客户端并装成全局默认实例
+// install builds the client from the configuration and makes it the global default instance.
 func install(c Config) error {
 	client, cl, err := New(c)
 	if err != nil {
@@ -471,7 +471,7 @@ func install(c Config) error {
 func closeXHttp(context.Context) error {
 	mu.Lock()
 	cl := liveCloser
-	current, liveCloser = nil, nil // 先摘掉再关，C() 随即退回兜底实例
+	current, liveCloser = nil, nil // detached before closing, so C() falls back right away
 	mu.Unlock()
 
 	if cl == nil {

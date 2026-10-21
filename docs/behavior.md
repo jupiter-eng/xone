@@ -54,10 +54,10 @@ MySQL 8.0.46, Redis 7.0.15, ClickHouse 24.8.14).
 | [`XKafka.Trace`](../xkafka/README.md#observability) | kotel writes the message key onto the span | kotel is not used, and the span holds no key | Keys often hold a user id or a phone number |
 | [`XCache.MaxCost`](../xcache/README.md#behavior-measured) | 56 bytes of internal overhead are counted per entry | Only the cost you give is counted | Otherwise `MaxCost: 2000` really holds 35 entries |
 | [`XCache` stopping](../xcache/README.md#behavior-measured) | `Close` | `Clear` | `Close` running alongside concurrent reads and writes panics |
-| [`XHttp`'s resty log](../xhttp/README.md#行为与实测) | Writes to `os.Stderr` with the URL's query string | Routed into slog with the query string removed | Tokens do not reach disk |
-| [`XHttp` cookies](../xhttp/README.md#行为与实测) | `resty.New()` comes with a cookie jar | None | Unrelated calls would share a session cookie somebody else was given |
-| [`XHttp` outbound spans](../xhttp/README.md#行为与实测) | `url.full` carries the query string | The query string is removed and the span name is the method alone | Tokens stay out of the tracing backend and the span name cardinality stays bounded |
-| [`XHttp` retry conditions](../xhttp/README.md#行为与实测) | Adding a condition voids resty's own judgment | Only transport errors are retried | Otherwise a 200 with broken JSON is retried as well |
+| [`XHttp`'s resty log](../xhttp/README.md#behavior-measured) | Writes to `os.Stderr` with the URL's query string | Routed into slog with the query string removed | Tokens do not reach disk |
+| [`XHttp` cookies](../xhttp/README.md#behavior-measured) | `resty.New()` comes with a cookie jar | None | Unrelated calls would share a session cookie somebody else was given |
+| [`XHttp` outbound spans](../xhttp/README.md#behavior-measured) | `url.full` carries the query string | The query string is removed and the span name is the method alone | Tokens stay out of the tracing backend and the span name cardinality stays bounded |
+| [`XHttp` retry conditions](../xhttp/README.md#behavior-measured) | Adding a condition voids resty's own judgment | Only transport errors are retried | Otherwise a 200 with broken JSON is retried as well |
 | [`XTrace` forwarding and baggage](../xtrace/README.md#behavior-measured) | Inbound values accepted from anyone | Accepted only when the direct peer is in `XGin.TrustedProxies` (`XEcho.TrustedProxies`) | Otherwise a public client can forge `X-Tenant-Id` and carry it into the internal network |
 | [`XTrace` sampling](../xtrace/README.md#behavior-measured) | `AlwaysSample`, ignoring upstream | `ParentBased`, honoring upstream when there is one | Otherwise an upstream `sampled=00` is rewritten to `-01` on the way down |
 | [`XMetric.Namespace`](../xmetric/README.md#behavior-measured) | A non-conforming name is escaped on export | Fails while the config is read | Otherwise the dashboard cannot find the name you wrote |
@@ -95,7 +95,7 @@ XGorm, XRedis and XKafka each probe once at startup through one shared implement
 | [xredis](../xredis/README.md#行为与实测) | go-redis: timeouts, connection retries, the handshake on a new connection, memory |
 | [xcache](../xcache/README.md#behavior-measured) | ristretto: internal overhead, stopping, the cost of metrics, TTL |
 | [xkafka](../xkafka/README.md#behavior-measured) | franz-go: automatic commits, offset reset, `Close` and `Flush`, `Ping`, a missing topic, rebalancing and session timeouts |
-| [xhttp](../xhttp/README.md#行为与实测) | The defaults of resty / otelhttp / the standard library's Transport |
+| [xhttp](../xhttp/README.md#behavior-measured) | The defaults of resty / otelhttp / the standard library's Transport |
 | [xcron](../xcron/README.md#behavior-measured) | cronexpr: field counts, timezone prefixes, DST, specs that never fire; the drift of `@every` |
 | [xgin](../xgin/README.md#behavior-measured) | gin / net/http: proxies, uploads, timeouts, h2c, TLS, graceful shutdown |
 | [xecho](../xecho/README.md#behavior-measured) | echo: client_ip, error rendering, route templates, group fallback routes, `e.Pre`, timeout middleware, panics, gommon logs, compression, the multipart threshold, strict route matching |

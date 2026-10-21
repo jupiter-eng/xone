@@ -31,16 +31,16 @@ import (
 	"github.com/jupiter-eng/xone/xtrace"
 )
 
-// TestMain 关掉 resty 的内部日志：连不上的用例本来就会刷一屏重试告警
+// TestMain turns resty's internal logging off: the cases that cannot connect would fill a screen with retry warnings anyway.
 func TestMain(m *testing.M) {
 	silent = true
 	os.Exit(m.Run())
 }
 
-// silent 让测试里新建的 client 闭嘴
+// silent keeps a client built inside a test quiet.
 var silent bool
 
-// echo 起一个记下收到的请求的服务端
+// echo starts a server that records the requests it receives.
 func echo(t *testing.T, h http.HandlerFunc) (*httptest.Server, *atomic.Pointer[http.Header]) {
 	t.Helper()
 	var last atomic.Pointer[http.Header]
@@ -63,34 +63,34 @@ func TestNew_ReturnsUsableResty(t *testing.T) {
 
 	resp, err := client.R().SetContext(context.Background()).Get(srv.URL)
 	if err != nil {
-		t.Fatalf("请求失败：%v", err)
+		t.Fatalf("the request failed: %v", err)
 	}
 	if resp.StatusCode() != 204 {
-		t.Errorf("状态码不对，got=%d", resp.StatusCode())
+		t.Errorf("wrong status code, got=%d", resp.StatusCode())
 	}
 }
 
 func TestNew_PoolSettingsPassedThrough(t *testing.T) {
 	c := DefaultConfig()
 	c.MaxIdleConnsPerHost, c.MaxIdleConns, c.IdleConnTimeout, c.MaxConnsPerHost = 33, 77, 11*time.Second, 5
-	c.Trace = false // otelhttp.Transport 不导出内层，要看底层就别包它
+	c.Trace = false // otelhttp.Transport does not export its inner layer, so do not wrap it when looking at the bottom
 	client, _ := newQuiet(t, c)
 
-	// 标准库默认每主机只留 2 条空闲连接，对只调几个下游的服务太小
+	// The standard library keeps only 2 idle connections per host by default, too few for a service calling a handful of downstreams.
 	tr := unwrapTransport(t, client)
 	if tr.MaxIdleConnsPerHost != 33 || tr.MaxIdleConns != 77 || tr.IdleConnTimeout != 11*time.Second || tr.MaxConnsPerHost != 5 {
-		t.Errorf("连接池参数没传下去，got=%+v", tr)
+		t.Errorf("the pool parameters did not reach it, got=%+v", tr)
 	}
 	if tr.DialContext == nil {
-		t.Error("应当装上带超时的 Dialer")
+		t.Error("a Dialer with a timeout must be installed")
 	}
-	// 从 DefaultTransport 克隆而不是新建，代理和 TLS 这些默认设置才不会丢
+	// Cloned from DefaultTransport rather than built fresh, so the proxy and TLS defaults are not lost.
 	if tr.Proxy == nil {
-		t.Error("应保留 DefaultTransport 的代理设置")
+		t.Error("DefaultTransport's proxy setting must be kept")
 	}
 }
 
-// unwrapTransport 剥掉链路那几层包装，拿到底层的 *http.Transport
+// unwrapTransport peels off the tracing layers to reach the underlying *http.Transport.
 func unwrapTransport(t *testing.T, client *resty.Client) *http.Transport {
 	t.Helper()
 	rt := client.GetClient().Transport
@@ -103,16 +103,16 @@ func unwrapTransport(t *testing.T, client *resty.Client) *http.Transport {
 		case propagateOnly:
 			rt = v.next
 		default:
-			t.Fatalf("剥不开的 Transport 类型：%T（otelhttp 不导出内层，测这层时把 Trace 关掉）", rt)
+			t.Fatalf("Transport type that cannot be peeled: %T (otelhttp does not export its inner layer, so turn Trace off when testing this layer)", rt)
 		}
 	}
-	t.Fatal("包装层数太多")
+	t.Fatal("too many wrapping layers")
 	return nil
 }
 
 func TestNew_TraceOffOnlySkipsSpans_TraceIDAndForwardHeadersStillSent(t *testing.T) {
-	// 回归用例。XHttp.Trace: false 原先把 xtrace.Transport 连同注入一起摘掉，
-	// X-Request-Id 和上游的 traceparent 就断在这一跳，而文档说它只管 Span
+	// Regression case. XHttp.Trace: false used to remove xtrace.Transport and the injection with it,
+	// so X-Request-Id and the upstream traceparent died at this hop while the documentation says it governs the Span only.
 	old := otel.GetTracerProvider()
 	oldProp := otel.GetTextMapPropagator()
 	t.Cleanup(func() { otel.SetTracerProvider(old); otel.SetTextMapPropagator(oldProp) })
@@ -147,28 +147,28 @@ func TestNew_TraceOffOnlySkipsSpans_TraceIDAndForwardHeadersStillSent(t *testing
 
 	got := *last.Load()
 	if got.Get("X-Request-Id") != "req-1" {
-		t.Errorf("Trace 关着也该透传 X-Request-Id，下游收到=%v", got)
+		t.Errorf("X-Request-Id must be forwarded with Trace off too, downstream received=%v", got)
 	}
 	if got.Get("X-Tenant-Id") != "t-1" {
-		t.Errorf("按域名的透传规则也要生效（目标 host 靠 xtrace.Transport 写进 ctx），下游收到=%v", got)
+		t.Errorf("the per-domain forwarding rules must work too (the target host is written into the ctx by xtrace.Transport), downstream received=%v", got)
 	}
 	if tp := got.Get("Traceparent"); !strings.HasPrefix(tp, "00-"+upstream+"-") {
-		t.Errorf("Trace 关着也该把上游的链路标识带给下游，got=%q", tp)
+		t.Errorf("the upstream trace identifiers must reach the downstream with Trace off, got=%q", tp)
 	}
 	if got.Get("Baggage") != "tenant=acme" {
-		t.Errorf("baggage 也该带给下游，got=%q", got.Get("Baggage"))
+		t.Errorf("baggage must reach the downstream too, got=%q", got.Get("Baggage"))
 	}
 	if spans := exp.GetSpans(); len(spans) != 0 {
-		t.Errorf("Trace 关着不该开出站 Span，got=%d 个", len(spans))
+		t.Errorf("with Trace off no outbound Span may be opened, got=%d", len(spans))
 	}
 	if req.RawRequest.Header.Get("X-Request-Id") != "" {
-		t.Error("注入要写在克隆出来的请求上，不该改调用方的请求")
+		t.Error("the injection must be written on a clone and must not modify the caller's request")
 	}
 }
 
 func TestNew_TraceOffCloseIdleConnectionsStillReachesPool(t *testing.T) {
-	// RawClient 的使用者调 http.Client.CloseIdleConnections，它靠类型断言一层层往下找，
-	// 中间哪一层不转发就是空操作。只断言方法存在测不出来，得看连接有没有真的被释放
+	// A RawClient user calls http.Client.CloseIdleConnections, which searches downwards by type assertion,
+	// and any layer in between that does not forward makes it a no-op. Asserting that the method exists proves nothing; the connections have to be really released.
 	var idle atomic.Int64
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
@@ -190,23 +190,23 @@ func TestNew_TraceOffCloseIdleConnectionsStillReachesPool(t *testing.T) {
 	if _, err := client.R().Get(srv.URL); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, func() bool { return idle.Load() > 0 }, "请求完成后该有一个空闲连接")
+	waitFor(t, func() bool { return idle.Load() > 0 }, "there must be one idle connection once the request finishes")
 	client.GetClient().CloseIdleConnections()
-	waitFor(t, func() bool { return idle.Load() == 0 }, "CloseIdleConnections 之后空闲连接该被释放")
+	waitFor(t, func() bool { return idle.Load() == 0 }, "the idle connection must be released after CloseIdleConnections")
 }
 
 func TestTransport_OtelhttpInjectsForwardHeadersUnderNoop(t *testing.T) {
-	// 单 Transport 的简化依赖这个前提：otelhttp 无论 TracerProvider 是不是 noop，
-	// 都会调用全局 Propagator 注入。前提不成立就得补回「链路关了自己注入」那一层。
-	// 钉在这里而不是 xtrace：那边为此引 otelhttp 会让每个 xtrace 使用者
-	// 的模块图凭空多四个模块。
+	// The single-Transport simplification rests on this premise: otelhttp calls the global Propagator to inject
+	// whether or not the TracerProvider is a noop. Without it, the "inject ourselves when tracing is off" layer would have to come back.
+	// It is pinned here rather than in xtrace: pulling otelhttp in there would add four modules to every xtrace user's
+	// module graph for nothing.
 	old := otel.GetTracerProvider()
 	oldProp := otel.GetTextMapPropagator()
 	t.Cleanup(func() { otel.SetTracerProvider(old); otel.SetTextMapPropagator(oldProp) })
 	otel.SetTracerProvider(noop.NewTracerProvider())
 
 	tc := xtrace.DefaultConfig()
-	tc.Enable = false // 链路关掉
+	tc.Enable = false // tracing off
 	tc.ForwardHeaders = []string{"X-Request-Id"}
 	tr, tcloser, err := xtrace.New(context.Background(), tc)
 	if err != nil {
@@ -218,7 +218,7 @@ func TestTransport_OtelhttpInjectsForwardHeadersUnderNoop(t *testing.T) {
 	srv, last := echo(t, nil)
 	client, _ := newQuiet(t, DefaultConfig())
 
-	// 透传只收可信对端发来的值，这里扮演 xgin 判过可信之后交来的请求头
+	// Forwarding accepts values only from a trusted peer; this stands in for the headers xgin hands over after judging it trusted.
 	ctx := tr.Propagator.Extract(context.Background(),
 		fromTrusted{propagation.HeaderCarrier(http.Header{"X-Request-Id": {"req-1"}})})
 	if _, err := client.R().SetContext(ctx).Get(srv.URL); err != nil {
@@ -227,14 +227,14 @@ func TestTransport_OtelhttpInjectsForwardHeadersUnderNoop(t *testing.T) {
 
 	got := *last.Load()
 	if got.Get("X-Request-Id") != "req-1" {
-		t.Fatalf("链路关着也该透传 header，实际收到的=%v", got)
+		t.Fatalf("headers must be forwarded with tracing off too, received=%v", got)
 	}
 	if got.Get("traceparent") != "" {
-		t.Errorf("链路关着就不该注入 traceparent，got=%q", got.Get("traceparent"))
+		t.Errorf("with tracing off no traceparent may be injected, got=%q", got.Get("traceparent"))
 	}
 }
 
-// fromTrusted 声明了「对端可信」的 carrier，约定见 xtrace.HeaderPropagator.Extract
+// fromTrusted is a carrier declaring "the peer is trusted"; the contract is in xtrace.HeaderPropagator.Extract.
 type fromTrusted struct{ propagation.HeaderCarrier }
 
 func (fromTrusted) TrustedPeer() bool { return true }
@@ -259,19 +259,19 @@ func TestTransport_TraceOnInjectsTraceparentAndStartsSpan(t *testing.T) {
 	}
 
 	if got := (*last.Load()).Get("traceparent"); got == "" {
-		t.Error("应当注入 traceparent")
+		t.Error("traceparent must be injected")
 	}
 	spans := exp.GetSpans()
 	if len(spans) == 0 {
-		t.Fatal("应当产出 Span")
+		t.Fatal("a Span must be produced")
 	}
 	if name := spans[0].Name; name != "GET" {
-		t.Errorf("Span 名应只有方法，got=%q", name)
+		t.Errorf("the Span name must be the method alone, got=%q", name)
 	}
 }
 
 func TestTransport_TargetHostStoredInCtx(t *testing.T) {
-	// 没有它，按域名透传的规则一条都不会命中
+	// Without it, not one per-domain forwarding rule ever matches.
 	var seen string
 	tr := &xtrace.Transport{Next: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 		seen = xtrace.TargetHostFromContext(r.Context())
@@ -282,7 +282,7 @@ func TestTransport_TargetHostStoredInCtx(t *testing.T) {
 		t.Fatal(err)
 	}
 	if seen != "api.example.com" {
-		t.Errorf("应写入目标 host，got=%q", seen)
+		t.Errorf("the target host must be written, got=%q", seen)
 	}
 }
 
@@ -290,37 +290,37 @@ type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
-// ---- 重试 ----
+// ---- retries ----
 
 func TestRetry_OnlyIdempotentMethods(t *testing.T) {
-	// 超时分不出「请求没到」和「处理完了但响应丢了」，
-	// 重发一个 POST 就可能变成重复下单
+	// A timeout cannot tell "the request never arrived" from "it was processed and the response was lost",
+	// so resending a POST may mean a duplicate order.
 	if !onlyIdempotent.condition(respFor("GET"), timeoutErr) {
-		t.Error("GET 应当允许重试")
+		t.Error("a GET must be allowed to retry")
 	}
 	for _, m := range []string{"POST", "PATCH"} {
 		if onlyIdempotent.condition(respFor(m), timeoutErr) {
-			t.Errorf("%s 不该重试", m)
+			t.Errorf("%s must not be retried", m)
 		}
 	}
 	if onlyIdempotent.condition(respFor("GET"), nil) {
-		t.Error("拿到响应就不该重试，与 resty 默认条件一致")
+		t.Error("with a response in hand there must be no retry, matching resty's default condition")
 	}
 	if onlyIdempotent.condition(nil, timeoutErr) {
-		t.Error("认不出方法时应当保守地不重试")
+		t.Error("an unrecognized method must conservatively not be retried")
 	}
 }
 
-// onlyIdempotent RetryOnlyIdempotent 开着时挂上的那套策略
+// onlyIdempotent is the policy installed with RetryOnlyIdempotent on.
 var onlyIdempotent = retryPolicy{onlyIdempotent: true}
 
-// timeoutErr 一个传输层错误，形状与 http.Client.Do 超时时报的一样
+// timeoutErr is a transport-layer error shaped like the one http.Client.Do reports on a timeout.
 var timeoutErr error = &url.Error{Op: "Get", URL: "http://h", Err: context.DeadlineExceeded}
 
 func TestRetry_NoRetryOnResponseParseFailure(t *testing.T) {
-	// 挂上重试条件之后 resty 自己的判断就作废了。从前幂等方法遇上任何错都重试，
-	// 实测 200 + 坏 JSON、RetryCount=3 时同一个请求发了 4 次——响应早已完整收到，
-	// 重发只会再拿到一模一样的坏 JSON。不挂条件时 resty 只发 1 次
+	// Attaching a retry condition voids resty's own judgment. This used to retry an idempotent method on any error,
+	// and measured, a 200 with broken JSON and RetryCount=3 sent the same request 4 times -- the response was already
+	// fully received, and resending it would only fetch the same broken JSON again. With no condition attached resty sends it once.
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
@@ -335,17 +335,17 @@ func TestRetry_NoRetryOnResponseParseFailure(t *testing.T) {
 
 	var out map[string]any
 	if _, err := client.R().SetContext(context.Background()).SetResult(&out).Get(srv.URL); err == nil {
-		t.Fatal("坏 JSON 应当报解析错误")
+		t.Fatal("broken JSON must give a parse error")
 	}
 	if got := hits.Load(); got != 1 {
-		t.Errorf("解析失败不该重试，应当只请求 1 次，got=%d", got)
+		t.Errorf("a parse failure must not be retried and must be exactly 1 request, got=%d", got)
 	}
 }
 
 func TestRetry_RetriesOnBodyCutMidway(t *testing.T) {
-	// 与 resty 的默认条件一致：响应体没收全是传输层的问题，io.ErrUnexpectedEOF
+	// Matching resty's default condition: an incomplete response body is a transport problem, io.ErrUnexpectedEOF.
 	if !onlyIdempotent.condition(respFor("GET"), io.ErrUnexpectedEOF) {
-		t.Error("响应体读到一半断开应当重试")
+		t.Error("a connection dropped halfway through the response body must be retried")
 	}
 }
 
@@ -357,7 +357,7 @@ func TestRetry_ActuallyResends(t *testing.T) {
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits.Add(1)
-		// 直接断开连接，制造传输层错误
+		// Drop the connection outright to produce a transport-layer error
 		hj, _ := w.(http.Hijacker)
 		conn, _, _ := hj.Hijack()
 		conn.Close()
@@ -370,13 +370,13 @@ func TestRetry_ActuallyResends(t *testing.T) {
 
 	client.R().SetContext(context.Background()).Get(srv.URL)
 	if got := hits.Load(); got != 3 {
-		t.Errorf("重试 2 次应当一共请求 3 次，got=%d", got)
+		t.Errorf("2 retries must be 3 requests in total, got=%d", got)
 	}
 
 	hits.Store(0)
 	client.R().SetContext(context.Background()).Post(srv.URL)
 	if got := hits.Load(); got != 1 {
-		t.Errorf("POST 不该重试，应当只请求 1 次，got=%d", got)
+		t.Errorf("a POST must not be retried and must be exactly 1 request, got=%d", got)
 	}
 }
 
@@ -397,24 +397,24 @@ func TestRetry_POSTRetriedWhenIdempotencyCheckOff(t *testing.T) {
 
 	client.R().SetContext(context.Background()).Post(srv.URL)
 	if got := hits.Load(); got != 3 {
-		t.Errorf("关掉限制后 POST 也该重试，got=%d", got)
+		t.Errorf("with the restriction off a POST must be retried too, got=%d", got)
 	}
 }
 
-// ---- 全局实例 ----
+// ---- the global instance ----
 
 func TestC_FallbackWithTimeoutBeforeInit(t *testing.T) {
-	// 零值超时是「永不超时」：关闭阶段发一个这样的请求，整个退出流程就卡住了
+	// A zero timeout means "never time out": one such request during shutdown would stall the whole exit.
 	emptyCell(t)
 
 	if C() == nil {
-		t.Fatal("任何时候都该返回可用实例")
+		t.Fatal("a usable instance must be returned at any time")
 	}
 	if got := C().GetClient().Timeout; got != fallbackTimeout {
-		t.Errorf("兜底实例必须带超时，got=%v", got)
+		t.Errorf("the fallback instance must carry a timeout, got=%v", got)
 	}
 	if got := RawClient().Timeout; got != fallbackTimeout {
-		t.Errorf("兜底的原生 client 也必须带超时，got=%v", got)
+		t.Errorf("the fallback native client must carry a timeout too, got=%v", got)
 	}
 }
 
@@ -422,13 +422,13 @@ func TestR_BindsCtx(t *testing.T) {
 	type key struct{}
 	ctx := context.WithValue(context.Background(), key{}, "v")
 	if got := R(ctx).Context().Value(key{}); got != "v" {
-		t.Errorf("R 应当绑定传进来的 ctx，got=%v", got)
+		t.Errorf("R must bind the ctx passed in, got=%v", got)
 	}
 }
 
 func TestRegister_RegistrationMatchesFramework(t *testing.T) {
-	// 这是本包和框架之间唯一的一根线：钩子漏登记、档位挂错，
-	// 表现是「配置不生效」或者「比用它的东西晚就绪」，别处都测不出来
+	// This is the only wire between this package and the framework: a missing hook registration or a wrong stage shows
+	// up as "the config has no effect" or "it is ready later than what uses it", and nothing else catches it.
 	var got *hook.Entry
 	for _, e := range hook.Start() {
 		if e.Pkg == "github.com/jupiter-eng/xone/xhttp" {
@@ -437,10 +437,10 @@ func TestRegister_RegistrationMatchesFramework(t *testing.T) {
 		}
 	}
 	if got == nil {
-		t.Fatal("没有登记启动钩子")
+		t.Fatal("no start hook was registered")
 	}
 	if got.Stage != hook.StageClient {
-		t.Errorf("出站客户端要在业务之前就绪（StageClient），got=%v", got.Stage)
+		t.Errorf("the outbound client must be ready before business code (StageClient), got=%v", got.Stage)
 	}
 
 	var stopped bool
@@ -448,39 +448,39 @@ func TestRegister_RegistrationMatchesFramework(t *testing.T) {
 		if e.Pkg == "github.com/jupiter-eng/xone/xhttp" {
 			stopped = true
 			if e.Stage != hook.StageClient {
-				// 启动和停止不在同一档的话，业务还在用的时候它就被关了
-				t.Errorf("停止钩子也该在 StageClient，got=%v", e.Stage)
+				// If start and stop are not on the same stage, it is closed while business code is still using it.
+				t.Errorf("the stop hook must be on StageClient too, got=%v", e.Stage)
 			}
 		}
 	}
 	if stopped != true {
-		t.Errorf("停止钩子登记情况不对，got=%v", stopped)
+		t.Errorf("the stop hook registration is wrong, got=%v", stopped)
 	}
 }
 
 func TestInit_WorksWithoutConfig(t *testing.T) {
-	// 与 xgorm / xredis 不同：HTTP 客户端不连任何外部资源，没配也该给一个能用的
+	// Unlike xgorm / xredis: an HTTP client connects to no external resource, so it must give a usable one even unconfigured.
 	withMetrics(t)
 	initComponent(t, DefaultConfig())
 
 	if C().GetClient().Timeout != DefaultConfig().Timeout {
-		t.Errorf("应当用默认超时，got=%v", C().GetClient().Timeout)
+		t.Errorf("the default timeout must be used, got=%v", C().GetClient().Timeout)
 	}
 	if RawClient() == nil {
-		t.Error("原生 client 也该可用")
+		t.Error("the native client must be usable too")
 	}
 
 	if err := closeXHttp(context.Background()); err != nil {
-		t.Errorf("关闭不该报错：%v", err)
+		t.Errorf("closing must not be an error: %v", err)
 	}
-	// 关闭后退回兜底实例而不是置空：关闭阶段仍可能有组件发请求，
-	// 让它带着超时失败，好过拿到一个已经关掉的客户端
+	// After closing it falls back rather than being nil: a component may still send a request while shutting down,
+	// and failing with a timeout beats getting a closed client.
 	if got := C().GetClient().Timeout; got != fallbackTimeout {
-		t.Errorf("关闭后应退回兜底实例，got=%v", got)
+		t.Errorf("after closing it must fall back, got=%v", got)
 	}
 }
 
-// emptyCell 把全局实例清空，模拟「框架还没初始化过」
+// emptyCell clears the global instance, simulating "the framework has not initialized yet".
 func emptyCell(t *testing.T) {
 	t.Helper()
 	mu.Lock()
@@ -490,52 +490,52 @@ func emptyCell(t *testing.T) {
 	t.Cleanup(func() { mu.Lock(); current = old; mu.Unlock() })
 }
 
-// initComponent 走一遍框架真正会走的路径：按这份配置装好本模块。
+// initComponent walks the path the framework really takes: set this module up from this configuration.
 func initComponent(t *testing.T, c Config) {
 	t.Helper()
 	if err := install(c); err != nil {
-		t.Fatalf("初始化失败：%v", err)
+		t.Fatalf("initialization failed: %v", err)
 	}
 }
 
 func TestValidate(t *testing.T) {
 	if err := DefaultConfig().Validate(); err != nil {
-		t.Errorf("默认配置应当合法：%v", err)
+		t.Errorf("the default configuration must be valid: %v", err)
 	}
 	bad := DefaultConfig()
 	bad.RetryCount = -1
 	if err := bad.Validate(); err == nil {
-		t.Error("重试次数为负应当报错")
+		t.Error("a negative retry count must be an error")
 	}
 	bad = DefaultConfig()
 	bad.MaxIdleConns = -1
 	if err := bad.Validate(); err == nil {
-		t.Error("连接数为负应当报错")
+		t.Error("a negative connection count must be an error")
 	}
 	bad = DefaultConfig()
 	bad.MaxConnsPerHost = -1
 	if err := bad.Validate(); err == nil {
-		t.Error("每 host 连接数上限为负应当报错")
+		t.Error("a negative per-host connection limit must be an error")
 	}
 }
 
 func TestTunedTransport_UntouchedDefaultsMatchDocs(t *testing.T) {
-	// 注释和 xhttp/README.md 里写的是这几个数（Go 1.25、resty v2.17.2）。
-	// 升级之后变了，这里先红，文档跟着改
+	// The comments and xhttp/README.md state these numbers (Go 1.25, resty v2.17.2).
+	// When an upgrade changes them this goes red first and the documentation follows.
 	tr := tunedTransport(DefaultConfig(), nil).(*http.Transport)
 	if tr.Proxy == nil || tr.TLSHandshakeTimeout != 10*time.Second || tr.ResponseHeaderTimeout != 0 ||
 		tr.MaxConnsPerHost != 0 || !tr.ForceAttemptHTTP2 {
-		t.Errorf("标准库的默认值变了：proxy=%v tls=%v header=%v maxConns=%d h2=%v",
+		t.Errorf("the standard library defaults changed: proxy=%v tls=%v header=%v maxConns=%d h2=%v",
 			tr.Proxy != nil, tr.TLSHandshakeTimeout, tr.ResponseHeaderTimeout, tr.MaxConnsPerHost, tr.ForceAttemptHTTP2)
 	}
 	client, _ := newQuiet(t, DefaultConfig())
 	if client.GetClient().CheckRedirect != nil {
-		t.Error("resty 自己设了重定向策略，文档里「标准库默认，最多 10 次」不再成立")
+		t.Error("resty now sets a redirect policy of its own, so \"the standard library default, at most 10\" in the docs no longer holds")
 	}
 }
 
 func TestNew_MaxConnsPerHostApplied(t *testing.T) {
-	// 不限的话并发多少就开多少条连接；配了上限，超出的请求排队等连接
+	// Unlimited opens as many connections as the concurrency asks for; with a limit, excess requests queue for one.
 	var mu sync.Mutex
 	conns := 0
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -568,38 +568,38 @@ func TestNew_MaxConnsPerHostApplied(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if conns > 2 {
-		t.Errorf("MaxConnsPerHost=2 时下游最多该看到 2 条连接，got=%d", conns)
+		t.Errorf("with MaxConnsPerHost=2 the downstream must see at most 2 connections, got=%d", conns)
 	}
 }
 
 func TestNew_DirectCallAlsoValidatesConfig(t *testing.T) {
-	// 不经过配置文件、直接 New 的使用者没有 xconfig.Unmarshal 替他调 Validate
+	// A caller going straight to New without the config file has no xconfig.Unmarshal to call Validate for them.
 	bad := DefaultConfig()
 	bad.DialTimeout = -time.Second
 	_, _, err := New(bad)
 	if err == nil {
-		t.Fatal("非法配置直接 New 也该失败")
+		t.Fatal("an invalid configuration must fail a direct New too")
 	}
 	if xerror.Module(err) != "xhttp" || strings.Count(err.Error(), "xhttp") != 1 {
-		t.Errorf("错误由 xhttp 包一次，got=%v", err)
+		t.Errorf("the error must be wrapped once by xhttp, got=%v", err)
 	}
 }
 
 func TestSpanName_MethodOnly(t *testing.T) {
-	// 路径里有 id，query 里常有 id 和令牌：放进 Span 名会撑爆基数，也会把敏感值带出去
+	// A path holds an id and a query often holds ids and tokens: putting them in the Span name would burst the cardinality and carry sensitive values out.
 	req, _ := http.NewRequest("GET", "https://h/api/orders/42?token=hunter2&id=1", nil)
 	if got := spanName("", req); got != "GET" {
-		t.Errorf("Span 名该只有方法，got=%q", got)
+		t.Errorf("the Span name must be the method alone, got=%q", got)
 	}
 	if strings.Contains(spanName("", req), "hunter2") {
-		t.Error("Span 名里出现了令牌")
+		t.Error("a token appeared in the Span name")
 	}
 }
 
-// newQuiet 建一个不打日志的 client，同时给它装一套独立的指标设施。
+// newQuiet builds a client that logs nothing and gives it a metrics setup of its own.
 //
-// 每个用例都换一套 registry：指标是进程级的全局状态，一个用例注册出的冲突
-// 会留在那里，让后面所有用例的 New 都失败——上一版就是这么串味的。
+// Every case gets a fresh registry: metrics are process-wide global state, and a conflict one case registers would
+// stay there and fail New for every case after it -- which is exactly how the previous version bled across.
 func newQuiet(t *testing.T, c Config) (*resty.Client, *xmetric.Metrics) {
 	t.Helper()
 	m := withMetrics(t)
@@ -621,18 +621,18 @@ func (discardLogger) Warnf(string, ...any)  {}
 func (discardLogger) Debugf(string, ...any) {}
 
 func TestNew_CloseReallyClearsIdleConns(t *testing.T) {
-	// 回归用例。上一版让 Closer 去调 http.Client.CloseIdleConnections()，
-	// 那个方法靠类型断言往下找；链路开着时中间隔着 otelhttp.Transport，
-	// 而它没实现这个方法，断言到那里就断了——整条调用是空操作，
-	// 而链路默认就是开着的。只断言「包装层实现了这个方法」测不出来，
-	// 得看连接有没有真的被释放
+	// Regression case. The previous version had the Closer call http.Client.CloseIdleConnections(),
+	// which searches downwards by type assertion; with tracing on there is an otelhttp.Transport in between,
+	// which does not implement the method, so the assertion stops there -- the whole call is a no-op,
+	// and tracing is on by default. Asserting that "the wrapper implements the method" proves nothing;
+	// the connections have to be really released.
 	for _, trace := range []bool{false, true} {
 		t.Run(fmt.Sprintf("Trace=%v", trace), func(t *testing.T) {
 			var idle atomic.Int64
 			srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.WriteHeader(200)
 			}))
-			// 必须在 Start 之前设：起来之后再改，服务端协程已经在读它了
+			// It has to be set before Start: changing it afterwards races the server goroutine already reading it
 			srv.Config.ConnState = func(_ net.Conn, s http.ConnState) {
 				switch s {
 				case http.StateIdle:
@@ -657,11 +657,11 @@ func TestNew_CloseReallyClearsIdleConns(t *testing.T) {
 			}
 			_ = resp
 
-			waitFor(t, func() bool { return idle.Load() > 0 }, "请求完成后该有一个空闲连接")
+			waitFor(t, func() bool { return idle.Load() > 0 }, "there must be one idle connection once the request finishes")
 			if err := closer.Close(); err != nil {
 				t.Fatal(err)
 			}
-			waitFor(t, func() bool { return idle.Load() == 0 }, "关闭之后空闲连接该被释放")
+			waitFor(t, func() bool { return idle.Load() == 0 }, "the idle connection must be released after closing")
 		})
 	}
 }
@@ -678,13 +678,13 @@ func waitFor(t *testing.T, cond func() bool, what string) {
 }
 
 func TestMetric_RetryDurationCoversWholeLogicalRequest(t *testing.T) {
-	// resty 每次尝试都会重置 Request.Time，resp.Time() 只是最后一次尝试的耗时。
-	// 计数是按「一次逻辑请求」记的，耗时也必须是——否则故障时请求数照涨、
-	// 耗时却纹丝不动，监控看上去异常地健康
+	// resty resets Request.Time on every attempt, so resp.Time() is only the last attempt's duration.
+	// The count is kept per "one logical request", so the duration has to be as well -- otherwise, during an incident,
+	// the request count rises while the duration does not move and the monitoring looks unusually healthy.
 	var hits atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if hits.Add(1) == 1 {
-			w.WriteHeader(http.StatusInternalServerError) // 第一次失败，触发重试
+			w.WriteHeader(http.StatusInternalServerError) // the first one fails, triggering a retry
 			return
 		}
 		w.WriteHeader(200)
@@ -711,12 +711,12 @@ func TestMetric_RetryDurationCoversWholeLogicalRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	if hits.Load() < 2 {
-		t.Fatalf("应当重试过，服务端只收到 %d 次", hits.Load())
+		t.Fatalf("it must have retried, the server saw only %d", hits.Load())
 	}
 
 	got := histogramSum(t, hist)
 	if got < backoff.Seconds() {
-		t.Errorf("耗时该覆盖整次逻辑请求（含退避 %v），got=%.3fs", backoff, got)
+		t.Errorf("the duration must cover the whole logical request (the %v backoff included), got=%.3fs", backoff, got)
 	}
 }
 
@@ -737,17 +737,17 @@ func histogramSum(t *testing.T, h *prometheus.HistogramVec) float64 {
 			}
 		}
 	}
-	t.Fatal("没采到直方图样本")
+	t.Fatal("no histogram sample was collected")
 	return 0
 }
 
 func TestNew_CtxCapsWholeLogicalRequest(t *testing.T) {
-	// Timeout 管的是一次尝试。开了 RetryCount 之后，最坏情况是
-	// (RetryCount+1) × Timeout 再加退避——配 300ms 实际能跑到 1.2s。
-	// 唯一能给整次逻辑请求封顶的是调用方的 ctx，这里把它钉住。
-	// 这里 Timeout 给 1s：不听 ctx 的话是 4s 起步，上界 2s 离 400ms 的预算和 4s 都远
+	// Timeout governs one attempt. With RetryCount on, the worst case is
+	// (RetryCount+1) x Timeout plus the backoff -- 300ms configured can really run to 1.2s.
+	// The only thing that caps the whole logical request is the caller's ctx, which is pinned down here.
+	// Timeout is 1s here: without honoring the ctx it would start at 4s, and the 2s bound is far from both the 400ms budget and 4s.
 	srv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		select { // 客户端断开就收手：srv.Close 要等在途请求跑完
+		select { // stop when the client disconnects: srv.Close waits for the requests in flight
 		case <-r.Context().Done():
 		case <-time.After(5 * time.Second):
 		}
@@ -770,14 +770,14 @@ func TestNew_CtxCapsWholeLogicalRequest(t *testing.T) {
 
 	start := time.Now()
 	if _, err := cli.R().SetContext(ctx).Get(srv.URL); err == nil {
-		t.Fatal("该超时的")
+		t.Fatal("it must time out")
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
-		t.Errorf("ctx 给了 400ms 的预算，重试不该把它撑到 %v", elapsed.Round(10*time.Millisecond))
+		t.Errorf("the ctx gave a 400ms budget and retries must not stretch it to %v", elapsed.Round(10*time.Millisecond))
 	}
 }
 
-// keepGlobals 记下会被 install 改掉的那些全局值，测试结束还原
+// keepGlobals records the globals install will change and restores them when the test ends.
 func keepGlobals(t *testing.T) {
 	t.Helper()
 	mu.Lock()
@@ -792,19 +792,19 @@ func keepGlobals(t *testing.T) {
 }
 
 func TestInitXHttp_NoConfigInstallsUsableDefaultClient(t *testing.T) {
-	// HTTP 客户端没配就不装的话，C() 每次退回兜底实例，
-	// 超时和重试全是另一套值——而使用者没配本来就该是「用默认的」
+	// Not installing it when the HTTP client is unconfigured would have C() fall back every time,
+	// with another set of timeouts and retries -- while not configuring it should simply mean "use the defaults".
 	keepGlobals(t)
 	xonetest.UseConfigYAML(t, "XApp:\n  Name: demo\n")
 
 	if err := initXHttp(context.Background()); err != nil {
-		t.Fatalf("没配不该报错：%v", err)
+		t.Fatalf("not configuring it must not be an error: %v", err)
 	}
 	mu.Lock()
 	got := current
 	mu.Unlock()
 	if got == nil {
-		t.Fatal("没装上全局客户端")
+		t.Fatal("no global client was installed")
 	}
 }
 
@@ -813,36 +813,36 @@ func TestInitXHttp_BadConfigFailsStartup(t *testing.T) {
 	xonetest.UseConfigYAML(t, "XHttp:\n  TimeOut: 3s\n")
 
 	if err := initXHttp(context.Background()); err == nil {
-		t.Fatal("字段拼错应当让启动失败")
+		t.Fatal("a misspelled field must fail startup")
 	}
 }
 
 func TestInitXHttp_InvalidValueFailsStartup(t *testing.T) {
-	// 负的时长是一个减号换来的静默故障：DialTimeout 写成负数时每一次请求
-	// 当场 i/o timeout，Timeout 写成负数反而被标准库当成「不限时」，
-	// 超时保护整个消失——两种都不会有任何迹象
+	// A negative duration is a silent failure bought with one minus sign: a negative DialTimeout makes every request
+	// fail with i/o timeout on the spot, while a negative Timeout is taken by the standard library as "no limit"
+	// and the timeout protection disappears entirely -- neither leaves any sign.
 	keepGlobals(t)
 	for _, field := range []string{"Timeout", "DialTimeout", "IdleConnTimeout", "RetryWaitTime", "RetryMaxWaitTime"} {
 		t.Run(field, func(t *testing.T) {
 			xonetest.UseConfigYAML(t, "XHttp:\n  "+field+": -1s\n")
 			if err := initXHttp(context.Background()); err == nil {
-				t.Fatalf("%s 配成负数应当让启动失败", field)
+				t.Fatalf("a negative %s must fail startup", field)
 			} else if !strings.Contains(err.Error(), field) {
-				t.Errorf("错误里要点名是哪个字段，got=%v", err)
+				t.Errorf("the error must name the field, got=%v", err)
 			} else if !xerror.Is(err, "xconfig") {
-				// 在读配置时就拦下（xconfig.Unmarshal 调 Validate），不是等到 New
-				t.Errorf("错误该出自读配置那一步，got=%v", err)
+				// It is caught while the config is read (xconfig.Unmarshal calls Validate), not only at New
+				t.Errorf("the error must come from the config-reading step, got=%v", err)
 			}
 		})
 	}
 }
 
 func TestValidate_KeepAlive_AllowsNegative(t *testing.T) {
-	// 这是唯一一个负值有意义的时长：标准库用它表示「不发探测」
+	// It is the one duration where a negative value is meaningful: the standard library takes it as "send no probes".
 	c := DefaultConfig()
 	c.DialKeepAlive = -1
 	if err := c.Validate(); err != nil {
-		t.Errorf("DialKeepAlive 负值是合法的，got=%v", err)
+		t.Errorf("a negative DialKeepAlive is valid, got=%v", err)
 	}
 }
 
@@ -854,28 +854,28 @@ func TestInitXHttp_ConfigAppliedToGlobalClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := C().GetClient().Timeout; got != 7*time.Second {
-		t.Errorf("超时没传到客户端上，got=%v", got)
+		t.Errorf("the timeout did not reach the client, got=%v", got)
 	}
 	if got := C().RetryCount; got != 4 {
-		t.Errorf("重试次数没传到客户端上，got=%v", got)
+		t.Errorf("the retry count did not reach the client, got=%v", got)
 	}
 }
 
 func TestCloseXHttp_FallsBackToDefaultAfterClose(t *testing.T) {
-	// 摘掉之后 C() 还得能用：退出阶段里其它组件的关闭逻辑可能还要发请求
+	// C() has to stay usable after it is detached: another component's shutdown logic may still send a request.
 	keepGlobals(t)
 	xonetest.UseConfigYAML(t, "XHttp:\n  Timeout: 7s\n")
 	if err := initXHttp(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if err := closeXHttp(context.Background()); err != nil {
-		t.Fatalf("关闭不该报错：%v", err)
+		t.Fatalf("closing must not be an error: %v", err)
 	}
 	if C() == nil {
-		t.Fatal("关完之后 C() 返回了 nil，调用方会当场空指针")
+		t.Fatal("C() returned nil after closing, so the caller would hit a nil pointer")
 	}
 	if got := C().GetClient().Timeout; got == 7*time.Second {
-		t.Error("关完还拿得到已经关掉的那个客户端")
+		t.Error("the already closed client is still reachable")
 	}
 }
 
@@ -889,12 +889,12 @@ func TestCloseXHttp_CloseWithoutInstallIsSafe(t *testing.T) {
 	}
 }
 
-// ---- 日志、链路属性、cookie ----
+// ---- logs, span attributes, cookies ----
 
 func TestNew_RestyLogsGoToSlogWithoutQuery(t *testing.T) {
-	// 回归用例。resty 的 logger 默认写 os.Stderr（建 client 那一刻抓住的），
-	// 开了重试之后每次失败都打一行 `WARN RESTY Get "http://…?token=…": …, Attempt 1`，
-	// 最后再打一行 ERROR——绕开 slog，查询串里的令牌原样落盘
+	// Regression case. resty's logger writes to os.Stderr by default (grabbed the moment the client is built),
+	// and with retries on it prints `WARN RESTY Get "http://…?token=…": …, Attempt 1` per failure
+	// and one ERROR at the end -- past slog, with the token in the query string landing on disk as it is.
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -922,23 +922,23 @@ func TestNew_RestyLogsGoToSlogWithoutQuery(t *testing.T) {
 	stderr, _ := io.ReadAll(r)
 
 	if reqErr == nil {
-		t.Fatal("连一个没人监听的端口，该失败")
+		t.Fatal("connecting to a port nobody listens on must fail")
 	}
 	if len(stderr) > 0 {
-		t.Errorf("resty 不该直接写 stderr，got=%s", stderr)
+		t.Errorf("resty must not write to stderr directly, got=%s", stderr)
 	}
 	got := buf.String()
 	if !strings.Contains(got, "Attempt") {
-		t.Errorf("重试告警该进 slog，got=%s", got)
+		t.Errorf("the retry warning must reach slog, got=%s", got)
 	}
 	if strings.Contains(got, "hunter2") {
-		t.Errorf("查询串里的令牌进了日志：%s", got)
+		t.Errorf("a token from the query string reached the log: %s", got)
 	}
 }
 
 func TestNew_RestyLogsScrubErrorArgsStructurally(t *testing.T) {
-	// Log 关着、resty 重试路径上的日志照打：参数里的 *url.Error 按结构去掉查询串。
-	// Location 里问号前有空格，按文本认不出来
+	// With Log off, resty's retry-path logs are printed: the *url.Error among the arguments has its query string removed by structure.
+	// A space before the question mark in Location is not found by text.
 	srv, _ := echo(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Location", "/a b?token=hunter2")
 		w.WriteHeader(http.StatusFound)
@@ -959,26 +959,26 @@ func TestNew_RestyLogsScrubErrorArgsStructurally(t *testing.T) {
 	client.R().Get(srv.URL)
 	got := buf.String()
 	if !strings.Contains(got, "Attempt") || !strings.Contains(got, "/a%20b") {
-		t.Fatalf("前提：重定向被拒也会重试，resty 打出每次尝试的那行，got=%s", got)
+		t.Fatalf("precondition: a refused redirect is retried too and resty prints its per-attempt line, got=%s", got)
 	}
 	if strings.Contains(got, "hunter2") {
-		t.Errorf("查询串里的令牌进了日志：%s", got)
+		t.Errorf("a token from the query string reached the log: %s", got)
 	}
 }
 
 func TestRestyLogger_TextScrubbed(t *testing.T) {
-	// 不是错误的参数、格式串本身里的 URL 按文本去掉查询串和 userinfo
+	// A URL in an argument that is not an error, or in the format string itself, has its query string and userinfo removed by text.
 	var buf strings.Builder
 	old := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&lockedWriter{w: &buf}, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(old) })
 	restyLogger{}.Warnf("see %s and https://u:p@h/y#frag", "http://h/x?token=hunter2")
 	if got := buf.String(); !strings.Contains(got, `see http://h/x and https://h/y`) {
-		t.Errorf("resty 日志里的 URL 该去掉查询串、片段和 userinfo，got=%s", got)
+		t.Errorf("a URL in resty's log must have its query string, fragment and userinfo removed, got=%s", got)
 	}
 }
 
-// lockedWriter resty 在自己的协程里打日志，测试这边同时在读
+// lockedWriter: resty logs from its own goroutine while the test reads at the same time.
 type lockedWriter struct {
 	mu sync.Mutex
 	w  io.Writer
@@ -1004,9 +1004,9 @@ func TestScrubText_Query(t *testing.T) {
 }
 
 func TestTransport_SpanHasNoQueryAndIsNotNamedByPath(t *testing.T) {
-	// 回归用例。otelhttp 往 url.full 里写的是完整 URL，查询串里的令牌跟着进了
-	// 链路后端（它只去掉 user:password）；Span 名按真实路径起，
-	// /users/42、/users/43 各是一个名字，基数随用户数增长
+	// Regression case. otelhttp writes the full URL into url.full, so a token in the query string reached the
+	// tracing backend with it (it only removes user:password); and the Span name was the real path,
+	// so /users/42 and /users/43 were each a name and the cardinality grew with the number of users.
 	old := otel.GetTracerProvider()
 	t.Cleanup(func() { otel.SetTracerProvider(old) })
 	exp := tracetest.NewInMemoryExporter()
@@ -1023,30 +1023,30 @@ func TestTransport_SpanHasNoQueryAndIsNotNamedByPath(t *testing.T) {
 
 	spans := exp.GetSpans()
 	if len(spans) != 1 {
-		t.Fatalf("应产出一个 Span，got=%d", len(spans))
+		t.Fatalf("one Span must be produced, got=%d", len(spans))
 	}
 	if spans[0].Name != "GET" {
-		t.Errorf("出站 Span 名该只有方法，got=%q", spans[0].Name)
+		t.Errorf("an outbound Span name must be the method alone, got=%q", spans[0].Name)
 	}
 	var full string
 	for _, kv := range spans[0].Attributes {
 		if strings.Contains(kv.Value.Emit(), "hunter2") {
-			t.Errorf("属性 %s 里带出了令牌：%s", kv.Key, kv.Value.Emit())
+			t.Errorf("the attribute %s carried a token out: %s", kv.Key, kv.Value.Emit())
 		}
 		if kv.Key == "url.full" {
 			full = kv.Value.Emit()
 		}
 	}
 	if full != srv.URL+"/users/42" {
-		t.Errorf("url.full 该去掉查询串、保留其余部分，got=%q", full)
+		t.Errorf("url.full must have its query string removed and keep the rest, got=%q", full)
 	}
 }
 
 func TestC_FallbackHasNoCookieJar(t *testing.T) {
-	// 回归用例。兜底实例原先是 resty.New()，它自带一个 cookie jar，
-	// 而配置出来的实例（NewWithClient）没有。于是初始化之前、关闭之后
-	// 发的请求会把 A 服务种下的 cookie 带给之后的每一次调用——
-	// 同一个进程里毫不相干的两次请求共享了会话
+	// Regression case. The fallback instance used to be a resty.New(), which brings a cookie jar,
+	// while a configured instance (NewWithClient) does not. So requests sent before initialization and after
+	// shutdown would carry a cookie set by service A into every call afterwards --
+	// two entirely unrelated requests in one process sharing a session.
 	emptyCell(t)
 	var cookie atomic.Value
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1065,9 +1065,9 @@ func TestC_FallbackHasNoCookieJar(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got, _ := cookie.Load().(string); got != "" {
-		t.Errorf("兜底实例不该记住别的请求种下的 cookie，got=%q", got)
+		t.Errorf("the fallback instance must not remember a cookie another request set, got=%q", got)
 	}
 	if RawClient().Jar != nil {
-		t.Error("兜底实例的原生 client 不该带 cookie jar，要与配置出来的实例一致")
+		t.Error("the fallback instance's native client must carry no cookie jar, matching a configured instance")
 	}
 }
