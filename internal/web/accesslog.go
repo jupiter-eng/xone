@@ -11,17 +11,20 @@ import (
 )
 
 const (
-	// maxRequestBody 请求体记录上限
+	// maxRequestBody is the upper bound on how much of a request body is recorded
 	maxRequestBody = 256 * 1024
-	// MaxResponseBody 响应体记录上限，比请求体小得多：
-	// 响应通常大得多，而排查时看开头几 KB 基本够了。截响应的 writer 在集成里，按它截
+	// MaxResponseBody is the upper bound on how much of a response body is recorded, far smaller
+	// than the request's: a response is usually much larger, and the first few KB are generally
+	// enough to track something down. The writer truncating the response lives in the integrations
+	// and truncates by this
 	MaxResponseBody = 4 * 1024
 )
 
-// AccessLog 访问日志记什么：跳过哪些路径、记不记 body / 查询串 / 请求头和响应头。
+// AccessLog is what the access log records: which paths are skipped, and whether the body, the
+// query string, the request headers and the response headers are recorded.
 //
-// 零值就能用，什么都不额外记。各集成的日志中间件持有一份，
-// 由它们自己的选项（xgin/middleware 的 WithSkipPaths、WithBody……）填。
+// Its zero value works and records nothing extra. Each integration's logging middleware holds one
+// and fills it from its own options (xgin/middleware's WithSkipPaths, WithBody and so on).
 type AccessLog struct {
 	skipExact  map[string]bool
 	skipPrefix []string
@@ -33,7 +36,8 @@ type AccessLog struct {
 	RespHeader bool
 }
 
-// SkipPaths 追加不记访问日志的路径：以 / 结尾的按前缀匹配（/health/ 命中 /health/live），其余精确匹配。
+// SkipPaths adds paths that are not written to the access log: one ending in / matches by prefix
+// (/health/ matches /health/live) and the rest match exactly.
 func (l *AccessLog) SkipPaths(paths ...string) {
 	for _, p := range paths {
 		if strings.HasSuffix(p, "/") {
@@ -47,13 +51,16 @@ func (l *AccessLog) SkipPaths(paths ...string) {
 	}
 }
 
-// Skip 这个请求要不要跳过：路径在跳过的名单里，或者 Info 级别的日志关着。
+// Skip reports whether this request is skipped: its path is on the skip list, or logging at Info
+// level is off.
 //
-// 级别关掉时直接放行。中间件里那一整套——缓存请求体、包装 ResponseWriter
-// 截响应、结束后的脱敏和序列化——存在的唯一目的就是拼出这一行日志。
-// 等 slog 自己去判级别时，代价已经付完了，只是结果被丢弃。
+// With the level off it is let through outright. The whole of what the middleware does -- buffering
+// the request body, wrapping the ResponseWriter to truncate the response, and the redaction and
+// serialization afterwards -- exists for one purpose: assembling this one line of log. By the time
+// slog decides about the level itself, the price has been paid in full and only the result is
+// thrown away.
 //
-// 每请求判一次而不是构造时判一次：级别可能在运行时变。
+// Decided per request rather than once at construction: the level may change at run time.
 func (l *AccessLog) Skip(r *http.Request) bool {
 	return l.skipPath(r.URL.Path) || !slog.Default().Enabled(r.Context(), slog.LevelInfo)
 }
@@ -65,58 +72,68 @@ func (l *AccessLog) skipPath(path string) bool {
 	return slices.ContainsFunc(l.skipPrefix, func(p string) bool { return strings.HasPrefix(path, p) })
 }
 
-// Access 一次请求结束时，访问日志里要记的、得从框架里取的那些值。
+// Access is what the access log records at the end of one request that has to be taken out of the
+// framework.
 //
-// 路由、状态码、写出的字节数、client IP、错误由集成量好了交进来，这里不去猜：
-// 它们在每个框架里的取法都不一样（gin 没匹配上时路由是空串、没写响应体时 Size 是 -1；
-// echo 的错误在中间件返回之后才渲染成响应）。其余的从 Request 上取。
+// The route, the status code, the bytes written, the client IP and the errors are measured by the
+// integration and handed in rather than guessed at here: how they are taken differs per framework
+// (gin's route is an empty string when nothing matched and its Size is -1 when no response body was
+// written; echo's error is only rendered into a response after the middleware returns). The rest is
+// taken from the Request.
 type Access struct {
 	Request  *http.Request
-	Ctx      context.Context // 记这条日志用的 ctx（trace_id、xlog.AddKV 的字段从这里取）；nil 时用 Request 的
-	Route    string          // 路由模板，没匹配上时是 unmatched
+	Ctx      context.Context // the ctx this log is written with (trace_id and xlog.AddKV's fields come from it); nil takes the Request's
+	Route    string          // the route template, unmatched when nothing matched
 	Status   int
 	Elapsed  time.Duration
 	ClientIP string
-	BytesOut int // 写出的响应体字节数，不含响应头；一个字节都没写是 0
+	BytesOut int // the bytes of response body written, headers excluded; 0 when not one byte was written
 
-	RespHeader http.Header // 记响应头、判响应体的 Content-Type 用
-	ReqBody    []byte      // ReqBody 开着时 SnapshotBody 取的那一份
-	RespBody   []byte      // RespBody 开着时截下的响应体，最多 MaxResponseBody 字节
-	Errors     string      // 框架登记的错误，空串就不记；脱敏规则见 RedactText
+	RespHeader http.Header // for recording the response headers and deciding the response body's Content-Type
+	ReqBody    []byte      // what SnapshotBody took while ReqBody is on
+	RespBody   []byte      // the response body truncated while RespBody is on, MaxResponseBody bytes at most
+	Errors     string      // the errors the framework recorded, left out when empty; the redaction rules are in RedactText
 }
 
-// Log 把 a 记成一条访问日志（Info 级别，message 是 request completed）。
+// Log records a as one line of access log (at Info level, with request completed as the message).
 //
-// 字段的名字和顺序是日志平台上的索引和看板认的，改一个就对不上一片：
-// method route path status elapsed_ms client_ip host proto user_agent bytes_in bytes_out，
-// 之后按开关依次是 request_headers query response_headers request_body response_body，最后是 errors。
+// The fields' names and their order are what the indexes and the dashboards on the logging platform
+// go by, and changing one puts a whole set out of step:
+// method route path status elapsed_ms client_ip host proto user_agent bytes_in bytes_out, followed
+// as the switches say by request_headers query response_headers request_body response_body, and
+// errors last.
 func (l *AccessLog) Log(a *Access) {
 	r := a.Request
-	// 直接给 slog.Attr，不给交替的 key、value：后者每个值都要先装进 any
-	// 再由 slog 拆出来，实测每条访问日志多 6 次分配（记 body 时 8 次）。
-	// 切片在这里拼、在这里交给 slog，不从函数里返回：返回的话它就得分配在堆上
+	// slog.Attr directly rather than alternating keys and values: the latter boxes every value into
+	// an any for slog to take apart again, measured at 6 allocations more per access log (8 with the
+	// bodies recorded).
+	// The slice is assembled here and handed to slog here rather than returned from a function:
+	// returning it would put it on the heap
 	attrs := []slog.Attr{
 		slog.String("method", r.Method),
-		slog.String("route", a.Route), // 没匹配上时记 unmatched，真实路径在 path 里
-		// 只记 Path，不含查询串：GET /login?token=... 这种请求里
-		// 凭证就在 URL 上。换成 RequestURI() 或 URL.String() 看着
-		// 都像是「把日志记全一点」，实际是把凭证明文写进日志
+		slog.String("route", a.Route), // unmatched when nothing matched; the real path is in path
+		// Path alone, with no query string: in a request such as GET /login?token=... the credential
+		// is in the URL. RequestURI() or URL.String() both look like "recording a bit more of the
+		// log" while really writing the credential into it in plaintext
 		slog.String("path", r.URL.Path),
 		slog.Int("status", a.Status),
-		// 字段名带单位：slog 的 JSON 把 Duration 写成纳秒整数，51130 看不出是 51µs。
-		// 浮点在 slog 的 JSON 里走 json.Marshal，实测每条多 2 次分配、约 0.5µs——
-		// 换成整数微秒能省掉，但日志是给人读的，毫秒更顺手
+		// The unit is in the field name: slog's JSON writes a Duration as an integer of nanoseconds,
+		// and 51130 does not read as 51µs.
+		// A float goes through json.Marshal in slog's JSON, measured at 2 allocations and about 0.5µs
+		// more per line -- integer microseconds would save that, but a log is read by people and
+		// milliseconds come easier
 		slog.Float64("elapsed_ms", millis(a.Elapsed)),
 		slog.String("client_ip", a.ClientIP),
 		slog.String("host", r.Host),
 		slog.String("proto", r.Proto),
 		slog.String("user_agent", r.UserAgent()),
-		// 请求头里的 Content-Length；分块上传时没有，记 -1，和 net/http 的约定一致
+		// The Content-Length of the request headers; a chunked upload has none and records -1, as
+		// net/http's convention has it
 		slog.Int64("bytes_in", r.ContentLength),
 		slog.Int("bytes_out", a.BytesOut),
 	}
 	if l.ReqHeader {
-		// 已是 slog.Value，slog.Any 会再装一次箱
+		// It is a slog.Value already, and slog.Any would box it once more
 		attrs = append(attrs, slog.Attr{Key: "request_headers", Value: RedactHeaders(r.Header)})
 	}
 	if l.Query && r.URL.RawQuery != "" {
@@ -149,10 +166,13 @@ func (l *AccessLog) Log(a *Access) {
 	slog.LogAttrs(ctx, slog.LevelInfo, "request completed", attrs...)
 }
 
-// encodedOmitted 响应体按 Content-Encoding 压缩过（gzip、br……）时记进日志的那一句，没压缩过返回空串。
+// encodedOmitted is the sentence written into the log when the response body was compressed by
+// Content-Encoding (gzip, br and so on), or an empty string when it was not.
 //
-// 压缩中间件（echo 的 middleware.Gzip、gin-contrib/gzip）排在访问日志里面，截下来的是压缩过的字节：
-// 照记的话是一串二进制乱码，JSON 还会解不出来。解压一遍只为了记日志不值得，和上传的文件一样只记一句 omitted
+// A compression middleware (echo's middleware.Gzip, gin-contrib/gzip) sits inside the access log,
+// so what is truncated are the compressed bytes: recorded as they are, they would be a run of
+// binary garbage, and JSON would not even parse. Decompressing them only to write a log is not
+// worth it, so it records one omitted sentence, as an uploaded file does
 func encodedOmitted(h http.Header) string {
 	enc := strings.ToLower(strings.TrimSpace(h.Get("Content-Encoding")))
 	if enc == "" || enc == "identity" {
@@ -161,10 +181,11 @@ func encodedOmitted(h http.Header) string {
 	return "[" + enc + "-encoded content omitted]"
 }
 
-// isText 判断是不是适合直接记进日志的文本类型
+// isText reports whether this is a text type fit to be written into the log as it is.
 //
-// json 用子串匹配，与 RedactBody 保持一致：application/vnd.api+json、
-// application/problem+json 都是 JSON，精确匹配会让这些响应体一声不响地不记。
+// json is matched as a substring, as RedactBody does: application/vnd.api+json and
+// application/problem+json are both JSON, and an exact match would leave such response bodies
+// unrecorded without a word.
 func isText(contentType string) bool {
 	ct := strings.ToLower(contentType)
 	return strings.Contains(ct, "json") ||
@@ -172,19 +193,22 @@ func isText(contentType string) bool {
 		strings.Contains(ct, "xml")
 }
 
-// SnapshotBody 取一份请求体副本（最多前 256KB），不影响后续读取。
+// SnapshotBody takes a copy of the request body (the first 256KB at most) without affecting later
+// reads.
 //
-// 优先用 GetBody：它返回的是副本，原始 Body 一点没动。
-// 拿不到才退回「读出来再塞回去」。
+// GetBody comes first: what it returns is a copy and the original Body is untouched.
+// Only without one does it fall back to "read it out and put it back".
 func SnapshotBody(req *http.Request) []byte {
 	if req == nil || req.Body == nil || req.Body == http.NoBody {
 		return nil
 	}
 
-	// 先转小写：媒体类型按 RFC 9110 大小写不敏感，照字面比的话
-	// 一个 Multipart/Form-Data 的上传会绕过下面的判断，文件内容整个进日志
+	// Lowercased first: a media type is case-insensitive under RFC 9110, and compared literally a
+	// Multipart/Form-Data upload would go around the checks below and put the whole file into the
+	// log
 	ct := strings.ToLower(req.Header.Get("Content-Type"))
-	// 文件上传和二进制流不读：内容对排查没用，读一遍却要付全部的内存和时间
+	// A file upload and a binary stream are not read: the content helps nothing while reading it
+	// costs the whole of the memory and the time
 	if strings.Contains(ct, "multipart/form-data") {
 		return []byte("[multipart/form-data omitted]")
 	}
@@ -200,37 +224,40 @@ func SnapshotBody(req *http.Request) []byte {
 		}
 	}
 
-	// 退路：只读前 maxRequestBody 字节，剩下的原样留在流里。
+	// The fallback: only the first maxRequestBody bytes are read and the rest is left in the stream
+	// as it is.
 	//
-	// 不能整个读进来。maxRequestBody 限的是「记多少日志」，不该顺手变成
-	// 「缓冲多少请求体」：一个 500MB 的 JSON 上传会整个躺进内存，而且
-	// handler 要等它全部落地才能开始处理。记一行日志不配有这种代价。
+	// It must not be read whole. maxRequestBody bounds "how much is logged" and must not casually
+	// become "how much of the request body is buffered": a 500MB JSON upload would lie in memory in
+	// its entirety, and the handler could not begin until all of it had landed. Writing one line of
+	// log does not deserve that price.
 	//
-	// 读出错也要把已经读到的接回去：读一半就 return 的话，那半截请求体
-	// 已经消失了，下游 handler 拿到的是个缺头的 body——
-	// 记日志这件事不该有能力改变请求本身。
+	// What was read has to be put back even on a read error: returning halfway would make that half
+	// of the request body disappear and hand the handler downstream a body missing its head --
+	// writing a log must not be able to change the request itself.
 	head, err := io.ReadAll(io.LimitReader(req.Body, maxRequestBody))
 	req.Body = &prefixedBody{prefix: head, rest: req.Body, preErr: err}
 	if err != nil {
-		return nil // 读不全就不记，但下游拿到的仍是完整的请求体和那个错误
+		return nil // an incomplete read is not recorded, while downstream still gets the whole request body and that error
 	}
 	return head
 }
 
-// prefixedBody 把已经读走的前缀接回请求体前面，连同预读时撞上的错误。
+// prefixedBody puts the prefix that was read back in front of the request body, along with the
+// error the read-ahead hit.
 //
-// 错误必须接回去。一个合法的 Reader 可以先返回「部分数据 + 错误」，
-// 下一次调用再返回 EOF——只把字节接回去的话，下游读到的是
-// 「前缀 + EOF」，一个被截断的请求看上去和一个正常的请求一模一样，
-// 业务层据此判断「收全了」。记日志这件事不该有能力改变这个判断。
+// The error has to go back. A valid Reader may return "some data plus an error" first and EOF on
+// the next call -- putting only the bytes back would have downstream read "the prefix plus EOF",
+// where a truncated request looks exactly like a complete one and the business layer concludes "it
+// all arrived". Writing a log must not be able to change that conclusion.
 //
-// Close 仍然落到原始 body 上：它才是真正持有连接的那个，
-// 换成 io.NopCloser 就等于把 http.Request 的关闭语义吃掉了。
+// Close still lands on the original body: that is what really holds the connection, and swapping in
+// an io.NopCloser would swallow http.Request's close semantics.
 type prefixedBody struct {
 	prefix []byte
 	off    int
 	rest   io.ReadCloser
-	preErr error // 预读时撞上的错误，前缀读完之后交给下游
+	preErr error // the error the read-ahead hit, handed downstream once the prefix has been read
 }
 
 func (b *prefixedBody) Read(p []byte) (int, error) {
@@ -247,5 +274,5 @@ func (b *prefixedBody) Read(p []byte) (int, error) {
 
 func (b *prefixedBody) Close() error { return b.rest.Close() }
 
-// millis 耗时换成毫秒，保留到微秒
+// millis turns an elapsed time into milliseconds, keeping it to the microsecond
 func millis(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }

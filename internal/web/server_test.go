@@ -15,7 +15,8 @@ import (
 	"github.com/jupiter-eng/xone/xerror"
 )
 
-// 启停的完整用例（超时强断、等 handler、h2c、TLS）在 xgin 里，经真实的 gin 服务跑；这里只钉几条边界
+// The full start and stop cases (force-closing at the deadline, waiting for the handlers, h2c,
+// TLS) live in xgin and run against a real gin server; only a few boundaries are pinned here
 
 func TestServer_StopBeforeStartSkipsListening(t *testing.T) {
 	s := &Server{}
@@ -35,7 +36,8 @@ func TestServer_StopBeforeStartSkipsListening(t *testing.T) {
 }
 
 func TestServer_ErrorsCarryTheIntegrationsModule(t *testing.T) {
-	// 错误出自谁的 Start，就算谁报的：调用方 xerror.Is(err, "xgin") 要成立
+	// Whoever's Start the error came out of is who reported it: a caller's xerror.Is(err, "xgin")
+	// has to hold
 	s := &Server{}
 	err := s.Start("xtest", ServerConfig{CertFile: "c", KeyFile: "k", ClientCAFile: "/nonexistent/ca.pem"}, http.NotFoundHandler())
 	if !xerror.Is(err, "xtest") {
@@ -62,8 +64,10 @@ func TestShutdownCtx_LeavesTailForHandlers(t *testing.T) {
 }
 
 func TestServer_ErrorLogRoutedToSlog(t *testing.T) {
-	// 回归用例：http.Server.ErrorLog 不设时 net/http 写标准库的 log（TLS 握手失败、Accept 出错……）：
-	// 进了 slog 也是 INFO，消息是每次都不一样的那一整行，没法按消息检索和告警
+	// A regression case: with http.Server.ErrorLog unset, net/http writes to the standard library's
+	// log (a failed TLS handshake, an Accept error and so on), which reaches slog as INFO with the
+	// whole line as the message, different every time, and can be neither searched for nor alerted
+	// on
 	var buf bytes.Buffer
 	old := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
@@ -71,18 +75,19 @@ func TestServer_ErrorLogRoutedToSlog(t *testing.T) {
 
 	srv := (&Server{}).newServer("xtest", ServerConfig{}, "127.0.0.1:0", http.NotFoundHandler())
 	if srv.ErrorLog == nil {
-		t.Fatal("ErrorLog 该接到 slog 上")
+		t.Fatal("ErrorLog must be connected to slog")
 	}
 	srv.ErrorLog.Printf("http: TLS handshake error from %s: EOF", "203.0.113.9:1234")
 	if want := `"level":"WARN","msg":"xtest http server error","error":"http: TLS handshake error from 203.0.113.9:1234: EOF"`; !strings.Contains(buf.String(), want) {
-		t.Errorf("该记成 %s，got=%s", want, buf.String())
+		t.Errorf("this must be recorded as %s, got=%s", want, buf.String())
 	}
 }
 
 func TestServerTLS_EmptyMinVersionMeansTLS12(t *testing.T) {
-	// MinVersion 留空取默认：写明 1.2，不落到 tls.Config 的零值（那是随 Go 版本变的默认）
+	// An empty MinVersion takes the default: 1.2 written out, rather than falling through to
+	// tls.Config's zero value (which is whatever default the Go version brings)
 	cfg, err := ServerConfig{CertFile: "c", KeyFile: "k"}.serverTLS()
 	if err != nil || cfg.MinVersion != tls.VersionTLS12 {
-		t.Errorf("留空该是 TLS 1.2，got=%v err=%v", cfg, err)
+		t.Errorf("left empty this must be TLS 1.2, got=%v err=%v", cfg, err)
 	}
 }

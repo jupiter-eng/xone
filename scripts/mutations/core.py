@@ -770,7 +770,7 @@ mutate("field names are compared by Unicode folding", "internal/web/redact.go", 
 # by the one above; this one is aimed at the call site: with the pre-check written naively as a
 # lowercasing, {"ſecret":…} takes the fast path and reaches the log as it is
 mutate("the sensitive-word pre-check uses Unicode folding", "internal/web/redact.go", ".", "TestRedactBody_Unicode",
-       swap('sensitive(s, words()) {\n\t\treturn Redacted\n\t}\n\t// 没有敏感字段名，但可能带着 URL / DSN 凭证（postgres://u:p@h），同 RedactText\n\treturn newlines', 'func(ws []string) bool { return slices.ContainsFunc(ws, func(w string) bool { return strings.Contains(strings.ToLower(s), w) }) }(words()) {\n\t\treturn Redacted\n\t}\n\t// 没有敏感字段名，但可能带着 URL / DSN 凭证（postgres://u:p@h），同 RedactText\n\treturn newlines'),
+       swap('sensitive(s, words()) {\n\t\treturn Redacted\n\t}\n\t// No sensitive field name, while it may still carry a URL / DSN credential\n\t// (postgres://u:p@h), as RedactText does\n\treturn newlines', 'func(ws []string) bool { return slices.ContainsFunc(ws, func(w string) bool { return strings.Contains(strings.ToLower(s), w) }) }(words()) {\n\t\treturn Redacted\n\t}\n\t// No sensitive field name, while it may still carry a URL / DSN credential\n\t// (postgres://u:p@h), as RedactText does\n\treturn newlines'),
        swap('|| sensitive(body, ws)', '|| slices.ContainsFunc(ws, func(w string) bool { return strings.Contains(strings.ToLower(body), w) })'))
 # path deliberately carries no query string, while Referer carries the previous page's whole URL
 mutate("URL-like request headers have their query string removed", "internal/web/redact.go", ".", "TestRedactHeaders_URL",
@@ -788,7 +788,7 @@ mutate("a request header name containing a sensitive word is masked too", "inter
 # If the pre-check does not recognize api-key, such a body takes the fast path and reaches the log
 # as it is, never getting to the field-by-field redaction
 mutate("the sensitive-word pre-check ignores separators", "internal/web/redact.go", ".", "TestRedactBody",
-       swap('sensitive(s, words()) {\n\t\treturn Redacted\n\t}\n\t// 没有敏感字段名，但可能带着 URL / DSN 凭证（postgres://u:p@h），同 RedactText\n\treturn newlines', 'func(ws []string) bool { return slices.ContainsFunc(ws, func(w string) bool { return strings.Contains(strings.Map(foldRune, s), w) }) }(words()) {\n\t\treturn Redacted\n\t}\n\t// 没有敏感字段名，但可能带着 URL / DSN 凭证（postgres://u:p@h），同 RedactText\n\treturn newlines'),
+       swap('sensitive(s, words()) {\n\t\treturn Redacted\n\t}\n\t// No sensitive field name, while it may still carry a URL / DSN credential\n\t// (postgres://u:p@h), as RedactText does\n\treturn newlines', 'func(ws []string) bool { return slices.ContainsFunc(ws, func(w string) bool { return strings.Contains(strings.Map(foldRune, s), w) }) }(words()) {\n\t\treturn Redacted\n\t}\n\t// No sensitive field name, while it may still carry a URL / DSN credential\n\t// (postgres://u:p@h), as RedactText does\n\treturn newlines'),
        swap('|| sensitive(body, ws)', '|| slices.ContainsFunc(ws, func(w string) bool { return strings.Contains(strings.Map(foldRune, body), w) })'))
 mutate("redaction loses no precision on a large integer", "internal/web/redact.go", ".", "TestRedactBody", swap('\tdec.UseNumber()\n', ''))
 mutate("redaction does not escape HTML characters", "internal/web/redact.go", ".", "TestRedactBody",

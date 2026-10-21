@@ -9,19 +9,22 @@ import (
 	"strings"
 )
 
-// TrustPrivate TrustedProxies 里代表 privateNetworks 的关键字
+// TrustPrivate is the keyword standing for privateNetworks inside TrustedProxies
 const TrustPrivate = "private"
 
-// privateNetworks TrustedProxies 里写 private 时展开成的网段：
-// 回环、RFC 1918 私有网段、运营商级 NAT（有的 CNI 和云厂商拿它当 Pod 网段）、IPv6 的回环和 ULA
+// privateNetworks are the ranges a private in TrustedProxies expands to: loopback, the RFC 1918
+// private ranges, carrier-grade NAT (which some CNIs and cloud providers use as the Pod range), and
+// IPv6's loopback and ULA
 var privateNetworks = []string{
 	"127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10",
 	"::1/128", "fc00::/7",
 }
 
-// ExpandProxies 把 TrustedProxies 里的 private 展开成网段，其余原样保留。
+// ExpandProxies expands a private in TrustedProxies into ranges and keeps everything else as it
+// is.
 //
-// 交给框架自己的代理设置（gin 的 SetTrustedProxies）用的是它：框架不认识 private 这个词
+// It is what goes into the framework's own proxy settings (gin's SetTrustedProxies): the framework
+// does not know the word private
 func ExpandProxies(list []string) []string {
 	out := make([]string, 0, len(list))
 	for _, p := range list {
@@ -34,16 +37,19 @@ func ExpandProxies(list []string) []string {
 	return out
 }
 
-// ValidateProxies 检查 TrustedProxies 的每一项都是 IP、网段或 private。
+// ValidateProxies checks that every entry of TrustedProxies is an IP, a range or private.
 //
-// 网段写错了就直接起不来。gin 那边的行为是解析到出错为止、把已经解出来的
-// 留下，于是前半段代理被信任、后半段被悄悄丢掉——日志里的 client_ip
-// 一半真一半假，是比起不来难查得多的状态。
+// A malformed range keeps the service from starting. gin parses until it hits an error and keeps
+// whatever it parsed so far, so the first half of the proxies is trusted and the second half
+// quietly dropped -- the client_ip in the logs is half real and half not, a state far harder to
+// track down than a service that does not start.
 //
-// IPv4 映射成 IPv6 的写法（::ffff:10.0.0.1、::ffff:10.0.0.0/104）也拦住，报错里给出该怎么写：
-// 同一行配置各处的理解不一样。实测 gin v1.12.0 把单个的 ::ffff:10.0.0.1 解歪了——
-// 信任的是 ::1、::5 这类地址，10.0.0.1 本身反而不信；网段写法 gin 解对了，
-// ParseProxies 却只 Unmap 单个 IP、不 Unmap 网段，于是 client_ip 和透传 Header 的可信判断对不上
+// The IPv4-mapped IPv6 spellings (::ffff:10.0.0.1, ::ffff:10.0.0.0/104) are caught as well, with
+// the error saying how to write it: one line of configuration is understood differently in
+// different places. gin v1.12.0 was measured reading a single ::ffff:10.0.0.1 wrong -- it trusts
+// addresses such as ::1 and ::5 while not trusting 10.0.0.1 itself; gin reads the range spelling
+// right, but ParseProxies only Unmaps a single IP and not a range, leaving client_ip and the trust
+// decision for forwarded headers out of step
 func ValidateProxies(list []string) error {
 	for _, p := range list {
 		if p != TrustPrivate && !isIPOrCIDR(p) {
@@ -56,9 +62,11 @@ func ValidateProxies(list []string) error {
 	return nil
 }
 
-// unmapped p 是 IPv4 映射成 IPv6 的写法时，返回它的 IPv4 写法（网段的前缀长度减掉 96）。
+// unmapped returns p's IPv4 spelling when p is an IPv4-mapped IPv6 one (with a range's prefix
+// length reduced by 96).
 //
-// 前缀短于 96 位的网段已经不只是映射地址那一段了，给的是它规范化之后的 IPv6 写法
+// A range whose prefix is shorter than 96 bits covers more than the mapped segment, and what is
+// given for it is its normalized IPv6 spelling
 func unmapped(p string) (string, bool) {
 	if pfx, err := netip.ParsePrefix(p); err == nil {
 		if !pfx.Addr().Is4In6() {
@@ -75,7 +83,7 @@ func unmapped(p string) (string, bool) {
 	return "", false
 }
 
-// isIPOrCIDR 判断一段是不是合法的 IP 或者网段，与 gin 接受的写法一致
+// isIPOrCIDR reports whether a string is a valid IP or range, accepting what gin accepts
 func isIPOrCIDR(s string) bool {
 	if strings.Contains(s, "/") {
 		_, _, err := net.ParseCIDR(s)
@@ -84,11 +92,13 @@ func isIPOrCIDR(s string) bool {
 	return net.ParseIP(s) != nil
 }
 
-// Proxies 解好的可信网段，见 ParseProxies
+// Proxies are the trusted ranges once parsed, see ParseProxies
 type Proxies []netip.Prefix
 
-// ParseProxies 把 TrustedProxies（可以含 private）解成网段，单个 IP 当作只含它自己的网段。
-// 写错的在 ValidateProxies 里就拦下了，这里解不出的直接跳过——拿不准就不信
+// ParseProxies parses TrustedProxies (private included) into ranges, taking a single IP as the
+// range holding it alone.
+// A malformed one was caught by ValidateProxies already, and anything that cannot be parsed here is
+// skipped -- what cannot be told is not trusted
 func ParseProxies(list []string) Proxies {
 	expanded := ExpandProxies(list)
 	out := make(Proxies, 0, len(expanded))
@@ -103,26 +113,29 @@ func ParseProxies(list []string) Proxies {
 	return out
 }
 
-// Trusts ip 是否落在任一网段里。ip 是不带端口的地址，解不出来的一律不信。
+// Trusts reports whether ip falls into any of the ranges. ip is an address without a port, and one
+// that cannot be parsed is never trusted.
 //
-// 该问的是直连的对端（RemoteAddr），不是框架算出来的 client IP：后者正是从
-// X-Forwarded-For 这些可伪造的头里推出来的。
+// What has to be asked about is the directly connected peer (RemoteAddr), not the client IP the
+// framework computed: the latter is derived from exactly the forgeable headers such as
+// X-Forwarded-For.
 //
-// Unmap 是为了 ::ffff:10.0.0.1 这种写法的 IPv4 也能对上 10.0.0.0/8
+// Unmap is there so that an IPv4 written as ::ffff:10.0.0.1 matches 10.0.0.0/8 too
 func (ps Proxies) Trusts(ip string) bool {
 	a, err := netip.ParseAddr(ip)
 	return err == nil && ps.has(a)
 }
 
-// has a 是否落在任一网段里
+// has reports whether a falls into any of the ranges
 func (ps Proxies) has(a netip.Addr) bool {
 	a = a.Unmap()
 	return slices.ContainsFunc(ps, func(p netip.Prefix) bool { return p.Contains(a) })
 }
 
-// RemoteIP 直连对端（RemoteAddr）的地址，不带端口；解不出来是空串。
+// RemoteIP is the directly connected peer's address (RemoteAddr) without the port, or an empty
+// string when it cannot be parsed.
 //
-// 该问「可不可信」的就是它，见 Trusts
+// It is what "is this trusted" has to be asked about, see Trusts
 func RemoteIP(r *http.Request) string {
 	ip, _, err := net.SplitHostPort(strings.TrimSpace(r.RemoteAddr))
 	if err != nil {
@@ -131,22 +144,26 @@ func RemoteIP(r *http.Request) string {
 	return ip
 }
 
-// forwardedHeaders 算 client IP 时按顺序看的请求头
+// forwardedHeaders are the request headers looked at, in order, when computing the client IP
 var forwardedHeaders = []string{"X-Forwarded-For", "X-Real-IP"}
 
-// ClientIP 访问日志里的 client_ip：直连对端可信时从 X-Forwarded-For / X-Real-IP 里往回找，否则就是对端本身。
+// ClientIP is the client_ip in the access log: with the directly connected peer trusted it walks
+// back through X-Forwarded-For / X-Real-IP, and otherwise it is the peer itself.
 //
-// 规则和 gin v1.12.0 的 Context.ClientIP 一字不差（xgin 用的是 gin 自己的那个）：
+// The rules match gin v1.12.0's Context.ClientIP word for word (xgin uses gin's own):
 //
-//   - 直连对端不可信：就是对端地址，转发头一概不看；
-//   - 可信：先看 X-Forwarded-For，再看 X-Real-IP。同名的头有好几行时拼成一个列表，
-//     从右往左找第一个不可信的地址——每一跳代理都往右边追加，最右边那个不可信的
-//     就是离我们最近、没法再往回追的那一跳；全都可信时取最左边的；
-//     碰到解不出的一项就放弃这个头；
-//   - 两个头都没有可用的值：退回对端地址。
+//   - the directly connected peer is not trusted: it is the peer's address and no forwarded header
+//     is looked at;
+//   - it is trusted: X-Forwarded-For first, X-Real-IP second. Several lines of the same header are
+//     joined into one list, and the first untrusted address is looked for right to left -- every
+//     proxy hop appends on the right, so the rightmost untrusted one is the hop closest to us that
+//     cannot be walked back any further; with all of them trusted the leftmost is taken; an entry
+//     that cannot be parsed abandons this header;
+//   - neither header holds anything usable: it falls back to the peer's address.
 //
-// 两边一致是 xgin 的测试钉着的（逐条比对 gin 的结果）：同一个服务换一个框架，client_ip 不该变。
-// 对端解不出来时返回空串，与 gin 相同
+// That the two agree is pinned by xgin's tests (comparing against gin's result case by case): the
+// same service on another framework must not change client_ip.
+// A peer that cannot be parsed returns an empty string, as gin does
 func (ps Proxies) ClientIP(r *http.Request) string {
 	remote := net.ParseIP(RemoteIP(r))
 	if remote == nil {
@@ -162,7 +179,7 @@ func (ps Proxies) ClientIP(r *http.Request) string {
 	return remote.String()
 }
 
-// fromHeader 从一个转发头里找 client IP，规则见 ClientIP
+// fromHeader looks for the client IP inside one forwarded header; the rules are in ClientIP
 func (ps Proxies) fromHeader(header string) (string, bool) {
 	if header == "" {
 		return "", false
@@ -181,7 +198,7 @@ func (ps Proxies) fromHeader(header string) (string, bool) {
 	return "", false
 }
 
-// contains 同 Trusts，收的是解好的地址
+// contains is Trusts, taking an address that is already parsed
 func (ps Proxies) contains(ip net.IP) bool {
 	a, ok := netip.AddrFromSlice(ip)
 	return ok && ps.has(a)
