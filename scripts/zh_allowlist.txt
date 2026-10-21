@@ -102,10 +102,3 @@ e2e/swagger_ui_test.go
 e2e/tls_http_test.go
 e2e/tls_test.go
 e2e/trace_options_test.go
-scripts/check.sh
-scripts/check_zh.py
-scripts/e2e.sh
-scripts/lib.sh
-scripts/mutate.py
-scripts/release.sh
-scripts/test.sh
