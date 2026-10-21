@@ -17,7 +17,7 @@ import (
 	"github.com/jupiter-eng/xone/xlog"
 )
 
-// ---- 校验 ----
+// ---- validation ----
 
 func wantXErr(t *testing.T, err error, op string, contains ...string) {
 	t.Helper()
@@ -27,7 +27,7 @@ func wantXErr(t *testing.T, err error, op string, contains ...string) {
 	}
 	for _, c := range contains {
 		if !strings.Contains(err.Error(), c) {
-			t.Errorf("错误里该有 %q：%v", c, err)
+			t.Errorf("the error must contain %q: %v", c, err)
 		}
 	}
 }
@@ -50,7 +50,7 @@ func TestAdd_DuplicateNameIsConfigError(t *testing.T) {
 	}
 	wantXErr(t, Add("@daily", ok), "config", `duplicate job name "xcron.ok"`)
 	if err := Add("@daily", ok, WithName("ok-daily")); err != nil {
-		t.Errorf("换了名字就该登记得上：%v", err)
+		t.Errorf("a different name must register: %v", err)
 	}
 }
 
@@ -76,7 +76,7 @@ func TestFuncName_DefaultNames(t *testing.T) {
 	}
 }
 
-// ---- 每次执行的注入 ----
+// ---- what each execution injects ----
 
 func TestExecute_InjectsRootSpanAndJobField(t *testing.T) {
 	logs := captureLogs(t)
@@ -92,32 +92,32 @@ func TestExecute_InjectsRootSpanAndJobField(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !inner.IsValid() {
-		t.Fatal("fn 的 ctx 里该有 Span")
+		t.Fatal("fn's ctx must carry a Span")
 	}
 	got := spans.GetSpans()
 	if len(got) != 1 || got[0].Name != "cron report" || got[0].SpanKind != trace.SpanKindInternal || got[0].Parent.IsValid() {
-		t.Fatalf("该有一个名为 cron report 的 internal 根 Span：%+v", got)
+		t.Fatalf("there must be one internal root Span named cron report: %+v", got)
 	}
 	if got[0].SpanContext.TraceID() != inner.TraceID() {
-		t.Error("fn 的 ctx 里的 Span 该就是那个根 Span")
+		t.Error("the Span in fn's ctx must be that root Span")
 	}
 
 	lines := logs()
 	for _, msg := range []string{"cron job started", "cron job finished"} {
 		l := withMsg(lines, msg)
 		if len(l) != 1 || l[0]["job"] != "report" || l[0]["trace_id"] != inner.TraceID().String() {
-			t.Errorf("%s 该带 job 和 trace_id：%v", msg, l)
+			t.Errorf("%s must carry job and trace_id: %v", msg, l)
 		}
 	}
 	fin := withMsg(lines, "cron job finished")[0]
 	if fin["level"] != "INFO" || fin["rows"] != float64(3) {
-		t.Errorf("结束那行该是 INFO，带着 fn 里 AddKV 的字段：%v", fin)
+		t.Errorf("the end line must be INFO and carry the fields AddKV added inside fn: %v", fin)
 	}
 	if _, ok := fin["elapsed_ms"].(float64); !ok {
-		t.Errorf("结束那行该带 elapsed_ms：%v", fin)
+		t.Errorf("the end line must carry elapsed_ms: %v", fin)
 	}
 	if l := withMsg(lines, "cron job started"); l[0]["level"] != "DEBUG" {
-		t.Errorf("开始那行记 DEBUG：%v", l)
+		t.Errorf("the start line is recorded at DEBUG: %v", l)
 	}
 }
 
@@ -126,15 +126,15 @@ func TestExecute_FailureLogsWarnAndMarksSpan(t *testing.T) {
 	spans := captureSpans(t)
 	boom := errors.New("boom")
 	if err := execute(context.Background(), "report", 0, func(context.Context) error { return boom }); !errors.Is(err, boom) {
-		t.Fatalf("fn 的错误原样返回：%v", err)
+		t.Fatalf("fn's error must be returned as it is: %v", err)
 	}
 	l := withMsg(logs(), "cron job failed")
 	if len(l) != 1 || l[0]["level"] != "WARN" || l[0]["error"] != "boom" || l[0]["job"] != "report" {
-		t.Errorf("失败记 WARN，带 error 和 job：%v", l)
+		t.Errorf("a failure is recorded at WARN with error and job: %v", l)
 	}
 	s := spans.GetSpans()[0]
 	if s.Status.Code != codes.Error || s.Status.Description != "cron job failed" || len(s.Events) != 0 {
-		t.Errorf("失败的 Span 只标状态，不记错误原文（原文可能带着 SQL 参数）：%+v %v", s.Status, s.Events)
+		t.Errorf("a failed Span carries only the status, not the error text (which may carry SQL parameters): %+v %v", s.Status, s.Events)
 	}
 }
 
@@ -143,14 +143,14 @@ func TestExecute_RecoversPanic(t *testing.T) {
 	spans := captureSpans(t)
 	err := execute(context.Background(), "report", 0, func(context.Context) error { panic("kaboom") })
 	if err == nil || !strings.Contains(err.Error(), "panicked: kaboom") {
-		t.Fatalf("panic 该变成错误：%v", err)
+		t.Fatalf("a panic must become an error: %v", err)
 	}
 	l := withMsg(logs(), "cron job panicked")
 	if len(l) != 1 || l[0]["level"] != "ERROR" || l[0]["job"] != "report" || !strings.Contains(fmt.Sprint(l[0]["stack"]), "xcron") {
-		t.Errorf("panic 记 ERROR，带栈：%v", l)
+		t.Errorf("a panic is recorded at ERROR with the stack: %v", l)
 	}
 	if s := spans.GetSpans()[0].Status; s.Code != codes.Error || s.Description != "cron job panicked" {
-		t.Errorf("panic 的 Span 该标成错误：%+v", s)
+		t.Errorf("a panicking Span must be marked as an error: %+v", s)
 	}
 }
 
@@ -158,14 +158,14 @@ func TestExecute_TimeoutCancelsCtx(t *testing.T) {
 	start := time.Now()
 	err := execute(context.Background(), "slow", 20*time.Millisecond, waitCtx)
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("到点该取消 ctx：%v", err)
+		t.Fatalf("the ctx must be cancelled when the limit is reached: %v", err)
 	}
 	if d := time.Since(start); d > 2*time.Second {
-		t.Errorf("20ms 的超时等了 %v", d)
+		t.Errorf("a 20ms timeout waited %v", d)
 	}
 }
 
-// ---- 调度 ----
+// ---- scheduling ----
 
 func TestScheduler_RunsOnSchedule(t *testing.T) {
 	logs := captureLogs(t)
@@ -176,11 +176,11 @@ func TestScheduler_RunsOnSchedule(t *testing.T) {
 	}
 	time.Sleep(30 * time.Millisecond)
 	if n.Load() != 0 {
-		t.Fatal("调度器起来之前不该跑")
+		t.Fatal("nothing may run before the scheduler is up")
 	}
 	started(t, std)
-	eventually(t, "跑了 3 次", func() bool { return n.Load() >= 3 })
-	eventually(t, "结束那行带着 job", func() bool {
+	eventually(t, "ran 3 times", func() bool { return n.Load() >= 3 })
+	eventually(t, "the end line carries job", func() bool {
 		l := withMsg(logs(), "cron job finished")
 		return len(l) > 0 && l[0]["job"] == "tick"
 	})
@@ -199,18 +199,18 @@ func TestScheduler_PassesLocationToSchedule(t *testing.T) {
 	std.add(&job{name: "tz", sched: rec, fn: ok, o: buildOptions(ok, []Option{WithLocation(berlin)})})
 	started(t, std)
 	if loc := <-got; loc != berlin {
-		t.Errorf("该按 WithLocation 的时区算下一个时间点：got=%v", loc)
+		t.Errorf("the next time point must be computed in the WithLocation time zone: got=%v", loc)
 	}
 }
 
-// recordingSchedule 记下 Next 收到的时刻，下一个时间点永远在一小时后
+// recordingSchedule records the moments Next receives, with the next time point always an hour later.
 type recordingSchedule func(time.Time)
 
 func (r recordingSchedule) Next(t time.Time) time.Time { r(t); return t.Add(time.Hour) }
 
 func TestOptions_DefaultLocationIsUTC(t *testing.T) {
 	if o := buildOptions(ok, nil); o.loc != time.UTC {
-		t.Errorf("默认时区该是 UTC：got=%v", o.loc)
+		t.Errorf("the default time zone must be UTC: got=%v", o.loc)
 	}
 }
 
@@ -218,14 +218,14 @@ func TestTimeout_AppliesToFirstRuns(t *testing.T) {
 	fresh(t)
 	Add("@every 1h", waitCtx, WithName("boot"), WithTimeout(20*time.Millisecond), RunOnStartAndWait())
 	if err := std.start(context.Background()); !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("启动时的第一次也受 WithTimeout 管：%v", err)
+		t.Errorf("the first run at startup is also subject to WithTimeout: %v", err)
 	}
 
 	fresh(t)
 	started(t, std)
 	err := Add("@every 1h", waitCtx, WithName("late"), WithTimeout(20*time.Millisecond), RunOnStartAndWait())
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("起来之后 Add 的第一次也受 WithTimeout 管：%v", err)
+		t.Errorf("the first run of an Add after startup is also subject to WithTimeout: %v", err)
 	}
 }
 
@@ -238,13 +238,13 @@ func TestScheduler_SkipsOverlappingRunAndWarns(t *testing.T) {
 		t.Fatal(err)
 	}
 	started(t, std)
-	eventually(t, "跳过的 WARN", func() bool { return len(withMsg(logs(), "cron job skipped, previous run still running")) >= 3 })
+	eventually(t, "the skipped WARN", func() bool { return len(withMsg(logs(), "cron job skipped, previous run still running")) >= 3 })
 	if got := n.Load(); got != 1 {
-		t.Errorf("上一次没跑完时不该开始下一次：跑了 %d 次", got)
+		t.Errorf("the next run must not start while the previous one is unfinished: ran %d times", got)
 	}
 	l := withMsg(logs(), "cron job skipped, previous run still running")[0]
 	if l["level"] != "WARN" || l["job"] != "slow" {
-		t.Errorf("跳过记 WARN，带 job：%v", l)
+		t.Errorf("a skip is recorded at WARN with job: %v", l)
 	}
 }
 
@@ -256,7 +256,7 @@ func TestScheduler_AllowOverlapRunsConcurrently(t *testing.T) {
 		t.Fatal(err)
 	}
 	started(t, std)
-	eventually(t, "3 次同时在跑", func() bool { return inFlight.Load() >= 3 })
+	eventually(t, "3 running at once", func() bool { return inFlight.Load() >= 3 })
 }
 
 func TestScheduler_PanicDoesNotStopTheJobOrOthers(t *testing.T) {
@@ -266,7 +266,7 @@ func TestScheduler_PanicDoesNotStopTheJobOrOthers(t *testing.T) {
 	Add("@every 5ms", func(context.Context) error { panics.Add(1); panic("kaboom") }, WithName("bad"))
 	Add("@every 5ms", func(context.Context) error { others.Add(1); return nil }, WithName("good"))
 	started(t, std)
-	eventually(t, "panic 之后两个任务都照常调度", func() bool { return panics.Load() >= 3 && others.Load() >= 3 })
+	eventually(t, "both jobs keep being scheduled after a panic", func() bool { return panics.Load() >= 3 && others.Load() >= 3 })
 }
 
 func TestStart_RunOnStartRunsNowWithoutWaiting(t *testing.T) {
@@ -274,17 +274,17 @@ func TestStart_RunOnStartRunsNowWithoutWaiting(t *testing.T) {
 	gate := release(t)
 	ran := make(chan struct{})
 	Add("@every 1h", func(context.Context) error { close(ran); <-gate; return errors.New("ignored") }, WithName("warm"), RunOnStart())
-	started(t, std) // 不等它：fn 卡在 gate 上，start 照样返回
+	started(t, std) // not waited for: fn is blocked on gate and start returns anyway
 	select {
 	case <-ran:
 	case <-time.After(5 * time.Second):
-		t.Fatal("RunOnStart 该在起来时就跑一次")
+		t.Fatal("RunOnStart must run once as it comes up")
 	}
 }
 
 func TestStart_RunOnStartAndWaitWaitsForFirstRuns(t *testing.T) {
 	fresh(t)
-	// 两个都到了才往下走：串行跑的话第一个永远等不到第二个，2s 后报错让启动失败
+	// Both have to arrive before it continues: run serially, the first would never see the second, and the error after 2s would fail startup.
 	var arrived atomic.Int32
 	var done atomic.Int32
 	both := func(context.Context) error {
@@ -302,7 +302,7 @@ func TestStart_RunOnStartAndWaitWaitsForFirstRuns(t *testing.T) {
 	Add("@every 1h", both, WithName("b"), RunOnStartAndWait())
 	started(t, std)
 	if done.Load() != 2 {
-		t.Fatal("start 返回时两个任务的第一次都该跑完了")
+		t.Fatal("the first run of both jobs must have finished by the time start returns")
 	}
 }
 
@@ -312,14 +312,14 @@ func TestStart_RunOnStartAndWaitFailureFailsStartup(t *testing.T) {
 	Add("@every 1h", func(context.Context) error { return boom }, WithName("load-config"), RunOnStartAndWait())
 	Add("@every 1h", ok, WithName("fine"), RunOnStartAndWait())
 
-	// 走的是框架会调的那个启动钩子
+	// This goes through the start hook the framework would call.
 	err := startXCron(context.Background())
 	wantXErr(t, err, "start", `job "load-config"`)
 	if !errors.Is(err, boom) {
-		t.Errorf("任务的错误该用 %%w 带着：%v", err)
+		t.Errorf("the job's error must be carried with %%w: %v", err)
 	}
 	if strings.Contains(err.Error(), `"fine"`) {
-		t.Errorf("成功的任务不该被点名：%v", err)
+		t.Errorf("a job that succeeded must not be named: %v", err)
 	}
 	wantXErr(t, Add("@every 1h", ok, WithName("late")), "register")
 }
@@ -330,7 +330,7 @@ func TestStart_RunOnStartAndWaitHonorsStartCtx(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(20*time.Millisecond, cancel)
 	if err := std.start(ctx); !errors.Is(err, context.Canceled) {
-		t.Fatalf("退出信号该取消第一次执行：%v", err)
+		t.Fatalf("the stop signal must cancel the first execution: %v", err)
 	}
 }
 
@@ -341,7 +341,7 @@ func TestAdd_AfterStartSchedulesImmediately(t *testing.T) {
 	if err := Add("@every 5ms", func(context.Context) error { n.Add(1); return nil }, WithName("late")); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, "起来之后 Add 的也跑", func() bool { return n.Load() >= 2 })
+	eventually(t, "a job added after startup runs too", func() bool { return n.Load() >= 2 })
 }
 
 func TestAdd_AfterStartWithRunOnStartAndWait(t *testing.T) {
@@ -349,17 +349,17 @@ func TestAdd_AfterStartWithRunOnStartAndWait(t *testing.T) {
 	started(t, std)
 	var done atomic.Bool
 	if err := Add("@every 1h", func(context.Context) error { done.Store(true); return nil }, WithName("w"), RunOnStartAndWait()); err != nil || !done.Load() {
-		t.Fatalf("Add 该等第一次跑完：err=%v done=%v", err, done.Load())
+		t.Fatalf("Add must wait for the first run: err=%v done=%v", err, done.Load())
 	}
 
 	boom := errors.New("boom")
 	err := Add("@every 1h", func(context.Context) error { return boom }, WithName("bad"), RunOnStartAndWait())
 	wantXErr(t, err, "execute", `"bad"`)
 	if !errors.Is(err, boom) {
-		t.Errorf("第一次的错误该用 %%w 带着：%v", err)
+		t.Errorf("the first run's error must be carried with %%w: %v", err)
 	}
 	if err := Add("@every 1h", ok, WithName("bad")); err != nil {
-		t.Errorf("第一次失败的不登记，同名可以再 Add：%v", err)
+		t.Errorf("a job whose first run failed is not registered, so the same name can be added again: %v", err)
 	}
 }
 
@@ -377,7 +377,7 @@ func TestStop_NoNewRunsAfterStop(t *testing.T) {
 	var n atomic.Int32
 	Add("@every 5ms", func(context.Context) error { n.Add(1); return nil }, WithName("tick"))
 	started(t, std)
-	eventually(t, "跑起来", func() bool { return n.Load() >= 1 })
+	eventually(t, "it is running", func() bool { return n.Load() >= 1 })
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	if err := std.stop(ctx); err != nil {
@@ -386,7 +386,7 @@ func TestStop_NoNewRunsAfterStop(t *testing.T) {
 	before := n.Load()
 	time.Sleep(50 * time.Millisecond)
 	if after := n.Load(); after != before {
-		t.Errorf("停了之后不该再跑：%d → %d", before, after)
+		t.Errorf("nothing may run after stopping: %d -> %d", before, after)
 	}
 }
 
@@ -398,7 +398,7 @@ func TestStop_CancelsInFlightAndWaitsForThem(t *testing.T) {
 		close(running)
 		err := waitCtx(ctx)
 		cancelled.Store(errors.Is(err, context.Canceled))
-		time.Sleep(30 * time.Millisecond) // 收尾
+		time.Sleep(30 * time.Millisecond) // cleanup
 		finished.Store(true)
 		return err
 	}, WithName("flush"), RunOnStart())
@@ -411,10 +411,10 @@ func TestStop_CancelsInFlightAndWaitsForThem(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !cancelled.Load() {
-		t.Error("stop 该取消在途执行的 ctx")
+		t.Error("stop must cancel the ctx of the executions in flight")
 	}
 	if !finished.Load() {
-		t.Error("stop 该等在途的执行返回")
+		t.Error("stop must wait for the executions in flight to return")
 	}
 }
 
@@ -433,11 +433,11 @@ func TestStop_DeadlineNamesStuckJobs(t *testing.T) {
 	err := stopXCron(ctx)
 	wantXErr(t, err, "stop", "stuck")
 	if !errors.Is(err, context.DeadlineExceeded) || strings.Contains(err.Error(), "idle") {
-		t.Errorf("只点名还在跑的，带着截止时间的错误：%v", err)
+		t.Errorf("only the ones still running are named, in an error carrying the deadline: %v", err)
 	}
 	l := withMsg(logs(), "xcron jobs still running when the stop budget ran out")
 	if len(l) != 1 || fmt.Sprint(l[0]["jobs"]) != "[stuck]" {
-		t.Errorf("点名的日志无论如何都要写出去：%v", l)
+		t.Errorf("the log naming them must go out no matter what: %v", l)
 	}
 }
 
@@ -445,10 +445,10 @@ func TestHooks_StartAtServerStage(t *testing.T) {
 	for _, e := range hook.Start() {
 		if e.Name == "xcron.startXCron" {
 			if e.Stage != hook.StageServer {
-				t.Errorf("调度器该在 StageServer 起来：got=%v", e.Stage)
+				t.Errorf("the scheduler must come up on StageServer: got=%v", e.Stage)
 			}
 			return
 		}
 	}
-	t.Fatal("xcron 没登记启动钩子")
+	t.Fatal("xcron registered no start hook")
 }

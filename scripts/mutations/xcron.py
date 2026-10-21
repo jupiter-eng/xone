@@ -56,7 +56,7 @@ mutate("上一次没跑完就跳过", "xcron/scheduler.go", "./xcron", "TestSche
 mutate("AllowOverlap 允许重叠", "xcron/scheduler.go", "./xcron", "TestScheduler_AllowOverlapRunsConcurrently",
        swap('\tif !j.o.overlap && j.running.Load() > 0 {\n', '\tif j.running.Load() > 0 {\n'))
 mutate("RunOnStart 起来就跑一次", "xcron/scheduler.go", "./xcron", "TestStart_RunOnStartRunsNow",
-       swap('lt.schedule(j, j.o.first == firstAsync) // RunOnStartAndWait', 'lt.schedule(j, false) // RunOnStartAndWait'))
+       swap('lt.schedule(j, j.o.first == firstAsync) // the first run of a RunOnStartAndWait', 'lt.schedule(j, false) // the first run of a RunOnStartAndWait'))
 mutate("起来之后 Add 的当场开始调度", "xcron/scheduler.go", "./xcron", "TestAdd_AfterStartSchedulesImmediately",
        swap('\t\tlt.schedule(j, j.o.first == firstAsync)\n\t\ts.mu.Unlock()\n', '\t\ts.mu.Unlock()\n'))
 mutate("RunOnStartAndWait 的第一次失败让启动失败", "xcron/scheduler.go", "./xcron", "TestStart_RunOnStartAndWaitFailureFailsStartup",

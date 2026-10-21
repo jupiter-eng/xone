@@ -13,53 +13,53 @@ import (
 	"github.com/jupiter-eng/xone/xerror"
 )
 
-// job 一个登记了的定时任务
+// job is one registered scheduled job.
 type job struct {
 	name  string
 	sched schedule
 	fn    func(context.Context) error
 	o     options
 
-	// running 在途的执行数。不允许重叠时，到点看它是不是 0。
-	// 先看再加不需要 CAS：一个任务的每一次执行都由同一个协程发起（它的调度循环，
-	// 或者在调度循环起来之前的 start / add），没有两处同时在看
+	// running is the number of executions in flight. Without overlap allowed, a time point checks whether it is 0.
+	// Checking before incrementing needs no CAS: every execution of a job is started by the same goroutine (its
+	// scheduling loop, or start / add before that loop is up), so no two places look at it at once.
 	running atomic.Int32
 }
 
-// state 调度器走到哪一步了
+// state is how far the scheduler has got.
 type state int
 
 const (
-	idle    state = iota // 还没起来：Add 只登记
-	running              // 起来了：Add 当场开始调度
-	stopped              // 开始停了（或停完了）：Add 报错
+	idle    state = iota // not up yet: Add only registers
+	running              // up: Add starts scheduling on the spot
+	stopped              // stopping has begun (or has finished): Add is an error
 )
 
-// scheduler 全部定时任务。一个进程一个（std），由 xcron 的那对钩子起停。
+// scheduler holds every scheduled job. There is one per process (std), started and stopped by xcron's pair of hooks.
 //
-// 每个任务一个协程、一个 time.Timer：算出下一个时间点，睡到那一刻，发起一次执行，再算下一个。
-// cronexpr 只管「下一个时间点是什么时候」，起停、取消、等在途执行都在这里
+// Each job gets a goroutine and a time.Timer: work out the next time point, sleep until it, start one execution, work
+// out the next. cronexpr only answers "when is the next time point"; starting, stopping, cancelling and waiting for executions in flight all happen here.
 type scheduler struct {
 	mu    sync.Mutex
 	state state
 	jobs  []*job
-	cur   *lifetime // state 是 running 时有效
+	cur   *lifetime // valid while state is running
 }
 
-// lifetime 调度器的一次「起来到停下」：同一个进程里 xone.Run 可以跑好几次，每次一份
+// lifetime is one "up until stopped" of the scheduler: xone.Run can run several times in one process, one each.
 type lifetime struct {
-	// ctx 每一次执行的 ctx 的父亲，也是调度循环的退出信号：stop 取消它
+	// ctx is the parent of every execution's ctx and also the scheduling loops' stop signal: stop cancels it.
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	// wg 数的是调度循环和在途的执行。执行由调度循环发起，那时它自己还占着一个数，
-	// 所以 Add 永远发生在计数大于 0 时，不会和 stop 里的 Wait 抢
+	// wg counts the scheduling loops and the executions in flight. An execution is started by a scheduling loop,
+	// which still holds a count of its own at that moment, so an Add always happens while the count is greater than 0 and never races the Wait in stop.
 	wg sync.WaitGroup
 }
 
 var std = &scheduler{}
 
-// add 登记一个任务。调度器已经起来的话当场开始调度
+// add registers a job. When the scheduler is already up it starts scheduling on the spot.
 func (s *scheduler) add(j *job) error {
 	s.mu.Lock()
 	if s.state == stopped {
@@ -82,7 +82,7 @@ func (s *scheduler) add(j *job) error {
 		return nil
 	}
 
-	// RunOnStartAndWait：这里就是「启动」，等第一次跑完。失败就不调度，名字也还回去，改好了可以再 Add
+	// RunOnStartAndWait: this is the "startup", and it waits for the first run. On failure nothing is scheduled and the name is given back, so a corrected job can be added again.
 	lt.begin(j)
 	s.mu.Unlock()
 	if err := lt.exec(j); err != nil {
@@ -94,13 +94,13 @@ func (s *scheduler) add(j *job) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.state == running && s.cur == lt {
-		lt.schedule(j, false) // 第一次已经跑过了，从下一个时间点开始
+		lt.schedule(j, false) // the first run has already happened, so start from the next time point
 	}
 	return nil
 }
 
-// start 起调度器：先把 RunOnStartAndWait 的任务并行跑一遍，全部成功了再给每个任务起调度循环。
-// 第一次执行用的是启动钩子的 ctx：收到退出信号时它们跟着被取消
+// start brings the scheduler up: it first runs the RunOnStartAndWait jobs in parallel and only starts a scheduling
+// loop per job once they have all succeeded. That first execution uses the start hook's ctx, so a stop signal cancels them.
 func (s *scheduler) start(ctx context.Context) error {
 	s.mu.Lock()
 	lt := &lifetime{}
@@ -110,7 +110,7 @@ func (s *scheduler) start(ctx context.Context) error {
 	s.mu.Unlock()
 
 	if err := firstRuns(ctx, jobs); err != nil {
-		// 停止钩子不会被调到（它的启动钩子失败了），自己收拾：此时一个调度循环都还没起
+		// The stop hook is never called (its start hook failed), so clean up here: not a single scheduling loop is up yet.
 		s.mu.Lock()
 		s.state = stopped
 		s.mu.Unlock()
@@ -120,14 +120,14 @@ func (s *scheduler) start(ctx context.Context) error {
 
 	s.mu.Lock()
 	for _, j := range jobs {
-		lt.schedule(j, j.o.first == firstAsync) // RunOnStartAndWait 的第一次在上面跑过了
+		lt.schedule(j, j.o.first == firstAsync) // the first run of a RunOnStartAndWait job already happened above
 	}
 	s.mu.Unlock()
 	slog.InfoContext(ctx, "xcron ready", "jobs", names(jobs))
 	return nil
 }
 
-// firstRuns 并行跑 RunOnStartAndWait 的那第一次，等全部跑完。失败的每一个都点名
+// firstRuns runs the first execution of the RunOnStartAndWait jobs in parallel and waits for all of them. Every failure is named.
 func firstRuns(ctx context.Context, jobs []*job) error {
 	var wg sync.WaitGroup
 	errs := make([]error, len(jobs))
@@ -148,8 +148,8 @@ func firstRuns(ctx context.Context, jobs []*job) error {
 	return nil
 }
 
-// stop 停调度器：不再发起新的执行，取消在途执行的 ctx，在 ctx 的截止时间之前等它们返回。
-// 到点还有没返回的，报错里点名是哪几个任务
+// stop stops the scheduler: no new execution is started, the ctx of the executions in flight is cancelled, and it
+// waits for them to return before the ctx deadline. Any that have not returned by then are named in the error.
 func (s *scheduler) stop(ctx context.Context) error {
 	s.mu.Lock()
 	if s.state != running {
@@ -169,14 +169,14 @@ func (s *scheduler) stop(ctx context.Context) error {
 	case <-ctx.Done():
 	}
 
-	// 框架的 runWithin 也在看同一个截止时间，两边几乎同时就绪时它可能先返回、把这里的错误丢掉，
-	// 所以点名的这一条日志无论如何都要写出去
+	// The framework's runWithin watches the same deadline, and when both become ready at nearly the same moment it may
+	// return first and drop this error, so this one log line naming them has to go out no matter what.
 	busy := s.busy()
 	slog.WarnContext(ctx, "xcron jobs still running when the stop budget ran out", "jobs", busy)
 	return xerror.Newf("xcron", "stop", "jobs %v still running when the stop budget ran out: %w", busy, ctx.Err())
 }
 
-// busy 还在跑的任务名
+// busy lists the names of the jobs still running.
 func (s *scheduler) busy() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -189,14 +189,14 @@ func (s *scheduler) busy() []string {
 	return out
 }
 
-// schedule 给 j 起调度循环，now 为真时先发起一次（RunOnStart）。调用方持有 scheduler.mu
-// 且 state 是 running：stop 先在锁里改 state 再 Wait，这里的 wg.Add 因此总在那次 Wait 之前
+// schedule starts j's scheduling loop, running one execution first when now is true (RunOnStart). The caller holds
+// scheduler.mu and state is running: stop changes state under the lock before it Waits, so the wg.Add here always precedes that Wait.
 func (lt *lifetime) schedule(j *job, now bool) {
 	lt.wg.Add(1)
 	go lt.loop(j, now)
 }
 
-// loop 一个任务的调度循环：睡到下一个时间点，发起一次执行，直到 stop
+// loop is one job's scheduling loop: sleep until the next time point, start one execution, until stop.
 func (lt *lifetime) loop(j *job, now bool) {
 	defer lt.wg.Done()
 	if now {
@@ -217,9 +217,9 @@ func (lt *lifetime) loop(j *job, now bool) {
 	}
 }
 
-// tick 到点了：发起一次执行，不等它
+// tick means the time point has arrived: start one execution without waiting for it.
 func (lt *lifetime) tick(j *job) {
-	// 计时器和 stop 同时就绪时 select 随便挑一个，挑中计时器也不该再发起
+	// When the timer and stop become ready at the same moment, select picks either one, and picking the timer must still not start anything.
 	if lt.ctx.Err() != nil {
 		return
 	}
@@ -231,13 +231,13 @@ func (lt *lifetime) tick(j *job) {
 	go lt.exec(j)
 }
 
-// begin 记下一次在途的执行，必须在 exec 之前、在发起它的那个协程里调
+// begin records one execution in flight; it must be called before exec, in the goroutine starting it.
 func (lt *lifetime) begin(j *job) {
 	j.running.Add(1)
 	lt.wg.Add(1)
 }
 
-// exec 跑一次，ctx 跟着这一次「起来到停下」：stop 时取消
+// exec runs once, with the ctx following this "up until stopped": cancelled on stop.
 func (lt *lifetime) exec(j *job) error {
 	defer lt.wg.Done()
 	defer j.running.Add(-1)

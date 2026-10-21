@@ -1,17 +1,17 @@
 # xcron
 
-进程内的定时任务：`xcron.Add` 登记，框架起停。没有配置块，全部写在代码里。
+In-process scheduled jobs: `xcron.Add` registers them and the framework starts and stops them. There is no config block; everything is written in code.
 
-- 每次执行一个根 Span（`cron <name>`），ctx 里带着 `job` 日志字段和 `trace_id`
-- 上一次还没跑完时这一次跳过并记 WARN，不越积越多（`AllowOverlap` 改成并发）
-- panic 被接住，记 ERROR、带栈，别的任务和进程照常
-- 退出时取消在途执行的 ctx，等它们返回之后才关数据库；到点没返回的点名报出来
-- 默认按 UTC 解释 spec；`WithLocation` 换时区
-- `RunOnStartAndWait`：起来先跑一次，跑不成功服务就不启动
+- Each execution gets a root Span (`cron <name>`), with the `job` log field and a `trace_id` in its ctx
+- When the previous run is unfinished this one is skipped and a WARN is recorded, so nothing piles up (`AllowOverlap` makes them concurrent)
+- A panic is caught and recorded at ERROR with the stack, leaving the other jobs and the process untouched
+- On shutdown the ctx of the executions in flight is cancelled and the database is only closed once they have returned; any that have not returned by the deadline are named
+- The spec is interpreted in UTC by default; `WithLocation` changes the time zone
+- `RunOnStartAndWait`: run once as it comes up, and the service does not start if that run fails
 
-## 快速上手
+## Quick start
 
-**Web 服务里带几个后台任务**——任务在后台跑，服务照常：
+**A web service with a few background jobs** -- the jobs run in the background and the service is unaffected:
 
 ```go
 import (
@@ -21,20 +21,20 @@ import (
 )
 
 func main() {
-	if err := xcron.Add("*/5 * * * *", syncOrders); err != nil { // 每 5 分钟（UTC）
+	if err := xcron.Add("*/5 * * * *", syncOrders); err != nil { // every 5 minutes (UTC)
 		log.Fatal(err)
 	}
-	xcron.Add("@every 30s", refreshRates, xcron.RunOnStart()) // 起来先跑一次，不等它
+	xcron.Add("@every 30s", refreshRates, xcron.RunOnStart()) // run once as it comes up, without waiting
 	xone.MustRun(xgin.New().WithRoutes(routes))
 }
 
 func syncOrders(ctx context.Context) error {
-	// ctx 退出时被取消；往下游传它
+	// the ctx is cancelled on shutdown; pass it downstream
 	return xgorm.CWithCtx(ctx).Exec("...").Error
 }
 ```
 
-**只跑定时任务的进程**：
+**A process running only scheduled jobs**:
 
 ```go
 func main() {
@@ -43,107 +43,120 @@ func main() {
 }
 ```
 
-**启动前跑一次、失败就不启动**（迁移、预热）不需要 xcron：写成 `xhook.BeforeStart(migrate)`，
-它在客户端建好之后、服务开始监听之前跑，返回错误启动就失败。跑一次就退出的进程用 `xone.Func`。
+**Running once before startup and failing startup on error** (a migration, a warm-up) does not need xcron: write it as
+`xhook.BeforeStart(migrate)`, which runs after the clients are built and before the servers start listening, and fails
+startup when it returns an error. For a process that runs once and exits, use `xone.Func`.
 
 ## API
 
-| 函数 | 说明 |
+| Function | Description |
 |---|---|
-| `Add(spec, fn, opts...) error` | 登记一个任务。当场校验，错误是 `*xerror.Error`（模块 `xcron`）：spec 写错、`fn` 是 nil、名字为空或重复是 `config`，退出开始之后再 Add 是 `register` |
+| `Add(spec, fn, opts...) error` | Registers a job. It validates on the spot, and the error is an `*xerror.Error` (module `xcron`): a malformed spec, a nil `fn`, and an empty or duplicate name are `config`, while an Add after shutdown has begun is `register` |
 
-`spec`：标准的 5 段 `分 时 日 月 周`，或者 `@yearly` / `@annually` / `@monthly` / `@weekly` / `@daily` / `@hourly` / `@every <时长>`。
-`<时长>` 是 `time.ParseDuration` 的写法（`90s`、`1h30m`），必须大于 0。
+`spec`: the standard 5 fields `minute hour day month weekday`, or `@yearly` / `@annually` / `@monthly` / `@weekly` /
+`@daily` / `@hourly` / `@every <duration>`. `<duration>` is `time.ParseDuration`'s form (`90s`, `1h30m`) and must be
+greater than 0.
 
-| Option | 默认 | 说明 |
+| Option | Default | Description |
 |---|---|---|
-| `WithName(name)` | 函数名，见下 | 日志的 `job`、Span 名、报错里都用它；同一个进程里不能重复 |
-| `WithTimeout(d)` | 不限时 | 每一次执行的超时，到点取消 ctx；也管 `RunOnStart*` 的那第一次 |
-| `AllowOverlap()` | 不允许 | 上一次没跑完也开始下一次，两次并发 |
-| `WithLocation(loc)` | UTC | 按哪个时区解释 spec |
-| `RunOnStart()` | 不跑 | 调度器起来时先在后台跑一次，不等它；失败只记日志 |
-| `RunOnStartAndWait()` | 不跑 | 调度器起来时先跑一次，启动等它；失败启动就失败 |
+| `WithName(name)` | the function name, below | Used for the log's `job`, the Span name and the errors; it must be unique within one process |
+| `WithTimeout(d)` | no limit | The time limit on each execution, cancelling the ctx when reached; it also covers the first run of `RunOnStart*` |
+| `AllowOverlap()` | not allowed | Start the next run even if the previous one is unfinished, so the two run concurrently |
+| `WithLocation(loc)` | UTC | The time zone the spec is interpreted in |
+| `RunOnStart()` | does not run | Run once in the background as the scheduler comes up, without waiting; a failure is only logged |
+| `RunOnStartAndWait()` | does not run | Run once as the scheduler comes up and have startup wait for it; its failure fails startup |
 
-**默认名字**是函数名，去掉 import path 前缀和方法值的 `-fm` 后缀（Go 1.25 实测）：
+**The default name** is the function name with the import path prefix and a method value's `-fm` suffix removed (measured on Go 1.25):
 
-| 传进去的 | 默认名字 |
+| What is passed | Default name |
 |---|---|
-| 普通函数 `cleanup` | `main.cleanup` |
-| 方法值 `svc.Sync`（值接收者） | `main.Service.Sync` |
-| 方法值 `svc.Sync`（指针接收者） | `main.(*Service).Sync` |
-| 闭包 | `main.main.func1` |
+| The ordinary function `cleanup` | `main.cleanup` |
+| The method value `svc.Sync` (value receiver) | `main.Service.Sync` |
+| The method value `svc.Sync` (pointer receiver) | `main.(*Service).Sync` |
+| A closure | `main.main.func1` |
 
-闭包的名字是编译器按出现顺序编的号，挪一下代码就变，看板和告警跟着断——传闭包时写 `WithName`。
-同一个函数登记两次（比如两个 spec）会撞名，第二个要 `WithName`。
+A closure's name is numbered by the compiler in order of appearance, so moving the code changes it and dashboards and
+alerts break with it -- write `WithName` when passing a closure. Registering the same function twice (two specs, say)
+collides, and the second one needs `WithName`.
 
-## 什么时候跑、什么时候停
+## When they run and when they stop
 
-调度器在 `StageServer` 那一档起来：客户端（xgorm、xredis……）和你的业务钩子都已就绪，任务里直接 `xgorm.C()`。
-在 `xone.Run` 之前 `Add` 的，调度器起来时一起开始；之后（比如在某个钩子里）`Add` 的，当场开始。
+The scheduler comes up on `StageServer`: the clients (xgorm, xredis, ...) and the caller's business hooks are all ready,
+so a job can call `xgorm.C()` directly. A job `Add`ed before `xone.Run` starts together with the scheduler, and one
+`Add`ed later (inside some hook, say) starts on the spot.
 
-- **`RunOnStartAndWait`** 的任务在启动阶段并行跑完第一次，全部成功了启动才继续；任何一个失败，
-  启动失败，报错里点名是哪几个（`xone xcron start failed, err=[first run failed: job "load-config": ...]`）。
-  启动期间收到退出信号时它们的 ctx 被取消。调度器起来之后再 `Add` 的，`Add` 等第一次跑完、返回它的错误，失败的不登记。
-- **退出**：Web 服务先停（等在途请求），然后 xcron 最先停——不再发起新的执行、取消在途执行的 ctx、
-  在它那一份停止预算里等它们返回，之后才轮到关数据库和缓存。到点还有没返回的，停止钩子的错误和一条 WARN 里点名是哪几个任务。
-  服务停下来的那段时间里任务照常调度。
-- **任务要停得下来就得看 ctx**：Go 没有从外面停下一个协程的办法，取消 ctx 是能做的全部。
-  xcron 是第一个停止钩子，能等的时间是「退出预算（`WithStopTimeout`，默认 15s）减去服务停下来用掉的，
-  再给排在后面的每个停止钩子各留最多 1s」：只跑定时任务的进程里服务不占时间，接了 xgorm、xredis、xlog 等 6 个组件时约 9s；
-  Web 服务用满它那 2/3 时只剩几百毫秒。规则见 [`docs/architecture.md`「停止预算是一份」](../docs/architecture.md#the-stop-budget-is-one-budget-not-one-per-component)。
+- **`RunOnStartAndWait`** jobs run their first execution in parallel during startup, and startup continues only once
+  they have all succeeded; if any of them fails, startup fails and the error names which ones
+  (`xone xcron start failed, err=[first run failed: job "load-config": ...]`). Their ctx is cancelled when a stop signal
+  arrives during startup. For an `Add` after the scheduler is up, `Add` waits for the first run and returns its error,
+  and a job whose first run failed is not registered.
+- **Shutdown**: the web server stops first (waiting for the requests in flight), then xcron stops before anything else --
+  it starts no new execution, cancels the ctx of those in flight, and waits for them to return within its share of the
+  stop budget, after which the database and the cache are closed. Any that have not returned by then are named in the
+  stop hook's error and in a WARN. Jobs keep being scheduled while the server is stopping.
+- **A job can only be stopped if it watches the ctx**: Go has no way to stop a goroutine from the outside, and
+  cancelling the ctx is all that can be done. xcron is the first stop hook, and how long it can wait is "the stop budget
+  (`WithStopTimeout`, 15s by default) minus what the servers used, leaving at most 1s for each stop hook queued behind
+  it": in a process running only scheduled jobs the servers take no time, and with 6 components such as xgorm, xredis
+  and xlog attached it is about 9s; a web service using its full two thirds leaves a few hundred milliseconds. The rules
+  are in [`docs/architecture.md` "The stop budget is one budget"](../docs/architecture.md#the-stop-budget-is-one-budget-not-one-per-component).
 
-## 多副本
+## Multiple replicas
 
-**每个副本都会跑。** xcron 是进程内的调度器，不知道别的副本在不在；部署 3 个副本，`0 3 * * *` 每天就跑 3 次。
-只想一个副本跑的，自己抢锁，比如用 xredis 的 `SetNX`：
+**Every replica runs them.** xcron is an in-process scheduler and does not know whether other replicas exist; deploy 3
+replicas and `0 3 * * *` runs 3 times a day. To have only one replica run it, take a lock, for example with xredis's
+`SetNX`:
 
 ```go
 xcron.Add("0 3 * * *", func(ctx context.Context) error {
-	// 锁的有效期：比任务最长的耗时长，比两次之间的间隔短。
-	// 跑完不删锁：副本之间的时钟差着几毫秒，删早了，晚到的那个副本会再抢到、再跑一遍
+	// the lock's lifetime: longer than the job's longest run, shorter than the interval between two runs.
+	// The lock is not deleted when the job finishes: replica clocks differ by milliseconds, and deleting it early lets a late replica take it and run again
 	got, err := xredis.C().SetNX(ctx, "lock:cleanup", hostname, 30*time.Minute).Result()
 	if err != nil || !got {
-		return err // 别的副本拿到了，这一轮不跑
+		return err // another replica took it, so this round does not run
 	}
 	return cleanup(ctx)
 }, xcron.WithName("cleanup"), xcron.WithTimeout(20*time.Minute))
 ```
 
-`WithTimeout` 要小于锁的有效期：否则任务还在跑、锁先过期，下一个时间点别的副本就能再抢到。
+`WithTimeout` must be shorter than the lock's lifetime: otherwise the lock expires while the job is still running, and
+another replica can take it at the next time point.
 
-## 可观测
+## Observability
 
-### 日志
+### Logs
 
-| 消息 | 级别 | 字段 |
+| Message | Level | Fields |
 |---|---|---|
-| `cron job started` | DEBUG | `job`、`trace_id` |
-| `cron job finished` | INFO | `job`、`trace_id`、`elapsed_ms` |
-| `cron job failed` | WARN | `job`、`trace_id`、`elapsed_ms`、`error` |
-| `cron job panicked` | ERROR | `job`、`trace_id`、`elapsed_ms`、`error`、`stack` |
+| `cron job started` | DEBUG | `job`, `trace_id` |
+| `cron job finished` | INFO | `job`, `trace_id`, `elapsed_ms` |
+| `cron job failed` | WARN | `job`, `trace_id`, `elapsed_ms`, `error` |
+| `cron job panicked` | ERROR | `job`, `trace_id`, `elapsed_ms`, `error`, `stack` |
 | `cron job skipped, previous run still running` | WARN | `job` |
 | `xcron ready` | INFO | `jobs` |
 | `xcron jobs still running when the stop budget ran out` | WARN | `jobs` |
 
-- `job` 在任务的 ctx 里，任务里用 `slog.InfoContext(ctx, …)` 记的每一行都带着；任务里 `xlog.AddKV(ctx, …)` 的字段也进结束那一行。
-- 开始那一行记 DEBUG：`@every 1s` 的任务记 INFO 就是每秒两行，而结束那一行带着 `elapsed_ms`，开始时刻倒推得出来。
-  卡住不返回的任务看不到结束那一行，退出时的报错会点名它。
-- 用了 xcron 就有 xlog（同 xgin）：只跑定时任务的进程也是 JSON 日志、带 `trace_id`。
+- `job` is in the job's ctx, so every line recorded inside the job with `slog.InfoContext(ctx, ...)` carries it; fields
+  added inside the job with `xlog.AddKV(ctx, ...)` reach the end line too.
+- The start line is recorded at DEBUG: an `@every 1s` job at INFO would be two lines every second, while the end line
+  already carries `elapsed_ms` and the start time follows from it. A job that hangs shows no end line, and the error on
+  shutdown names it.
+- Using xcron brings xlog (as xgin does): a process running only scheduled jobs still logs JSON with a `trace_id`.
 
-日志的全局约定见 [`docs/observability.md`](../docs/observability.md#logs)。
+The global logging conventions are in [`docs/observability.md`](../docs/observability.md#logs).
 
-### 链路
+### Tracing
 
-| 来源 | Span 名 | 说明 |
+| Source | Span name | Description |
 |---|---|---|
-| xcron | `cron <name>` | 每次执行一个根 Span，`SpanKindInternal`；失败和 panic 时状态标成 Error，描述是 `cron job failed` / `cron job panicked`，不记错误原文（它常包着带参数值的 SQL、Redis 错误，原文在日志里）。任务里的数据库、Redis、出站 HTTP 的 Span 都挂在它下面 |
+| xcron | `cron <name>` | One root Span per execution, `SpanKindInternal`; on a failure or a panic the status is marked Error with the description `cron job failed` / `cron job panicked`, and the error text is not recorded (it often wraps an SQL or Redis error carrying parameter values; the text is in the log). The Spans of a job's database, Redis and outbound HTTP calls hang below it |
 
-用了 xcron 就有链路（它带着 xtrace），不用另外 import。
+Using xcron brings tracing (it carries xtrace), with no separate import needed.
 
-### 指标
+### Metrics
 
-xcron 不导出指标：只跑定时任务的进程没有 `/metrics` 端点，为它带上 Prometheus 的依赖不值得。
-要按任务看耗时，在任务里自己打点：
+xcron exports no metrics: a process running only scheduled jobs has no `/metrics` endpoint, and pulling in a Prometheus
+dependency for it is not worth it. To track duration per job, instrument it inside the job:
 
 ```go
 start := time.Now()
@@ -151,65 +164,76 @@ err := cleanup(ctx)
 xmetric.ObserveDuration("cron_job_duration", time.Since(start), xmetric.T("job", "cleanup"), xmetric.T("status", status(err)))
 ```
 
-## 行为与实测
+## Behavior (measured)
 
-实测环境和跨模块的总表见 [`docs/behavior.md`](../docs/behavior.md)。
+The measurement environment and the cross-module summary table are in [`docs/behavior.md`](../docs/behavior.md).
 
-hashicorp/cronexpr v1.1.3（只用来解析和算下一个时间点，调度循环是 xcron 自己的）、Go 1.25。升级 cronexpr 之后
-`schedule_test.go` 里 `TestCronexpr_*` 那一组哪一条红了，这里对应的那条就要重量。
+hashicorp/cronexpr v1.1.3 (used only for parsing and for computing the next time point; the scheduling loop is xcron's
+own) and Go 1.25. After a cronexpr upgrade, whichever of the `TestCronexpr_*` group in `schedule_test.go` goes red, the
+matching entry here has to be measured again.
 
-**cronexpr 收的比 5 段多，这里只收 5 段。**
+**cronexpr accepts more than 5 fields; only 5 are accepted here.**
 
-| spec | cronexpr 自己 | xcron |
+| spec | cronexpr itself | xcron |
 |---|---|---|
-| 6 段 `0 30 2 * * *` | 多出来的那段是**年**，不是秒：报 `syntax error in hour field: '30'`；`30 2 * * * 2027` 从 2027 年才开始跑 | `want 5 fields` |
-| 7 段 | 开头多一段秒、末尾一段年 | `want 5 fields` |
-| 8 段及以上 | 第 7 段之后的悄悄丢掉 | `want 5 fields` |
-| `CRON_TZ=Europe/Berlin 30 2 * * *` | `syntax error in minute field: 'CRON_TZ=Europe/Berlin'` | 指向 `WithLocation` |
-| `@midnight`、`@reboot`、`@every 1m` | 一律 `missing field(s)` | `@every` 自己实现；其余报 `unknown descriptor` |
-| `0 0 30 2 *`（2 月 30 日） | 解析成功，`Next` 返回零值：任务登记上了却一次都不跑 | `spec never fires` |
+| 6 fields `0 30 2 * * *` | The extra field is the **year**, not seconds: it reports `syntax error in hour field: '30'`; `30 2 * * * 2027` only starts running in 2027 | `want 5 fields` |
+| 7 fields | An extra leading field of seconds and a trailing one of years | `want 5 fields` |
+| 8 fields or more | Everything after the 7th is dropped silently | `want 5 fields` |
+| `CRON_TZ=Europe/Berlin 30 2 * * *` | `syntax error in minute field: 'CRON_TZ=Europe/Berlin'` | Points at `WithLocation` |
+| `@midnight`, `@reboot`, `@every 1m` | Always `missing field(s)` | `@every` is implemented here; the rest report `unknown descriptor` |
+| `0 0 30 2 *` (30 February) | It parses and `Next` returns the zero value: the job is registered and never runs | `spec never fires` |
 
-`L`、`W`、`#`、`?`、月份和星期的英文缩写（`MON-FRI`、`JAN`）它也认，xcron 不拦。
+It also accepts `L`, `W`, `#`, `?` and English abbreviations for months and weekdays (`MON-FRI`, `JAN`), which xcron does
+not block.
 
-**时区**：cronexpr 按传进去的时刻的时区算下一个时间点——同一个 `30 2 * * *`，传柏林时间得到柏林的 02:30，
-传 UTC 得到 UTC 的 02:30。`WithLocation` 就是把「现在」换到那个时区再交给它；不写是 UTC，和机器的 `TZ` 无关。
+**Time zones**: cronexpr computes the next time point in the time zone of the moment passed in -- the same
+`30 2 * * *` gives 02:30 Berlin for a Berlin time and 02:30 UTC for a UTC time. `WithLocation` simply converts "now" to
+that time zone before handing it over; without it the zone is UTC, regardless of the machine's `TZ`.
 
-**夏令时**（`WithLocation(America/New_York)`，2026-03-08 02:00 拨快到 03:00，2026-11-01 02:00 拨回 01:00）：
+**Daylight saving** (`WithLocation(America/New_York)`, the clock going forward from 02:00 to 03:00 on 2026-03-08 and back
+from 02:00 to 01:00 on 2026-11-01):
 
-| spec | 拨快那天 | 拨回那天 |
+| spec | The day the clock goes forward | The day it goes back |
 |---|---|---|
-| `30 2 * * *` | 02:30 不存在，**整天跳过**（3-07 之后下一次是 3-09），不挪到 03:30 | 跑一次（EST 02:30，UTC 07:30） |
-| `30 1 * * *` | 照常 | **跑两次**：EDT 01:30 和 EST 01:30，相隔一小时 |
-| `0 * * * *` | 01:00 之后是 03:00 | 01:00 跑两次 |
+| `30 2 * * *` | 02:30 does not exist, so **the whole day is skipped** (the next run after 3-07 is 3-09) rather than moved to 03:30 | Runs once (02:30 EST, 07:30 UTC) |
+| `30 1 * * *` | As usual | **Runs twice**: 01:30 EDT and 01:30 EST, an hour apart |
+| `0 * * * *` | 01:00 is followed by 03:00 | 01:00 runs twice |
 
-有夏令时的时区里，落在 01:00–03:00 的任务要么某天不跑、要么某天跑两次。不想要这个就用默认的 UTC。
+In a time zone with daylight saving, a job falling between 01:00 and 03:00 either skips a day or runs twice on one. To
+avoid that, keep the default UTC.
 
-**下一个时间点严格在「现在」之后**：从 10:01:00 整算 `* * * * *` 得到 10:02:00。墙上时钟被往回拨（NTP 校时）时，
-xcron 从上一个时间点往后算，不会把刚跑过的那个再跑一次。
+**The next time point is strictly after "now"**: computing `* * * * *` from exactly 10:01:00 gives 10:02:00. When the
+wall clock is turned back (an NTP correction), xcron computes forward from the previous time point and never runs the one
+that has just run again.
 
-**`@every <d>` 不对齐**：从每次触发的那一刻往后数 `d`——10:00:17.5 起的 `@every 1m` 下一次是 10:01:17.5，
-不对齐到整分，也不截掉毫秒。第一次在调度器起来之后 `d` 才跑（要立刻跑一次写 `RunOnStart`）。
-每次都从实际触发的时刻往后数，计时器的延迟会累积：实测 `@every 10ms` 跑 2s，每次比间隔晚约 0.32ms
-（4 核 Linux）。`@every 1m` 一天累积约 0.5s，要对齐整点的用 5 段写法。
+**`@every <d>` does not align**: it counts `d` forward from the moment of each trigger -- an `@every 1m` starting at
+10:00:17.5 next runs at 10:01:17.5, aligned neither to a whole minute nor with milliseconds truncated. The first run is
+`d` after the scheduler comes up (for an immediate first run, write `RunOnStart`). Counting forward from the actual
+trigger each time makes timer delays accumulate: measured, an `@every 10ms` running for 2s was about 0.32ms late per run
+(4-core Linux). An `@every 1m` accumulates about 0.5s a day, so anything that has to align to the hour uses the 5-field
+form.
 
-**到了时间点而上一次还在跑**：默认跳过，记 `cron job skipped, previous run still running`，下一个时间点照常；
-所以一个比间隔还慢的任务，实际节奏是「跑完之后的下一个时间点」。`AllowOverlap` 时每个时间点都发起一次。
+**A time point arriving while the previous run is unfinished**: it is skipped by default and
+`cron job skipped, previous run still running` is recorded, with the next time point proceeding as usual; so a job
+slower than its own interval actually runs at "the next time point after it finishes". With `AllowOverlap` every time
+point starts one.
 
-## 排错
+## Troubleshooting
 
 ### `xone xcron config failed, err=[job "main.main.func1": bad spec "...": want 5 fields ...]`
 
-spec 不是 5 段。秒级的写法（6 段）不收，要秒级用 `@every 10s`；cronexpr 的 6 段是「带年份」，见上面的表。
+The spec does not have 5 fields. The second-level form (6 fields) is not accepted; for second-level scheduling use
+`@every 10s`. cronexpr's 6-field form means "with a year", see the table above.
 
 ### `duplicate job name "main.cleanup": give one of them xcron.WithName`
 
-同一个函数登记了两次，或者两个闭包恰好同名。给其中一个写 `WithName`。
+The same function was registered twice, or two closures happen to have the same name. Give one of them a `WithName`.
 
 ### `xone xcron register failed, err=[cannot add job ...: the scheduler is shutting down]`
 
-退出流程已经开始之后才 `Add`。多半是在 `Start` 返回之后、或者停止钩子里登记的。
+`Add` was called after the shutdown sequence had begun, most likely after `Start` returned or inside a stop hook.
 
 ### `xone xcron stop failed, err=[jobs [cleanup] still running when the stop budget ran out: context deadline exceeded]`
 
-这些任务在停止预算用完时还没返回：没看 ctx，或者收尾比预算长。让任务把 ctx 传给它调的每一个阻塞操作，
-或者调大 `xone.WithStopTimeout`。
+These jobs had not returned when the stop budget ran out: either they do not watch the ctx, or their cleanup takes longer
+than the budget. Have the job pass the ctx to every blocking call it makes, or raise `xone.WithStopTimeout`.

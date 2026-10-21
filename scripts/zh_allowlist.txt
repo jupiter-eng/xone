@@ -199,16 +199,6 @@ scripts/mutations/xtrace.py
 scripts/release.sh
 scripts/test.sh
 xapp/README.md
-xcron/README.md
-xcron/go.mod
-xcron/helpers_test.go
-xcron/option.go
-xcron/run.go
-xcron/schedule.go
-xcron/schedule_test.go
-xcron/scheduler.go
-xcron/xcron.go
-xcron/xcron_test.go
 xflow/README.md
 xflow/bench_test.go
 xflow/config.go

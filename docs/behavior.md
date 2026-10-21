@@ -96,7 +96,7 @@ XGorm, XRedis and XKafka each probe once at startup through one shared implement
 | [xcache](../xcache/README.md#behavior-measured) | ristretto: internal overhead, stopping, the cost of metrics, TTL |
 | [xkafka](../xkafka/README.md#行为与实测) | franz-go: automatic commits, offset reset, `Close` and `Flush`, `Ping`, a missing topic, rebalancing and session timeouts |
 | [xhttp](../xhttp/README.md#行为与实测) | The defaults of resty / otelhttp / the standard library's Transport |
-| [xcron](../xcron/README.md#行为与实测) | cronexpr: field counts, timezone prefixes, DST, specs that never fire; the drift of `@every` |
+| [xcron](../xcron/README.md#behavior-measured) | cronexpr: field counts, timezone prefixes, DST, specs that never fire; the drift of `@every` |
 | [xgin](../xgin/README.md#behavior-measured) | gin / net/http: proxies, uploads, timeouts, h2c, TLS, graceful shutdown |
 | [xecho](../xecho/README.md#behavior-measured) | echo: client_ip, error rendering, route templates, group fallback routes, `e.Pre`, timeout middleware, panics, gommon logs, compression, the multipart threshold, strict route matching |
 | [xmetric](../xmetric/README.md#行为与实测) | client_golang: buckets, names, constant labels |

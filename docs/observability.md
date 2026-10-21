@@ -67,7 +67,7 @@ Each module's own logs are under "Observability" in its README:
 [xcache](../xcache/README.md#logs) · [xkafka](../xkafka/README.md#日志)
 (`kafka produce failed`, `kafka message failed` / `kafka message dead-lettered` /
 `kafka message skipped, …` / `kafka handler panicked`, with the handler's logs carrying `topic` /
-`partition` / `offset` / `group`) · [xcron](../xcron/README.md#日志) (`cron job finished` /
+`partition` / `offset` / `group`) · [xcron](../xcron/README.md#logs) (`cron job finished` /
 `cron job failed` / `cron job panicked`, `cron job skipped, previous run still running`) ·
 [xflow](../xflow/README.md#日志) (`xflow flow done` / `xflow flow failed`; the per-step
 `xflow step … done` is INFO and `… failed` is WARN) · [xtrace](../xtrace/README.md#日志).
@@ -119,7 +119,7 @@ Each module's span names and key attributes are under "Observability · Tracing"
 | [xhttp](../xhttp/README.md#链路) | Outbound |
 | [xgorm](../xgorm/README.md#tracing) | One per SQL statement, with attributes following OTel's database semantic conventions |
 | [xredis](../xredis/README.md#链路) | One per command |
-| [xcron](../xcron/README.md#链路) | One root span `cron <name>` per execution |
+| [xcron](../xcron/README.md#tracing) | One root span `cron <name>` per execution |
 | [xkafka](../xkafka/README.md#链路) | `<topic> publish` when producing and `<topic> process` when consuming, with consumption joining the trace from the message headers |
 | [xflow](../xflow/README.md#链路) | Opens no spans |
 

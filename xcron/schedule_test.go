@@ -8,8 +8,8 @@ import (
 	"github.com/hashicorp/cronexpr"
 )
 
-// 这一组钉住 cronexpr v1.1.3 的行为：parse / next 和 README「行为与实测」靠的就是这些。
-// 升级 cronexpr 之后哪一条红了，对应的注释和文档要跟着改
+// This group pins down the behavior of cronexpr v1.1.3: parse / next and the README's "Behavior (measured)" rest on it.
+// Whichever of these goes red after a cronexpr upgrade, the matching comment and documentation change with it.
 
 func mustLoad(t *testing.T, name string) *time.Location {
 	t.Helper()
@@ -25,82 +25,82 @@ func TestCronexpr_NextFollowsLocationOfInput(t *testing.T) {
 	e := cronexpr.MustParse("30 2 * * *")
 	got := e.Next(time.Date(2026, 1, 1, 0, 0, 0, 0, berlin))
 	if want := time.Date(2026, 1, 1, 2, 30, 0, 0, berlin); !got.Equal(want) {
-		t.Errorf("传柏林时间该按柏林算：got=%v want=%v", got, want)
+		t.Errorf("a Berlin time must be computed in Berlin: got=%v want=%v", got, want)
 	}
 	got = e.Next(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	if want := time.Date(2026, 1, 1, 2, 30, 0, 0, time.UTC); !got.Equal(want) {
-		t.Errorf("传 UTC 该按 UTC 算：got=%v want=%v", got, want)
+		t.Errorf("a UTC time must be computed in UTC: got=%v want=%v", got, want)
 	}
 }
 
 func TestCronexpr_FieldCounts(t *testing.T) {
 	t0 := time.Date(2026, 1, 1, 10, 0, 17, 0, time.UTC)
-	// 6 段：多出来的是年，不是秒
+	// 6 fields: the extra one is the year, not seconds.
 	if _, err := cronexpr.Parse("0 30 2 * * *"); err == nil || !strings.Contains(err.Error(), "hour field") {
-		t.Errorf("6 段的第 2 段该被当成小时：err=%v", err)
+		t.Errorf("with 6 fields the 2nd must be taken as the hour: err=%v", err)
 	}
 	if got := cronexpr.MustParse("30 2 * * * 2027").Next(t0); got.Year() != 2027 {
-		t.Errorf("6 段的最后一段是年：got=%v", got)
+		t.Errorf("with 6 fields the last one is the year: got=%v", got)
 	}
-	// 7 段：开头多一段秒
+	// 7 fields: the extra leading one is seconds.
 	if got := cronexpr.MustParse("15 30 2 * * * *").Next(t0); got.Second() != 15 {
-		t.Errorf("7 段的第 1 段是秒：got=%v", got)
+		t.Errorf("with 7 fields the 1st is seconds: got=%v", got)
 	}
-	// 8 段：第 7 段之后的悄悄丢掉
+	// 8 fields: everything after the 7th is dropped silently.
 	if _, err := cronexpr.Parse("15 30 2 * * * * garbage"); err != nil {
-		t.Errorf("8 段时多出来的不报错：err=%v", err)
+		t.Errorf("with 8 fields the extra ones are not an error: err=%v", err)
 	}
 }
 
 func TestCronexpr_RejectsTimeZonePrefixAndUnknownDescriptors(t *testing.T) {
 	for _, spec := range []string{"CRON_TZ=Europe/Berlin 30 2 * * *", "TZ=UTC 0 * * * *", "@midnight", "@reboot", "@every 1m"} {
 		if _, err := cronexpr.Parse(spec); err == nil {
-			t.Errorf("cronexpr 收下了 %q，parse 的注释和这里一起改", spec)
+			t.Errorf("cronexpr accepted %q, so parse's comment and this change together", spec)
 		}
 	}
 	for _, d := range descriptors {
 		if _, err := cronexpr.Parse(d); err != nil {
-			t.Errorf("cronexpr 不认 %s 了：%v", d, err)
+			t.Errorf("cronexpr no longer knows %s: %v", d, err)
 		}
 	}
 }
 
 func TestCronexpr_NeverFiringSpecReturnsZero(t *testing.T) {
 	if got := cronexpr.MustParse("0 0 30 2 *").Next(time.Now()); !got.IsZero() {
-		t.Errorf("2 月 30 日不存在，Next 该是零值：got=%v", got)
+		t.Errorf("30 February does not exist, so Next must be the zero value: got=%v", got)
 	}
 }
 
 func TestCronexpr_NextIsStrictlyAfter(t *testing.T) {
 	at := time.Date(2026, 1, 1, 10, 1, 0, 0, time.UTC)
 	if got := cronexpr.MustParse("* * * * *").Next(at); !got.Equal(at.Add(time.Minute)) {
-		t.Errorf("从一个正好匹配的时刻算，下一个该严格在它之后：got=%v", got)
+		t.Errorf("computed from an exactly matching moment, the next one must be strictly after it: got=%v", got)
 	}
 }
 
-// 夏令时：America/New_York 2026-03-08 02:00 拨快到 03:00，2026-11-01 02:00 拨回 01:00
+// Daylight saving: America/New_York goes forward from 02:00 to 03:00 on 2026-03-08 and back from 02:00 to 01:00 on 2026-11-01.
 func TestCronexpr_DSTInNewYork(t *testing.T) {
 	ny := mustLoad(t, "America/New_York")
 	daily := cronexpr.MustParse("30 2 * * *")
 
-	// 拨快那天 02:30 不存在：那天整天跳过，不挪到 03:30
+	// 02:30 does not exist on the day the clock goes forward: that whole day is skipped rather than moved to 03:30.
 	got := daily.Next(time.Date(2026, 3, 7, 12, 0, 0, 0, ny))
 	if want := time.Date(2026, 3, 9, 2, 30, 0, 0, ny); !got.Equal(want) {
-		t.Errorf("拨快那天的 02:30 该跳过：got=%v want=%v", got, want)
+		t.Errorf("02:30 on the day the clock goes forward must be skipped: got=%v want=%v", got, want)
 	}
-	// 拨回那天 02:30 只出现一次（EST）
+	// 02:30 occurs only once on the day the clock goes back (EST).
 	got = daily.Next(time.Date(2026, 10, 31, 12, 0, 0, 0, ny))
 	if want := time.Date(2026, 11, 1, 7, 30, 0, 0, time.UTC); !got.Equal(want) {
-		t.Errorf("拨回那天的 02:30 跑一次：got=%v want=%v", got, want)
+		t.Errorf("02:30 on the day the clock goes back runs once: got=%v want=%v", got, want)
 	}
 	if n := daily.Next(got); n.Day() != 2 {
-		t.Errorf("拨回那天的 02:30 不该跑两次：next=%v", n)
+		t.Errorf("02:30 on the day the clock goes back must not run twice: next=%v", n)
 	}
 
-	// 拨回那天 01:30 出现两次（EDT 一次、EST 一次），两次都跑
+	// 01:30 occurs twice on the day the clock goes back (once in EDT and once in EST), and both run.
 	early := cronexpr.MustParse("30 1 * * *").NextN(time.Date(2026, 10, 31, 12, 0, 0, 0, ny), 2)
 	if len(early) != 2 || early[1].Sub(early[0]) != time.Hour {
-		t.Errorf("拨回那天的 01:30 该跑两次、相隔一小时：got=%v", early)
+		t.Errorf("01:30 on the day the clock goes back must run twice, an hour apart: got=%v", early)
 	}
 }
 
@@ -142,7 +142,7 @@ func TestEvery_CountsFromGivenTimeNotAligned(t *testing.T) {
 	}
 	from := time.Date(2026, 1, 1, 10, 0, 17, 500e6, time.UTC)
 	if got := s.Next(from); !got.Equal(from.Add(time.Minute)) {
-		t.Errorf("@every 不对齐整分、不截掉毫秒：got=%v", got)
+		t.Errorf("@every does not align to a whole minute and does not truncate milliseconds: got=%v", got)
 	}
 }
 
@@ -151,12 +151,12 @@ func TestNext_UsesLocationAndNeverRepeatsAfterClockStepsBack(t *testing.T) {
 	s, _ := parse("30 2 * * *")
 	got := next(s, berlin, time.Time{})
 	if got.Location() != berlin || got.Hour() != 2 || got.Minute() != 30 {
-		t.Errorf("该按柏林时间的 02:30：got=%v", got)
+		t.Errorf("it must be 02:30 Berlin time: got=%v", got)
 	}
-	// prev 在「现在」之后（时钟被往回拨了）：从 prev 往后算，不把 prev 再算一遍
+	// prev is after "now" (the clock was turned back): compute forward from prev rather than computing prev again.
 	prev := time.Now().Add(48 * time.Hour).Truncate(time.Minute)
 	m, _ := parse("* * * * *")
 	if got := next(m, time.UTC, prev); !got.After(prev) {
-		t.Errorf("下一个时间点该在 prev 之后：prev=%v got=%v", prev, got)
+		t.Errorf("the next time point must be after prev: prev=%v got=%v", prev, got)
 	}
 }

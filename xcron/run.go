@@ -11,27 +11,27 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 
-	// 不是匿名 import：job 字段靠 xlog.CtxWithKV 放进 ctx。顺带的效果和 xgin 一样——
-	// 用了 xcron 就有 xlog，只跑定时任务的进程照样是 JSON 日志、带 trace_id
+	// Not a blank import: the job field goes into the ctx through xlog.CtxWithKV. The side effect is the same as in
+	// xgin -- using xcron brings xlog, so a process running only scheduled jobs still logs JSON with a trace_id.
 	"github.com/jupiter-eng/xone/xlog"
 )
 
 const tracerName = "github.com/jupiter-eng/xone/xcron"
 
-// execute 跑一次任务，Add 的每一次执行都走这里。
+// execute runs the job once; every execution of an Add goes through here.
 //
-// 替 fn 做的事：开一个根 Span（cron <name>），ctx 里带上 job=<name> 这个日志字段，
-// 按 timeout 限时，记一行结果，接住 panic。返回 fn 的错误；panic 变成错误返回。
+// What it does on fn's behalf: opens a root Span (cron <name>), puts the log field job=<name> into the ctx, applies
+// the timeout, records one line of result, and catches panics. It returns fn's error; a panic becomes a returned error.
 //
-// 日志的级别：开始记 DEBUG，结束记 INFO，失败 WARN，panic ERROR。开始那一行不记 INFO，
-// 是因为 @every 1s 的任务每秒就是两行，而结束那一行已经带着 elapsed_ms，开始时刻倒推得出来；
-// 卡住不返回的任务看不到结束那一行，停止时的报错里点名还在跑的任务（见 scheduler.stop）。
-// 和 xgin 的访问日志一样：一次执行一行。
+// The log levels: the start is DEBUG, the end INFO, a failure WARN and a panic ERROR. The start line is not INFO
+// because an @every 1s job would mean two lines every second, while the end line already carries elapsed_ms and the
+// start time follows from it; a job that hangs shows no end line, and the error on shutdown names the jobs still
+// running (see scheduler.stop). As with xgin's access log: one line per execution.
 //
-// job 字段只放进 ctx 的日志作用域，不在这里再写一遍：两处都写，JSON 里就是两个同名的 key。
+// The job field goes only into the ctx's logging scope and is not written again here: writing it in both places would put two keys of the same name in the JSON.
 //
-// Span 上只标状态、不记错误原文（不调 RecordError），同 xgorm / xredis：任务返回的错误常常包着
-// 底层的 SQL 或 Redis 错误，原文里带着参数值，而 xgorm 刚刚费劲没把它们写进链路。原文在日志里
+// The Span carries only the status and not the error text (RecordError is not called), as in xgorm / xredis: the
+// error a job returns often wraps an underlying SQL or Redis error whose text carries parameter values, which xgorm has just gone to some trouble to keep out of traces. The text is in the log.
 func execute(parent context.Context, name string, timeout time.Duration, fn func(context.Context) error) (err error) {
 	ctx, span := otel.Tracer(tracerName).Start(parent, "cron "+name, trace.WithSpanKind(trace.SpanKindInternal))
 	defer span.End()
@@ -62,7 +62,7 @@ func execute(parent context.Context, name string, timeout time.Duration, fn func
 	return fn(ctx)
 }
 
-// panicked 把 recover 到的值变成 error，本身是 error 的用 %w 接住，errors.Is / errors.As 还能用
+// panicked turns a recovered value into an error, catching one that is already an error with %w so errors.Is / errors.As still work.
 func panicked(r any) error {
 	if err, ok := r.(error); ok {
 		return fmt.Errorf("panicked: %w", err)
@@ -70,5 +70,5 @@ func panicked(r any) error {
 	return fmt.Errorf("panicked: %v", r)
 }
 
-// ms 耗时换成毫秒，保留到微秒。字段名带单位：slog 的 JSON 把 Duration 写成纳秒整数
+// ms converts an elapsed time to milliseconds, keeping microseconds. The field name carries the unit: slog's JSON writes a Duration as an integer number of nanoseconds.
 func ms(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }
