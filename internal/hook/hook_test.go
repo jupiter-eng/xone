@@ -10,7 +10,7 @@ import (
 
 func noop(context.Context) error { return nil }
 
-// board 把一组登记项拼成 "名字 名字 ..." 便于断言顺序
+// board joins a set of registrations into "name name ..." so that the order can be asserted on
 func board(es []Entry) string {
 	names := make([]string, 0, len(es))
 	for _, e := range es {
@@ -31,22 +31,24 @@ func TestStartOrder_AscendingByStage(t *testing.T) {
 		entry("trace", StageTelemetry),
 	}))
 	if want := "log trace db server"; got != want {
-		t.Errorf("启动要从最底层往上走\nwant %s\ngot  %s", want, got)
+		t.Errorf("startup goes from the deepest layer upwards\nwant %s\ngot  %s", want, got)
 	}
 }
 
 func TestStartOrder_KeepsRegistrationOrderWithinStage(t *testing.T) {
-	// 稳定排序是有意的：同一档内谁先登记谁先起，换成不稳定排序之后
-	// 顺序会随实现变化，而使用者是照着 import 的先后去理解它的。
+	// The stable sort is deliberate: within one stage whatever registered first comes up first, and
+	// with an unstable sort the order would change with the implementation, while the caller
+	// understands it by the order of the imports.
 	//
-	// 输入要够长、而且本来就是乱的：标准库的排序在 12 项以内走插入排序，
-	// 输入已经有序时又会直接放过——两种情况下它碰巧都是稳的，
-	// 用三五项顺序输入根本测不出 slices.SortFunc 和 slices.SortStableFunc 的差别
+	// The input has to be long enough and out of order to begin with: the standard library's sort
+	// takes an insertion sort up to 12 items and lets an already sorted input straight through -- it
+	// happens to be stable in both cases, so three or five items in order prove nothing about the
+	// difference between slices.SortFunc and slices.SortStableFunc
 	stages := []Stage{StageTelemetry, StageClient, StageServer}
 	const per = 8
 
 	var in []Entry
-	for i := 0; i < per; i++ { // 按档位轮转着登记，保证输入不是有序的
+	for i := 0; i < per; i++ { // registered round-robin by stage, so that the input is not in order
 		for _, s := range stages {
 			in = append(in, entry(fmt.Sprintf("s%d-%d", s, i), s))
 		}
@@ -60,13 +62,14 @@ func TestStartOrder_KeepsRegistrationOrderWithinStage(t *testing.T) {
 	}
 
 	if got := board(startOrder(in)); got != strings.Join(want, " ") {
-		t.Errorf("同档内不该重排\nwant %s\ngot  %s", strings.Join(want, " "), got)
+		t.Errorf("nothing within one stage may be reordered\nwant %s\ngot  %s", strings.Join(want, " "), got)
 	}
 }
 
 func TestStopOrder_MirrorsStartOrder(t *testing.T) {
-	// 「声明一个档位就同时做到先启动、后关闭」这条承诺，全靠这里是整体逆序。
-	// 只按档位降序而不逆转同档内顺序的话，同档里先起的会先关
+	// The promise that "declaring one stage gives both starting earlier and closing later" rests
+	// entirely on this being the whole thing reversed. Sorting by descending stage without reversing
+	// the order within one stage would close whatever came up first in that stage first
 	in := []Entry{
 		entry("log", StageLog),
 		entry("trace", StageTelemetry),
@@ -75,7 +78,7 @@ func TestStopOrder_MirrorsStartOrder(t *testing.T) {
 		entry("server", StageServer),
 	}
 	if got, want := board(stopOrder(in)), "server cache db trace log"; got != want {
-		t.Errorf("关闭要从最上层往下走，同档内后起的先关\nwant %s\ngot  %s", want, got)
+		t.Errorf("shutdown goes from the highest layer downwards, and within one stage whatever came up last closes first\nwant %s\ngot  %s", want, got)
 	}
 }
 
@@ -89,23 +92,23 @@ func TestStopOrder_SymmetricWithStartOrderPerItem(t *testing.T) {
 	}
 	start, stop := startOrder(in), stopOrder(in)
 	if len(start) != len(stop) {
-		t.Fatalf("两个顺序的长度必须一致，got %d vs %d", len(start), len(stop))
+		t.Fatalf("the two orders must be the same length, got %d vs %d", len(start), len(stop))
 	}
 	for i := range start {
 		if j := len(stop) - 1 - i; start[i].Name != stop[j].Name {
-			t.Errorf("第 %d 项不对称：启动 %s，对应位置的停止是 %s", i, start[i].Name, stop[j].Name)
+			t.Errorf("item %d is not symmetric: start %s, and stop at the matching position is %s", i, start[i].Name, stop[j].Name)
 		}
 	}
 }
 
 func TestStartOrder_DoesNotModifyInput(t *testing.T) {
-	// 排序如果落在调用方的底层数组上，全局登记板会被每次读取悄悄重排——
-	// 之后每一次 Start() 拿到的顺序都不一样了
+	// Were the sort to land on the caller's backing array, the global registration board would be
+	// quietly reordered by every read -- and every later Start() would return a different order
 	in := []Entry{entry("server", StageServer), entry("log", StageLog)}
 	startOrder(in)
 	stopOrder(in)
 	if got, want := board(in), "server log"; got != want {
-		t.Errorf("入参被改动了\nwant %s\ngot  %s", want, got)
+		t.Errorf("the argument was modified\nwant %s\ngot  %s", want, got)
 	}
 }
 
@@ -116,10 +119,10 @@ func TestStart_ReturnsCopy(t *testing.T) {
 	AddStart(entry("b", StageClient))
 
 	got := Start()
-	got[0], got[1] = got[1], got[0] // 调用方随手重排自己拿到的那份
+	got[0], got[1] = got[1], got[0] // the caller casually reorders the copy it was given
 
 	if want := "a b"; board(Start()) != want {
-		t.Errorf("登记板被调用方改掉了，want %s，got %s", want, board(Start()))
+		t.Errorf("the registration board was changed by the caller, want %s, got %s", want, board(Start()))
 	}
 }
 
@@ -145,13 +148,13 @@ func TestReset_ClearsBothBoards(t *testing.T) {
 	AddStop(entry("a", StageClient))
 	Reset()
 	if len(Start()) != 0 || len(Stop()) != 0 {
-		t.Errorf("Reset 之后两块板都应为空，got start=%d stop=%d", len(Start()), len(Stop()))
+		t.Errorf("both boards must be empty after Reset, got start=%d stop=%d", len(Start()), len(Stop()))
 	}
 }
 
 func TestAddStart_ConcurrentRegisterLosesNothing(t *testing.T) {
-	// 集成包的 init() 之间是串行的，但框架不该指望这一点：
-	// 使用者完全可以在自己的协程里登记
+	// The integrations' init() functions run one after another, but the framework must not count on
+	// it: a caller may perfectly well register from a goroutine of their own
 	t.Cleanup(Reset)
 	Reset()
 
@@ -168,13 +171,13 @@ func TestAddStart_ConcurrentRegisterLosesNothing(t *testing.T) {
 	wg.Wait()
 
 	if len(Start()) != n || len(Stop()) != n {
-		t.Errorf("登记丢项了，want %d，got start=%d stop=%d", n, len(Start()), len(Stop()))
+		t.Errorf("registrations were lost, want %d, got start=%d stop=%d", n, len(Start()), len(Stop()))
 	}
 }
 
 func TestAddStop_PairsWithLatestPriorStartHookInSamePackage(t *testing.T) {
-	// 一起登记的就是一对：open 配 close，第二组各配各的。
-	// 别的包的、登记在它之后的，都不算
+	// Registered together makes a pair: open with close, and the second set each with its own.
+	// Another package's, and anything registered after it, do not count
 	Reset()
 	t.Cleanup(Reset)
 	AddStart(Entry{Name: "a.openA", Pkg: "a", Run: noop})
@@ -186,21 +189,22 @@ func TestAddStop_PairsWithLatestPriorStartHookInSamePackage(t *testing.T) {
 
 	seqOf := map[string]int{}
 	for _, s := range Start() {
-		if s.Seq == 0 { // 0 留给「没有配对」：编成 0 的那个启动钩子失败了，它的停止钩子照样会被调
-			t.Errorf("%s 的登记序号是 0，序号要从 1 编起", s.Name)
+		if s.Seq == 0 { // 0 is reserved for "unpaired": were a start hook numbered 0 to fail, its stop hook would be called anyway
+			t.Errorf("%s has registration number 0; they are counted from 1", s.Name)
 		}
 		seqOf[s.Name] = s.Seq
 	}
 	want := map[string]int{"a.closeA": seqOf["a.openA"], "a.closeB": seqOf["a.openB"], "c.flush": 0}
 	for _, e := range Stop() {
 		if e.Pair != want[e.Name] {
-			t.Errorf("%s 该配序号 %d 的启动钩子（0 表示不配），got=%d", e.Name, want[e.Name], e.Pair)
+			t.Errorf("%s must pair with the start hook numbered %d (0 means unpaired), got=%d", e.Name, want[e.Name], e.Pair)
 		}
 	}
 }
 
 func TestStopAfter_SkipsStopHooksWhoseStartHookFailed(t *testing.T) {
-	// 配对的启动钩子没成功的跳过，没有配对的总会留下；留下的保持停止顺序
+	// The ones whose paired start hook did not succeed are skipped and the unpaired ones are always
+	// kept; what is kept stays in stop order
 	Reset()
 	t.Cleanup(Reset)
 	AddStart(Entry{Name: "a.open", Pkg: "a", Stage: StageClient, Run: noop})
@@ -215,18 +219,19 @@ func TestStopAfter_SkipsStopHooksWhoseStartHookFailed(t *testing.T) {
 	for _, s := range Start() {
 		seqOf[s.Name] = s.Seq
 	}
-	started := map[int]bool{seqOf["a.open"]: true, seqOf["d.open"]: true} // b.open 失败了
+	started := map[int]bool{seqOf["a.open"]: true, seqOf["d.open"]: true} // b.open failed
 
 	if got, want := board(StopAfter(started)), "d.close a.close c.flush"; got != want {
 		t.Errorf("StopAfter want %s, got %s", want, got)
 	}
 	if got, want := board(StopAfter(nil)), "c.flush"; got != want {
-		t.Errorf("一个启动钩子都没成功时只剩不配对的，want %s, got %s", want, got)
+		t.Errorf("with no start hook succeeding, only the unpaired ones are left, want %s, got %s", want, got)
 	}
 }
 
 func TestAddStop_WithoutExplicitStageFollowsPairedStartHook(t *testing.T) {
-	// 一对钩子管的是同一个资源：只在启动钩子上声明档位，关闭也该在那一档
+	// One pair of hooks minds one resource: with the stage declared on the start hook alone, closing
+	// belongs in that stage too
 	Reset()
 	t.Cleanup(Reset)
 	AddStart(Entry{Name: "a.open", Pkg: "a", Stage: StageClient, Run: noop})
@@ -235,23 +240,24 @@ func TestAddStop_WithoutExplicitStageFollowsPairedStartHook(t *testing.T) {
 	AddStop(Entry{Name: "c.flush", Pkg: "c", Stage: StageBusiness, Inherit: true, Run: noop})
 
 	want := map[string]Stage{
-		"a.close": StageClient,   // 继承
-		"a.flush": StageServer,   // 显式指定的不动
-		"c.flush": StageBusiness, // 没配上对，保持原样
+		"a.close": StageClient,   // inherited
+		"a.flush": StageServer,   // one written explicitly is left alone
+		"c.flush": StageBusiness, // found no pair and stays as it was
 	}
 	for _, e := range Stop() {
 		if e.Stage != want[e.Name] {
-			t.Errorf("%s 的档位该是 %v，got=%v", e.Name, want[e.Name], e.Stage)
+			t.Errorf("%s must be in stage %v, got=%v", e.Name, want[e.Name], e.Stage)
 		}
 	}
 }
 
 func TestStage_BusinessIsAfterClientBeforeServer(t *testing.T) {
-	// 五档的相对次序是对外承诺的一部分，靠 iota 的书写顺序保证。
-	// 业务钩子里直接用 xgorm.C()，靠的就是 StageClient < StageBusiness
+	// The relative order of the five stages is part of what is promised outwards and rests on the
+	// order the iota is written in. Using xgorm.C() directly inside a business hook rests on
+	// StageClient < StageBusiness
 	if !(StageLog < StageTelemetry && StageTelemetry < StageClient &&
 		StageClient < StageBusiness && StageBusiness < StageServer) {
-		t.Errorf("档位次序不对：log=%d telemetry=%d client=%d business=%d server=%d",
+		t.Errorf("the stage order is wrong: log=%d telemetry=%d client=%d business=%d server=%d",
 			StageLog, StageTelemetry, StageClient, StageBusiness, StageServer)
 	}
 }

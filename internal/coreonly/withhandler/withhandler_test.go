@@ -1,5 +1,6 @@
-// Package withhandler 根包加上 xlog.UseHandler 的程序。和 coreonly 分开：这里要 import xlog，
-// 放进 coreonly 的话，「根包不带 xlog」就验不出来了
+// Package withhandler is a program using the root package plus xlog.UseHandler. It is kept apart
+// from coreonly because it has to import xlog, and inside coreonly that would make "the root
+// package does not bring xlog along" impossible to verify
 package withhandler
 
 import (
@@ -16,7 +17,8 @@ import (
 )
 
 func TestRun_UseHandlerReceivesFrameworkLogs(t *testing.T) {
-	// 换了后端，框架自己的启停日志和业务日志一样写进它，不会分成两条路
+	// With the backend swapped, the framework's own start and stop logs go into it just as the
+	// business logs do, rather than splitting into two paths
 	var buf bytes.Buffer
 	xlog.UseHandler(slog.NewJSONHandler(&buf, nil))
 	t.Cleanup(func() { xlog.UseHandler(nil) })
@@ -31,6 +33,6 @@ func TestRun_UseHandlerReceivesFrameworkLogs(t *testing.T) {
 	}
 	out := buf.String()
 	if !strings.Contains(out, `"msg":"business"`) || !strings.Contains(out, "xlog.closeXLog") {
-		t.Errorf("业务日志和框架的停止日志都该写进自己的 handler，got=%s", out)
+		t.Errorf("both the business logs and the framework's stop logs must go into the handler of your own, got=%s", out)
 	}
 }

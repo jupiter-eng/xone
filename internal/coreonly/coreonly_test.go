@@ -1,7 +1,9 @@
-// Package coreonly 只 import 根包的程序：单独一个测试二进制，登记表里只有框架自己带来的钩子。
+// Package coreonly is a program importing the root package alone: a test binary of its own, whose
+// registration board holds nothing but the hooks the framework brings along itself.
 //
-// 这里的测试不能再 import 别的 xone 包（哪怕是 xlog、xapp）：那样根包带没带它们、
-// 有没有多带 xlog，这里就验不出来了。要用 xlog 的放到 withhandler
+// The tests here must not import another xone package (not even xlog or xapp): that would make it
+// impossible to verify here whether the root package brings them along, and whether it brings xlog
+// along as well. Whatever needs xlog goes into withhandler
 package coreonly
 
 import (
@@ -18,7 +20,8 @@ import (
 )
 
 func TestRun_XAppWorksWithCoreOnly(t *testing.T) {
-	// XApp 块跟着框架一起来：没 import xapp 的程序写了 XApp.Name，也不该被当成没人读的 key
+	// The XApp block comes along with the framework: an XApp.Name written by a program that never
+	// imported xapp must not count as a key nobody read
 	cfg := filepath.Join(t.TempDir(), "application.yml")
 	if err := os.WriteFile(cfg, []byte("XApp:\n  Name: core.only\n  Version: v1\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -26,12 +29,13 @@ func TestRun_XAppWorksWithCoreOnly(t *testing.T) {
 	err := xone.Run(xone.Func(func(context.Context) error { return nil }),
 		xone.WithConfigPath(cfg), xone.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
 	if err != nil {
-		t.Fatalf("只 import 根包、写了 XApp 也该正常启动：%v", err)
+		t.Fatalf("importing the root package alone and writing an XApp must still start as usual: %v", err)
 	}
 }
 
 func TestRun_CoreOnlyLeavesSlogDefaultAlone(t *testing.T) {
-	// xlog 不跟着根包来：只用核心（和 xgorm 这类数据集成）的程序，slog.Default 还是它自己设的那个
+	// xlog does not come along with the root package: in a program using only the core (and data
+	// integrations such as xgorm), slog.Default stays the one it set itself
 	var buf bytes.Buffer
 	mine := slog.New(slog.NewTextHandler(&buf, nil))
 	old := slog.Default()
@@ -46,12 +50,13 @@ func TestRun_CoreOnlyLeavesSlogDefaultAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	if slog.Default() != mine || !strings.Contains(buf.String(), "msg=\"core only\"") {
-		t.Errorf("只 import 根包，slog.Default 不该被换掉，got=%q", buf.String())
+		t.Errorf("importing the root package alone must leave slog.Default alone, got=%q", buf.String())
 	}
 }
 
 func TestRun_XLogWithoutImportNamesTheImport(t *testing.T) {
-	// 写了 XLog 却没 import xlog：报错直接给出要加的那一行，不让人猜是哪个包
+	// An XLog written without xlog imported: the error gives the line to add outright, rather than
+	// leaving somebody to guess which package it is
 	cfg := filepath.Join(t.TempDir(), "application.yml")
 	if err := os.WriteFile(cfg, []byte("XLog:\n  Level: debug\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -59,6 +64,6 @@ func TestRun_XLogWithoutImportNamesTheImport(t *testing.T) {
 	err := xone.Run(xone.Func(func(context.Context) error { return nil }),
 		xone.WithConfigPath(cfg), xone.WithLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
 	if err == nil || !strings.Contains(err.Error(), `import _ "github.com/jupiter-eng/xone/xlog"`) {
-		t.Errorf("该报错并给出 xlog 的 import，got=%v", err)
+		t.Errorf("this must fail and give xlog's import, got=%v", err)
 	}
 }
