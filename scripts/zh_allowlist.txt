@@ -223,10 +223,6 @@ xflow/monitor_test.go
 xflow/optional_test.go
 xflow/xflow.go
 xflow/xflow_test.go
-xginswagger/README.md
-xginswagger/go.mod
-xginswagger/swagger.go
-xginswagger/swagger_test.go
 xhttp/README.md
 xhttp/bench_test.go
 xhttp/config.go

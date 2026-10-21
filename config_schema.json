@@ -505,34 +505,34 @@
         "object",
         "null"
       ],
-      "description": "Swagger 文档的元信息 这些值写在配置里而不是代码注释里，是因为它们随环境变： 联调环境和生产环境的 Host 不一样，而文档注解是编译进去的。",
+      "description": "is the Swagger document metadata. These values live in the configuration rather than in code annotations because they vary by environment: the Host of an integration environment differs from production, while doc annotations are compiled in.",
       "properties": {
         "BasePath": {
           "type": "string",
-          "description": "所有接口的公共前缀，如 /api/v1。"
+          "description": "is the common prefix of every endpoint, such as /api/v1."
         },
         "Description": {
           "type": "string",
-          "description": "文档描述。"
+          "description": "is the document description."
         },
         "Host": {
           "type": "string",
-          "description": "文档里显示的服务地址，如 api.example.com。默认取自请求。"
+          "description": "is the service address shown in the document, such as api.example.com. It defaults to the request's."
         },
         "Schemes": {
           "type": "array",
-          "description": "支持的协议，如 [\"https\"]。默认留空：沿用注解里的 @schemes，写了才覆盖。",
+          "description": "are the supported protocols, such as [\"https\"]. It defaults to empty: the @schemes from the annotations is kept unless this is set.",
           "items": {
             "type": "string"
           }
         },
         "Title": {
           "type": "string",
-          "description": "文档标题。默认取 XApp.Name。"
+          "description": "is the document title. It defaults to XApp.Name."
         },
         "URLPrefix": {
           "type": "string",
-          "description": "Swagger UI 挂载路径的前缀，如 /internal。 默认挂在 /swagger/*any。要么留空，要么以 / 开头、不以 / 结尾，否则启动失败。 gin 自己不挑（实测 v1.12.0：internal 和 /internal/ 都被规整成 /internal/swagger/*any，不 panic），但 URL() 是照原样拼的， 拼出来的 internal/swagger/index.html 就和实际挂的地址对不上。"
+          "description": "is the prefix of the Swagger UI mount path, such as /internal. The default mounts at /swagger/*any. It is either empty or starts with / and does not end with /, or startup fails. gin itself is not fussy (measured on v1.12.0: internal and /internal/ are both normalized to /internal/swagger/*any without a panic), but URL() concatenates it as it is, and the resulting internal/swagger/index.html does not match the address it is actually mounted at."
         }
       },
       "additionalProperties": false

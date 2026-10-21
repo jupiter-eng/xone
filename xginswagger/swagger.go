@@ -1,12 +1,12 @@
-// Package xginswagger 把 Swagger UI 挂到 Gin 上。
+// Package xginswagger mounts the Swagger UI on Gin.
 //
 //	gx := xgin.New().WithRoutes(func(e *gin.Engine) {
 //		xginswagger.Register(e, docs.SwaggerInfo)
 //		registerBusinessRoutes(e)
 //	})
 //
-// 单独一个 module，不并进 xgin：Swagger UI 会把整套前端资源编进二进制，
-// 实测比只用 gin 多 27 个模块（GOWORK=off go list -m all：只 import gin 是 55 个第三方模块，只 import xginswagger 是 82 个）。文档是开发期的事，不该让每个线上服务都背上。
+// It is a module of its own rather than part of xgin: the Swagger UI compiles a whole front-end asset bundle into the
+// binary, measured at 27 modules more than gin alone (GOWORK=off go list -m all: importing only gin gives 55 third-party modules, importing only xginswagger gives 82). Documentation is a development-time concern and should not be carried by every production service.
 package xginswagger
 
 import (
@@ -25,43 +25,43 @@ import (
 	"github.com/jupiter-eng/xone/xhook"
 )
 
-// ConfigKey 本模块在配置文件里的顶层 key
+// ConfigKey is this module's top-level key in the config file.
 const ConfigKey = "XGinSwagger"
 
-// route Swagger UI 的路由，*any 是 gin 的通配段，Swagger UI 要用它加载各种资源
+// route is the Swagger UI route; *any is gin's wildcard segment, which the Swagger UI needs for loading its assets.
 const route = "/swagger/*any"
 
-// Config Swagger 文档的元信息
+// Config is the Swagger document metadata.
 //
-// 这些值写在配置里而不是代码注释里，是因为它们随环境变：
-// 联调环境和生产环境的 Host 不一样，而文档注解是编译进去的。
+// These values live in the configuration rather than in code annotations because they vary by environment:
+// the Host of an integration environment differs from production, while doc annotations are compiled in.
 type Config struct {
-	// Host 文档里显示的服务地址，如 api.example.com。默认取自请求。
+	// Host is the service address shown in the document, such as api.example.com. It defaults to the request's.
 	Host string `yaml:"Host"`
 
-	// BasePath 所有接口的公共前缀，如 /api/v1。
+	// BasePath is the common prefix of every endpoint, such as /api/v1.
 	BasePath string `yaml:"BasePath"`
 
-	// Title 文档标题。默认取 XApp.Name。
+	// Title is the document title. It defaults to XApp.Name.
 	Title string `yaml:"Title"`
 
-	// Description 文档描述。
+	// Description is the document description.
 	Description string `yaml:"Description"`
 
-	// Schemes 支持的协议，如 ["https"]。默认留空：沿用注解里的 @schemes，写了才覆盖。
+	// Schemes are the supported protocols, such as ["https"]. It defaults to empty: the @schemes from the annotations is kept unless this is set.
 	Schemes []string `yaml:"Schemes"`
 
-	// URLPrefix Swagger UI 挂载路径的前缀，如 /internal。
-	// 默认挂在 /swagger/*any。要么留空，要么以 / 开头、不以 / 结尾，否则启动失败。
-	// gin 自己不挑（实测 v1.12.0：internal 和 /internal/ 都被规整成
-	// /internal/swagger/*any，不 panic），但 URL() 是照原样拼的，
-	// 拼出来的 internal/swagger/index.html 就和实际挂的地址对不上。
+	// URLPrefix is the prefix of the Swagger UI mount path, such as /internal.
+	// The default mounts at /swagger/*any. It is either empty or starts with / and does not end with /, or startup fails.
+	// gin itself is not fussy (measured on v1.12.0: internal and /internal/ are both normalized to
+	// /internal/swagger/*any without a panic), but URL() concatenates it as it is, and the resulting
+	// internal/swagger/index.html does not match the address it is actually mounted at.
 	URLPrefix string `yaml:"URLPrefix"`
 }
 
-// Validate 检查配置本身说不通的地方。
+// Validate checks what does not make sense in the configuration itself.
 //
-// xconfig.Unmarshal 解完配置文件里的 XGinSwagger 块会调它，配错的值在读配置时就失败。
+// xconfig.Unmarshal calls it after decoding the XGinSwagger block, so a misconfigured value fails while the config is read.
 func (c Config) Validate() error {
 	if c.URLPrefix != "" && (!strings.HasPrefix(c.URLPrefix, "/") || strings.HasSuffix(c.URLPrefix, "/")) {
 		return fmt.Errorf("URLPrefix must start with / and must not end with /, got=%q", c.URLPrefix)
@@ -69,11 +69,11 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// DefaultConfig 全部默认值集中在这里。
+// DefaultConfig holds every default in one place.
 //
-// 每一项都留空：没配的一律沿用注解，见 fill。默认值是预填进结构体的，
-// 这里给了值就等于配置里写了——Schemes 原先默认 ["https", "http"]，
-// 注解里的 @schemes 于是永远被盖掉
+// Every item is left empty: anything not configured keeps what the annotations say, see fill. Defaults are
+// pre-filled into the struct, so giving a value here is the same as writing it in the configuration -- Schemes
+// used to default to ["https", "http"], which meant the @schemes in the annotations was always overridden.
 func DefaultConfig() Config {
 	return Config{}
 }
@@ -82,18 +82,18 @@ func init() {
 	xhook.BeforeStart(loadConfig, xhook.At(xhook.StageServer))
 }
 
-// loadConfig 在启动阶段把这一块读一遍：认领它，并让配错的值在这里就失败。
-// 读出来不存，Register 和 URL 用的时候自己读，读到的是同一份最终值
+// loadConfig reads this block once during startup: it claims the block and makes a misconfigured value fail here.
+// What it reads is not stored; Register and URL read it themselves when they need it, and get the same final value.
 func loadConfig(context.Context) error {
 	_, err := fileConfig()
 	return err
 }
 
-// fileConfig 配置文件里的 XGinSwagger 块，没写的字段是默认值。
+// fileConfig is the XGinSwagger block of the config file, with the defaults for whatever it does not set.
 //
-// 在 Start 之前任何时候调都行：配置文件第一次读的时候才加载，读到的永远是最终值——
-// 在 main 顶上、xone.Run 之前就装配 engine 也一样。
-// xconfig.Unmarshal 解完会调 Validate；解不出来或者不合法时返回默认值和那个错误
+// It may be called at any time before Start: the config file is loaded on its first read, so what is read is always
+// the final value -- assembling the engine at the top of main, before xone.Run, works just as well.
+// xconfig.Unmarshal calls Validate after decoding; on a decode failure or an invalid value it returns the defaults and that error.
 func fileConfig() (Config, error) {
 	c := DefaultConfig()
 	if err := xconfig.Unmarshal(ConfigKey, &c); err != nil {
@@ -102,15 +102,15 @@ func fileConfig() (Config, error) {
 	return c, nil
 }
 
-// Register 把 Swagger UI 挂到 engine 上，并用配置填好文档元信息。
+// Register mounts the Swagger UI on engine and fills the document metadata from the configuration.
 //
-// info 通常是 swaggo 生成的 docs.SwaggerInfo。传 nil 表示只挂 UI 不填元信息。
+// info is usually the docs.SwaggerInfo generated by swaggo. Passing nil mounts the UI without filling any metadata.
 //
-// 配置错了就按默认值挂：那个错误由启动钩子报出来，服务起不来。
+// A misconfigured block is mounted with the defaults: the error is reported by the start hook and the service does not come up.
 //
-// 元信息在第一次访问文档时才填，不在这里填：标题和版本默认取自 xapp，
-// 而 xapp 要等 xone.Run 的启动钩子才读好。Register 早于它的话，这里读到的
-// 是空的——文档照样打得开，只是标题不对。第一个请求一定在服务起来之后。
+// The metadata is filled on the first visit to the document rather than here: the title and the version default to
+// xapp's, and xapp is only read by xone.Run's start hooks. With Register running earlier, what is read here would be
+// empty -- the document would still open, only with the wrong title. The first request always comes after the service is up.
 func Register(e *gin.Engine, info *swag.Spec) {
 	if e == nil {
 		return
@@ -119,8 +119,8 @@ func Register(e *gin.Engine, info *swag.Spec) {
 
 	serve := ginswagger.WrapHandler(swaggerfiles.Handler)
 	if info != nil {
-		// Once 而不是每次都填：info 是 swag 全局登记的那一份，
-		// 并发的请求同时写它就是数据竞争
+		// Once rather than filling every time: info is the one swag registers globally, and concurrent requests
+		// writing it at the same time is a data race.
 		var once sync.Once
 		inner := serve
 		serve = func(ctx *gin.Context) {
@@ -131,16 +131,16 @@ func Register(e *gin.Engine, info *swag.Spec) {
 	e.GET(c.URLPrefix+route, serve)
 }
 
-// URL 返回 Swagger UI 的实际访问路径，方便打日志或做跳转
+// URL returns the actual path the Swagger UI is served at, for logging or redirecting.
 func URL() string {
 	c, _ := fileConfig()
 	return c.URLPrefix + "/swagger/index.html"
 }
 
-// fill 把配置写进 swaggo 生成的元信息
+// fill writes the configuration into the metadata generated by swaggo.
 //
-// 只覆盖配了的字段：没配就保留注解里写的那份，
-// 否则一个空的配置块会把文档标题清成空白。
+// Only configured fields are overridden: anything not configured keeps what the annotations say,
+// otherwise an empty configuration block would blank the document title.
 func fill(info *swag.Spec, c Config) {
 	if c.Host != "" {
 		info.Host = c.Host
@@ -155,7 +155,7 @@ func fill(info *swag.Spec, c Config) {
 		info.Schemes = c.Schemes
 	}
 
-	// 标题和版本默认跟 App 走：同一个事实配两遍迟早会不一致
+	// Title and version follow App by default: configuring the same fact twice ends in disagreement sooner or later.
 	switch {
 	case c.Title != "":
 		info.Title = c.Title
