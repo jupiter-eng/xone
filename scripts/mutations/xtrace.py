@@ -1,68 +1,80 @@
-# xtrace 的变异：module xtrace 里的承诺。写法见 scripts/mutations/__init__.py
+# The xtrace mutations: the promises of the xtrace module. The format is in
+# scripts/mutations/__init__.py
 from . import cut, mutate, section, swap
 
-section("中间件")
-mutate("关独立实例不影响全局链路", "xtrace/xtrace.go", "./xtrace", "TestClose",
+section("Middleware")
+mutate("closing a standalone instance leaves the global tracing alone", "xtrace/xtrace.go", "./xtrace", "TestClose",
        swap('\tif live == c {\n\t\tlive = nil\n\t}','\tlive = nil'))
-# 初始化之后登记的处理器直接挂到在跑的 provider 上；漏了这一支，它就进了
-# 再也没人读的待办队列，Span 照常产生、永远到不了上报端
-mutate("初始化之后登记的处理器立即挂上", "xtrace/xtrace.go", "./xtrace", "TestAddSpanProcessor",
+# A processor registered after initialization is attached to the running provider directly; without
+# that branch it goes into a pending queue nobody reads again, and the Spans are produced as usual
+# and never reach the exporter
+mutate("a processor registered after initialization is attached at once", "xtrace/xtrace.go", "./xtrace", "TestAddSpanProcessor",
        swap('\t\tlive.tp.RegisterSpanProcessor(sp)\n\t\treturn\n', '\t\t_ = live.tp\n'))
-# 全采样原先是裸的 AlwaysSample：上游 sampled=00，我们照样采、再以 -01 往下传
-mutate("全采样也听上游的采样决定", "xtrace/xtrace.go", "./xtrace", "TestNew_FullSamplingRespectsUpstreamNotSampled|TestSamplerOf",
+# Full sampling used to be a bare AlwaysSample: with an upstream's sampled=00 we sampled anyway and
+# passed -01 downstream
+mutate("full sampling still follows the upstream's sampling decision", "xtrace/xtrace.go", "./xtrace", "TestNew_FullSamplingRespectsUpstreamNotSampled|TestSamplerOf",
        swap('\treturn sdktrace.ParentBased(sdktrace.TraceIDRatioBased(ratio))',
      '\tif ratio >= 1 {\n\t\treturn sdktrace.AlwaysSample()\n\t}\n\treturn sdktrace.ParentBased(sdktrace.TraceIDRatioBased(ratio))'))
-mutate("采样率越界要拦住", "xtrace/config.go", "./xtrace", "TestNew_OutOfRangeSampleRateFails",
+mutate("a sample ratio out of range is caught", "xtrace/config.go", "./xtrace", "TestNew_OutOfRangeSampleRateFails",
        swap('if math.IsNaN(c.SampleRatio) || c.SampleRatio < 0 || c.SampleRatio > 1 {', 'if math.IsNaN(c.SampleRatio) && false {'))
-# *trusted.com 原先会匹配 eviltrusted.com，内部令牌发给了谁都能注册的域名
-mutate("通配域名只认星点开头", "xtrace/propagator.go", "./xtrace", "TestNewHeaderPropagator",
+# *trusted.com used to match eviltrusted.com, giving an internal token to a domain anybody can
+# register
+mutate("a wildcard domain is accepted only as *.", "xtrace/propagator.go", "./xtrace", "TestNewHeaderPropagator",
        swap('\t\tif err := checkDomain(d); err != nil {\n\t\t\treturn nil, err\n\t\t}\n', ''))
-mutate("通配域名按点分隔的父域匹配", "xtrace/propagator.go", "./xtrace", "TestHeaderPropagator_DomainRules",
+mutate("a wildcard domain matches on the dot-separated parent domain", "xtrace/propagator.go", "./xtrace", "TestHeaderPropagator_DomainRules",
        swap('strings.HasSuffix(h, "."+parent)', 'strings.HasSuffix(h, parent)'))
-# OTEL_RESOURCE_ATTRIBUTES 写错一项、容器里查不到随机 UID，原先都让服务起不来
-mutate("资源属性采集出错照常启动", "xtrace/xtrace.go", "./xtrace", "TestNew_",
+# One wrong entry in OTEL_RESOURCE_ATTRIBUTES, or a random UID that cannot be looked up in a
+# container, used to keep the service from starting
+mutate("a resource attribute collection error still starts as usual", "xtrace/xtrace.go", "./xtrace", "TestNew_",
        swap('\t\tslog.WarnContext(ctx, "xtrace some resource attributes', '\t\tpanic(err)\n\t\tslog.WarnContext(ctx, "xtrace some resource attributes'))
-mutate("资源属性采集出错时用采到的那部分", "xtrace/xtrace.go", "./xtrace", "TestNew_",
+mutate("a resource attribute collection error keeps whatever was collected", "xtrace/xtrace.go", "./xtrace", "TestNew_",
        swap('\t\tslog.WarnContext(ctx, "xtrace some resource attributes', '\t\tres = resource.Empty()\n\t\tslog.WarnContext(ctx, "xtrace some resource attributes'))
-# App.Name 没配时原先照样写进 service.name=""，把 OTel 的兜底名和 OTEL_SERVICE_NAME 一起盖掉
-mutate("没配应用名时不写空的 service.name", "xtrace/xtrace.go", "./xtrace", "TestNew_",
+# With App.Name unset, service.name="" used to be written all the same, covering both OTel's
+# fallback name and OTEL_SERVICE_NAME
+mutate("no empty service.name is written when the application name is unset", "xtrace/xtrace.go", "./xtrace", "TestNew_",
        swap('if name := xapp.Name(); name != "" {', 'if name := xapp.Name(); true {'))
-mutate("没配应用名时落到 OTel 的兜底名", "xtrace/xtrace.go", "./xtrace", "TestNew_",
+mutate("an unset application name falls back to OTel's fallback name", "xtrace/xtrace.go", "./xtrace", "TestNew_",
        swap('\t\tresource.WithService(),\n', ''))
-# resource.New 里后面的选项压过前面的：配置排在环境变量后面，部署方就改不动服务名
-mutate("OTel 环境变量压过 XApp 配置", "xtrace/xtrace.go", "./xtrace", "TestNew_",
+# In resource.New a later option overrides an earlier one: with the configuration after the
+# environment variables, whoever deploys cannot change the service name
+mutate("the OTel environment variables override the XApp configuration", "xtrace/xtrace.go", "./xtrace", "TestNew_",
        swap('\t\tresource.WithAttributes(appAttributes()...),\n\t\tresource.WithFromEnv(),\n',
      '\t\tresource.WithFromEnv(),\n\t\tresource.WithAttributes(appAttributes()...),\n'))
-# 链路关着时原先交回空操作的 Closer，登记的处理器（连同 exporter 的连接和协程）没人关
-mutate("链路关着时照样关掉登记的处理器", "xtrace/xtrace.go", "./xtrace", "TestNew_TracingDisabledStillShutsDownProcessors|TestCloseXTrace_TracingDisabledStillClosesRegisteredProcessors",
+# With tracing off a no-op Closer used to be handed back, and the registered processors (along with
+# the exporter's connections and goroutines) were never closed
+mutate("the registered processors are shut down even with tracing off", "xtrace/xtrace.go", "./xtrace", "TestNew_TracingDisabledStillShutsDownProcessors|TestCloseXTrace_TracingDisabledStillClosesRegisteredProcessors",
        swap('idle := sdktrace.NewTracerProvider(processors(procs)...)', 'idle := sdktrace.NewTracerProvider()'))
-# 框架只剩 100ms 时照样等满自己的 ShutdownTimeout，后面的组件被挤掉
-mutate("链路关闭听框架给的截止时间", "xtrace/xtrace.go", "./xtrace", "TestCloseXTrace",
+# With only 100ms left in the framework it used to wait out its own ShutdownTimeout all the same,
+# squeezing out the components behind it
+mutate("shutting tracing down honours the deadline the framework gave", "xtrace/xtrace.go", "./xtrace", "TestCloseXTrace",
        swap('return c.shutdown(ctx)', 'return c.Close()'))
-mutate("链路关闭在调用方的 ctx 上收紧", "xtrace/xtrace.go", "./xtrace", "TestCloseXTrace",
+mutate("shutting tracing down tightens on the caller's ctx", "xtrace/xtrace.go", "./xtrace", "TestCloseXTrace",
        swap('context.WithTimeout(parent, c.timeout)', 'context.WithTimeout(context.Background(), c.timeout)'))
-# 照单全收的话，公网客户端发一个 X-Tenant-Id 就被带进内网的每一次调用
-mutate("透传 Header 只收可信对端发来的", "xtrace/propagator.go", "./xtrace", "TestHeaderPropagator_AcceptsOnlyFromTrustedPeers|TestNew_InstalledPropagatorAccepts",
+# Accepted from anybody, an X-Tenant-Id sent by an internet client is carried into every call
+# inside the network
+mutate("a forwarded header is accepted only from a trusted peer", "xtrace/propagator.go", "./xtrace", "TestHeaderPropagator_AcceptsOnlyFromTrustedPeers|TestNew_InstalledPropagatorAccepts",
        swap('\tif !fromTrustedPeer(carrier) {\n\t\tp.warnUntrusted(carrier)', '\tif false && !fromTrustedPeer(carrier) {\n\t\tp.warnUntrusted(carrier)'))
-# baggage 和透传头是同一种东西，OTel 自带的那个谁发来的都收
-mutate("baggage 只收可信对端发来的", "xtrace/propagator.go", "./xtrace", "TestNew_InstalledPropagatorAcceptsBaggageOnlyFromTrustedPeers",
+# baggage is the same kind of thing as a forwarded header, and OTel's own accepts it from anybody
+mutate("baggage is accepted only from a trusted peer", "xtrace/propagator.go", "./xtrace", "TestNew_InstalledPropagatorAcceptsBaggageOnlyFromTrustedPeers",
        swap('\tif !fromTrustedPeer(carrier) {\n\t\t// Warned once only', '\tif false {\n\t\t// Warned once only'))
-mutate("装的是只收可信对端的 baggage", "xtrace/xtrace.go", "./xtrace", "TestNew_InstalledPropagatorAcceptsBaggageOnlyFromTrustedPeers",
+mutate("what is installed is the baggage that accepts a trusted peer only", "xtrace/xtrace.go", "./xtrace", "TestNew_InstalledPropagatorAcceptsBaggageOnlyFromTrustedPeers",
        swap('&trustedBaggage{}', 'propagation.Baggage{}'))
-mutate("不可信对端带来 baggage 时只告警一次", "xtrace/propagator.go", "./xtrace", "TestTrustedBaggage",
+mutate("baggage from an untrusted peer warns once only", "xtrace/propagator.go", "./xtrace", "TestTrustedBaggage",
        swap('b.warned.CompareAndSwap(false, true)', 'true'))
-# 透传规则写错原先要等装 Propagator 才报；New 照样会报，所以要看错误出自读配置那一步
-mutate("透传规则在读配置时就校验", "xtrace/config.go", "./xtrace", "TestInitXTrace_BadForwardingRulesFailAtConfigRead",
+# A malformed forwarding rule used to be reported only when the Propagator was installed; New
+# reports it all the same, so the error has to come from the step that reads the configuration
+mutate("the forwarding rules are validated while the configuration is read", "xtrace/config.go", "./xtrace", "TestInitXTrace_BadForwardingRulesFailAtConfigRead",
        swap('\tif c.forwardEnabled() {\n\t\tif _, err := newHeaderPropagator(', '\tif false && c.forwardEnabled() {\n\t\tif _, err := newHeaderPropagator('))
-mutate("XTrace 块在读配置时就校验", "xtrace/xtrace.go", "./xtrace", "TestInitXTrace_BadForwardingRulesFailAtConfigRead",
+mutate("the XTrace block is validated while the configuration is read", "xtrace/xtrace.go", "./xtrace", "TestInitXTrace_BadForwardingRulesFailAtConfigRead",
        swap('xconfig.Unmarshal(ConfigKey, &c)', 'func() error { type raw Config; return xconfig.Unmarshal(ConfigKey, (*raw)(&c)) }()'))
-mutate("不可信对端带来透传头时只告警一次", "xtrace/propagator.go", "./xtrace", "TestHeaderPropagator_WarnsOnceForUntrustedPeerHeaders",
+mutate("forwarded headers from an untrusted peer warn once only", "xtrace/propagator.go", "./xtrace", "TestHeaderPropagator_WarnsOnceForUntrustedPeerHeaders",
        swap('\tif p.warned.Load() {\n\t\treturn\n\t}\n', ''),
        swap('if p.warned.CompareAndSwap(false, true) {', 'if true {'))
 
-section("告警文案")
-# 原先写死 XGin.TrustedProxies：只用 xecho 的进程照着加一个 XGin 块，启动就报「没人读的配置」
-mutate("透传告警不只点 XGin", "xtrace/propagator.go", "./xtrace", "TestHeaderPropagator_WarnsOnceForUntrustedPeerHeaders",
+section("The wording of the warnings")
+# It used to name XGin.TrustedProxies outright: a process using xecho alone that added an XGin
+# block accordingly failed startup with "configuration nobody reads"
+mutate("the forwarding warning does not name XGin alone", "xtrace/propagator.go", "./xtrace", "TestHeaderPropagator_WarnsOnceForUntrustedPeerHeaders",
        swap("forward headers from an untrusted peer, only peers in the web server's TrustedProxies (XGin / XEcho) are trusted", "forward headers from an untrusted peer, only peers in XGin.TrustedProxies are trusted"))
-mutate("baggage 告警不只点 XGin", "xtrace/propagator.go", "./xtrace", "TestTrustedBaggage_WarnsOnceForUntrustedPeerBaggage",
+mutate("the baggage warning does not name XGin alone", "xtrace/propagator.go", "./xtrace", "TestTrustedBaggage_WarnsOnceForUntrustedPeerBaggage",
        swap("baggage from an untrusted peer, only peers in the web server's TrustedProxies (XGin / XEcho) are trusted", "baggage from an untrusted peer, only peers in XGin.TrustedProxies are trusted"))

@@ -150,17 +150,6 @@ scripts/check_zh.py
 scripts/e2e.sh
 scripts/lib.sh
 scripts/mutate.py
-scripts/mutations/__init__.py
 scripts/mutations/core.py
-scripts/mutations/example.py
-scripts/mutations/schemagen.py
-scripts/mutations/xcache.py
-scripts/mutations/xcron.py
-scripts/mutations/xginswagger.py
-scripts/mutations/xhttp.py
-scripts/mutations/xkafka.py
-scripts/mutations/xmetric.py
-scripts/mutations/xredis.py
-scripts/mutations/xtrace.py
 scripts/release.sh
 scripts/test.sh
