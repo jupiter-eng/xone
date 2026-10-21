@@ -1,7 +1,7 @@
-// Package xlog 基于标准库 log/slog 提供配置驱动的日志：级别、格式、控制台与文件轮转。
+// Package xlog provides configuration-driven logging on top of the standard library log/slog: level, format, console and file rotation.
 //
-// 使用者拿到的是原生的 *slog.Logger，业务代码直接用标准库的
-// slog.Info / slog.InfoContext 即可，不需要认识本包。
+// What the caller gets is a native *slog.Logger, so business code uses the standard library's slog.Info /
+// slog.InfoContext directly and does not have to know this package.
 package xlog
 
 import (
@@ -9,93 +9,93 @@ import (
 	"time"
 )
 
-// ConfigKey 本模块在配置文件里的顶层 key
+// ConfigKey is this module's top-level key in the config file.
 const ConfigKey = "XLog"
 
-// 日志格式
+// The log formats.
 const (
 	FormatJSON = "json"
 	FormatText = "text"
 )
 
-// Config 日志配置
+// Config is the logging configuration.
 type Config struct {
-	// Level 日志级别：debug / info / warn / error
+	// Level is the log level: debug / info / warn / error.
 	Level string `yaml:"Level"`
 
-	// Format 输出格式：json / text
+	// Format is the output format: json / text.
 	Format string `yaml:"Format"`
 
-	// Timezone 日志时间戳按哪个时区渲染，IANA 时区名，如 Europe/Berlin。
-	// 留空表示跟随进程的本地时区（容器里通常就是 UTC）。
+	// Timezone is the time zone the log timestamps are rendered in, an IANA name such as Europe/Berlin.
+	// Empty means the process's local time zone (usually UTC inside a container).
 	//
-	// 配了却加载不到会直接启动失败，不会悄悄退回本地时区——
-	// 那意味着你以为在看柏林时间，实际是 UTC，差一两个小时而毫无提示。
-	// scratch / distroless 这类镜像里没有 /usr/share/zoneinfo，
-	// 需要在自己的 main 包里加一行把时区库编进二进制（约 400KB）：
+	// Configuring one that cannot be loaded fails startup outright rather than quietly falling back to local --
+	// that would mean believing the timestamps are Berlin time while they are UTC, an hour or two off with no hint.
+	// An image such as scratch or distroless has no /usr/share/zoneinfo, so one line in the caller's own main package
+	// is needed to compile the time zone database into the binary (about 400KB):
 	//
 	//	import _ "time/tzdata"
 	//
-	// 框架不替你编进去：没用到这项的人不该背这 400KB。
+	// The framework does not compile it in: anyone not using this setting should not carry those 400KB.
 	Timezone string `yaml:"Timezone"`
 
-	// AddSource 是否记录打日志的代码位置。有开销，默认关闭。
+	// AddSource says whether the source location of the log call is recorded. It costs something and is off by default.
 	AddSource bool `yaml:"AddSource"`
 
-	// Console 是否打到标准输出，由部署环境的日志采集组件收集。默认开启。
+	// Console says whether to write to standard output, for the deployment environment's log collector. It defaults to on.
 	Console bool `yaml:"Console"`
 
-	// File 文件输出
+	// File is the file output.
 	File FileConfig `yaml:"File"`
 
-	// Fields 每条日志都带的静态字段。值可以用 ${VAR} 从环境变量取，比如 K8s 用 Downward API
-	// 注入的 POD_NAME、NODE_NAME；${VAR:} 没设时是空串，空串的字段不写。
+	// Fields are static fields carried on every log line. A value may take ${VAR} from the environment, such as the
+	// POD_NAME and NODE_NAME K8s injects through the Downward API; ${VAR:} is an empty string when unset, and a field with an empty string is not written.
 	//
-	// 框架默认已带 service（XApp.Name）、version（XApp.Version）、hostname（主机名，
-	// K8s 里就是 Pod 名）、pid。同名的以这里为准，写成空串就是不要这个默认字段。
-	// 这些值启动时算一次、序列化一次：实测默认的 4 个（Pod 名那么长的 hostname）每行多 88 字节，
-	// 时间和分配都量不出差别（BenchmarkHandle_WithIdentityFields 对照 BenchmarkHandle_Bare）。
+	// The framework already carries service (XApp.Name), version (XApp.Version), hostname (the host name, which is the
+	// Pod name in K8s) and pid. A name written here wins, and writing an empty string drops that default field.
+	// These values are computed and serialized once at startup: measured, the default 4 (with a hostname as long as a
+	// Pod name) add 88 bytes per line, and neither time nor allocations are measurably different (BenchmarkHandle_WithIdentityFields against BenchmarkHandle_Bare).
 	Fields map[string]string `yaml:"Fields"`
 }
 
-// FileConfig 文件输出配置
+// FileConfig is the file output configuration.
 type FileConfig struct {
-	// Enable 是否写文件。默认关闭。
+	// Enable says whether to write to a file. It defaults to off.
 	Enable bool `yaml:"Enable"`
 
-	// Path 日志目录
+	// Path is the log directory.
 	Path string `yaml:"Path"`
 
-	// Name 日志文件名。实际文件是 {Name}.{时间后缀}，
-	// 另有一个指向当前文件的同名符号链接，便于 tail 跟随。
+	// Name is the log file name. The actual file is {Name}.{time suffix},
+	// with a symbolic link of the same name pointing at the current file, so tail can follow it.
 	Name string `yaml:"Name"`
 
-	// RotateTime 轮转周期。默认一天，按本地时区对齐。至少 1 分钟。
+	// RotateTime is the rotation period. It defaults to one day, aligned to the local time zone. The minimum is 1 minute.
 	//
-	// 文件名的时间后缀最细到分钟：写成 0s 时每分钟一个文件，写成 30s 时
-	// 两个周期落在同一个文件名上、实际还是每分钟轮转——都是配了 A 跑的是 B，
-	// 所以短于 1 分钟直接启动失败。
+	// The time suffix in the file name goes down to the minute: writing 0s would give one file per minute, and writing
+	// 30s would put two periods in the same file name while still rotating once a minute -- both are "configure A and
+	// get B", so anything shorter than a minute fails startup outright.
 	RotateTime time.Duration `yaml:"RotateTime"`
 
-	// MaxAge 历史文件保留时长，0 表示不清理。默认 7 天。不能为负。
+	// MaxAge is how long historical files are kept; 0 means no cleanup. It defaults to 7 days and must not be negative.
 	//
-	// 启动时清一次，之后每次轮转清一次。只清 {Name}.{时间后缀} 这种
-	// 我们自己命名的文件，同目录下的 app.log.bak、app.log.1.gz 一律不碰。
+	// Cleanup runs once at startup and once per rotation after that. It only removes files named {Name}.{time suffix}
+	// the way this package names them, and never touches an app.log.bak or app.log.1.gz in the same directory.
 	MaxAge time.Duration `yaml:"MaxAge"`
 
-	// Perm 日志文件权限，按八进制解析的字符串。默认 "0644"，也认 "644" 和 "0o644"。
+	// Perm is the log file permission, a string parsed as octal. It defaults to "0644" and also accepts "644" and "0o644".
 	//
-	// 用字符串而不是数字：实测 yaml.v3 把数字 0644 按八进制解析成 420（正是 0o644），
-	// 可漏掉前导 0 写成 644 就是十进制 644 = 0o1204（--w----r-T），不报错也不提示。
-	// 字符串一律按八进制解析，写不写前导 0 结果都一样；不加引号也行，
-	// 进字符串字段的 0644 还是 "0644"。
+	// It is a string rather than a number: measured, yaml.v3 parses the number 0644 as octal 420 (exactly 0o644),
+	// while 644 with the leading 0 dropped is decimal 644 = 0o1204 (--w----r-T), with no error and no hint.
+	// A string is always parsed as octal, with or without the leading 0; quotes are optional too,
+	// since a 0644 going into a string field is still "0644".
 	Perm string `yaml:"Perm"`
 }
 
-// validate 校验不依赖文件系统的那些字段。
+// validate checks the fields that do not depend on the file system.
 //
-// 不看 Enable：默认值本来就合法，能走到这里报错的只有显式写错的值，
-// 而写错了就是写错了，不该因为今天恰好没开文件输出就放过去。
+// It ignores Enable: the defaults are valid anyway, so the only way to get an error here is an explicitly wrong value,
+// and wrong is wrong -- it should not be let through just because file output happens to be off today.
 func (c FileConfig) validate() error {
 	if c.RotateTime < time.Minute {
 		return fmt.Errorf("File.RotateTime=[%v] must be >= 1m: log file names are only precise to the minute", c.RotateTime)
@@ -106,9 +106,9 @@ func (c FileConfig) validate() error {
 	return nil
 }
 
-// DefaultConfig 全部默认值集中在这里。
+// DefaultConfig holds every default in one place.
 //
-// 文件里没写的字段保持这些值，写了的覆盖——包括显式写成零值（false / 0 / ""）。
+// A field the file does not set keeps these values, and one it sets overrides them -- including one explicitly set to a zero value (false / 0 / "").
 func DefaultConfig() Config {
 	return Config{
 		Level:   "info",

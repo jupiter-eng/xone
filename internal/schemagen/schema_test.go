@@ -125,19 +125,19 @@ func TestCheckDocs_ConfigDocsMatchStructs(t *testing.T) {
 }
 
 func TestCheckDocs_ChecksPerSectionNotWholeDoc(t *testing.T) {
-	// 从前在整份文档里 grep 字段名：Name 在别处出现过，
-	// XLog.File.Name 没写也照样通过。现在只看 xlog/README.md 的「## 配置」一节
+	// It used to grep the field names across the whole document: Name appeared elsewhere,
+	// so an unwritten XLog.File.Name passed anyway. Now only xlog/README.md's "## Configuration" section is looked at.
 	r := &root{Properties: map[string]*node{
 		"XLog": {Type: "object", AdditionalProperties: false, Properties: map[string]*node{
 			"File": {Type: "object", AdditionalProperties: false, Properties: map[string]*node{"Name": {Type: "string"}}},
 		}},
 	}}
 	docs := map[string]string{
-		"xlog/README.md": "# xlog\n\n## 配置\n\nFile 下面写文件。\n\n## 行为与实测\n\nName 是文件名。\n",
+		"xlog/README.md": "# xlog\n\n## Configuration\n\nFile is where the file settings go.\n\n## Behavior (measured)\n\nName is the file name.\n",
 	}
 	got := strings.Join(checkDocs(r, docs), "\n")
 	if !strings.Contains(got, "XLog") || !strings.Contains(got, "Name") {
-		t.Errorf("XLog 的「## 配置」没提到 Name，该报出来，got=%q", got)
+		t.Errorf("XLog's \"## Configuration\" does not mention Name and that must be reported, got=%q", got)
 	}
 }
 

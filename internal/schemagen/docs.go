@@ -15,7 +15,7 @@ import (
 // 加了一个配置块就在这里登记，没登记的 checkDocs 会报出来
 var configDocs = map[string]docSection{
 	"XApp":        {"xapp/README.md", "Configuration"},
-	"XLog":        {"xlog/README.md", "配置"},
+	"XLog":        {"xlog/README.md", "Configuration"},
 	"XTrace":      {"xtrace/README.md", "Configuration"},
 	"XMetric":     {"xmetric/README.md", "Configuration"},
 	"XGorm":       {"xgorm/README.md", "Configuration"},

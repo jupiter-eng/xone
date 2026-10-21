@@ -7,37 +7,37 @@ import (
 	"github.com/jupiter-eng/xone/internal/logext"
 )
 
-// CtxWithScope 开启一个字段作用域。
+// CtxWithScope opens a field scope.
 //
-// 之后在这条 context 上任何位置调用 AddKV 写入的字段，都会出现在该 context
-// 记录的每一条日志里——包括请求入口在 handler 返回之后写的那条访问日志。
+// Every field AddKV writes anywhere on that context afterwards appears in every log line recorded on it --
+// including the access log the request entry point writes after the handler returns.
 //
-// 幂等：已经有作用域时原样返回，重复调用（比如中间件被注册了两次）不会
-// 清空已经写入的字段。
+// It is idempotent: an existing scope is returned as it is, so calling it again (a middleware registered twice, say)
+// does not clear the fields already written.
 func CtxWithScope(ctx context.Context) context.Context { return logext.WithScope(ctx) }
 
-// CtxWithKV 派生一个带着 kvs 的新 context：父 context 已有的字段照样带着，
-// 再叠上 kvs（同名以 kvs 为准）。
+// CtxWithKV derives a new context carrying kvs: the fields the parent context already has are kept and kvs is
+// layered on top (kvs wins on a name clash).
 //
-// 和 AddKV 的分工在影响范围：AddKV 原地写，同一个请求里后面的每一行日志都带上；
-// CtxWithKV 只影响它返回的那个 context，适合给一段调用打标——批量处理里每一条
-// 带上自己的 order_id、起一个 goroutine 带上 worker 名字——兄弟之间互不串。
+// The division of labor with AddKV is the reach: AddKV writes in place and every later line in the same request
+// carries it; CtxWithKV affects only the context it returns, which suits labelling one stretch of calls -- each item
+// in a batch carrying its own order_id, a goroutine carrying its worker name -- without siblings bleeding into each other.
 //
 //	for _, o := range orders {
 //		ctx := xlog.CtxWithKV(ctx, map[string]any{"order_id": o.ID})
-//		process(ctx, o) // 这里面的日志都带着 order_id，下一轮不带上一轮的
+//		process(ctx, o) // every log in here carries order_id, and the next round does not carry the previous one's
 //	}
 //
-// 派生出来的 context 自带一个作用域：在它上面 AddKV 只写进它自己，
-// 不回流到父 context——入口处的访问日志因此看不到这些字段。
-// 派生之后父 context 再 AddKV 的字段，它也看不到：它拿的是派生那一刻的副本。
+// The derived context brings a scope of its own: an AddKV on it writes only into itself and does not flow back to
+// the parent context -- so the access log at the entry point does not see these fields.
+// It also does not see fields the parent adds afterwards: it took a copy at the moment it was derived.
 func CtxWithKV(ctx context.Context, kvs map[string]any) context.Context {
 	return logext.WithKV(ctx, kvs)
 }
 
-// AddKV 往当前作用域写一个字段。
+// AddKV writes one field into the current scope.
 //
-// 没有作用域时丢弃并计数——否则「字段就是没出现在日志里」不留任何痕迹。
+// Without a scope it is discarded and counted -- otherwise "the field simply did not appear in the log" leaves no trace.
 func AddKV(ctx context.Context, k string, v any) {
 	s := scopeFrom(ctx)
 	if s == nil {
@@ -47,7 +47,7 @@ func AddKV(ctx context.Context, k string, v any) {
 	s.Add(k, v)
 }
 
-// AddKVs 往当前作用域批量写字段
+// AddKVs writes several fields into the current scope.
 func AddKVs(ctx context.Context, kvs map[string]any) {
 	if len(kvs) == 0 {
 		return
@@ -60,12 +60,12 @@ func AddKVs(ctx context.Context, kvs map[string]any) {
 	s.AddAll(kvs)
 }
 
-// droppedKV 在没有作用域的 context 上被丢弃的字段数。
-// 供排查「我明明 AddKV 了但日志里没有」——多半是漏了 CtxWithScope。
+// droppedKV is the number of fields discarded on a context with no scope.
+// It is there for investigating "I called AddKV and the log has nothing" -- most likely a missing CtxWithScope.
 var droppedKV atomic.Int64
 
-// DroppedKVCount 返回被丢弃的字段数，不为零说明有 AddKV 调用没有对应的作用域
+// DroppedKVCount returns the number of discarded fields; a non-zero value means some AddKV call had no matching scope.
 func DroppedKVCount() int64 { return droppedKV.Load() }
 
-// scopeFrom 作用域本身在 internal/logext 里，理由见那里
+// scopeFrom: the scope itself lives in internal/logext, for the reason given there.
 func scopeFrom(ctx context.Context) *logext.Scope { return logext.ScopeFrom(ctx) }

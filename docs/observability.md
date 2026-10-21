@@ -29,7 +29,7 @@ the framework write to. It comes along with xgin / xecho / xcron; a program with
 `github.com/jupiter-eng/xone/xlog` anonymously, since otherwise `slog.Default()` stays as it was
 and none of the below exists. To write to your own logging backend (zap, a company logging SDK),
 call `xlog.UseHandler(h)` before `xone.Run`; everything below still applies, see
-[xlog "用自己的日志后端"](../xlog/README.md#用自己的日志后端).
+[xlog "Using your own logging backend"](../xlog/README.md#using-your-own-logging-backend).
 
 - **`trace_id` / `span_id`**: with tracing on (see [Tracing](#tracing)), every line written through
   a ctx-aware method (`slog.InfoContext(ctx, …)`) carries them automatically (xtrace wires it up;

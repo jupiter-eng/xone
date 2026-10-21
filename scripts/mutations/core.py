@@ -9,7 +9,7 @@ mutate("没配时区时清掉上一次的", "xlog/xlog.go", ".", "TestInitXLog_T
        swap('\tloc, _ := parseLocation(c.Timezone)\n\tlocation.Store(loc)\n',
             '\tif loc, _ := parseLocation(c.Timezone); loc != nil {\n\t\tlocation.Store(loc)\n\t}\n'))
 mutate("UseHandler 时清掉上一次的时区", "xlog/xlog.go", ".", "TestInitXLog_TimezoneClearedWhenLaterRunLeavesItUnset",
-       swap('\t\tlocation.Store(nil) // 时间戳由你的 handler 决定，xlog 没有时区\n', ''))
+       swap('\t\tlocation.Store(nil) // the timestamps are decided by that handler, so xlog has no time zone\n', ''))
 mutate("时区加载不到直接失败", "xlog/xlog.go", ".", "TestNew_FailsWhenTimezoneCannotLoad",
        swap('''\tloc, err := time.LoadLocation(name)
 \tif err != nil {''', '''\tloc, err := time.LoadLocation(name)
@@ -624,7 +624,7 @@ mutate("UseHandler 和 XLog 块同时写就启动失败", "xlog/xlog.go", ".", "
 mutate("日志装好之后 UseHandler 不生效", "xlog/xlog.go", ".", "TestUseHandler_LateCall",
        swap('\tif installed.Load() {\n', '\tif false {\n'))
 mutate("关掉之后 UseHandler 重新可用", "xlog/xlog.go", ".", "TestUseHandler_UsableAgain",
-       swap('\tinstalled.Store(false) // 同一进程里再跑一次 Run', '\t// 同一进程里再跑一次 Run'))
+       swap('\tinstalled.Store(false) // so UseHandler still works', '\t// so UseHandler still works'))
 # 每条日志的身份字段：框架装配时加上，Fields 覆盖同名的，空串不写
 mutate("日志默认带身份字段", "xlog/xlog.go", ".", "TestIdentity_DefaultFields",
        swap('l, cl, err := build(c, identity())', 'l, cl, err := build(c, nil)'))

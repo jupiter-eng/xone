@@ -401,7 +401,7 @@ and its troubleshooting.
 | Block | What it is | Module documentation |
 |---|---|---|
 | `XApp` | Application identity, profiles, Import | [xapp/README.md](../xapp/README.md#configuration) |
-| `XLog` | Logging | [xlog/README.md](../xlog/README.md#配置) |
+| `XLog` | Logging | [xlog/README.md](../xlog/README.md#configuration) |
 | `XTrace` | Tracing | [xtrace/README.md](../xtrace/README.md#configuration) |
 | `XMetric` | Metrics | [xmetric/README.md](../xmetric/README.md#configuration) |
 | `XGorm` | Databases | [xgorm/README.md](../xgorm/README.md#configuration) |

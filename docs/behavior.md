@@ -101,4 +101,4 @@ XGorm, XRedis and XKafka each probe once at startup through one shared implement
 | [xecho](../xecho/README.md#behavior-measured) | echo: client_ip, error rendering, route templates, group fallback routes, `e.Pre`, timeout middleware, panics, gommon logs, compression, the multipart threshold, strict route matching |
 | [xmetric](../xmetric/README.md#behavior-measured) | client_golang: buckets, names, constant labels |
 | [xtrace](../xtrace/README.md#behavior-measured) | The OTel SDK: sampling, service.name, forwarding |
-| [xlog](../xlog/README.md#行为与实测) | `Perm`, rotated file names, timezones |
+| [xlog](../xlog/README.md#behavior-measured) | `Perm`, rotated file names, timezones |

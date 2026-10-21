@@ -19,21 +19,21 @@ import (
 	"github.com/jupiter-eng/xone/xhook"
 )
 
-// New 按配置造一个 logger。
+// New builds a logger from the configuration.
 //
-// 纯构造器：不碰全局、不读配置文件、不依赖框架运行。测试直接调它。
+// It is a pure constructor: it touches no globals, reads no config file and does not need the framework running. Tests call it directly.
 //
-// 返回的 io.Closer 用于收尾（关闭日志文件），即便没有文件输出也不会是 nil，
-// 调用方不必判空。
+// The io.Closer returned is for cleanup (closing the log file) and is never nil even without file output,
+// so the caller does not have to check.
 //
-// 只带 cfg.Fields；service、hostname 这些默认字段是框架装配时（initXLog）才加的。
+// It carries only cfg.Fields; the default fields such as service and hostname are added when the framework assembles it (initXLog).
 func New(cfg Config) (*slog.Logger, io.Closer, error) { return build(cfg, nil) }
 
-// build 同 New，每条日志另带 base 这组字段（被 cfg.Fields 同名的覆盖）
+// build is New with every log line also carrying the base fields (overridden by any cfg.Fields of the same name).
 func build(cfg Config, base []slog.Attr) (*slog.Logger, io.Closer, error) {
-	// 配置项全部先校验完，再动文件。反过来的话，Format 写错时
-	// 日志文件已经建好、fd 也开着，而 New 返回了错误——调用方手上
-	// 没有 Closer 可关，那个 fd 和它的符号链接就留在那里了
+	// Every configuration item is validated before any file is touched. The other way round, a malformed Format would
+	// leave the log file already created with its fd open while New returned an error -- the caller would have no
+	// Closer to close, and that fd and its symbolic link would simply stay there.
 	level, err := parseLevel(cfg.Level)
 	if err != nil {
 		return nil, nil, err
@@ -65,17 +65,17 @@ func build(cfg Config, base []slog.Attr) (*slog.Logger, io.Closer, error) {
 		closers = append(closers, w)
 	}
 
-	// 一个输出都没开时 MultiWriter 什么也不写（等同 io.Discard）而不是报错：
-	// 「我就是不要日志」是个合理的选择，不该让服务起不来
+	// With no output at all, MultiWriter writes nothing (the same as io.Discard) rather than reporting an error:
+	// "I simply do not want logs" is a reasonable choice and must not keep the service from starting.
 	out := io.MultiWriter(writers...)
 
 	opts := &slog.HandlerOptions{Level: level, AddSource: cfg.AddSource, ReplaceAttr: inLocation(loc)}
 	return withStatic(slog.New(newCtxHandler(newHandler(out, opts))), base, cfg.Fields), multiCloser(closers), nil
 }
 
-// identity 框架默认给每条日志带的身份字段，和 xtrace 的 Span 上的 service.name、host.name、process.pid 对得上。
+// identity are the framework's default per-line fields, matching service.name, host.name and process.pid on xtrace's Spans.
 //
-// 机器名叫 hostname 不叫 host：xgin 的访问日志里 host 是请求的 Host 头，同名就是一条日志两个 host
+// The machine name is called hostname rather than host: in xgin's access log, host is the request's Host header, and the same name would mean two hosts in one line.
 func identity() []slog.Attr {
 	hostname, _ := os.Hostname()
 	return []slog.Attr{
@@ -86,9 +86,9 @@ func identity() []slog.Attr {
 	}
 }
 
-// withStatic 给 logger 挂上静态字段：base 在前，同名的以 fields 为准，其余按名字排序跟在后面；值为空串的不写。
+// withStatic attaches the static fields to a logger: base first, a name in fields wins, and the rest follow sorted by name; a field with an empty string value is not written.
 //
-// 挂在 With 上：JSON / text handler 在这里就把它们序列化好了，之后每条日志只是拷一段现成的字节
+// They are attached with With: the JSON / text handler serializes them right there, so every later log line only copies a ready-made stretch of bytes.
 func withStatic(l *slog.Logger, base []slog.Attr, fields map[string]string) *slog.Logger {
 	attrs := make([]any, 0, len(base)+len(fields))
 	add := func(a slog.Attr) {
@@ -118,7 +118,7 @@ func withStatic(l *slog.Logger, base []slog.Attr, fields map[string]string) *slo
 	return l.With(attrs...)
 }
 
-// parseLocation 解析 IANA 时区名。留空表示跟随本地时区
+// parseLocation parses an IANA time zone name. Empty means follow the local time zone.
 func parseLocation(name string) (*time.Location, error) {
 	if name == "" {
 		return nil, nil
@@ -132,14 +132,14 @@ func parseLocation(name string) (*time.Location, error) {
 	return loc, nil
 }
 
-// inLocation 把记录时间换到指定时区。loc 为 nil 时返回 nil，
-// 于是 HandlerOptions.ReplaceAttr 保持为空，热路径上一次多余的函数调用都没有
+// inLocation converts the record time into the given time zone. It returns nil when loc is nil,
+// which leaves HandlerOptions.ReplaceAttr empty and keeps even one redundant function call off the hot path.
 func inLocation(loc *time.Location) func([]string, slog.Attr) slog.Attr {
 	if loc == nil {
 		return nil
 	}
 	return func(groups []string, a slog.Attr) slog.Attr {
-		// 只动顶层的时间字段：业务自己打的 time.Time 是它的数据，不该被改时区
+		// Only the top-level time field is touched: a time.Time the business logged is its data and must not have its time zone changed.
 		if len(groups) == 0 && a.Key == slog.TimeKey && a.Value.Kind() == slog.KindTime {
 			a.Value = slog.TimeValue(a.Value.Time().In(loc))
 		}
@@ -147,8 +147,8 @@ func inLocation(loc *time.Location) func([]string, slog.Attr) slog.Attr {
 	}
 }
 
-// handlerFor 按格式选出 handler 的构造函数。
-// 只认格式、不碰输出，好让格式写错这件事在打开日志文件之前就暴露。
+// handlerFor picks the handler constructor by format.
+// It only looks at the format and does not touch the output, so a malformed format surfaces before the log file is opened.
 func handlerFor(format string) (func(io.Writer, *slog.HandlerOptions) slog.Handler, error) {
 	switch strings.ToLower(format) {
 	case FormatText:
@@ -161,14 +161,14 @@ func handlerFor(format string) (func(io.Writer, *slog.HandlerOptions) slog.Handl
 	}
 }
 
-// newFileWriter 造文件写入器，目录不存在时创建
+// newFileWriter builds the file writer, creating the directory when it does not exist.
 func newFileWriter(c FileConfig) (io.WriteCloser, error) {
-	// 先解析权限再建目录：Perm 写错时不该留下一个空目录
+	// The permission is parsed before the directory is created: a malformed Perm must not leave an empty directory behind.
 	perm, err := parsePerm(c.Perm)
 	if err != nil {
 		return nil, err
 	}
-	// 建目录失败是运行环境的问题（没权限、只读盘），配置本身合法，所以 op 是 new 而不是 config
+	// A failure to create the directory is an environment problem (no permission, a read-only disk) while the configuration itself is valid, so the op is new rather than config.
 	if c.Path != "" {
 		if err := os.MkdirAll(c.Path, 0o755); err != nil {
 			return nil, xerror.Newf("xlog", "new", "create log dir failed Path=[%s]: %w", c.Path, err)
@@ -177,8 +177,8 @@ func newFileWriter(c FileConfig) (io.WriteCloser, error) {
 	return newRotateWriter(filepath.Join(c.Path, c.Name), c.MaxAge, c.RotateTime, perm)
 }
 
-// parseLevel 解析日志级别。不认识的值直接报错而不是退回默认值——
-// 配置写错了应该在启动时知道，而不是上线后发现日志级别不对。
+// parseLevel parses the log level. An unrecognized value is an error rather than a fallback to the default --
+// a malformed configuration should be known at startup, not discovered in production with the wrong log level.
 func parseLevel(s string) (slog.Level, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "debug":
@@ -195,7 +195,7 @@ func parseLevel(s string) (slog.Level, error) {
 	}
 }
 
-// parsePerm 解析八进制权限字符串，认 "0644"、"644" 和 YAML 1.2 的 "0o644"
+// parsePerm parses an octal permission string, accepting "0644", "644" and YAML 1.2's "0o644".
 func parsePerm(s string) (os.FileMode, error) {
 	if s == "" {
 		return defaultLogFilePerm, nil
@@ -220,15 +220,15 @@ func (m multiCloser) Close() error {
 	return first
 }
 
-// ---- 登记 ----
+// ---- registration ----
 
-// location 生效中的日志时区，每次装日志时都重新写。nil 表示跟随本地时区
+// location is the log time zone in effect, rewritten every time logging is installed. nil means follow the local time zone.
 var location atomic.Pointer[time.Location]
 
-// Location 返回日志时间戳用的时区。
+// Location returns the time zone the log timestamps use.
 //
-// 业务自己要格式化时间、又想和日志对得上时用它，免得把配置里的时区名
-// 在代码里再抄一遍。没配 XLog.Timezone 时返回 time.Local。
+// It is for business code formatting times of its own that should line up with the logs, so the time zone name in
+// the configuration does not have to be copied into the code. Without XLog.Timezone configured it returns time.Local.
 //
 //	t.In(xlog.Location()).Format(time.RFC3339)
 func Location() *time.Location {
@@ -238,32 +238,32 @@ func Location() *time.Location {
 	return time.Local
 }
 
-// init 日志要最先起、最后关，这样其余组件的启停日志都写得出去
+// init puts logging first up and last down, so every other component's start and stop logs get written.
 func init() {
 	xhook.BeforeStart(initXLog, xhook.At(xhook.StageLog))
-	xhook.BeforeStop(closeXLog) // 档位跟着上面那个启动钩子
+	xhook.BeforeStop(closeXLog) // the stage follows the start hook above
 }
 
-// closer 由 initXLog 填好，closeXLog 用它关掉写入器
+// closer is filled in by initXLog and used by closeXLog to close the writer.
 var closer io.Closer
 
-// custom 是 UseHandler 给的后端，nil 表示按 XLog 配置建；installed 表示日志已经装好
+// custom is the backend UseHandler was given, nil meaning build from the XLog configuration; installed means logging is already set up.
 var (
 	custom    atomic.Pointer[slog.Handler]
 	installed atomic.Bool
 )
 
-// UseHandler 让日志写到你自己的 handler 上（zap 的 slog 桥、公司的日志 SDK……）。
-// 在 xone.Run 之前调，比如 main 的第一行。
+// UseHandler sends the logs to a handler of your own (a slog bridge for zap, a company logging SDK, ...).
+// Call it before xone.Run, as the first line of main for example.
 //
-// xlog 照样把它包一层再装成 slog.Default()：trace_id、AddKV / CtxWithKV 的字段、
-// 错误日志计数都还在，框架的访问日志、SQL 日志也都写进它，只是最后由它来写。
+// xlog still wraps it and installs it as slog.Default(): the trace_id, the fields from AddKV / CtxWithKV and the
+// error log counting are all still there, the framework's access logs and SQL logs still go into it, and it merely does the final writing.
 //
-// 这时 XLog 里除了 Fields（每条都带的字段，照样带上）都是决定 xlog 自己怎么写的，一项都不起作用；
-// 写了就启动失败，免得你以为 Level: debug 生效了。级别、格式、输出去向都由你的 handler 决定。
-// 传 nil 恢复按 XLog 配置。
+// Everything in XLog except Fields (the per-line fields, which are still carried) decides how xlog itself writes and
+// has no effect at all; writing any of it fails startup, so nobody believes a Level: debug took. The level, the format and the destination are all decided by that handler.
+// Passing nil restores building from the XLog configuration.
 //
-// 日志装好之后（xone.Run 已经走过日志那一档）再调不会生效，只打一条 WARN。
+// Calling it after logging is set up (xone.Run has already passed the logging stage) has no effect and only logs a WARN.
 func UseHandler(h slog.Handler) {
 	if installed.Load() {
 		slog.Warn("xlog.UseHandler called after logging was installed, ignored; call it before xone.Run")
@@ -276,15 +276,15 @@ func UseHandler(h slog.Handler) {
 	custom.Store(&h)
 }
 
-// initXLog 读配置，然后装好日志
+// initXLog reads the configuration and then sets logging up.
 func initXLog(context.Context) error {
 	c := DefaultConfig()
 	if err := xconfig.Unmarshal(ConfigKey, &c); err != nil {
 		return err
 	}
 	if h := custom.Load(); h != nil {
-		// Fields 不归 handler 管，换了后端照样带上；别的项决定的是 xlog 自己怎么写。
-		// 块写了但一项都没改默认值（比如只写了 Level: info）不算冲突：它本来就是这个意思
+		// Fields are not the handler's business and are carried with any backend; the other items decide how xlog itself writes.
+		// A block written without changing a single default (only Level: info, say) is not a conflict: that is what it means anyway.
 		output := c
 		output.Fields = nil
 		if !reflect.DeepEqual(output, DefaultConfig()) {
@@ -293,7 +293,7 @@ func initXLog(context.Context) error {
 				ConfigKey, ConfigKey)
 		}
 		closer = nil
-		location.Store(nil) // 时间戳由你的 handler 决定，xlog 没有时区
+		location.Store(nil) // the timestamps are decided by that handler, so xlog has no time zone
 		slog.SetDefault(withStatic(slog.New(newCtxHandler(*h)), identity(), c.Fields))
 		installed.Store(true)
 		return nil
@@ -301,35 +301,35 @@ func initXLog(context.Context) error {
 	return install(c)
 }
 
-// install 按配置建好 logger，并把它装成标准库的全局默认值
+// install builds the logger from the configuration and installs it as the standard library's global default.
 func install(c Config) error {
 	l, cl, err := build(c, identity())
 	if err != nil {
 		return err
 	}
 	closer = cl
-	// New 已经校验过，这里不会再失败。没配时存 nil（跟随本地时区）也要存：
-	// 同一个进程里的上一次 Run 配过时区的话，不存就一直留着那一个
+	// New has already validated, so this cannot fail again. Storing nil (follow the local time zone) when nothing is
+	// configured matters too: with a time zone configured by a previous Run in the same process, not storing would leave that one in place.
 	loc, _ := parseLocation(c.Timezone)
 	location.Store(loc)
-	// 装进标准库的全局默认 logger：业务代码直接用 slog.Info / slog.InfoContext，
-	// 不需要认识本包。这与 slog.SetDefault 是同一个模式。
+	// Installed as the standard library's global default logger: business code uses slog.Info / slog.InfoContext
+	// directly and does not have to know this package. This is the same pattern as slog.SetDefault.
 	slog.SetDefault(l)
 	installed.Store(true)
 	return nil
 }
 
-// closeXLog 关掉日志文件。
+// closeXLog closes the log file.
 //
-// 写入没有缓冲（每条日志直接 write 到文件），所以这里没有要 flush 的东西，
-// 只是把 fd 还回去。
+// Writing is unbuffered (every log line is written straight to the file), so there is nothing to flush here;
+// it only hands the fd back.
 //
-// 关之前先把全局 logger 换成写 stderr 的那个：日志是最后关的，但关完之后
-// 还有日志要打——xone.Run 返回的错误、超时后被丢下的停止钩子、没做完的在途请求。
-// 原先 slog.Default() 还指着已经关掉的文件，Console 关着的话这些日志一声不响就没了，
-// 而它们恰恰是排查「为什么没有正常退出」最要紧的那几条
+// The global logger is swapped for one writing to stderr first: logging is closed last, but there are still logs
+// after it closes -- the error xone.Run returns, the stop hooks abandoned after the timeout, the requests still in
+// flight. slog.Default() used to still point at the closed file, so with Console off those logs vanished without a
+// word -- and they are exactly the ones that matter most for investigating "why did it not exit cleanly".
 func closeXLog(context.Context) error {
-	installed.Store(false) // 同一进程里再跑一次 Run（测试里常见）时，UseHandler 照样能用
+	installed.Store(false) // so UseHandler still works on another Run in the same process (common in tests)
 	if closer == nil {
 		return nil
 	}

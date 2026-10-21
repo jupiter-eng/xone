@@ -224,15 +224,6 @@ xkafka/option.go
 xkafka/worker.go
 xkafka/xkafka.go
 xkafka/xkafka_test.go
-xlog/README.md
-xlog/bench_test.go
-xlog/config.go
-xlog/ctx.go
-xlog/handler.go
-xlog/rotate.go
-xlog/rotate_test.go
-xlog/xlog.go
-xlog/xlog_test.go
 xone.go
 xone_test.go
 xredis/README.md
