@@ -4,8 +4,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-// cacheMetric 一个缓存指标的定义。表驱动的理由同 xgorm / xredis：
-// 分散成结构体字段的话，加一个指标要同步改四处。
+// cacheMetric is the definition of one cache metric. The table-driven form has the same reason as in
+// xgorm / xredis: spread across struct fields, adding a metric would mean changing four places in step.
 type cacheMetric struct {
 	name  string
 	help  string
@@ -13,14 +13,14 @@ type cacheMetric struct {
 	value func(*Cache) float64
 }
 
-// cacheMetrics 指标表。计数都来自 ristretto 的 Metrics（v2.4.2），它们是整个实例
-// 生命期的累计值；几处和字面意思不一样的，都是量过的：
+// cacheMetrics is the metric table. The counts all come from ristretto's Metrics (v2.4.2) and are cumulative
+// over the instance's whole lifetime; the few that do not mean what they appear to have all been measured:
 //
-//   - keys_evicted 不只是「容量满了被挤掉」：显式 Del 和 TTL 到期被清理的，
-//     ristretto 走的是同一个计数（policy 的 del），一并算在里面。
-//   - 调 Clear() 会把全部计数清零——Prometheus 把它当成计数器重置，rate() 照常能算。
-//   - cost 是当前占用的成本。本包写入时 cost 固定为 1，所以它就是条目数；
-//     写进缓冲还没被处理的那几条不算。
+//   - keys_evicted is not only "pushed out because the capacity was full": an explicit Del and a TTL expiry
+//     cleaned up go through the same count in ristretto (the policy's del) and are included in it.
+//   - Calling Clear() resets every count to zero -- Prometheus reads that as a counter reset and rate() still works.
+//   - cost is the cost currently occupied. This package always writes with cost 1, so it is the number of
+//     entries; the few written into the buffer and not yet processed are not counted.
 var cacheMetrics = []cacheMetric{
 	{"cache_hits_total", "Total Get calls that found the key", prometheus.CounterValue,
 		func(c *Cache) float64 { return float64(c.Metrics.Hits()) }},
@@ -42,14 +42,14 @@ var cacheMetrics = []cacheMetric{
 		func(c *Cache) float64 { return float64(c.MaxCost()) }},
 }
 
-// cacheCollector 被抓取时才读各实例的计数，理由同 xredis 的 poolCollector：
-// 不推、不额外占协程，读到的永远是抓取那一刻的值。
+// cacheCollector reads each instance's counts only when scraped, for the same reason as xredis's poolCollector:
+// nothing is pushed, no extra goroutine is held, and what is read is always the value at the moment of the scrape.
 type cacheCollector struct {
-	descs  []*prometheus.Desc // 与 cacheMetrics 一一对应
+	descs  []*prometheus.Desc // one per entry in cacheMetrics
 	caches func() map[string]*Cache
 }
 
-// newCacheCollector 前缀和常量标签由调用方传进来，不在这里读全局
+// newCacheCollector takes the prefix and the constant labels from the caller and reads no globals here.
 func newCacheCollector(ns string, labels prometheus.Labels, caches func() map[string]*Cache) *cacheCollector {
 	descs := make([]*prometheus.Desc, len(cacheMetrics))
 	for i, m := range cacheMetrics {

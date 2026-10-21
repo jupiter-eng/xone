@@ -43,7 +43,7 @@
       "additionalProperties": false
     },
     "XCache": {
-      "description": "本模块的配置。两种写法",
+      "description": "is this module's configuration. There are two forms",
       "oneOf": [
         {
           "type": "object",
@@ -53,19 +53,19 @@
                 "integer",
                 "string"
               ],
-              "description": "Get 的内部缓冲区大小。默认 64，官方建议值。",
+              "description": "is the size of the internal buffer for Get. It defaults to 64, the value upstream recommends.",
               "pattern": "\\$\\{"
             },
             "DefaultTTL": {
               "type": "string",
-              "description": "包级 Set 写入时用的过期时间。默认 5m。 0 表示永不过期；负数启动失败——ristretto 会把 ttl\u003c0 的写入直接丢掉。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+              "description": "is the expiry used by the package-level Set. It defaults to 5m. 0 means it never expires; a negative value fails startup -- ristretto drops a write with ttl\u003c0 outright.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
             },
             "MaxCost": {
               "type": [
                 "integer",
                 "string"
               ],
-              "description": "缓存总成本上限。默认 100000。 本包写入时 cost 固定为 1，所以它等价于「最多存多少条」。 自己调 C().Set 传别的 cost 时，它才是真正的成本上限。 这里统计的是使用者给出的 cost，不含 ristretto 每条 56 字节的内部开销。 按字节记 cost 时把这部分算进自己的预算里。",
+              "description": "is the upper bound on the cache's total cost. It defaults to 100000. This package always writes with cost 1, so it is equivalent to \"how many entries at most\". It is a real cost bound only when C().Set is called directly with a different cost. What is counted here is the cost the caller gives, without ristretto's 56 bytes of internal overhead per entry. When recording cost in bytes, include that in the budget.",
               "pattern": "\\$\\{"
             },
             "Metric": {
@@ -73,7 +73,7 @@
                 "boolean",
                 "string"
               ],
-              "description": "是否导出命中率等指标。默认开启，与 XGorm / XRedis 一致。 按实例生效：配了 Metric: false 的实例不出现在 /metrics 里，ristretto 也不计数。 计数是 ristretto 自己的：它的 Metrics 默认关着，不打开就什么都看不到。 打开的代价，实测（ristretto v2.4.2，4 核）： - 内存：每个实例常驻多约 84KB；另有一张记录写入时间的表（给它的存活时长 直方图用，最多 10 万条），写过 10 万个以上不同的键之后多约 8–12MB。 - CPU：本包的 Get / Set 基准前后差异不显著（p\u003e0.2）；ristretto 自己的 4 协程并发 Get 每次约多 20ns（110ns → 131ns，噪声 ±12%）。 实例多、条目多又在意内存的，按实例关掉。",
+              "description": "says whether to export the hit rate and the other metrics. It defaults to on, as in XGorm / XRedis. It applies per instance: an instance configured with Metric: false does not appear in /metrics and ristretto does not count for it either. The counting is ristretto's own: its Metrics is off by default, and nothing is visible until it is turned on. The cost of turning it on, measured (ristretto v2.4.2, 4 cores): - Memory: about 84KB more resident per instance; plus a table recording write times (for its lifetime histogram, at most 100 thousand entries), about 8-12MB more after more than 100 thousand distinct keys have been written. - CPU: no significant difference in this package's Get / Set benchmarks (p\u003e0.2); ristretto's own 4-goroutine concurrent Get costs about 20ns more per call (110ns -\u003e 131ns, noise +-12%). Turn it off per instance when there are many instances, many entries, and memory matters.",
               "pattern": "\\$\\{"
             },
             "NumCounters": {
@@ -81,7 +81,7 @@
                 "integer",
                 "string"
               ],
-              "description": "用于统计访问频率的计数器个数。默认 1000000。 建议取预期条目数的 10 倍：ristretto 靠它判断哪些键值得留下， 给少了准入判断会失准，缓存命中率上不去。",
+              "description": "is the number of counters used to track access frequency. It defaults to 1000000. Ten times the expected number of entries is a good value: ristretto uses it to decide which keys are worth keeping, and too few makes the admission decision inaccurate and holds the hit rate down.",
               "pattern": "\\$\\{"
             }
           },
@@ -101,19 +101,19 @@
                       "integer",
                       "string"
                     ],
-                    "description": "Get 的内部缓冲区大小。默认 64，官方建议值。",
+                    "description": "is the size of the internal buffer for Get. It defaults to 64, the value upstream recommends.",
                     "pattern": "\\$\\{"
                   },
                   "DefaultTTL": {
                     "type": "string",
-                    "description": "包级 Set 写入时用的过期时间。默认 5m。 0 表示永不过期；负数启动失败——ristretto 会把 ttl\u003c0 的写入直接丢掉。（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                    "description": "is the expiry used by the package-level Set. It defaults to 5m. 0 means it never expires; a negative value fails startup -- ristretto drops a write with ttl\u003c0 outright.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
                   },
                   "MaxCost": {
                     "type": [
                       "integer",
                       "string"
                     ],
-                    "description": "缓存总成本上限。默认 100000。 本包写入时 cost 固定为 1，所以它等价于「最多存多少条」。 自己调 C().Set 传别的 cost 时，它才是真正的成本上限。 这里统计的是使用者给出的 cost，不含 ristretto 每条 56 字节的内部开销。 按字节记 cost 时把这部分算进自己的预算里。",
+                    "description": "is the upper bound on the cache's total cost. It defaults to 100000. This package always writes with cost 1, so it is equivalent to \"how many entries at most\". It is a real cost bound only when C().Set is called directly with a different cost. What is counted here is the cost the caller gives, without ristretto's 56 bytes of internal overhead per entry. When recording cost in bytes, include that in the budget.",
                     "pattern": "\\$\\{"
                   },
                   "Metric": {
@@ -121,7 +121,7 @@
                       "boolean",
                       "string"
                     ],
-                    "description": "是否导出命中率等指标。默认开启，与 XGorm / XRedis 一致。 按实例生效：配了 Metric: false 的实例不出现在 /metrics 里，ristretto 也不计数。 计数是 ristretto 自己的：它的 Metrics 默认关着，不打开就什么都看不到。 打开的代价，实测（ristretto v2.4.2，4 核）： - 内存：每个实例常驻多约 84KB；另有一张记录写入时间的表（给它的存活时长 直方图用，最多 10 万条），写过 10 万个以上不同的键之后多约 8–12MB。 - CPU：本包的 Get / Set 基准前后差异不显著（p\u003e0.2）；ristretto 自己的 4 协程并发 Get 每次约多 20ns（110ns → 131ns，噪声 ±12%）。 实例多、条目多又在意内存的，按实例关掉。",
+                    "description": "says whether to export the hit rate and the other metrics. It defaults to on, as in XGorm / XRedis. It applies per instance: an instance configured with Metric: false does not appear in /metrics and ristretto does not count for it either. The counting is ristretto's own: its Metrics is off by default, and nothing is visible until it is turned on. The cost of turning it on, measured (ristretto v2.4.2, 4 cores): - Memory: about 84KB more resident per instance; plus a table recording write times (for its lifetime histogram, at most 100 thousand entries), about 8-12MB more after more than 100 thousand distinct keys have been written. - CPU: no significant difference in this package's Get / Set benchmarks (p\u003e0.2); ristretto's own 4-goroutine concurrent Get costs about 20ns more per call (110ns -\u003e 131ns, noise +-12%). Turn it off per instance when there are many instances, many entries, and memory matters.",
                     "pattern": "\\$\\{"
                   },
                   "NumCounters": {
@@ -129,7 +129,7 @@
                       "integer",
                       "string"
                     ],
-                    "description": "用于统计访问频率的计数器个数。默认 1000000。 建议取预期条目数的 10 倍：ristretto 靠它判断哪些键值得留下， 给少了准入判断会失准，缓存命中率上不去。",
+                    "description": "is the number of counters used to track access frequency. It defaults to 1000000. Ten times the expected number of entries is a good value: ristretto uses it to decide which keys are worth keeping, and too few makes the admission decision inaccurate and holds the hit rate down.",
                     "pattern": "\\$\\{"
                   }
                 },

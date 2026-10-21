@@ -64,7 +64,7 @@ Each module's own logs are under "Observability" in its README:
 [xgorm](../xgorm/README.md#logs) (`xgorm connected`, SQL logs) ·
 [xredis](../xredis/README.md#日志) (`xredis connected`, `redis command`, `redis pipeline`) ·
 [xhttp](../xhttp/README.md#日志) (`xhttp ready`, `http request`) ·
-[xcache](../xcache/README.md#日志) · [xkafka](../xkafka/README.md#日志)
+[xcache](../xcache/README.md#logs) · [xkafka](../xkafka/README.md#日志)
 (`kafka produce failed`, `kafka message failed` / `kafka message dead-lettered` /
 `kafka message skipped, …` / `kafka handler panicked`, with the handler's logs carrying `topic` /
 `partition` / `offset` / `group`) · [xcron](../xcron/README.md#日志) (`cron job finished` /
@@ -84,7 +84,7 @@ Every metric the framework ships carries `XMetric.ConstLabels`; apart from clien
 | [xgorm](../xgorm/README.md#metrics) | `db_pool_*` |
 | [xredis](../xredis/README.md#指标) | `redis_pool_*` |
 | [xkafka](../xkafka/README.md#指标) | `kafka_consume_duration_seconds` |
-| [xcache](../xcache/README.md#指标) | `cache_*` |
+| [xcache](../xcache/README.md#metrics) | `cache_*` |
 | [xmetric](../xmetric/README.md#指标) | `log_errors_total`, `go_*` / `process_*`, and the business's own instrumentation |
 
 A few things worth knowing:

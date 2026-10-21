@@ -199,12 +199,6 @@ scripts/mutations/xtrace.py
 scripts/release.sh
 scripts/test.sh
 xapp/README.md
-xcache/README.md
-xcache/config.go
-xcache/go.mod
-xcache/metric.go
-xcache/xcache.go
-xcache/xcache_test.go
 xcron/README.md
 xcron/go.mod
 xcron/helpers_test.go
