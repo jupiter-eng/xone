@@ -5,18 +5,18 @@ import (
 	"strings"
 )
 
-// fieldDoc 把字段上的注释变成一行说明。
+// fieldDoc turns the comment on a field into a one-line description.
 //
-// 注释的写法是固定的：
+// The comments are written in a fixed shape:
 //
-//	// Timeout 单次尝试的超时。默认 60s。
+//	// Timeout is one attempt's timeout. It defaults to 60s.
 //	//
-//	// 更长的解释……
+//	// A longer explanation...
 //	Timeout time.Duration `yaml:"Timeout"`
 //
-// 取整段、去掉开头重复的字段名、合并成一行。不只取第一句是因为
-// 这个仓库的注释常把「为什么」写在后面几行，而那几行恰恰是最该
-// 出现在 IDE 悬浮提示里的内容
+// The whole group is taken, the field name repeated at the start is removed, and the rest is joined
+// into one line. Not only the first sentence, because the comments in this repository usually put
+// the "why" in the lines after it, and those are exactly what belongs in an editor's hover
 func fieldDoc(f *ast.Field) string {
 	if f.Doc == nil {
 		return ""
@@ -28,7 +28,7 @@ func fieldDoc(f *ast.Field) string {
 	return flatten(f.Doc, name)
 }
 
-// docOf 取类型上的注释
+// docOf takes the comment on a type
 func docOf(p *pkg, typeName string) string {
 	if d, ok := p.docs[typeName]; ok {
 		return flatten(d, typeName)
@@ -36,12 +36,12 @@ func docOf(p *pkg, typeName string) string {
 	return ""
 }
 
-// flatten 把注释组压成一行，去掉开头的 "字段名 "
+// flatten squeezes a comment group into one line and removes the leading "<field name> "
 func flatten(g *ast.CommentGroup, name string) string {
 	lines := make([]string, 0, len(g.List))
 	for _, c := range g.List {
-		raw := c.Text // *ast.Comment.Text 是字段，带着 "//" 前缀
-		// 代码示例那几行（缩进过的）在一行里读不通，丢掉
+		raw := c.Text // *ast.Comment.Text is a field and carries the "//" prefix
+		// The lines of a code example (the indented ones) do not read in one line and are dropped
 		if strings.HasPrefix(raw, "//\t") {
 			continue
 		}
@@ -53,7 +53,7 @@ func flatten(g *ast.CommentGroup, name string) string {
 	if name != "" {
 		out = strings.TrimSpace(strings.TrimPrefix(out, name))
 	}
-	// 代码示例被丢掉之后常留下一个「两种写法：」这样的残句，
-	// 结尾的冒号在这里已经指不到任何东西了
-	return strings.TrimRight(strings.TrimSpace(out), "：:")
+	// Dropping a code example usually leaves a stub such as "Two ways to write it:" behind, whose
+	// trailing colon now points at nothing
+	return strings.TrimRight(strings.TrimSpace(out), ":")
 }

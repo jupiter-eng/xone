@@ -34,13 +34,14 @@ func TestProbe_StopsAfterSuccess(t *testing.T) {
 		return nil
 	})
 	if err != nil || calls != 2 {
-		t.Errorf("第二次成功就该停，err=%v calls=%d", err, calls)
+		t.Errorf("succeeding on the second attempt must stop it, err=%v calls=%d", err, calls)
 	}
 }
 
 func TestProbe_AuthFailureReturnsOriginalErrorAfterOneTry(t *testing.T) {
-	// 密码错了再试也是错，只是多等几轮退避；返回的要是 fn 的那个错误本身，
-	// 调用方靠它说「认证失败」，也靠 errors.As 取驱动的错误类型
+	// A wrong password stays wrong on a retry and only costs a few more backoffs; what is returned
+	// has to be fn's very error, which is what the caller says "authentication failed" by and takes
+	// the driver's error type out of with errors.As
 	calls := 0
 	wrapped := &wrapErr{errDenied}
 	err := Probe(context.Background(), policy(isDenied), func(context.Context) error {
@@ -48,17 +49,17 @@ func TestProbe_AuthFailureReturnsOriginalErrorAfterOneTry(t *testing.T) {
 		return wrapped
 	})
 	if calls != 1 {
-		t.Errorf("认证失败不该重试，试了 %d 次", calls)
+		t.Errorf("an authentication failure must not be retried, it made %d attempts", calls)
 	}
 	if err != error(wrapped) {
-		t.Errorf("返回的应是 fn 的错误本身，got=%#v", err)
+		t.Errorf("what is returned must be fn's very error, got=%#v", err)
 	}
 }
 
 func TestProbe_RetriesWhenAuthFailureNotRecognized(t *testing.T) {
 	for name, auth := range map[string]func(error) bool{
-		"没给 AuthFailed": nil,
-		"AuthFailed 不认": func(error) bool { return false },
+		"no AuthFailed given":         nil,
+		"AuthFailed does not know it": func(error) bool { return false },
 	} {
 		calls := 0
 		err := Probe(context.Background(), policy(auth), func(context.Context) error {
@@ -66,7 +67,7 @@ func TestProbe_RetriesWhenAuthFailureNotRecognized(t *testing.T) {
 			return errDenied
 		})
 		if calls != 3 || !errors.Is(err, errDenied) {
-			t.Errorf("%s：应试满 3 次并返回最后的错误，calls=%d err=%v", name, calls, err)
+			t.Errorf("%s: all 3 attempts must be made and the last error returned, calls=%d err=%v", name, calls, err)
 		}
 	}
 }
@@ -76,14 +77,14 @@ func TestProbe_EachAttemptHasItsOwnDeadline(t *testing.T) {
 	_ = Probe(context.Background(), policy(nil), func(ctx context.Context) error {
 		d, ok := ctx.Deadline()
 		if !ok {
-			t.Fatal("fn 拿到的 ctx 应带着这一次的截止时间")
+			t.Fatal("the ctx fn receives must carry this attempt's deadline")
 		}
 		deadlines = append(deadlines, time.Until(d))
 		return errors.New("timeout")
 	})
 	for _, d := range deadlines {
 		if d > 50*time.Millisecond {
-			t.Errorf("单次截止时间不该超过 Timeout，got=%v", d)
+			t.Errorf("one attempt's deadline must not exceed Timeout, got=%v", d)
 		}
 	}
 }
@@ -97,7 +98,7 @@ func TestProbe_CtxCanceledStopsRetrying(t *testing.T) {
 		return errors.New("connection refused")
 	})
 	if calls != 1 || !errors.Is(err, context.Canceled) {
-		t.Errorf("取消之后不该再试，并如实报取消，calls=%d err=%v", calls, err)
+		t.Errorf("no further attempt may be made after a cancellation, which must be reported faithfully, calls=%d err=%v", calls, err)
 	}
 }
 
@@ -107,16 +108,17 @@ func (w *wrapErr) Error() string { return "connect: " + w.err.Error() }
 func (w *wrapErr) Unwrap() error { return w.err }
 
 func TestProbe_CertRejectedReturnsAfterOneTry(t *testing.T) {
-	// 对端的告警在 TCP 上长什么样，现场握一次手量出来：服务端要客户端证书，客户端不带
+	// What the peer's alert looks like over TCP is measured by shaking hands here and now: the
+	// server wants a client certificate and the client sends none
 	remote := remoteAlert(t)
 	if !strings.Contains(remote.Error(), "remote error: tls: certificate required") {
-		t.Fatalf("量出来的告警和注释里写的对不上：%v", remote)
+		t.Fatalf("the alert measured does not match what the comment says: %v", remote)
 	}
 	for name, rejected := range map[string]error{
-		"我们不认对端的证书":        fmt.Errorf("failed to connect: %w", &tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}),
-		"TLS 1.3 下没带客户端证书": fmt.Errorf("dial: %w", remote),
-		"对端不认我们的 CA":       &net.OpError{Op: "remote error", Err: errors.New("tls: unknown certificate authority")},
-		"证书坏了":             &net.OpError{Op: "remote error", Err: errors.New("tls: bad certificate")},
+		"we do not accept the peer's certificate":  fmt.Errorf("failed to connect: %w", &tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}),
+		"no client certificate sent under TLS 1.3": fmt.Errorf("dial: %w", remote),
+		"the peer does not accept our CA":          &net.OpError{Op: "remote error", Err: errors.New("tls: unknown certificate authority")},
+		"the certificate is broken":                &net.OpError{Op: "remote error", Err: errors.New("tls: bad certificate")},
 	} {
 		calls := 0
 		err := Probe(context.Background(), policy(nil), func(context.Context) error {
@@ -124,22 +126,23 @@ func TestProbe_CertRejectedReturnsAfterOneTry(t *testing.T) {
 			return rejected
 		})
 		if calls != 1 || err != rejected {
-			t.Errorf("%s：证书被拒不该重试，calls=%d err=%v", name, calls, err)
+			t.Errorf("%s: a rejected certificate must not be retried, calls=%d err=%v", name, calls, err)
 		}
 	}
 
-	// 别的告警（比如对端内部出错）照常重试
+	// Another alert (the peer failing internally, say) is retried as usual
 	calls := 0
 	_ = Probe(context.Background(), policy(nil), func(context.Context) error {
 		calls++
 		return &net.OpError{Op: "remote error", Err: errors.New("tls: internal error")}
 	})
 	if calls != 3 {
-		t.Errorf("与证书无关的告警该照常重试，calls=%d", calls)
+		t.Errorf("an alert unrelated to certificates must be retried as usual, calls=%d", calls)
 	}
 }
 
-// remoteAlert 握一次手：服务端要客户端证书、客户端不带，返回客户端读到的错误
+// remoteAlert shakes hands once, with the server wanting a client certificate and the client
+// sending none, and returns the error the client read
 func remoteAlert(t *testing.T) error {
 	t.Helper()
 	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -159,11 +162,11 @@ func remoteAlert(t *testing.T) error {
 			c.Close()
 		}
 	}()
-	c, err := tls.Dial("tcp", ln.Addr().String(), &tls.Config{InsecureSkipVerify: true}) // 只为拿到告警，不校验
+	c, err := tls.Dial("tcp", ln.Addr().String(), &tls.Config{InsecureSkipVerify: true}) // only to get at the alert, nothing is verified
 	if err != nil {
 		return err
 	}
 	defer c.Close()
-	_, err = c.Read(make([]byte, 1)) // TLS 1.3 下服务端的拒绝在握手之后的第一次读才到
+	_, err = c.Read(make([]byte, 1)) // under TLS 1.3 the server's refusal arrives on the first read after the handshake
 	return err
 }

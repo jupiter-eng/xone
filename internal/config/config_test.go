@@ -24,7 +24,7 @@ func defaults() demoConf {
 	return demoConf{Addr: "127.0.0.1:5432", Timeout: 5 * time.Second, Retries: 3, Enable: true}
 }
 
-// comps 造一份填好默认值的配置，供 LoadInto 解进去
+// comps builds a configuration with the defaults filled in, for LoadInto to decode into
 func comps(t *testing.T) *demoConf {
 	t.Helper()
 	c := defaults()
@@ -46,21 +46,22 @@ func TestLoad_DefaultsKeptOnUnsetFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c.Addr != "10.0.0.1:1" {
-		t.Errorf("写了的字段应被覆盖，got=%q", c.Addr)
+		t.Errorf("a field that was written must be overridden, got=%q", c.Addr)
 	}
 	if c.Timeout != 5*time.Second || c.Retries != 3 || !c.Enable {
-		t.Errorf("没写的字段应保留默认值，got=%+v", *c)
+		t.Errorf("a field that was not written must keep its default, got=%+v", *c)
 	}
 }
 
 func TestLoad_ExplicitZeroOverridesDefault(t *testing.T) {
-	// 这正是 *bool 指针模式想解决的问题，预填默认值天然就有这个语义
+	// This is exactly the problem the *bool pointer pattern tries to solve, and pre-filled defaults
+	// have those semantics to begin with
 	c := comps(t)
 	if err := LoadInto(write(t, "Demo:\n  Enable: false\n  Retries: 0\n  Addr: \"\"\n"), "Demo", &c); err != nil {
 		t.Fatal(err)
 	}
 	if c.Enable || c.Retries != 0 || c.Addr != "" {
-		t.Errorf("显式写的零值应覆盖默认值，got=%+v", *c)
+		t.Errorf("a zero value written explicitly must override the default, got=%+v", *c)
 	}
 }
 
@@ -85,9 +86,9 @@ func TestLoad_DurationParsedNatively(t *testing.T) {
 
 func TestLoad_BadDurationFormatFailsFast(t *testing.T) {
 	c := comps(t)
-	err := LoadInto(write(t, "Demo:\n  Timeout: 那么久\n"), "Demo", &c)
+	err := LoadInto(write(t, "Demo:\n  Timeout: that long\n"), "Demo", &c)
 	if err == nil {
-		t.Fatal("时长格式不对应该启动失败，而不是静默变成 0")
+		t.Fatal("a malformed duration must fail startup rather than quietly becoming 0")
 	}
 }
 
@@ -95,28 +96,29 @@ func TestLoad_MisspelledFieldIsError(t *testing.T) {
 	c := comps(t)
 	err := LoadInto(write(t, "Demo:\n  Adrr: \"x\"\n"), "Demo", &c)
 	if err == nil {
-		t.Fatal("拼错的字段应该报错，而不是被忽略")
+		t.Fatal("a misspelled field must be an error rather than being ignored")
 	}
 	if !strings.Contains(err.Error(), "Demo") {
-		t.Errorf("错误里应指明是哪个块出的问题，got=%v", err)
+		t.Errorf("the error must name the block the problem is in, got=%v", err)
 	}
 }
 
 func TestUnclaimed_ReportsBlocksNobodyRead(t *testing.T) {
-	// 读是各集成包自己在启动钩子里做的，所以「没人要」这件事只有等钩子
-	// 全跑完才知道。框架据此报错，它同时覆盖「key 拼错」和「忘了 import」
+	// Reading is what each integration does in its own start hook, so "nobody wants it" is only
+	// known once every hook has run. The framework reports it then, which covers both "a misspelled
+	// key" and "a forgotten import"
 	c := comps(t)
 	if err := LoadInto(write(t, "Demo:\n  Addr: x\nXRedis:\n  Addr: y\n"), "Demo", &c); err != nil {
 		t.Fatal(err)
 	}
 	got := Unclaimed()
 	if len(got) != 1 || got[0] != "XRedis" {
-		t.Errorf("只有没人读过的 XRedis 该被报出来，got=%v", got)
+		t.Errorf("the unread XRedis alone must be reported, got=%v", got)
 	}
 }
 
 func TestLoad_Placeholder(t *testing.T) {
-	t.Run("环境变量已设置", func(t *testing.T) {
+	t.Run("the environment variable is set", func(t *testing.T) {
 		t.Setenv("XONE_T_ADDR", "10.1.1.1:9")
 		c := comps(t)
 		if err := LoadInto(write(t, "Demo:\n  Addr: \"${XONE_T_ADDR}\"\n"), "Demo", &c); err != nil {
@@ -127,43 +129,43 @@ func TestLoad_Placeholder(t *testing.T) {
 		}
 	})
 
-	t.Run("未设置时用默认值", func(t *testing.T) {
+	t.Run("unset, the default is used", func(t *testing.T) {
 		os.Unsetenv("XONE_T_UNSET")
 		c := comps(t)
 		if err := LoadInto(write(t, "Demo:\n  Addr: \"${XONE_T_UNSET:1.2.3.4:5}\"\n"), "Demo", &c); err != nil {
 			t.Fatal(err)
 		}
 		if c.Addr != "1.2.3.4:5" {
-			t.Errorf("默认值里含冒号也应完整保留，got=%q", c.Addr)
+			t.Errorf("a default holding a colon must be kept whole, got=%q", c.Addr)
 		}
 	})
 
-	t.Run("必填未设置则启动失败", func(t *testing.T) {
+	t.Run("a required one unset fails startup", func(t *testing.T) {
 		os.Unsetenv("XONE_T_REQUIRED")
 		c := comps(t)
 		err := LoadInto(write(t, "Demo:\n  Addr: \"${XONE_T_REQUIRED}\"\n"), "Demo", &c)
 		if err == nil || !strings.Contains(err.Error(), "XONE_T_REQUIRED") {
-			t.Fatalf("必填占位符缺失应报错并指出变量名，got=%v", err)
+			t.Fatalf("a missing required placeholder must be an error naming the variable, got=%v", err)
 		}
 	})
 
-	t.Run("显式空串覆盖默认值", func(t *testing.T) {
+	t.Run("an explicit empty string overrides the default", func(t *testing.T) {
 		t.Setenv("XONE_T_EMPTY", "")
 		c := comps(t)
 		if err := LoadInto(write(t, "Demo:\n  Addr: \"${XONE_T_EMPTY:fallback}\"\n"), "Demo", &c); err != nil {
 			t.Fatal(err)
 		}
 		if c.Addr != "" {
-			t.Errorf("显式设为空串是有效取值，应覆盖默认值，got=%q", c.Addr)
+			t.Errorf("an empty string set explicitly is a valid value and must override the default, got=%q", c.Addr)
 		}
 	})
 }
 
 func TestLoad_PlaceholderFillsNonStringField(t *testing.T) {
-	// 文档把 ${VAR} 写成一条通用规则，那它就得对所有字段类型成立。
-	// 解析时整个 ${PORT:8080} 是一段文本，标量因此被打上 !!str；
-	// 替换之后不重新判定类型的话，这些字段全都以
-	// "cannot unmarshal !!str into int" 失败——占位符沦为字符串字段专用。
+	// The documentation presents ${VAR} as a general rule, so it has to hold for every field type.
+	// While parsing, the whole ${PORT:8080} is one piece of text and the scalar is tagged !!str;
+	// without deciding the type again after the replacement, every such field would fail with
+	// "cannot unmarshal !!str into int" and placeholders would be for string fields alone.
 	type demo struct {
 		Retries int           `yaml:"Retries"`
 		Enable  bool          `yaml:"Enable"`
@@ -172,7 +174,7 @@ func TestLoad_PlaceholderFillsNonStringField(t *testing.T) {
 		Addr    string        `yaml:"Addr"`
 	}
 
-	t.Run("用默认值", func(t *testing.T) {
+	t.Run("using the default", func(t *testing.T) {
 		os.Unsetenv("XONE_T_N1")
 		c := demo{}
 		body := "Demo:\n  Retries: ${XONE_T_N1:7}\n  Enable: ${XONE_T_N1:true}\n" +
@@ -186,51 +188,53 @@ func TestLoad_PlaceholderFillsNonStringField(t *testing.T) {
 		}
 	})
 
-	t.Run("取环境变量", func(t *testing.T) {
+	t.Run("taking the environment variable", func(t *testing.T) {
 		t.Setenv("XONE_T_N2", "42")
 		c := demo{}
 		if err := LoadInto(write(t, "Demo:\n  Retries: ${XONE_T_N2}\n"), "Demo", &c); err != nil {
 			t.Fatal(err)
 		}
 		if c.Retries != 42 {
-			t.Errorf("Retries 应取自环境变量，got=%d", c.Retries)
+			t.Errorf("Retries must come from the environment variable, got=%d", c.Retries)
 		}
 	})
 
-	t.Run("裸数字进时长字段照样报错", func(t *testing.T) {
-		// 重新判定类型不能顺手把这条保证放掉：${T:30} 和直接写 30 是一回事，
-		// 写的人想要 30 秒，不是 30 纳秒
+	t.Run("a bare number in a duration field is still an error", func(t *testing.T) {
+		// Deciding the type again must not casually drop this promise: ${T:30} is the same thing as
+		// writing 30, and whoever wrote it wanted 30 seconds, not 30 nanoseconds
 		c := demo{}
 		if err := LoadInto(write(t, "Demo:\n  Timeout: ${XONE_T_N3:30}\n"), "Demo", &c); err == nil {
-			t.Fatal("占位符里的裸数字同样应当报错")
+			t.Fatal("a bare number inside a placeholder must be an error just the same")
 		}
 	})
 
-	t.Run("加了引号就仍按字符串处理", func(t *testing.T) {
-		// 数字形态的密码、版本号指望这一条：显式引号是明确的意图，不该被重新判定
+	t.Run("quotes keep it a string", func(t *testing.T) {
+		// A numeric-looking password or version depends on this: explicit quotes are an explicit
+		// intent and must not be decided again
 		t.Setenv("XONE_T_N4", "0123456")
 		c := demo{}
 		if err := LoadInto(write(t, "Demo:\n  Addr: \"${XONE_T_N4}\"\n"), "Demo", &c); err != nil {
 			t.Fatal(err)
 		}
 		if c.Addr != "0123456" {
-			t.Errorf("引号里的值应原样进字符串字段，got=%q", c.Addr)
+			t.Errorf("a quoted value must reach a string field as it is, got=%q", c.Addr)
 		}
 	})
 
-	t.Run("不加引号的数字进字符串字段也不丢前导零", func(t *testing.T) {
+	t.Run("an unquoted number in a string field keeps its leading zero", func(t *testing.T) {
 		t.Setenv("XONE_T_N5", "0123456")
 		c := demo{}
 		if err := LoadInto(write(t, "Demo:\n  Addr: ${XONE_T_N5}\n"), "Demo", &c); err != nil {
 			t.Fatal(err)
 		}
 		if c.Addr != "0123456" {
-			t.Errorf("重新判定类型不该改变字符串字段读到的内容，got=%q", c.Addr)
+			t.Errorf("deciding the type again must not change what a string field reads, got=%q", c.Addr)
 		}
 	})
 
-	t.Run("空值不重新判定", func(t *testing.T) {
-		// "" 重新判定会变成 null，把结构体里预填的默认值清成零值
+	t.Run("an empty value is not decided again", func(t *testing.T) {
+		// Decided again, "" would become null and clear the default pre-filled in the struct to the
+		// zero value
 		t.Setenv("XONE_T_N6", "")
 		c := demo{Retries: 3}
 		if err := LoadInto(write(t, "Demo:\n  Addr: ${XONE_T_N6}\n"), "Demo", &c); err != nil {
@@ -243,8 +247,10 @@ func TestLoad_PlaceholderFillsNonStringField(t *testing.T) {
 }
 
 func TestLoad_PlaceholderInMapAndSliceTypedByExpandedContent(t *testing.T) {
-	// 展开是在整棵节点树上做的，map 的 value、切片元素、嵌套结构体都要对。
-	// 尤其是 map[string]string：重新判定类型不该把 "123" 变成读不进 string 的东西
+	// The expansion happens over the whole node tree, so a map's values, a slice's elements and a
+	// nested struct all have to come out right.
+	// map[string]string above all: deciding the type again must not turn "123" into something a
+	// string cannot read
 	os.Unsetenv("XONE_T_C1")
 	type demo struct {
 		Labels  map[string]string `yaml:"Labels"`
@@ -267,37 +273,39 @@ func TestLoad_PlaceholderInMapAndSliceTypedByExpandedContent(t *testing.T) {
 	}
 	want := map[string]string{"env": "dev", "ver": "123", "on": "true"}
 	if !reflect.DeepEqual(c.Labels, want) {
-		t.Errorf("map 的 string value 应原样是文本，got=%v", c.Labels)
+		t.Errorf("a map's string value must stay text as it is, got=%v", c.Labels)
 	}
 	if !reflect.DeepEqual(c.Names, []string{"a", "7"}) {
-		t.Errorf("字符串切片，got=%v", c.Names)
+		t.Errorf("a slice of strings, got=%v", c.Names)
 	}
 	if !reflect.DeepEqual(c.Buckets, []float64{0.1, 1}) {
-		t.Errorf("数值切片，got=%v", c.Buckets)
+		t.Errorf("a slice of numbers, got=%v", c.Buckets)
 	}
 	if c.Nested.Max != 9 {
-		t.Errorf("嵌套结构体，got=%d", c.Nested.Max)
+		t.Errorf("a nested struct, got=%d", c.Nested.Max)
 	}
 }
 
 func TestLoad_PlaceholderSpecialCharsDoNotBreakStructure(t *testing.T) {
-	// 在解析后的节点上展开，而不是对原始字节做文本替换 —— 否则这是条注入路径
+	// Expanded on the parsed nodes rather than by replacing text in the raw bytes -- otherwise this
+	// would be an injection path
 	t.Setenv("XONE_T_INJECT", "a: b\nEvil: true")
 	c := comps(t)
 	if err := LoadInto(write(t, "Demo:\n  Addr: \"${XONE_T_INJECT}\"\n"), "Demo", &c); err != nil {
 		t.Fatal(err)
 	}
 	if c.Addr != "a: b\nEvil: true" {
-		t.Errorf("环境变量的值应原样进字段，不该被当成 YAML 解析，got=%q", c.Addr)
+		t.Errorf("an environment variable's value must reach the field as it is and must not be parsed as YAML, got=%q", c.Addr)
 	}
 
-	// 不加引号时标量会被重新判定类型，那一步同样不能让值逃出标量本身
+	// Without quotes the scalar's type is decided again, and that step must not let the value
+	// escape the scalar either
 	c2 := comps(t)
 	if err := LoadInto(write(t, "Demo:\n  Addr: ${XONE_T_INJECT}\n"), "Demo", c2); err != nil {
 		t.Fatal(err)
 	}
 	if c2.Addr != "a: b\nEvil: true" {
-		t.Errorf("重新判定类型后仍应是一个标量，got=%q", c2.Addr)
+		t.Errorf("it must still be one scalar after the type is decided again, got=%q", c2.Addr)
 	}
 }
 
@@ -307,7 +315,7 @@ func TestLoad_EmptyFileUsesAllDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	if *c != defaults() {
-		t.Errorf("空文件应保持全部默认值，got=%+v", *c)
+		t.Errorf("an empty file must keep every default, got=%+v", *c)
 	}
 }
 
@@ -317,56 +325,58 @@ func TestLoad_MissingBlockKeepsDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	if *c != defaults() {
-		t.Errorf("块为空应保持默认值，got=%+v", *c)
+		t.Errorf("an empty block must keep the defaults, got=%+v", *c)
 	}
 }
 
 func TestLoad_FileNotFound(t *testing.T) {
 	c := comps(t)
 	if err := LoadInto(filepath.Join(t.TempDir(), "nope.yml"), "Demo", c); err == nil {
-		t.Fatal("文件不存在应报错")
+		t.Fatal("a file that does not exist must be an error")
 	}
 }
 
 func TestLoad_DurationFields(t *testing.T) {
-	// 各模块的超时/周期都直接用 time.Duration，靠的是 yaml.v3 原生认识时长字符串。
-	// 这是个横跨所有模块的假设，在这里钉住：改了依赖会先在这里炸，
-	// 而不是等到某个模块的超时悄悄变成 0
+	// Every module's timeouts and periods use time.Duration directly, which rests on yaml.v3
+	// recognizing duration strings natively.
+	// That is an assumption spanning every module and is pinned here: changing the dependency blows
+	// up here first, rather than some module's timeout quietly becoming 0
 	type demo struct {
 		Timeout time.Duration `yaml:"Timeout"`
 		Rotate  time.Duration `yaml:"Rotate"`
 	}
 
-	t.Run("认识时长字符串", func(t *testing.T) {
-		c := demo{Rotate: 24 * time.Hour} // 预填的默认值
+	t.Run("duration strings are recognized", func(t *testing.T) {
+		c := demo{Rotate: 24 * time.Hour} // the pre-filled default
 		if err := LoadInto(write(t, "Demo:\n  Timeout: 1h30m\n"), "Demo", &c); err != nil {
 			t.Fatal(err)
 		}
 		if c.Timeout != 90*time.Minute {
-			t.Errorf("Timeout 应为 90m，got=%v", c.Timeout)
+			t.Errorf("Timeout must be 90m, got=%v", c.Timeout)
 		}
 		if c.Rotate != 24*time.Hour {
-			t.Errorf("没配的字段应保持默认值，got=%v", c.Rotate)
+			t.Errorf("an unconfigured field must keep its default, got=%v", c.Rotate)
 		}
 	})
 
-	t.Run("裸数字要报错", func(t *testing.T) {
-		// 写 Timeout: 30 的人想要 30 秒，Go 的零值语义会给他 30 纳秒。
-		// 启动就失败好过线上超时形同虚设
+	t.Run("a bare number is an error", func(t *testing.T) {
+		// Whoever writes Timeout: 30 wants 30 seconds, and Go's semantics would give them 30
+		// nanoseconds. Failing at startup beats a timeout that means nothing in production
 		c := demo{}
 		err := LoadInto(write(t, "Demo:\n  Timeout: 30\n"), "Demo", &c)
 		if err == nil {
-			t.Fatal("裸数字应当报错，要求写明单位")
+			t.Fatal("a bare number must be an error asking for a unit")
 		}
 		if !strings.Contains(err.Error(), "Demo") {
-			t.Errorf("错误应指明是哪一块配置，got=%v", err)
+			t.Errorf("the error must name the configuration block, got=%v", err)
 		}
 	})
 }
 
 func TestLoad_UnclaimedTopLevelKeyIsError(t *testing.T) {
-	// 多半是拼错了，或者忘了 import 对应的集成包。
-	// 静默忽略的话，使用者会盯着一份"明明配了"的文件查半天
+	// Most likely it is misspelled, or the matching integration was never imported.
+	// Ignored quietly, the caller spends a long time staring at a file that "clearly has it
+	// configured"
 	type demo struct {
 		Addr string `yaml:"Addr"`
 	}
@@ -375,17 +385,18 @@ func TestLoad_UnclaimedTopLevelKeyIsError(t *testing.T) {
 	if err := LoadInto(write(t, "Demo:\n  Addr: a\nXGrom:\n  DSN: x\n"), "Demo", &c); err != nil {
 		t.Fatal(err)
 	}
-	// 读是各集成包自己在启动钩子里做的，所以这件事只有等钩子全跑完才知道，
-	// 由框架在那时检查 Unclaimed
+	// Reading is what each integration does in its own start hook, so this is only known once every
+	// hook has run, and the framework checks Unclaimed then
 	got := Unclaimed()
 	if len(got) != 1 || got[0] != "XGrom" {
-		t.Errorf("拼错的顶层 key 要被报出来，got=%v", got)
+		t.Errorf("a misspelled top-level key must be reported, got=%v", got)
 	}
 }
 
 func TestLoad_DefaultOverrideSemantics(t *testing.T) {
-	// 默认值预填在结构体里，所以「文件里写了会发生什么」必须钉死。
-	// 两种容器的行为不一样，写默认值的人必须知道
+	// The defaults are pre-filled in the structs, so "what happens when the file writes it" has to
+	// be pinned down. The two kinds of container behave differently, and whoever writes a default
+	// has to know that
 	type demo struct {
 		Buckets []float64         `yaml:"Buckets"`
 		Labels  map[string]string `yaml:"Labels"`
@@ -397,58 +408,61 @@ func TestLoad_DefaultOverrideSemantics(t *testing.T) {
 		}
 	}
 
-	t.Run("切片是整体替换", func(t *testing.T) {
+	t.Run("a slice is replaced whole", func(t *testing.T) {
 		c := fresh()
 		if err := LoadInto(write(t, "Demo:\n  Buckets: [0.1, 1]\n"), "Demo", &c); err != nil {
 			t.Fatal(err)
 		}
 		if !reflect.DeepEqual(c.Buckets, []float64{0.1, 1}) {
-			t.Errorf("配了就该整体换掉，不能和默认值混在一起，got=%v", c.Buckets)
+			t.Errorf("one that is configured must be replaced whole and must not blend into the default, got=%v", c.Buckets)
 		}
 	})
 
-	t.Run("map 是合并而不是替换", func(t *testing.T) {
-		// 所以 map 类型的字段不要预填默认值：使用者删不掉预填的条目。
-		// 这条钉在这里，免得哪天有人给 ConstLabels 之类加个「合理的默认」
+	t.Run("a map is merged rather than replaced", func(t *testing.T) {
+		// Which is why a map field must have no pre-filled default: a caller cannot delete a
+		// pre-filled entry.
+		// It is pinned here so that nobody gives something like ConstLabels a "sensible default" one
+		// day
 		c := fresh()
 		if err := LoadInto(write(t, "Demo:\n  Labels:\n    a: \"1\"\n"), "Demo", &c); err != nil {
 			t.Fatal(err)
 		}
 		if c.Labels["pre"] != "filled" {
-			t.Errorf("map 的默认值不会被覆盖掉，这正是不该给 map 预填默认值的原因，got=%v", c.Labels)
+			t.Errorf("a map's default is never overridden, which is exactly why a map gets no pre-filled default, got=%v", c.Labels)
 		}
 	})
 
-	t.Run("没配的字段保持默认", func(t *testing.T) {
+	t.Run("an unconfigured field keeps its default", func(t *testing.T) {
 		c := fresh()
 		if err := LoadInto(write(t, "Demo: {}\n"), "Demo", &c); err != nil {
 			t.Fatal(err)
 		}
 		if !reflect.DeepEqual(c.Buckets, []float64{1, 2, 3}) {
-			t.Errorf("没配就该保持默认，got=%v", c.Buckets)
+			t.Errorf("one that is unconfigured must keep its default, got=%v", c.Buckets)
 		}
 	})
 }
 
 func TestLoad_DuplicateTopLevelKeyIsError(t *testing.T) {
-	// 转成 map 的那一刻重复信息就没了，后面的严格解码再也看不见它——
-	// 于是同一个块写两遍能正常加载，静默地以后一份为准
+	// The moment it becomes a map the duplicate is gone and the strict decoding never sees it again
+	// -- so the same block written twice loads fine, quietly going by the second one
 	c := comps(t)
 	err := LoadInto(write(t, "Demo:\n  Retries: 1\nOther: {}\nDemo:\n  Retries: 2\n"), "Demo", &c)
 	if err == nil {
-		t.Fatalf("重复的顶层 key 应当报错，实际解出 Retries=%d", c.Retries)
+		t.Fatalf("a duplicate top-level key must be an error, it decoded Retries=%d", c.Retries)
 	}
 	for _, want := range []string{"Demo", "duplicate", "line 4", "line 1"} {
 		if !strings.Contains(err.Error(), want) {
-			t.Errorf("错误里该出现 %q（要能定位到行），got=%v", want, err)
+			t.Errorf("the error must hold %q (the line has to be locatable), got=%v", want, err)
 		}
 	}
 }
 
-// ---- Has：「配了才初始化」的判据 ----
+// ---- Has: what "initialize it only when it is configured" goes by ----
 
 func TestHas_DistinguishesSetFromUnset(t *testing.T) {
-	// 判错一次，可选组件要么白建一套，要么配了也不起
+	// Decided wrong once, an optional component either builds a set for nothing or does not come up
+	// although it was configured
 	Reset()
 	t.Cleanup(Reset)
 	if err := Load(write(t, "XRedis:\n  Addr: 127.0.0.1:6379\n")); err != nil {
@@ -456,15 +470,16 @@ func TestHas_DistinguishesSetFromUnset(t *testing.T) {
 	}
 
 	if !Has("XRedis") {
-		t.Error("写了的块应当报告有")
+		t.Error("a block that was written must be reported as there")
 	}
 	if Has("XGorm") {
-		t.Error("没写的块不该报告有")
+		t.Error("a block that was not written must not be reported as there")
 	}
 }
 
 func TestHas_EmptyBlockCountsAsUnset(t *testing.T) {
-	// 「XCache:」后面什么都不写，是「我先占个位」而不是「按默认值给我建一套」
+	// "XCache:" with nothing after it is "I am holding the place", not "build me a set on the
+	// defaults"
 	Reset()
 	t.Cleanup(Reset)
 	if err := Load(write(t, "XCache:\nXRedis:\n  Addr: 127.0.0.1:6379\n")); err != nil {
@@ -472,40 +487,42 @@ func TestHas_EmptyBlockCountsAsUnset(t *testing.T) {
 	}
 
 	if Has("XCache") {
-		t.Error("空块不该让可选组件白建一套")
+		t.Error("an empty block must not have an optional component build a set for nothing")
 	}
 	if !Has("XRedis") {
-		t.Error("同一个文件里写实了的块要照常报告有")
+		t.Error("a block really written in the same file must still be reported as there")
 	}
 }
 
 func TestHas_LoadsFirstIfNotLoaded(t *testing.T) {
-	// 可选组件靠 Has 决定建不建。还没加载就报告没有的话，一个在 Run 之前
-	// 问了一句的组件会以为自己没配，从此静默缺席
+	// An optional component decides whether to build by Has. Reporting none before anything is
+	// loaded would have a component that asked once before Run believe it is unconfigured and stay
+	// quietly absent from then on
 	Reset()
 	t.Cleanup(Reset)
 	t.Setenv(EnvKey, write(t, "XRedis:\n  Addr: x\n"))
 
 	if !Has("XRedis") {
-		t.Error("第一次问的时候该先加载，而不是报告没有")
+		t.Error("the first question must load first rather than report none")
 	}
 }
 
-// ---- Unclaimed 的其余语义 ----
+// ---- Unclaimed's remaining semantics ----
 
 func TestUnclaimed_SortedByName(t *testing.T) {
-	// 顺序稳定，错误文案才可复现
+	// A stable order is what makes the error text reproducible
 	c := comps(t)
 	if err := LoadInto(write(t, "Demo:\n  Addr: x\nXTypo:\n  Foo: 1\nXAlso:\n  Bar: 2\n"), "Demo", &c); err != nil {
 		t.Fatal(err)
 	}
 	if got := Unclaimed(); len(got) != 2 || got[0] != "XAlso" || got[1] != "XTypo" {
-		t.Errorf("want [XAlso XTypo]，got=%v", got)
+		t.Errorf("want [XAlso XTypo], got=%v", got)
 	}
 }
 
 func TestUnclaimed_ReadingAbsentBlockCountsAsClaim(t *testing.T) {
-	// 可选组件都是「先读了再看有没有」，那种读不该把别的块连累成没人认领
+	// An optional component always "reads first and looks afterwards", and such a read must not
+	// drag another block into counting as unclaimed
 	c := comps(t)
 	if err := LoadInto(write(t, "Demo:\n  Addr: x\n"), "Demo", &c); err != nil {
 		t.Fatal(err)
@@ -514,20 +531,20 @@ func TestUnclaimed_ReadingAbsentBlockCountsAsClaim(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := Unclaimed(); len(got) != 0 {
-		t.Errorf("want 空，got=%v", got)
+		t.Errorf("want empty, got=%v", got)
 	}
 }
 
 func TestUnclaimed_EmptyBeforeLoad(t *testing.T) {
 	Reset()
 	if got := Unclaimed(); len(got) != 0 {
-		t.Errorf("want 空，got=%v", got)
+		t.Errorf("want empty, got=%v", got)
 	}
 }
 
 func TestLoad_EachLoadResetsClaims(t *testing.T) {
-	// 同一个进程里跑第二次时，上一轮的认领记录不能留下来——
-	// 那会让这一轮真正没人读的块被漏报
+	// Running a second time in the same process must leave no claims behind from the previous round
+	// -- that would miss a block this round really did not read
 	c := comps(t)
 	if err := LoadInto(write(t, "Demo:\n  Addr: x\n"), "Demo", &c); err != nil {
 		t.Fatal(err)
@@ -539,7 +556,7 @@ func TestLoad_EachLoadResetsClaims(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := Unclaimed(); len(got) != 1 || got[0] != "Demo" {
-		t.Errorf("上一轮的认领记录不该留到这一轮，got=%v", got)
+		t.Errorf("the previous round's claims must not reach this one, got=%v", got)
 	}
 }
 
@@ -550,14 +567,15 @@ func TestUnmarshal_EmptyBlockKeepsDefaults(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c.Addr != want {
-		t.Errorf("空块不该把默认值抹掉，got=%q", c.Addr)
+		t.Errorf("an empty block must not wipe the defaults out, got=%q", c.Addr)
 	}
 }
 
 func TestHas_AskingCountsAsClaim(t *testing.T) {
-	// 「XRedis:」这样的空块曾经让启动直接失败：Has 返回 false，那个包就此
-	// 跳过、不再 Unmarshal，于是这个 key 没人认领。而 Unclaimed 报出来的
-	// 两条原因（拼错了、忘了 import）都不成立，照着查什么都查不出来
+	// An empty block such as "XRedis:" used to fail startup outright: Has returned false, the
+	// package skipped it and never Unmarshalled, so the key was claimed by nobody. And neither
+	// reason Unclaimed reports (a misspelling, a forgotten import) applied, so following them found
+	// nothing
 	Reset()
 	t.Cleanup(Reset)
 	if err := Load(write(t, "XRedis:\n")); err != nil {
@@ -565,10 +583,10 @@ func TestHas_AskingCountsAsClaim(t *testing.T) {
 	}
 
 	if Has("XRedis") {
-		t.Fatal("空块应当报告没配")
+		t.Fatal("an empty block must be reported as unconfigured")
 	}
 	if got := Unclaimed(); len(got) != 0 {
-		t.Errorf("问过就算有人要，不该再被报成没人认领，got=%v", got)
+		t.Errorf("asking counts as wanting it and it must no longer be reported as unclaimed, got=%v", got)
 	}
 }
 
@@ -580,21 +598,21 @@ func TestHas_AskingNonEmptyBlockCountsAsClaim(t *testing.T) {
 	}
 
 	if !Has("XRedis") {
-		t.Fatal("写实了的块应当报告有")
+		t.Fatal("a block really written must be reported as there")
 	}
 	if got := Unclaimed(); len(got) != 0 {
-		t.Errorf("want 空，got=%v", got)
+		t.Errorf("want empty, got=%v", got)
 	}
 }
 
 func TestLoad_PlaceholderExpandingToEmptyKeepsDefault(t *testing.T) {
-	// 展开成空等于这一项没写：非字符串字段从前以
-	// cannot unmarshal !!str "" into int 失败，字符串字段则被清成空串
+	// Expanding to empty means the field was not written: a non-string field used to fail with
+	// cannot unmarshal !!str "" into int, and a string field was cleared to an empty string
 	os.Unsetenv("XONE_T_EMPTY")
 	t.Setenv("XONE_T_BLANK", "")
 	for name, v := range map[string]string{
-		"默认值为空":  "${XONE_T_EMPTY:}",
-		"环境变量为空": "${XONE_T_BLANK}",
+		"an empty default":              "${XONE_T_EMPTY:}",
+		"an empty environment variable": "${XONE_T_BLANK}",
 	} {
 		t.Run(name, func(t *testing.T) {
 			body := "Demo:\n  Addr: " + v + "\n  Timeout: " + v + "\n  Retries: " + v + "\n  Enable: " + v + "\n"
@@ -603,14 +621,15 @@ func TestLoad_PlaceholderExpandingToEmptyKeepsDefault(t *testing.T) {
 				t.Fatal(err)
 			}
 			if *c != defaults() {
-				t.Errorf("展开为空的字段该保持默认值，got=%+v", *c)
+				t.Errorf("a field expanding to empty must keep its default, got=%+v", *c)
 			}
 		})
 	}
 }
 
 func TestLoad_QuotedEmptyPlaceholderIsEmptyString(t *testing.T) {
-	// 引号是明确的「按字符串处理」，真想要空串就这样写
+	// Quotes are an explicit "treat it as a string", and an empty string that is really wanted is
+	// written that way
 	os.Unsetenv("XONE_T_EMPTY")
 	c := comps(t)
 	if err := LoadInto(write(t, "Demo:\n  Addr: \"${XONE_T_EMPTY:}\"\n"), "Demo", c); err != nil {
@@ -622,7 +641,8 @@ func TestLoad_QuotedEmptyPlaceholderIsEmptyString(t *testing.T) {
 }
 
 func TestLoad_AnchorsWorkAcrossTopLevelBlocks(t *testing.T) {
-	// 各块是分开解码的，从前别名指向别的块里的锚点时报 unknown anchor
+	// Each block is decoded separately, and an alias pointing at an anchor inside another block used
+	// to report unknown anchor
 	body := "Shared: &timeouts\n  Timeout: 7s\n  Retries: 9\n" +
 		"Demo:\n  <<: *timeouts\n  Addr: h:1\n" +
 		"Other:\n  Addr: &addr o:1\n" +
@@ -639,7 +659,7 @@ func TestLoad_AnchorsWorkAcrossTopLevelBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 	if third.Addr != "o:1" {
-		t.Errorf("标量别名该解出锚点的值，got=%q", third.Addr)
+		t.Errorf("a scalar alias must resolve to the anchor's value, got=%q", third.Addr)
 	}
 }
 
@@ -671,7 +691,8 @@ func TestLoad_ProfileFileCanOverrideAliasExpandedFields(t *testing.T) {
 }
 
 func TestLoad_TooManyAliasExpansionsIsError(t *testing.T) {
-	// 别名在加载时就地展开成副本，一份刻意构造的「十亿笑」会把内存吃光
+	// Aliases are expanded into copies while loading, and a deliberately built "billion laughs"
+	// would eat the memory up
 	var b strings.Builder
 	b.WriteString("L0: &l0 [x, x, x, x, x, x, x, x, x, x]\n")
 	for i := 1; i <= 8; i++ {
@@ -686,13 +707,14 @@ func TestLoad_TooManyAliasExpansionsIsError(t *testing.T) {
 	}
 	err := LoadInto(write(t, b.String()), "Demo", comps(t))
 	if err == nil || !strings.Contains(err.Error(), "alias") {
-		t.Fatalf("展开后的规模该有上限，got=%v", err)
+		t.Fatalf("the size after expansion must have an upper bound, got=%v", err)
 	}
 }
 
 func TestDecodeStrict_MissingTagErrorExplainsFix(t *testing.T) {
-	// yaml.v3 对没写 tag 的字段只认全小写：照着字段名写 Endpoint，报的是
-	// 「field Endpoint not found」——字段明明就叫这个。嵌套的一样要提示到
+	// yaml.v3 recognizes an untagged field only in all lowercase: writing Endpoint as the field is
+	// named reports "field Endpoint not found" -- while the field is called exactly that. A nested
+	// one has to get the hint as well
 	type inner struct{ Host string }
 	var c struct {
 		Endpoint string
@@ -705,21 +727,22 @@ func TestDecodeStrict_MissingTagErrorExplainsFix(t *testing.T) {
 		}
 		err := DecodeStrict(n.Content[0], &c)
 		if err == nil {
-			t.Fatalf("%s: 没写 tag 的字段照着字段名写，yaml.v3 本来就不认", src)
+			t.Fatalf("%s: an untagged field written as the field is named is not recognized by yaml.v3 to begin with", src)
 		}
 		var te *yaml.TypeError
 		if !errors.As(err, &te) {
-			t.Errorf("%s: 原始的 yaml 错误要用 %%w 保住，got=%v", src, err)
+			t.Errorf("%s: the original yaml error has to be kept with %%w, got=%v", src, err)
 		}
 		if !strings.Contains(err.Error(), "has no yaml tag") || !strings.Contains(err.Error(), "`yaml:") {
-			t.Errorf("%s: 报错里该说字段没写 tag、该怎么写，got=%v", src, err)
+			t.Errorf("%s: the error must say the field has no tag and how to write it, got=%v", src, err)
 		}
 	}
 }
 
 func TestDecodeStrict_KeyOneLevelTooHighPointsToItsBlock(t *testing.T) {
-	// 字段从平铺挪进子块之后（XGin 的 CertFile 挪进 TLS:），照旧写法写的使用者
-	// 该看到往哪挪，而不只是「没有这个字段」。两个子块都有同名字段时不猜
+	// Once a field has moved from the top level into a block (xgin's CertFile into TLS:), a caller
+	// writing it the old way should see where it moved to rather than only "no such field". With two
+	// blocks holding a field of the same name, nothing is guessed at
 	type tlsBlock struct {
 		CertFile string `yaml:"CertFile"`
 		CAFile   string `yaml:"CAFile"`
@@ -733,7 +756,7 @@ func TestDecodeStrict_KeyOneLevelTooHighPointsToItsBlock(t *testing.T) {
 		Proxy *other   `yaml:"Proxy"`
 	}
 	for src, want := range map[string]string{
-		"CertFile: a": "field CertFile not found in type struct", // 前缀照旧
+		"CertFile: a": "field CertFile not found in type struct", // the prefix is unchanged
 		"Nope: a":     "field Nope not found in type struct",
 		"CAFile: a":   "field CAFile not found in type struct",
 	} {
@@ -743,25 +766,26 @@ func TestDecodeStrict_KeyOneLevelTooHighPointsToItsBlock(t *testing.T) {
 		}
 		err := DecodeStrict(n.Content[0], &c)
 		if err == nil || !strings.Contains(err.Error(), want) {
-			t.Fatalf("%s: 认不出的字段该报出来，got=%v", src, err)
+			t.Fatalf("%s: a field that is not recognized must be reported, got=%v", src, err)
 		}
 		hinted := strings.Contains(err.Error(), "did you mean")
 		switch src {
 		case "CertFile: a":
 			if !strings.Contains(err.Error(), "(did you mean TLS.CertFile? move it under TLS:)") {
-				t.Errorf("%s: 该指出挪到 TLS: 下，got=%v", src, err)
+				t.Errorf("%s: it must point at moving it under TLS:, got=%v", src, err)
 			}
 		default:
 			if hinted {
-				t.Errorf("%s: 子块里没有或不止一个子块有，不该猜，got=%v", src, err)
+				t.Errorf("%s: with no block holding it, or more than one, nothing may be guessed at, got=%v", src, err)
 			}
 		}
 	}
 }
 
 func TestLoad_PlaceholderNullLiteralIsNotTreatedAsUnset(t *testing.T) {
-	// 变量的值恰好是 null / ~ 时，重新判定会把它当成「这一项没写」：
-	// 字段悄悄留在默认值上，启动一切正常，配的值却没生效
+	// When a variable's value happens to be null / ~, deciding again takes it as "this field was not
+	// written": the field quietly stays at its default, startup looks perfectly fine, and the value
+	// that was configured never took effect
 	for _, v := range []string{"null", "~", "Null", "NULL"} {
 		t.Run(v, func(t *testing.T) {
 			t.Setenv("XONE_T_NULLISH", v)
@@ -771,20 +795,21 @@ func TestLoad_PlaceholderNullLiteralIsNotTreatedAsUnset(t *testing.T) {
 				t.Fatal(err)
 			}
 			if c.Addr != v {
-				t.Errorf("字符串字段该拿到字面量 %q，got=%q", v, c.Addr)
+				t.Errorf("a string field must get the literal %q, got=%q", v, c.Addr)
 			}
 
 			c = comps(t)
 			err := LoadInto(write(t, "Demo:\n  Retries: ${XONE_T_NULLISH}\n"), "Demo", c)
 			var te *yaml.TypeError
 			if !errors.As(err, &te) {
-				t.Errorf("非字符串字段该报类型错误，而不是悄悄保持默认值，got err=%v Retries=%d", err, c.Retries)
+				t.Errorf("a non-string field must report a type error rather than quietly keeping its default, got err=%v Retries=%d", err, c.Retries)
 			}
 		})
 	}
 }
 
-// secretElem 自己写 UnmarshalYAML 的集合元素：走的是嵌套的那次 DecodeStrict
+// secretElem is a collection element with an UnmarshalYAML of its own: it goes through the nested
+// DecodeStrict
 type secretElem struct {
 	N int `yaml:"N"`
 }
@@ -795,8 +820,9 @@ func (e *secretElem) UnmarshalYAML(n *yaml.Node) error {
 }
 
 func TestUnmarshal_ExpandedPlaceholderValueNotInError(t *testing.T) {
-	// yaml 的类型错误会带上值的前几个字符。${VAR} 是凭证的推荐写法，
-	// 密码填错了字段，报出来的就是 cannot unmarshal !!str `hunter2...` into int
+	// A yaml type error carries the first few characters of the value. ${VAR} is the recommended
+	// spelling for a credential, and a password written into the wrong field is reported as
+	// cannot unmarshal !!str `hunter2...` into int
 	t.Setenv("XONE_T_SECRET", "hunter2-very-secret")
 	t.Setenv("XONE_T_SHORT", "s3cr3t")
 	type conf struct {
@@ -805,28 +831,28 @@ func TestUnmarshal_ExpandedPlaceholderValueNotInError(t *testing.T) {
 		Items   map[string]secretElem `yaml:"Items"`
 	}
 	for name, body := range map[string]string{
-		"长值":     "Demo:\n  Retries: ${XONE_T_SECRET}\n",
-		"短值":     "Demo:\n  Enable: ${XONE_T_SHORT}\n",
-		"拼在字面量里": "Demo:\n  Retries: pre-${XONE_T_SHORT}\n",
-		"嵌套的元素":  "Demo:\n  Items:\n    a:\n      N: ${XONE_T_SECRET}\n",
+		"a long value":          "Demo:\n  Retries: ${XONE_T_SECRET}\n",
+		"a short value":         "Demo:\n  Enable: ${XONE_T_SHORT}\n",
+		"joined onto a literal": "Demo:\n  Retries: pre-${XONE_T_SHORT}\n",
+		"a nested element":      "Demo:\n  Items:\n    a:\n      N: ${XONE_T_SECRET}\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			var c conf
 			err := LoadInto(write(t, body), "Demo", &c)
 			if err == nil {
-				t.Fatal("类型不对该报错")
+				t.Fatal("the wrong type must be an error")
 			}
 			for _, leak := range []string{"hunter2", "s3cr3t"} {
 				if strings.Contains(err.Error(), leak) {
-					t.Errorf("报错里不该有展开出来的值 %q，got=%v", leak, err)
+					t.Errorf("the error must hold no expanded value %q, got=%v", leak, err)
 				}
 			}
 			if !strings.Contains(err.Error(), "${XONE_T_") {
-				t.Errorf("该换成配置里写的占位符，好看出是哪一项，got=%v", err)
+				t.Errorf("it must be replaced with the placeholder as written, so the field is visible, got=%v", err)
 			}
 			var te *yaml.TypeError
 			if !errors.As(err, &te) {
-				t.Errorf("errors.As 该照样取得到 yaml 的类型错误，got=%v", err)
+				t.Errorf("errors.As must still reach yaml's type error, got=%v", err)
 			}
 		})
 	}
@@ -842,13 +868,14 @@ func TestDecodeStrict_NoTagHintOnRealTypo(t *testing.T) {
 	}
 	err := DecodeStrict(n.Content[0], &c)
 	if err == nil || strings.Contains(err.Error(), "yaml tag") {
-		t.Errorf("拼错的字段该原样报拼错，不该提示 tag，got=%v", err)
+		t.Errorf("a misspelled field must be reported as a misspelling with no hint about a tag, got=%v", err)
 	}
 }
 
 func TestLoad_BadFieldReportsFileAndLine(t *testing.T) {
-	// 严格解码从前是把节点序列化成文本再解的，yaml 报的行号是那段文本里的行号：
-	// 第 6 行的拼错报成 line 2，也不说是哪个文件，profile 文件里的更是无从找起
+	// Strict decoding used to serialize the node back to text and decode that, so the line number
+	// yaml reported was the line inside that text: a misspelling on line 6 was reported as line 2,
+	// with no file named, and one inside a profile file was impossible to find at all
 	type conf struct {
 		Addr    string                `yaml:"Addr"`
 		Retries int                   `yaml:"Retries"`
@@ -856,34 +883,34 @@ func TestLoad_BadFieldReportsFileAndLine(t *testing.T) {
 	}
 	for _, c := range []struct {
 		name    string
-		profile string            // 激活的 profile，空则只有 base
-		files   map[string]string // application.yml 必有
-		file    string            // 报错该点名的文件
-		want    string            // 报错里该有的「:行号: 原因」
+		profile string            // the active profile; empty means base alone
+		files   map[string]string // application.yml is always there
+		file    string            // the file the error must name
+		want    string            // the ":<line>: <reason>" the error must hold
 	}{
-		{"base 文件里拼错", "", map[string]string{
-			"application.yml": "# 注释\nOther:\n  X: 1\nDemo:\n  Addr: a\n  Adrr: b\n",
+		{"a misspelling in the base file", "", map[string]string{
+			"application.yml": "# a comment\nOther:\n  X: 1\nDemo:\n  Addr: a\n  Adrr: b\n",
 		}, "application.yml", ":6: field Adrr not found"},
-		{"类型不对", "", map[string]string{
+		{"the wrong type", "", map[string]string{
 			"application.yml": "Demo:\n\n  Retries: abc\n",
 		}, "application.yml", ":3: cannot unmarshal"},
-		{"profile 文件里拼错", "prod", map[string]string{
+		{"a misspelling in a profile file", "prod", map[string]string{
 			"application.yml":      "Demo:\n  Addr: a\n  Retries: 1\n",
 			"application-prod.yml": "\n\nDemo:\n  Retries: 2\n  Retires: 3\n",
 		}, "application-prod.yml", ":5: field Retires not found"},
-		{"profile 文件里类型不对", "prod", map[string]string{
+		{"the wrong type in a profile file", "prod", map[string]string{
 			"application.yml":      "Demo:\n  Addr: a\n",
 			"application-prod.yml": "Demo:\n  Retries: x\n",
 		}, "application-prod.yml", ":2: cannot unmarshal"},
-		{"两个文件合并出来的块本身类型不对", "prod", map[string]string{
+		{"a block merged from two files is itself the wrong type", "prod", map[string]string{
 			"application.yml":      "Demo:\n\n  Addr:\n    a: 1\n",
 			"application-prod.yml": "Demo:\n  Addr:\n    b: 2\n",
 		}, "application.yml", ":4: cannot unmarshal !!map"},
-		{"import 进来的文件里拼错", "", map[string]string{
+		{"a misspelling in an imported file", "", map[string]string{
 			"application.yml": "XApp:\n  Import: part.yml\nDemo:\n  Addr: a\n",
 			"part.yml":        "Demo:\n  Adrr: b\n",
 		}, "part.yml", ":2: field Adrr not found"},
-		{"嵌套在 UnmarshalYAML 里的那一次", "", map[string]string{
+		{"the one nested inside an UnmarshalYAML", "", map[string]string{
 			"application.yml": "Demo:\n  Items:\n    a:\n      N: 1\n    b:\n      M: 2\n",
 		}, "application.yml", ":6: field M not found"},
 	} {
@@ -895,22 +922,22 @@ func TestLoad_BadFieldReportsFileAndLine(t *testing.T) {
 			var got conf
 			err := LoadInto(base, "Demo", &got)
 			if err == nil {
-				t.Fatal("写错了应当报错")
+				t.Fatal("something written wrong must be an error")
 			}
 			want := filepath.Join(filepath.Dir(base), c.file) + c.want
 			if !strings.Contains(err.Error(), want) {
-				t.Errorf("报错该点名文件和行号 %q，got=%v", want, err)
+				t.Errorf("the error must name the file and the line %q, got=%v", want, err)
 			}
 			var te *yaml.TypeError
 			if !errors.As(err, &te) {
-				t.Errorf("errors.As 该照样取得到 yaml 的类型错误，got=%v", err)
+				t.Errorf("errors.As must still reach yaml's type error, got=%v", err)
 			}
 		})
 	}
 }
 
 func TestDecodeStrict_NonFileNodeReportsItsOwnLine(t *testing.T) {
-	// 没有文件可说时，行号也得是调用方手里那个节点的行号
+	// With no file to name, the line number still has to be that of the node the caller holds
 	var n yaml.Node
 	if err := yaml.Unmarshal([]byte("a: 1\nDemo:\n  Addr: x\n\n  Adrr: y\n"), &n); err != nil {
 		t.Fatal(err)
@@ -918,13 +945,14 @@ func TestDecodeStrict_NonFileNodeReportsItsOwnLine(t *testing.T) {
 	var c demoConf
 	err := DecodeStrict(n.Content[0].Content[3], &c)
 	if err == nil || !strings.Contains(err.Error(), "line 5: field Adrr not found") {
-		t.Errorf("该报原节点的 line 5，got=%v", err)
+		t.Errorf("the original node's line 5 must be reported, got=%v", err)
 	}
 }
 
 func TestLoad_CollectionElementErrorsReportedWithOthers(t *testing.T) {
-	// 自己写 UnmarshalYAML 的元素在检查那一遍里就试解，而不是等到最后才解：
-	// 否则外面有一处写错，元素里的就要等改完、重启一次才看得见
+	// An element with an UnmarshalYAML of its own is tried during the checking pass rather than
+	// decoded only at the end: otherwise one mistake outside would hide the one inside the element
+	// until it is fixed and the process restarted
 	type conf struct {
 		Addr  string                `yaml:"Addr"`
 		Items map[string]secretElem `yaml:"Items"`
@@ -933,14 +961,15 @@ func TestLoad_CollectionElementErrorsReportedWithOthers(t *testing.T) {
 	err := LoadInto(write(t, "Demo:\n  Adrr: a\n  Items:\n    a:\n      M: 1\n"), "Demo", &got)
 	for _, want := range []string{":2: field Adrr not found", ":5: field M not found"} {
 		if err == nil || !strings.Contains(err.Error(), want) {
-			t.Errorf("两处都该报出来，缺 %q，got=%v", want, err)
+			t.Errorf("both must be reported, %q is missing, got=%v", want, err)
 		}
 	}
 }
 
 func TestDecodeStrict_FieldRulesMatchYAML(t *testing.T) {
-	// 未知字段是自己按类型查的，认字段的规则必须和 yaml.v3 一模一样：
-	// 多认一个是拼错放行，少认一个是合法的配置起不来
+	// Unknown fields are looked up by type here, and the rules for recognizing a field have to match
+	// yaml.v3's exactly: one too many lets a misspelling through, and one too few keeps a valid
+	// configuration from starting
 	type base struct {
 		Host string `yaml:"Host"`
 	}
@@ -955,12 +984,12 @@ func TestDecodeStrict_FieldRulesMatchYAML(t *testing.T) {
 	}
 	ok := "Host: h\nPtr: {Host: p}\nList: [{Host: l}]\nAny: {whatever: 1}\nNamed: {a: {Host: n}}\nother: 7\n"
 	bad := map[string]string{
-		"内嵌结构体摊平后的拼错":       "Host: h\nHots: x\n",
-		"指针里的拼错":            "Ptr: {Hots: p}\n",
-		"切片元素里的拼错":          "List: [{Hots: l}]\n",
-		"map 值里的拼错":         "Named: {a: {Hots: n}}\n",
-		"写了 - 的字段":          "Skip: x\n",
-		"inline map 的值类型不对": "other: abc\n",
+		"a misspelling after an embedded struct is flattened": "Host: h\nHots: x\n",
+		"a misspelling inside a pointer":                      "Ptr: {Hots: p}\n",
+		"a misspelling inside a slice element":                "List: [{Hots: l}]\n",
+		"a misspelling inside a map value":                    "Named: {a: {Hots: n}}\n",
+		"a field written with -":                              "Skip: x\n",
+		"the wrong value type for an inline map":              "other: abc\n",
 	}
 	decode := func(src string) (conf, error) {
 		var n yaml.Node
@@ -972,20 +1001,21 @@ func TestDecodeStrict_FieldRulesMatchYAML(t *testing.T) {
 	}
 	c, err := decode(ok)
 	if err != nil {
-		t.Fatalf("合法的配置不该报错：%v", err)
+		t.Fatalf("a valid configuration must not be an error: %v", err)
 	}
 	if c.Host != "h" || c.Ptr.Host != "p" || c.List[0].Host != "l" || c.Named["a"].Host != "n" || c.Extra["other"] != 7 {
 		t.Errorf("got=%+v", c)
 	}
 	for name, src := range bad {
 		if _, err := decode(src); err == nil {
-			t.Errorf("%s：应当报错", name)
+			t.Errorf("%s: this must be an error", name)
 		}
 	}
 }
 
 func TestLoad_MultipleDocumentsIsError(t *testing.T) {
-	// 从前只读第一份文档，--- 之后的整段静默丢掉，连 Unclaimed 都看不见它
+	// Only the first document used to be read, with everything after the --- dropped quietly and
+	// invisible even to Unclaimed
 	for _, body := range []string{
 		"Demo:\n  Addr: a:1\n---\nDemo:\n  Addr: b:1\n",
 		"Demo:\n  Addr: a:1\n---\nOther: 1\n---\n",
@@ -994,13 +1024,14 @@ func TestLoad_MultipleDocumentsIsError(t *testing.T) {
 		err := LoadInto(write(t, body), "Demo", comps(t))
 		if err == nil || !strings.Contains(err.Error(), "multiple YAML documents") ||
 			!strings.Contains(err.Error(), "application-{profile}.yml") {
-			t.Errorf("%q: 多份文档该启动失败，got=%v", body, err)
+			t.Errorf("%q: several documents must fail startup, got=%v", body, err)
 		}
 	}
 }
 
 func TestLoad_LeadingOrTrailingDocumentMarkerStillLoads(t *testing.T) {
-	// 空文档（--- 后面什么都没写、只有注释、~）不算一份：开头一个 ---、结尾多一个 --- 照常加载
+	// An empty document (nothing after the ---, only comments, a ~) does not count as one: a --- at
+	// the start and an extra --- at the end both load as usual
 	for _, body := range []string{
 		"---\n---\nDemo:\n  Addr: a:1\n",
 		"---\nDemo:\n  Addr: a:1\n",
@@ -1023,10 +1054,10 @@ func TestLoad_LeadingOrTrailingDocumentMarkerStillLoads(t *testing.T) {
 }
 
 func TestLoad_MissingVariablesListedOnceSorted(t *testing.T) {
-	// 同一个变量用了好几处时从前报成 ZZMISS_B, ZZMISS_A, ZZMISS_B
+	// One variable used in several places used to be reported as ZZMISS_B, ZZMISS_A, ZZMISS_B
 	body := "Demo:\n  Addr: ${ZZMISS_B}\n  Retries: ${ZZMISS_A}\nOther:\n  A: ${ZZMISS_B}\n  B: ${ZZMISS_B}-${ZZMISS_A}\n"
 	err := LoadInto(write(t, body), "Demo", comps(t))
 	if err == nil || !strings.HasSuffix(err.Error(), "environment variables not set: ZZMISS_A, ZZMISS_B]") {
-		t.Errorf("没设的变量该按名字排好、每个只报一次，got=%v", err)
+		t.Errorf("the unset variables must be sorted by name and reported once each, got=%v", err)
 	}
 }

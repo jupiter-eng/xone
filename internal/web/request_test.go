@@ -22,7 +22,7 @@ func TestNormalizeMethod(t *testing.T) {
 }
 
 func TestIsBrokenPipe(t *testing.T) {
-	// 客户端提前断开不算故障，不值得打一份完整栈
+	// A client disconnecting early is not a failure and does not deserve a whole stack
 	broken := &net.OpError{Err: &os.SyscallError{Syscall: "write", Err: errors.New("broken pipe")}}
 	if !IsBrokenPipe(broken) {
 		t.Error("broken pipe should be recognized")
@@ -56,12 +56,12 @@ func TestClientGone(t *testing.T) {
 		ctx  context.Context
 		want bool
 	}{
-		"被 net/http 取消了": {canceled, true},
-		"业务自己的截止时间到了":    {expired, false},
-		"还在":             {context.Background(), false},
+		"cancelled by net/http":              {canceled, true},
+		"the business's own deadline passed": {expired, false},
+		"still there":                        {context.Background(), false},
 	} {
 		if got := ClientGone(c.ctx); got != c.want {
-			t.Errorf("%s：ClientGone=%v，want %v", name, got, c.want)
+			t.Errorf("%s: ClientGone=%v, want %v", name, got, c.want)
 		}
 	}
 }

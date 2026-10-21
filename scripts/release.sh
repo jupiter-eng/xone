@@ -1,34 +1,44 @@
 #!/bin/sh
-# 发布。多模块仓库的每个 module 有自己的 tag，全都打在 main 上的同一个提交上。
+# Release. Each module of this multi-module repository has tags of its own, and all of them go onto
+# the same commit on main.
 #
-# 分两步，中间是一个普通的 PR（main 的分支保护照常生效）：
+# Two steps, with an ordinary PR in between (main's branch protection applies as usual):
 #
-#   scripts/release.sh v0.1.0 --bump     # 1. 把各模块 go.mod 里仓库内的 require 改成 v0.1.0、
-#                                        #    turn the CHANGELOG's Unreleased section into this version, update the version in the README install command;
-#                                        #    只改文件，不提交
-#   （提交、开 PR、CI 绿了合进 main）
-#   scripts/release.sh v0.1.0 --tag      # 2. 在 main 的最新提交上给每个模块打 tag（不推送）
-#   scripts/release.sh v0.1.0 --smoke    # 推送之前：同一个外部工程，依赖指向本地代码，起得来、关得对
-#   scripts/release.sh v0.1.0 --verify   # 推送之后：用一个全新的外部工程验证装得上、跑得起来
+#   scripts/release.sh v0.1.0 --bump     # 1. pin the in-repository require lines of every module's
+#                                        #    go.mod to v0.1.0, turn the CHANGELOG's Unreleased
+#                                        #    section into this version, update the version in the
+#                                        #    README install command; it only changes files, it
+#                                        #    does not commit
+#   (commit, open the PR, CI goes green, merge into main)
+#   scripts/release.sh v0.1.0 --tag      # 2. tag every module on main's latest commit (no push)
+#   scripts/release.sh v0.1.0 --smoke    # before the push: the same external project with its
+#                                        #    dependencies pointing at the local code; it comes up
+#                                        #    and shuts down in the right order
+#   scripts/release.sh v0.1.0 --verify   # after the push: a brand new external project proves the
+#                                        #    release installs and runs
 #
-# 第 2 步平时用 GitHub Actions 的 release 按钮做（.github/workflows/release.yml）：
-# 同样的检查，再 --smoke，跑完只推 tag、再 --verify。
+# Day to day, step 2 is done with the release button in GitHub Actions
+# (.github/workflows/release.yml): the same checks, then --smoke, and once that is through it
+# pushes the tags only and runs --verify.
 #
-# 为什么 main 上的 go.mod 能直接发：开发用的 replace 一直留着，
-# 而使用者的构建会忽略依赖里的 replace——他们只看 require 的版本。
-# 所以发布只需要把 require 钉成要发的版本，replace 不用去掉，也就不需要
-# 单独的发布提交和还原提交，tag 直接打在 main 上。
+# Why main's go.mod can be released as it is: the replace lines development uses stay in, and a
+# caller's build ignores a replace sitting in a dependency -- it goes by the version in require
+# alone. So a release only has to pin require to the version being released, replace does not have
+# to be taken out, and that means no separate release commit and revert commit: the tags go
+# straight onto main.
 #
-# --tag 发布前要一轮绿的 e2e（真实的 PG / MySQL / Redis）：默认在这一步跑 scripts/e2e.sh；
-# 这个提交在别处跑绿过，或者会在推送之前另跑一遍（release 按钮就是打完 tag 紧接着跑 e2e）的话，
-# 加 --e2e-passed 跳过这一步的 e2e，由你担保。
+# --tag wants one green e2e run (real PG / MySQL / Redis) before the release: it runs scripts/e2e.sh
+# at this step by default. When this commit has gone green elsewhere, or e2e runs once more before
+# the push (the release button runs it right after the tags are made), --e2e-passed skips the e2e
+# here, and whoever passes it vouches for that.
 #
-# 推送是单独一步：Go 的 module proxy 会永久缓存 tag，推错了删不掉，只能再发一个版本盖过去。
+# The push is a step of its own: Go's module proxy caches a tag for good, and a wrong one cannot be
+# deleted, only covered by another release.
 set -e
 cd "$(dirname "$0")/.."
 . scripts/lib.sh
 
-usage() { echo "用法：scripts/release.sh vX.Y.Z (--bump | --tag [--e2e-passed] | --smoke | --verify)"; exit 1; }
+usage() { echo "usage: scripts/release.sh vX.Y.Z (--bump | --tag [--e2e-passed] | --smoke | --verify)"; exit 1; }
 VERSION="$1"
 [ -n "$VERSION" ] || usage
 shift
@@ -43,57 +53,67 @@ for a; do
 done
 [ -n "$MODE" ] || usage
 case "$VERSION" in
-  # 只收 v0 / v1：模块路径里没有 /v2 后缀，go mod edit 会拒收 v2 及以上的版本号
+  # v0 / v1 only: the module paths carry no /v2 suffix, and go mod edit refuses a version of v2 or
+  # above
   v0.*.*|v1.*.*) ;;
-  v*.*.*) echo "模块路径没有 /vN 后缀，只能发 v0 / v1，got=$VERSION"; exit 1;;
-  *) echo "版本号格式应为 vX.Y.Z，got=$VERSION"; exit 1;;
+  v*.*.*) echo "the module paths have no /vN suffix, only v0 / v1 can be released, got=$VERSION"; exit 1;;
+  *) echo "the version has to look like vX.Y.Z, got=$VERSION"; exit 1;;
 esac
 
 MOD=github.com/jupiter-eng/xone
 
-# 要发布的子模块：签入的每个子目录 go.mod，除了这几个（根模块另打不带前缀的 tag）：
-#   example             示例不是库，replace 要一直留着，这样它永远编译的是
-#                       仓库当前的代码，而不是某个已发布版本
-#   e2e                 真实 Web 服务测试，理由同 example
-#   internal/schemagen  仓库自己的构建工具，不给使用者 import
+# The submodules to release: every checked-in subdirectory go.mod except these (the root module
+# gets a tag of its own without a prefix):
+#   example             an example is not a library, its replace lines stay in for good so that it
+#                       always compiles against the repository's current code and never against
+#                       some released version
+#   e2e                 tests against real services, for the same reason as example
+#   internal/schemagen  the repository's own build tool, not for a caller to import
 #
-# 从前这里是一张手写的「发布顺序」表，可所有 tag 都打在同一个提交上、一次推送，
-# 谁先谁后根本无所谓；手写的表倒是新加一个模块就得记得改
+# This used to be a hand-written "release order" table, but all the tags go onto the same commit
+# and are pushed in one go, so which comes first makes no difference; the hand-written table, on
+# the other hand, had to be remembered whenever a module was added
 #
-# 钉版本号（PINNED）要连不发布的 example / e2e / internal/schemagen 一起：它们 require 的子模块
-# 钉成 $VERSION 之后又 require 核心的 ${VERSION}，自己的 go.mod 还写着 v0.0.0 的话，
-# go 会说 go.mod 要更新，check.sh 的 vet 当场就红。tag 只打 $MODS
+# Pinning (PINNED) has to cover example / e2e / internal/schemagen, which are not released: once
+# the submodules they require are pinned to $VERSION and they in turn require the core's
+# ${VERSION}, a go.mod of their own still saying v0.0.0 has go report that go.mod needs updating
+# and check.sh's vet goes red on the spot. Only $MODS is tagged
 PINNED=$(git ls-files '*/go.mod' | xargs -n1 dirname)
 MODS=$(echo "$PINNED" | grep -vxE 'example|e2e|internal/schemagen')
 
-# ---- --smoke / --verify：一个全新的外部工程装得上、跑得起来 ----
-# 两个模式跑的是同一个消费者工程、同一套检查（起服务 → 请求 → SIGTERM → 逆序关闭），
-# 只有依赖从哪来不同：
+# ---- --smoke / --verify: a brand new external project installs it and runs it ----
+# Both modes run the same consumer project and the same checks (start the service -> request ->
+# SIGTERM -> shut down in reverse order) and differ only in where the dependencies come from:
 #
-#   --verify  必须在 git push --tags 之后跑，go get 的是 module proxy 上发布出去的版本。
-#             CI 跑的是工作区里的代码，模块之间还靠 replace 互指，证明不了一个真正的
-#             使用者 go get 之后会发生什么——require 的版本对不对、tag 打全了没有、
-#             去掉 replace 还编不编得过，全都只有这一步能回答。
-#   --smoke   推送之前跑，依赖指向本地这份工作区（就是刚打了 tag 的那个提交）：
-#             消费者是主模块，它的 replace 说了算，各模块 go.mod 里互指的 replace 被忽略，
-#             和使用者的构建一样。--verify 曾经在 tag 推出去之后才红
-#             （认钩子的 sed 对不上新的日志字段），而 tag 推出去就撤不回了——
-#             同样的检查先在这里跑一遍，真有回归的话 tag 还只在本地。
-#             它验不了 tag 打没打全、proxy 拉不拉得到，那些仍然交给 --verify
+#   --verify  has to run after git push --tags: go get takes the released version off the module
+#             proxy. CI runs the code in the working tree, where the modules still point at each
+#             other through replace, which proves nothing about what a real caller meets after a
+#             go get -- whether the require versions are right, whether every tag was made, and
+#             whether it still compiles without the replace lines are questions only this step
+#             answers.
+#   --smoke   runs before the push with the dependencies pointing at this working tree (which is
+#             the commit that was just tagged): the consumer is the main module and its replace
+#             lines are the ones that count, so the replace lines the modules point at each other
+#             with are ignored, the same as in a caller's build. --verify once went red after the
+#             tags had been pushed (the sed recognizing the hooks no longer matched the new log
+#             fields) and a pushed tag cannot be taken back -- the same checks run here first, so a
+#             regression finds the tags still local.
+#             It cannot tell whether every tag was made or whether the proxy serves them; those
+#             stay with --verify
 consumer() {
-# 和发布的是同一份子模块列表，新加的模块自动进来
+# The same submodule list the release uses, so a newly added module comes along by itself
 PKGS=$(printf "$MOD/%s\n" $MODS)
 ROOT=$(pwd)
 DIR=$(mktemp -d)
 trap 'rm -rf "$DIR"' EXIT
 
 if [ "$MODE" = "--smoke" ]; then
-  # 工作区有改动的话，跑的就不是打了 tag 的那个提交，说一声
-  [ -z "$(git status --porcelain)" ] || echo "  ⚠ 工作区有未提交的改动，跑的是改过的代码，不是 $(git log -1 --format=%h)"
-  echo "== 用本地的 $(git log -1 --format='%h %s') 充当 $VERSION =="
+  # Changes in the working tree mean this is not the commit that was tagged; say so
+  [ -z "$(git status --porcelain)" ] || echo "  ⚠ the working tree has uncommitted changes, so this runs the changed code and not $(git log -1 --format=%h)"
+  echo "== the local $(git log -1 --format='%h %s') stands in for $VERSION =="
 fi
 
-echo "== 在 $DIR 里建一个干净的消费者工程 =="
+echo "== building a clean consumer project in $DIR =="
 cd "$DIR"
 cat > go.mod <<MOD_EOF
 module verify
@@ -101,12 +121,14 @@ module verify
 go 1.25
 MOD_EOF
 
-# 一个真实使用者会写的样子：起服务、连库、打点，全部走公开 API。
+# What a real caller would write: start the service, connect to the databases, record metrics, all
+# through the public API.
 #
-# 下面 go get 的每个模块都必须在这里 import 到：go mod tidy 会把没人 import 的
-# require 删掉，那个模块就从头到尾没被编译过——xcache 和 xginswagger 从前就是
-# 这样，「装得上、编得过」对它们俩什么都没证明。所以 import 由同一份列表生成，
-# 每个模块一行 _ import；xgin / xmetric 另有一行具名的，同一个包两种写法 Go 是允许的
+# Every module the go get below takes has to be imported here: go mod tidy drops a require nobody
+# imports and that module is then never compiled at all -- which is what xcache and xginswagger
+# used to be, so "it installs and compiles" proved nothing about either. The imports therefore come
+# from the same list, one _ import per module; xgin / xmetric have a named line as well, and Go
+# allows the same package both ways
 {
   cat <<'GO_EOF'
 package main
@@ -134,17 +156,19 @@ GO_EOF
 } > main.go
 
 if [ "$MODE" = "--smoke" ]; then
-  echo "== require 各模块的 ${VERSION}，replace 到 $ROOT =="
-  # 不走 go get：这个版本还没推，proxy 上没有。require 照样写 ${VERSION}，
-  # 使用者 go.mod 里会出现的就是这几行，只是内容从本地目录来
+  echo "== require ${VERSION} of every module, replaced with $ROOT =="
+  # Not through go get: this version has not been pushed and the proxy does not have it. require
+  # still says ${VERSION}, which is the line a caller's go.mod will hold, only its content comes
+  # from a local directory
   for p in "$MOD" $PKGS; do
     echo "  $p@$VERSION => $ROOT${p#"$MOD"}"
     go mod edit -require="$p@$VERSION" -replace="$p=$ROOT${p#"$MOD"}"
   done
 else
-  echo "== go get 各模块的 $VERSION =="
-  # 一条 go get 拿全部模块：逐个 go get 每次都要重新解一遍整张依赖图。
-  # 实测空缓存（CI 上 verify 那台新机器的情形）下 12 个模块逐个 43s，一次 23s
+  echo "== go get $VERSION of every module =="
+  # Every module in one go get: one go get per module resolves the whole dependency graph again
+  # each time. Measured on an empty cache (what verify's fresh machine looks like in CI), 12
+  # modules take 43s one by one and 23s in one go
   set --
   for p in "$MOD" $PKGS; do
     echo "  $p@$VERSION"
@@ -153,60 +177,63 @@ else
   GOFLAGS=-mod=mod go get "$@" >/dev/null
 fi
 
-echo "== 编译 =="
+echo "== compiling =="
 go mod tidy >/dev/null
 go build -o verify .
-echo "  ✓ 装得上、编得过"
+echo "  ✓ it installs and compiles"
 
-echo "== 起一遍：启动 → 请求 → 退出 =="
+echo "== one run: start -> request -> exit =="
 ./verify --config=/dev/null >out.txt 2>&1 &
 pid=$!
-# 走到这里时服务通常已经退出，kill 失败是正常的：不加 || true 的话，set -e 让这次失败
-# 成了整个脚本的退出码——有一次发布就这样在「✓ 验证通过」之后报了 exit 1
+# By the time this runs the service has usually exited already and the kill fails, which is normal:
+# without the || true, set -e makes that failure the whole script's exit code -- one release
+# reported exit 1 right after the "verified" line
 trap 'kill -9 "$pid" 2>/dev/null || true; rm -rf "$DIR"' EXIT
 
 i=0
 until curl -sf http://127.0.0.1:8080/ping >/dev/null 2>&1; do
   i=$((i + 1))
-  [ "$i" -lt 50 ] || { echo "✗ 服务没起来"; cat out.txt; exit 1; }
+  [ "$i" -lt 50 ] || { echo "✗ the service did not come up"; cat out.txt; exit 1; }
   sleep 0.2
 done
-echo "  ✓ /ping 通了"
+echo "  ✓ /ping answered"
 
 kill -TERM "$pid"
 i=0
 while kill -0 "$pid" 2>/dev/null; do
   i=$((i + 1))
-  [ "$i" -lt 100 ] || { echo "✗ 收到 SIGTERM 之后没退出"; cat out.txt; exit 1; }
+  [ "$i" -lt 100 ] || { echo "✗ it did not exit after the SIGTERM"; cat out.txt; exit 1; }
   sleep 0.2
 done
-echo "  ✓ 收到 SIGTERM 之后干净退出"
+echo "  ✓ it exited cleanly after the SIGTERM"
 
-# 从前这里 grep 的是 "closing"，命中的其实是收到信号那一行
-# （"shutdown signal received, closing gracefully ..."），一个组件都没关也照样过。
-# hooks 在 scripts/lib.sh 里，check.sh 拿样例日志测着它
+# This used to grep for "closing", which matched the line saying the signal had arrived
+# ("shutdown signal received, closing gracefully ..."), so it passed with not one component closed.
+# hooks lives in scripts/lib.sh and check.sh tests it against a sample log
 hooks starting out.txt > started.txt
 hooks stopping out.txt > stopped.txt
-# 两边都有的包：停止顺序必须正好是启动顺序倒过来
+# The packages both sides hold: the stop order has to be exactly the start order reversed
 awk '{ l[NR] = $0 } END { for (i = NR; i > 0; i--) print l[i] }' started.txt | grep -Fxf stopped.txt > want.txt || true
 grep -Fxf started.txt stopped.txt > got.txt || true
-[ "$(wc -l < got.txt)" -ge 2 ] || { echo "✗ 没看到组件关闭的日志"; cat out.txt; exit 1; }
-cmp -s want.txt got.txt || { echo "✗ 关闭顺序不是启动顺序的逆序"; echo "  启动：$(tr '\n' ' ' < started.txt)"; echo "  关闭：$(tr '\n' ' ' < stopped.txt)"; exit 1; }
-# 日志最先起、最后关，其余组件的关闭日志才写得出去
-[ "$(tail -n 1 got.txt)" = "xlog" ] || { echo "✗ 最后关的不是 xlog：$(tr '\n' ' ' < got.txt)"; exit 1; }
-echo "  ✓ 组件被逆序关闭：$(tr '\n' ' ' < got.txt)"
+[ "$(wc -l < got.txt)" -ge 2 ] || { echo "✗ no component shutdown lines in the log"; cat out.txt; exit 1; }
+cmp -s want.txt got.txt || { echo "✗ the shutdown order is not the reverse of the start order"; echo "  start: $(tr '\n' ' ' < started.txt)"; echo "  stop:  $(tr '\n' ' ' < stopped.txt)"; exit 1; }
+# The log starts first and closes last, which is what lets the other components' shutdown lines be
+# written at all
+[ "$(tail -n 1 got.txt)" = "xlog" ] || { echo "✗ xlog is not the last one closed: $(tr '\n' ' ' < got.txt)"; exit 1; }
+echo "  ✓ the components were closed in reverse order: $(tr '\n' ' ' < got.txt)"
 echo
 if [ "$MODE" = "--smoke" ]; then
-  echo "✓ $VERSION 冒烟通过（本地代码，还没推送）"
+  echo "✓ $VERSION passed the smoke run (local code, not pushed yet)"
 else
-  echo "✓ $VERSION 验证通过"
+  echo "✓ $VERSION verified"
 fi
 }
 case "$MODE" in --smoke|--verify) consumer; exit 0;; esac
 
-# inrepo go.mod：列出 require 里仓库内的模块（路径@版本）。
-# 只看 require：从前从整份 -json 里 grep 路径，只出现在 replace 里的
-# （xgin 替换了 xtrace 却不 require 它）也被补了一条 require，发出去的 go.mod 平白多一个依赖
+# inrepo go.mod: lists the in-repository modules in require (path@version).
+# require only: this used to grep the whole -json output for the path, so one appearing in a
+# replace alone (xgin replaces xtrace without requiring it) had a require line added as well, and
+# the released go.mod carried a dependency it never had
 inrepo() {
   GOWORK=off go mod edit -json "$1" | python3 -c '
 import json, sys
@@ -217,7 +244,8 @@ for e in json.load(sys.stdin).get("Require") or []:
         print(p + "@" + e["Version"])' "$MOD"
 }
 
-# unpinned：仓库内的 require 里还没钉成 $VERSION 的，一行一个「模块: 依赖@版本」
+# unpinned: the in-repository require lines not pinned to $VERSION yet, one
+# "module: dep@version" per line
 unpinned() {
   for m in $PINNED; do
     for dep in $(inrepo "$m/go.mod"); do
@@ -226,8 +254,9 @@ unpinned() {
   done
 }
 
-# has_entries 标题前缀：docs/CHANGELOG.md 里以它开头的那一节（到下一个 "## " 为止）
-# 有没有 "- " 开头的条目。### 小标题不算条目：只有「### 修复」没有内容的一节照样是空的
+# has_entries <heading prefix>: whether the section of docs/CHANGELOG.md starting with it (up to
+# the next "## ") holds an entry starting with "- ". A ### subheading is not an entry: a section
+# holding only "### Fixed" and nothing under it is empty all the same
 has_entries() {
   awk -v h="$1" '
     index($0, h) == 1 { s = 1; next }
@@ -247,22 +276,24 @@ if [ "$MODE" = "--bump" ]; then
     exit 1
   fi
 
-  echo "== 1. 把各模块 go.mod 里仓库内的 require 钉成 ${VERSION}（replace 留着） =="
-  # 用 go mod edit 而不是 sed：require 块的缩进、子模块路径后缀这些细节
-  # 手写正则很容易弄错，而弄错的后果是发出去一个装不上的版本。
-  # 原来是 v0.0.0、上一个版本，还是 go 工具自己补的伪版本，都一样改写
+  echo "== 1. pin the in-repository require lines of every module's go.mod to ${VERSION} (replace stays) =="
+  # go mod edit rather than sed: the indentation of a require block and the submodule path suffixes
+  # are easy to get wrong in a hand-written regexp, and getting them wrong releases a version that
+  # cannot be installed.
+  # v0.0.0, the previous version and a pseudo-version the go tool filled in itself are all
+  # rewritten the same way
   for m in $PINNED; do
     for dep in $(inrepo "$m/go.mod"); do
       GOWORK=off go mod edit -require="${dep%@*}@$VERSION" "$m/go.mod"
     done
   done
   left=$(unpinned)
-  [ -z "$left" ] || { echo "✗ 还有没钉好的仓库内依赖："; echo "$left"; exit 1; }
-  echo "  ✓ $(echo $PINNED | wc -w) 个子模块的 go.mod 都钉到了 $VERSION"
+  [ -z "$left" ] || { echo "✗ some in-repository dependencies are still unpinned:"; echo "$left"; exit 1; }
+  echo "  ✓ the go.mod of all $(echo $PINNED | wc -w) submodules is pinned to $VERSION"
 
   echo "== 2. CHANGELOG: Unreleased becomes ${VERSION}, with a new empty Unreleased above it =="
   if grep -q "^## \[$VERSION\]" docs/CHANGELOG.md; then
-    echo "  CHANGELOG 里已经有 $VERSION 这一节，不动"
+    echo "  the CHANGELOG already has a $VERSION section, leaving it alone"
   else
     python3 - "$VERSION" "$(date +%Y-%m-%d)" <<'PY'
 import sys
@@ -273,27 +304,29 @@ head = "## [Unreleased]\n"
 assert s.count(head) == 1, "no unique '## [Unreleased]' found in the CHANGELOG"
 open(p, "w").write(s.replace(head, "## [Unreleased]\n\n## [%s] - %s\n" % (v, day), 1))
 PY
-    echo "  ✓ 已改，这一版的条目写在 ## [$VERSION] 下面"
+    echo "  ✓ done, this version's entries go under ## [$VERSION]"
   fi
 
-  echo "== 3. README 里的安装命令换成 $VERSION =="
-  # 所有模块共用一个版本号：README 写死这一版，照抄的人各模块版本才一致
-  # perl 而不是 sed -i -E：macOS 的 BSD sed 要求 -i 后面跟备份后缀，-E 被当成了后缀，
-  # 扩展正则没开，\1 报 not defined in the RE，--bump 在 Mac 上停在这一步
+  echo "== 3. the install command in the README becomes $VERSION =="
+  # Every module shares one version number: the README pins this one so that whoever copies it ends
+  # up with the same version everywhere
+  # perl rather than sed -i -E: macOS's BSD sed wants a backup suffix after -i and took -E for one,
+  # so extended regexps were off, \1 reported "not defined in the RE", and --bump stopped here on a
+  # Mac
   perl -pi -e "s#(github\.com/jupiter-eng/xone(/[a-z/]+)?)\@v[0-9]+\.[0-9]+\.[0-9]+#\${1}\@$VERSION#g" README.md
-  grep -q "xone@$VERSION" README.md || { echo "✗ README 里没找到安装命令"; exit 1; }
-  echo "  ✓ README 的 go get 写的是 $VERSION"
+  grep -q "xone@$VERSION" README.md || { echo "✗ no install command found in the README"; exit 1; }
+  echo "  ✓ the README's go get says $VERSION"
 
-  echo "== 4. 检查 =="
+  echo "== 4. checks =="
   scripts/check.sh
   cat <<TIP
 
-已改好，没有提交。接下来：
+The files have been changed, nothing was committed. Next:
 
   git switch -c release/$VERSION && git commit -am "release: $VERSION" && git push -u origin release/$VERSION
 
-开 PR 合进 main（这时 main 上的 go.mod 已经 require ${VERSION}，靠 replace 照常开发），
-合进去之后在 GitHub 上点 Actions → release → Run workflow，或者本地：
+Open a PR and merge it into main (main's go.mod then requires ${VERSION} while development carries
+on through replace); once it is in, press Actions -> release -> Run workflow on GitHub, or locally:
 
   scripts/release.sh $VERSION --tag
 TIP
@@ -301,50 +334,56 @@ TIP
 fi
 
 # ---- --tag ----
-echo "== 1. 确认这个提交可以发 $VERSION =="
-[ -z "$(git status --porcelain)" ] || { echo "✗ 工作区有未提交的改动，先提交或暂存"; exit 1; }
-# 这一组 tag 一个都不能已经存在，全部先查完再打：只查根 tag 的话，一个残留的 xgin/$VERSION
-# 会让第 3 步打到一半才失败，留下半组 tag
+echo "== 1. making sure $VERSION can be released from this commit =="
+[ -z "$(git status --porcelain)" ] || { echo "✗ the working tree has uncommitted changes, commit or stash them first"; exit 1; }
+# Not one tag of this set may exist already and all of them are checked before any is made: going
+# by the root tag alone would have a leftover xgin/$VERSION fail step 3 halfway through, leaving
+# half a set of tags behind
 taken=
 for t in "$VERSION" $(printf "%s/$VERSION\n" $MODS); do
   if git rev-parse -q --verify "refs/tags/$t" >/dev/null; then taken="$taken $t"; fi
 done
 if [ -n "$taken" ]; then
   cat <<TIP
-✗ 这些 tag 已经存在：${taken# }
+✗ these tags already exist: ${taken# }
 
-  - 这个版本已经推出去了（git ls-remote --tags origin 里有 ${VERSION}）：换一个版本号；
-  - 是本地上一次 --tag / --smoke 失败留下的、还没推送：删掉再重跑 --tag——
+  - this version has been pushed already (git ls-remote --tags origin lists ${VERSION}): pick
+    another version number;
+  - they are left over from a local --tag / --smoke that failed and were never pushed: delete them
+    and run --tag again --
 
       git tag -d \$(git tag --points-at $VERSION)
 
-    根 tag $VERSION 不在、只剩子模块 tag 的话，上面那条列不出它们，直接删：git tag -d$taken
+    when the root tag $VERSION is gone and only submodule tags are left, that line lists none of
+    them; delete them directly: git tag -d$taken
 TIP
   exit 1
 fi
 left=$(unpinned)
-[ -z "$left" ] || { echo "✗ 这个提交的 go.mod 还没钉到 ${VERSION}，先合并 scripts/release.sh $VERSION --bump 的那个 PR："; echo "$left"; exit 1; }
-grep -q "^## \[$VERSION\]" docs/CHANGELOG.md || { echo "✗ docs/CHANGELOG.md 里没有 ## [$VERSION] 这一节"; exit 1; }
+[ -z "$left" ] || { echo "✗ this commit's go.mod is not pinned to ${VERSION} yet, merge the PR from scripts/release.sh $VERSION --bump first:"; echo "$left"; exit 1; }
+grep -q "^## \[$VERSION\]" docs/CHANGELOG.md || { echo "✗ docs/CHANGELOG.md has no ## [$VERSION] section"; exit 1; }
 # --bump turned Unreleased into this section; an empty one means Unreleased held nothing before --bump
-has_entries "## [$VERSION]" || { echo "✗ docs/CHANGELOG.md 的 ## [$VERSION] 一节是空的（没有 - 开头的条目）：先把这一版使用者看得见的变化写进去"; exit 1; }
+has_entries "## [$VERSION]" || { echo "✗ the ## [$VERSION] section of docs/CHANGELOG.md is empty (no lines starting with -): write this version's caller-visible changes there first"; exit 1; }
 echo "  ✓ $(git log -1 --format='%h %s')"
 
-# 输出不吞掉：红了的话要看的正是那几行
-echo "== 2. 跑一遍检查、测试和 e2e =="
+# The output is not swallowed: when it goes red those lines are exactly the ones to read
+echo "== 2. one run of the checks, the tests and e2e =="
 scripts/check.sh
 scripts/test.sh -count=1
-# 单元测试里没有数据库；连真实服务的那一层只有 e2e 看得到，发出去之前必须绿过一次
+# The unit tests have no database; the layer that talks to real services is visible to e2e alone
+# and it has to have gone green once before a release
 if [ -n "$E2E_PASSED" ]; then
-  echo "  ⚠ 跳过 e2e：--e2e-passed，你担保这个提交的 e2e 刚跑绿过"
+  echo "  ⚠ skipping e2e: --e2e-passed vouches that this commit's e2e has just gone green"
 else
   scripts/e2e.sh
 fi
-echo "  ✓ 通过"
+echo "  ✓ passed"
 
-# 发出去的 go.mod 带着 replace ../xxx：使用者的构建会忽略依赖里的 replace，
-# 只按 require 的 $VERSION 去拉——那些 tag 就在这一步打。
-# 去掉 replace 之后编不编得过，这里验不了（tag 还没推，依赖拉不到），交给推送之后的 --verify
-echo "== 3. 在 $(git log -1 --format=%h) 上打 tag =="
+# The released go.mod carries replace ../xxx: a caller's build ignores a replace in a dependency
+# and goes by the $VERSION in require -- those are the tags made at this step.
+# Whether it compiles without the replace lines cannot be checked here (the tags are not pushed, so
+# the dependencies cannot be fetched); that is for --verify after the push
+echo "== 3. tagging $(git log -1 --format=%h) =="
 git tag "$VERSION"
 echo "  $VERSION"
 for m in $MODS; do
@@ -354,22 +393,24 @@ done
 
 cat <<TIP
 
-已在本地打好 tag，没有推送。推送之前先用本地代码冒烟一遍
-（和 --verify 同一个外部工程、同一套检查，红了的话 tag 还没出去）：
+The tags have been made locally, nothing was pushed. Before the push, smoke test the local code
+(the same external project and the same checks as --verify; a red run leaves the tags local):
 
   scripts/release.sh $VERSION --smoke
 
-冒烟红了、要改代码重来的话，先删掉这组本地 tag 再重跑 --tag：
+When the smoke run goes red and the code has to change, delete this set of local tags before
+running --tag again:
 
   git tag -d \$(git tag --points-at $VERSION)
 
-确认无误后只推这一组 tag：
+Once that is confirmed, push this set of tags only:
 
   git push --atomic origin \$(git tag --points-at $VERSION | sed 's|^|refs/tags/|')
 
-推送之后 tag 就被 module proxy 永久缓存了，删不掉，只能再发一版盖过去。
-推完必须验证一遍别人装不装得上 —— CI 跑的是工作区里的代码，
-证明不了发布出去的版本能装：
+After the push the tags are cached by the module proxy for good: they cannot be deleted, only
+covered by another release.
+Once pushed, it has to be verified that the release installs -- CI runs the code in the working
+tree, which proves nothing about the released version:
 
   scripts/release.sh $VERSION --verify
 TIP

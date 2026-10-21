@@ -22,7 +22,8 @@ func schemaOf(t *testing.T) *root {
 	return r
 }
 
-// check 按整份 schema 校验一段 YAML。顶层不认识的 key 放行，与生成的 schema 一致
+// check validates a piece of YAML against the whole schema. An unknown top-level key is let
+// through, as the generated schema does
 func check(t *testing.T, r *root, body string) []string {
 	t.Helper()
 	var doc map[string]any
@@ -39,28 +40,28 @@ func check(t *testing.T, r *root, body string) []string {
 func TestSchema_AcceptsEverythingRuntimeAccepts(t *testing.T) {
 	r := schemaOf(t)
 	cases := map[string]string{
-		"单实例":        "XGorm:\n  DSN: x\n  MaxOpenConns: 5\n",
-		"多实例":        "XGorm:\n  Clients:\n    default: {DSN: x}\n    report: {DSN: y, MaxOpenConns: 5}\n",
-		"XRedis单实例":  "XRedis:\n  Addr: a\n",
-		"XCache多实例":  "XCache:\n  Clients:\n    hot: {MaxCost: 5}\n",
-		"空块":         "XRedis:\nXLog:\nXGorm: {}\n",
-		"Import一个":   "XApp:\n  Import: a.yml\n",
-		"Import多个":   "XApp:\n  Import: [a.yml, optional:b.yml]\n",
-		"Active字符串":  "XApp:\n  Profiles: dev,prod\n",
-		"Active列表":   "XApp:\n  Profiles: [dev]\n",
-		"整数字段写占位符":   "XGin:\n  Port: ${PORT:8080}\n",
-		"布尔字段写占位符":   "XGin:\n  UseH2C: ${H2C:false}\n",
-		"小数字段写占位符":   "XTrace:\n  SampleRatio: ${RATIO:1}\n",
-		"map字段":      "XMetric:\n  ConstLabels: {env: dev}\n",
-		"业务自己的块":     "MyApp:\n  Topic: x\n",
-		"列表里的结构体":    "XTrace:\n  ForwardHeaderRules:\n    - Domains: [a.com]\n      Headers: [X-A]\n",
-		"整数写进小数字段":   "XTrace:\n  SampleRatio: 1\n",
-		"Postgres参数": "XGorm:\n  Postgres:\n    Params: {search_path: app}\n",
+		"one instance":                    "XGorm:\n  DSN: x\n  MaxOpenConns: 5\n",
+		"several instances":               "XGorm:\n  Clients:\n    default: {DSN: x}\n    report: {DSN: y, MaxOpenConns: 5}\n",
+		"one XRedis instance":             "XRedis:\n  Addr: a\n",
+		"several XCache instances":        "XCache:\n  Clients:\n    hot: {MaxCost: 5}\n",
+		"an empty block":                  "XRedis:\nXLog:\nXGorm: {}\n",
+		"one Import":                      "XApp:\n  Import: a.yml\n",
+		"several Imports":                 "XApp:\n  Import: [a.yml, optional:b.yml]\n",
+		"Profiles as a string":            "XApp:\n  Profiles: dev,prod\n",
+		"Profiles as a list":              "XApp:\n  Profiles: [dev]\n",
+		"a placeholder in an int field":   "XGin:\n  Port: ${PORT:8080}\n",
+		"a placeholder in a bool field":   "XGin:\n  UseH2C: ${H2C:false}\n",
+		"a placeholder in a float field":  "XTrace:\n  SampleRatio: ${RATIO:1}\n",
+		"a map field":                     "XMetric:\n  ConstLabels: {env: dev}\n",
+		"the business's own block":        "MyApp:\n  Topic: x\n",
+		"a struct inside a list":          "XTrace:\n  ForwardHeaderRules:\n    - Domains: [a.com]\n      Headers: [X-A]\n",
+		"an int written in a float field": "XTrace:\n  SampleRatio: 1\n",
+		"Postgres parameters":             "XGorm:\n  Postgres:\n    Params: {search_path: app}\n",
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
 			if errs := check(t, r, body); len(errs) > 0 {
-				t.Errorf("运行时接受的写法被标红：%v", errs)
+				t.Errorf("a spelling the runtime accepts was flagged: %v", errs)
 			}
 		})
 	}
@@ -69,23 +70,23 @@ func TestSchema_AcceptsEverythingRuntimeAccepts(t *testing.T) {
 func TestSchema_FlagsEverythingRuntimeRejects(t *testing.T) {
 	r := schemaOf(t)
 	cases := map[string]string{
-		"字段拼错":        "XLog:\n  Bogus: 1\n",
-		"嵌套字段拼错":      "XLog:\n  File:\n    Enabel: true\n",
-		"名字带数字的字段拼错":  "XGin:\n  UseH2c: true\n",
-		"列表里的结构体拼错":   "XTrace:\n  ForwardHeaderRules:\n    - Domain: [a.com]\n",
-		"两种写法混用":      "XGorm:\n  DSN: x\n  Clients:\n    a: {DSN: y}\n",
-		"多实例里拼错":      "XGorm:\n  Clients:\n    a: {DSNN: y}\n",
-		"单实例拼错":       "XRedis:\n  Adr: a\n",
-		"空的Clients":   "XGorm:\n  Clients: {}\n",
-		"Profiles拼错":  "XApp:\n  Profile: [a]\n",
-		"整数字段写了字符串":   "XGin:\n  Port: abc\n",
-		"布尔字段写了数字":    "XGin:\n  UseH2C: 1\n",
-		"Import写成map": "XApp:\n  Import: {a: b}\n",
+		"a misspelled field":                        "XLog:\n  Bogus: 1\n",
+		"a misspelled nested field":                 "XLog:\n  File:\n    Enabel: true\n",
+		"a misspelled field whose name has a digit": "XGin:\n  UseH2c: true\n",
+		"a misspelled struct inside a list":         "XTrace:\n  ForwardHeaderRules:\n    - Domain: [a.com]\n",
+		"the two spellings mixed":                   "XGorm:\n  DSN: x\n  Clients:\n    a: {DSN: y}\n",
+		"a misspelling among several instances":     "XGorm:\n  Clients:\n    a: {DSNN: y}\n",
+		"a misspelling in one instance":             "XRedis:\n  Adr: a\n",
+		"empty Clients":                             "XGorm:\n  Clients: {}\n",
+		"a misspelled Profiles":                     "XApp:\n  Profile: [a]\n",
+		"a string written in an int field":          "XGin:\n  Port: abc\n",
+		"a number written in a bool field":          "XGin:\n  UseH2C: 1\n",
+		"Import written as a map":                   "XApp:\n  Import: {a: b}\n",
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
 			if errs := check(t, r, body); len(errs) == 0 {
-				t.Error("运行时会拒绝的写法没被标红")
+				t.Error("a spelling the runtime refuses was not flagged")
 			}
 		})
 	}
@@ -97,7 +98,7 @@ func TestSchema_ExampleConfigsPass(t *testing.T) {
 	nested, _ := filepath.Glob(filepath.Join(repo, "example", "*", "*.yml"))
 	paths := append(top, nested...)
 	if len(paths) == 0 {
-		t.Fatal("一个示例配置都没找到，路径写错了")
+		t.Fatal("not one example configuration was found; the path must be wrong")
 	}
 	for _, p := range paths {
 		body, err := os.ReadFile(p)
@@ -105,7 +106,7 @@ func TestSchema_ExampleConfigsPass(t *testing.T) {
 			t.Fatal(err)
 		}
 		if errs := check(t, r, string(body)); len(errs) > 0 {
-			t.Errorf("%s 过不了 schema：%v", p, errs)
+			t.Errorf("%s does not pass the schema: %v", p, errs)
 		}
 	}
 }
@@ -120,7 +121,7 @@ func TestCheckDocs_ConfigDocsMatchStructs(t *testing.T) {
 		docs[d.path] = string(md)
 	}
 	if problems := checkDocs(schemaOf(t), docs); len(problems) > 0 {
-		t.Errorf("文档与 Config 结构体对不上：\n%s", strings.Join(problems, "\n"))
+		t.Errorf("the documentation does not agree with the Config structs:\n%s", strings.Join(problems, "\n"))
 	}
 }
 
@@ -148,12 +149,10 @@ func TestCheckDocs_ReportsUnknownFieldsInExamples(t *testing.T) {
 	// Each broken example has to be reported on its own merits, not padded out by some other
 	// problem (a missing document, say).
 	//
-	// xgin's section is "Configuration" because xgin/README.md is translated; modules still
-	// waiting for the migration keep "配置" in configDocs.
 	for name, c := range map[string]struct{ md, want string }{
-		"unknown field":   {"## Configuration\n\nUseH2C\n\n```yaml\nXGin:\n  UseH2C: true\n  Bogus: 1\n```\n", "YAML 示例"},
-		"wrong type":      {"## Configuration\n\nUseH2C\n\n```yaml\nXGin:\n  UseH2C: 1\n```\n", "YAML 示例"},
-		"section missing": {"## Behavior (measured)\n\nUseH2C\n", "没有 xgin/README.md「## Configuration」"},
+		"unknown field":   {"## Configuration\n\nUseH2C\n\n```yaml\nXGin:\n  UseH2C: true\n  Bogus: 1\n```\n", "YAML example"},
+		"wrong type":      {"## Configuration\n\nUseH2C\n\n```yaml\nXGin:\n  UseH2C: 1\n```\n", "YAML example"},
+		"section missing": {"## Behavior (measured)\n\nUseH2C\n", `there is no xgin/README.md "## Configuration" section`},
 		"wrong top key":   {"## Configuration\n\nUseH2C\n\n```yaml\nXGni:\n  UseH2C: true\n```\n", "XGni"},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -167,6 +166,6 @@ func TestCheckDocs_ReportsUnknownFieldsInExamples(t *testing.T) {
 func TestCheckDocs_ReportsUndocumentedConfigBlocks(t *testing.T) {
 	r := &root{Properties: map[string]*node{"XNew": {Type: "object"}}}
 	if got := strings.Join(checkDocs(r, nil), "\n"); !strings.Contains(got, "XNew") {
-		t.Errorf("XNew 没登记在 configDocs 里，该报出来，got=%q", got)
+		t.Errorf("XNew is not registered in configDocs and that must be reported, got=%q", got)
 	}
 }

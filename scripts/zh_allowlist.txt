@@ -6,7 +6,6 @@
 # instead of quietly staying forever. Nothing is ever added except during this migration.
 #
 # Generated once from the state of the repository at the time the rule landed.
-config_schema.json
 # The two diagrams hold their text as SVG nodes at fixed coordinates. English is wider than
 # Chinese at the same font size, so translating them without rendering the result risks text
 # overflowing its boxes; they need a pass where the rendering can be checked.
@@ -103,46 +102,3 @@ e2e/swagger_ui_test.go
 e2e/tls_http_test.go
 e2e/tls_test.go
 e2e/trace_options_test.go
-internal/config/clients.go
-internal/config/config.go
-internal/config/config_test.go
-internal/config/debug.go
-internal/config/debug_test.go
-internal/config/ensure_test.go
-internal/config/locate.go
-internal/config/locate_test.go
-internal/config/merge.go
-internal/config/merge_test.go
-internal/config/profile_test.go
-internal/config/source.go
-internal/config/strict.go
-internal/schemagen/doc.go
-internal/schemagen/docs.go
-internal/schemagen/main.go
-internal/schemagen/schema.go
-internal/schemagen/schema_test.go
-internal/schemagen/validate.go
-internal/web/accesslog.go
-internal/web/accesslog_test.go
-internal/web/config.go
-internal/web/doc.go
-internal/web/proxy.go
-internal/web/proxy_test.go
-internal/web/redact.go
-internal/web/redact_test.go
-internal/web/request.go
-internal/web/request_test.go
-internal/web/server.go
-internal/web/server_test.go
-internal/xclient/probe.go
-internal/xclient/probe_test.go
-internal/xclient/xclient.go
-internal/xclient/xclient_test.go
-scripts/check.sh
-scripts/check_zh.py
-scripts/e2e.sh
-scripts/lib.sh
-scripts/mutate.py
-scripts/mutations/core.py
-scripts/release.sh
-scripts/test.sh

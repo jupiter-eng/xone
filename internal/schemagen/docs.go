@@ -11,8 +11,9 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// configDocs 每个配置块写在哪一节：模块的配置块在那个模块 README 的「## 配置」。
-// 加了一个配置块就在这里登记，没登记的 checkDocs 会报出来
+// configDocs is which section each configuration block is documented in: a module's block lives
+// under "## Configuration" in that module's README.
+// A new configuration block is registered here, and checkDocs reports one that is not
 var configDocs = map[string]docSection{
 	"XApp":        {"xapp/README.md", "Configuration"},
 	"XLog":        {"xlog/README.md", "Configuration"},
@@ -25,55 +26,60 @@ var configDocs = map[string]docSection{
 	"XHttp":       {"xhttp/README.md", "Configuration"},
 	"XGin":        {"xgin/README.md", "Configuration"},
 	"XGinSwagger": {"xginswagger/README.md", "Configuration"},
-	// xecho 的 README 已经英文化，小节名是 Configuration；其余模块随各自的批次改
-	"XEcho": {"xecho/README.md", "Configuration"},
-	"XFlow": {"xflow/README.md", "Configuration"},
+	"XEcho":       {"xecho/README.md", "Configuration"},
+	"XFlow":       {"xflow/README.md", "Configuration"},
 }
 
-// exampleDocs 自己没有配置块、却写了 YAML 示例的节：只校验示例。
-// xgorm/clickhouse 的示例写的是 XGorm 块；docs/config.md 的 Profiles、Import 两节讲的是 XApp 的两项
+// exampleDocs are the sections that have no configuration block of their own yet hold YAML
+// examples: only the examples are validated.
+// xgorm/clickhouse's examples are of the XGorm block, and the Profiles and Import sections of
+// docs/config.md are about two fields of XApp
 var exampleDocs = []docSection{
 	{"xgorm/clickhouse/README.md", "Configuration"},
 	{"docs/config.md", "Profiles"},
 	{"docs/config.md", "Import"},
 }
 
-// docSection 一份文档里的一个二级标题：path 相对仓库根，title 是标题的第一个词
+// docSection is one second-level heading inside one document: path is relative to the repository
+// root and title is the heading's first word
 type docSection struct{ path, title string }
 
-func (d docSection) String() string { return fmt.Sprintf("%s「## %s」", d.path, d.title) }
+func (d docSection) String() string { return fmt.Sprintf("%s \"## %s\"", d.path, d.title) }
 
-// checkDocs 对照 schema 检查每个配置块的文档（configDocs 登记的那一节），返回全部问题。
-// docs 是文档的路径（相对仓库根）→ 全文。
+// checkDocs checks each configuration block's documentation (the section configDocs registers)
+// against the schema and returns every problem.
+// docs maps a document's path (relative to the repository root) to its whole text.
 //
-// 两个方向都查，而且都按节查：
+// Both directions are checked, and both per section:
 //
-//   - 每个字段都要在**它自己那一节**里出现，不是那份 README 的别处。从前的检查是在整份
-//     文档里 grep 字段名，Name、Timeout、Enable 这种名字总能在别处找到，永远通过。
-//   - 每一节里的 YAML 示例都得是真的能用的配置：字段存在、类型对、
-//     单实例和多实例的写法没混。文档里多写一个不存在的 key，
-//     照着配的人会发现它不生效——运行时直接启动失败。
+//   - every field has to appear in **its own section**, not somewhere else in that README. The
+//     check used to grep the whole document for the field name, and a name such as Name, Timeout or
+//     Enable is always found somewhere else, so it always passed.
+//   - every YAML example in a section has to be a configuration that really works: the fields
+//     exist, the types are right, and the single-instance and multi-instance spellings are not
+//     mixed. One key too many in the documentation means somebody configuring it that way finds it
+//     has no effect -- at run time it fails startup outright.
 func checkDocs(r *root, docs map[string]string) []string {
 	rs, err := compile(r)
 	if err != nil {
-		return []string{fmt.Sprintf("schema 本身不合法：%v", err)}
+		return []string{fmt.Sprintf("the schema itself is invalid: %v", err)}
 	}
 	var out []string
 	for _, key := range slices.Sorted(maps.Keys(r.Properties)) {
 		d, ok := configDocs[key]
 		if !ok {
-			out = append(out, fmt.Sprintf("配置块 %s 没有登记在 configDocs 里", key))
+			out = append(out, fmt.Sprintf("configuration block %s is not registered in configDocs", key))
 			continue
 		}
 		md := docs[d.path]
 		text, ok := docSections(md)[d.title]
 		if !ok {
-			out = append(out, fmt.Sprintf("没有 %s 这一节", d))
+			out = append(out, fmt.Sprintf("there is no %s section", d))
 			continue
 		}
 		for _, f := range fieldNames(r.Properties[key]) {
 			if !regexp.MustCompile(`\b` + regexp.QuoteMeta(f) + `\b`).MatchString(text) {
-				out = append(out, fmt.Sprintf("%s 里没有提到 %s 的字段 %s", d, key, f))
+				out = append(out, fmt.Sprintf("%s does not mention %s's field %s", d, key, f))
 			}
 		}
 		out = append(out, checkExamples(r, rs, d, text)...)
@@ -81,7 +87,7 @@ func checkDocs(r *root, docs map[string]string) []string {
 	for _, d := range exampleDocs {
 		text, ok := docSections(docs[d.path])[d.title]
 		if !ok {
-			out = append(out, fmt.Sprintf("没有 %s 这一节", d))
+			out = append(out, fmt.Sprintf("there is no %s section", d))
 			continue
 		}
 		out = append(out, checkExamples(r, rs, d, text)...)
@@ -89,28 +95,30 @@ func checkDocs(r *root, docs map[string]string) []string {
 	return out
 }
 
-// checkExamples 一节里的每个 YAML 示例都要过得了 schema，顶层 key 也得是认识的配置块
+// checkExamples: every YAML example in a section has to pass the schema, and its top-level keys
+// have to be configuration blocks that exist
 func checkExamples(r *root, rs *jsonschema.Resolved, d docSection, text string) []string {
 	var out []string
 	for i, block := range yamlBlocks(text) {
 		var doc map[string]any
 		if err := yaml.Unmarshal([]byte(block), &doc); err != nil {
-			out = append(out, fmt.Sprintf("%s 第 %d 个 YAML 示例解析失败：%v", d, i+1, err))
+			out = append(out, fmt.Sprintf("%s YAML example %d could not be parsed: %v", d, i+1, err))
 			continue
 		}
 		for _, top := range slices.Sorted(maps.Keys(doc)) {
 			if _, ok := r.Properties[top]; !ok {
-				out = append(out, fmt.Sprintf("%s 第 %d 个 YAML 示例里有不存在的顶层 key %s", d, i+1, top))
+				out = append(out, fmt.Sprintf("%s YAML example %d holds the top-level key %s, which does not exist", d, i+1, top))
 			}
 		}
 		for _, p := range problems(rs, doc) {
-			out = append(out, fmt.Sprintf("%s 第 %d 个 YAML 示例：%s", d, i+1, p))
+			out = append(out, fmt.Sprintf("%s YAML example %d: %s", d, i+1, p))
 		}
 	}
 	return out
 }
 
-// docSections 按二级标题切开文档：标题的第一个词 → 这一节的全文（含三级标题下的内容）
+// docSections cuts a document up by its second-level headings: the heading's first word maps to
+// that section's whole text (what is under its third-level headings included)
 func docSections(md string) map[string]string {
 	out := map[string]string{}
 	var key string
@@ -133,7 +141,7 @@ func docSections(md string) map[string]string {
 	return out
 }
 
-// yamlBlocks 取出一段 Markdown 里所有 ```yaml 代码块的内容
+// yamlBlocks takes the contents of every ```yaml block in a piece of Markdown
 func yamlBlocks(text string) []string {
 	var out []string
 	var cur *strings.Builder
@@ -152,8 +160,9 @@ func yamlBlocks(text string) []string {
 	return out
 }
 
-// fieldNames 一个配置块里出现的全部字段名，去重排序。
-// map 的 key 是使用者自己起的名字（实例名、标签名），不算字段
+// fieldNames is every field name appearing in one configuration block, deduplicated and sorted.
+// A map's keys are names the caller chose (an instance name, a label name) and do not count as
+// fields
 func fieldNames(n *node) []string {
 	seen := map[string]bool{}
 	var walk func(*node)

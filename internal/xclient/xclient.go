@@ -1,11 +1,13 @@
-// Package xclient 提供「一组按名字组织的实例」这件事本身。
+// Package xclient provides "a set of instances organized by name" as such.
 //
-// xgorm、xredis、xcache 都是同一个形状：配置里可以写一个实例，也可以按名字写
-// 好几个；运行时用 C() 按名字取；启动时挨个建、有一个建不起来就把已建好的全关掉。
-// 这些语义本该处处一致——「名字找不到时说什么」「两种写法混用怎么办」
-// 都是一次决定，分散在三个模块里就变成了三份会各自漂移的实现。
+// xgorm, xredis and xcache all have the same shape: the configuration may hold one instance or
+// several by name; at run time C() takes one by name; at startup they are built one by one, and
+// one that fails to build closes everything already built.
+// These semantics should be the same everywhere -- "what to say when a name is not found" and
+// "what to do when the two spellings are mixed" are decided once, and spread across three modules
+// they would become three implementations drifting apart.
 //
-// 集成包这样用：
+// An integration uses it like this:
 //
 //	var reg = xclient.NewRegistry[*redis.Client]("xredis", ConfigKey)
 //
@@ -15,7 +17,7 @@
 //
 //	func initXRedis(ctx context.Context) error {
 //		if !xconfig.Has(ConfigKey) {
-//			return xclient.Build(ctx, reg, nil, build) // 没配也走一遍：之后取不到时报「没配」而不是「调早了」
+//			return xclient.Build(ctx, reg, nil, build) // run it even when unconfigured, so that a later lookup says "not configured" rather than "called too early"
 //		}
 //		c := DefaultConfig()
 //		if err := xconfig.Unmarshal(ConfigKey, &c); err != nil {
@@ -24,21 +26,25 @@
 //		return xclient.Build(ctx, reg, c.Clients, build)
 //	}
 //
-//	// build 建一个实例；name 是它在配置里的名字，写进日志好分清是哪一个
+//	// build builds one instance; name is what it is called in the configuration, written into the
+//	// logs to tell them apart
 //	func build(ctx context.Context, name string, c ClientConfig) (*redis.Client, io.Closer, error) {
 //		return New(ctx, c)
 //	}
 //
 //	func closeXRedis(context.Context) error { return reg.Close() }
 //
-// 启动期的建连探测也是同一件事：试几次、每次多久、认证被拒就别再试。
-// Probe 把这三条收成一处（见 probe.go），各模块只提供「怎么探一次」和「怎么认出认证失败」。
+// The connection probe at startup is one thing as well: how many attempts, how long each one gets,
+// and no more attempts once authentication is refused. Probe gathers those three in one place (see
+// probe.go), and each module only provides "how to probe once" and "how to recognize an
+// authentication failure".
 //
-// 它是 internal 的：这是本仓库三个多实例模块的共用实现，不是使用者要学的东西。
-// 你自己写的集成想要多实例，照着抄一份就好——那只是一个按名字存实例的 map，
-// 不值得让所有人为它多认一个包。
+// It is internal: this is the shared implementation of this repository's three multi-instance
+// modules, not something a caller has to learn. An integration of your own that wants several
+// instances is welcome to copy it -- it is a map of instances by name, and not worth making
+// everybody learn another package for.
 //
-// 本包零第三方依赖。
+// This package has no third-party dependencies.
 package xclient
 
 import (
@@ -54,53 +60,59 @@ import (
 	"github.com/jupiter-eng/xone/xerror"
 )
 
-// DefaultName 不带参数取实例时用的名字，也是单实例写法被规整成的名字。
-// 只写在这一处：internal/config、xconfig 和各集成模块的同名常量都引用它
+// DefaultName is the name used when an instance is taken without an argument, and the name the
+// single-instance spelling is normalized to.
+// It is written here alone: the constants of the same name in internal/config, xconfig and each
+// integration all refer to it
 const DefaultName = "default"
 
-// Registry 一组按名字组织的实例
+// Registry is a set of instances organized by name
 type Registry[T any] struct {
-	module string // 出现在 panic 文案里，如 "xgorm"
-	key    string // 配置块的顶层 key，如 "XGorm"
+	module string // appears in the panic text, "xgorm" for one
+	key    string // the configuration block's top-level key, "XGorm" for one
 
-	// 整份换掉而不是逐个字段改：读的一方拿到的永远是完整的一份，不用加锁。
-	// C() 每次数据访问都要走一遍，读锁的计数在多核之间来回争抢：
-	// 实测 4 核并发 Get 约 100ns，比单协程的 25ns 还慢；换成原子指针后约 30ns
+	// Replaced whole rather than field by field: a reader always gets a complete one and needs no
+	// lock. C() is on the path of every data access, and a read lock's counter is fought over across
+	// cores: a concurrent Get on 4 cores was measured at about 100ns, slower than the 25ns of a
+	// single goroutine; with an atomic pointer it is about 30ns
 	state atomic.Pointer[snapshot[T]]
 }
 
-// snapshot 注册表某一刻的全部内容，发布之后不再修改
+// snapshot is the registry's whole content at one moment, never modified once published
 type snapshot[T any] struct {
 	items   map[string]T
 	closers []io.Closer
 	phase   phase
 }
 
-// phase 注册表处在生命周期的哪一段。只用来把「取不到」的原因说准：
-// 调早了、调晚了、没配、名字写错，是四个不同的问题，要查的地方各不相同
+// phase is where in the lifecycle the registry is. It serves one purpose: saying exactly why
+// something was not found -- called too early, called too late, never configured and a misspelled
+// name are four different problems, each sending somebody to a different place
 type phase int
 
 const (
-	notStarted phase = iota // 启动钩子还没跑
-	running                 // 建好了；没配这一块的话就是一个都没建
-	closed                  // 停止钩子跑过了
+	notStarted phase = iota // the start hooks have not run yet
+	running                 // built; with the block unconfigured, that means none was built
+	closed                  // the stop hooks have run
 )
 
-// NewRegistry 创建注册表。module 与 key 只用于拼错误信息。
+// NewRegistry creates a registry. module and key serve only to assemble the error messages.
 func NewRegistry[T any](module, key string) *Registry[T] {
 	r := &Registry[T]{module: module, key: key}
 	r.state.Store(&snapshot[T]{items: map[string]T{}})
 	return r
 }
 
-// Get 取一个实例，不带参数时取名为 default 的那个。取不到直接 panic。
+// Get takes one instance, the one called default without an argument. One that is not found panics
+// outright.
 //
-// 不返回零值：返回 nil 不会让程序走得更远——客户端上的任何方法在 nil 上
-// 都是空指针解引用，只是把同一个 panic 推迟到调用方第一次用它的时候，
-// 而那里的栈里只剩 "invalid memory address"，看不出根因是配置没配。
-// 这是启动期的配置问题，不是运行期要处理的错误。
+// It does not return the zero value: returning nil would not get the program any further -- any
+// method on the client is a nil pointer dereference, which only defers the same panic to the
+// caller's first use of it, where the stack holds nothing but "invalid memory address" and says
+// nothing about the configuration being the root cause.
+// This is a configuration problem at startup, not an error to be handled at run time.
 //
-// 可选依赖（配了就用、没配就跳过）用 Has 先判断。
+// An optional dependency (used when configured, skipped when not) checks with Has first.
 func (r *Registry[T]) Get(name ...string) T {
 	v, ok := r.Lookup(name...)
 	if !ok {
@@ -109,36 +121,39 @@ func (r *Registry[T]) Get(name ...string) T {
 	return v
 }
 
-// Lookup 取一个实例，取不到时返回零值和 false
+// Lookup takes one instance, returning the zero value and false when it is not found
 func (r *Registry[T]) Lookup(name ...string) (T, bool) {
 	v, ok := r.state.Load().items[nameOf(name)]
 	return v, ok
 }
 
-// Has 报告指定实例是否已配置，供可选依赖判断
+// Has reports whether the named instance is configured, for an optional dependency to check
 func (r *Registry[T]) Has(name ...string) bool {
 	_, ok := r.Lookup(name...)
 	return ok
 }
 
-// Names 返回已配置的实例名，按名字排序
+// Names returns the configured instance names, sorted by name
 func (r *Registry[T]) Names() []string {
 	return slices.Sorted(maps.Keys(r.state.Load().items))
 }
 
-// All 返回当前全部实例，名字到实例。
+// All returns every instance there is now, name to instance.
 //
-// 返回的是一份拷贝：快照发布之后不许改，调用方拿去随便改也碰不到它。
-// 同一刻的一份——逐个 Names 再 Lookup 的话，中间赶上 Close 就会取到一半。
+// What it returns is a copy: a snapshot is immutable once published, and a caller changing it
+// cannot reach it. It is also one moment's worth -- Names followed by Lookup one by one would
+// return half of them when a Close falls in between.
 func (r *Registry[T]) All() map[string]T {
 	return maps.Clone(r.state.Load().items)
 }
 
-// missing 只报「没找到」帮助有限：调早了、调晚了、整块没配、名字写错，
-// 要查的地方各不相同，文案要让人一眼分清是哪一种。
+// missing: reporting "not found" alone helps little -- called too early, called too late, the
+// whole block unconfigured and a misspelled name each send somebody to a different place, and the
+// wording has to tell them apart at a glance.
 //
-// 调早了最容易被说错：从前它和「整块没配」是同一句话，于是在 main 里、
-// 在 Run 之前取实例的人会去翻一份明明写对了的配置文件。
+// Called too early is the one most easily told wrong: it used to read the same as "the whole block
+// is unconfigured", sending whoever took an instance in main, before Run, to a configuration file
+// that was perfectly correct.
 func (r *Registry[T]) missing(want string) string {
 	s := r.state.Load()
 	p, got := s.phase, slices.Sorted(maps.Keys(s.items))
@@ -165,25 +180,31 @@ func nameOf(name []string) string {
 	return DefaultName
 }
 
-// Build 按名字顺序建出全部实例，并把它们发布到注册表。
+// Build builds every instance in name order and publishes them to the registry.
 //
-// cfgs 为空（这一块没配）也要调：什么都不建，但注册表由此知道启动钩子跑过了，
-// 取不到实例时报「没配」而不是「调早了」。
+// It is called even with an empty cfgs (the block is unconfigured): nothing is built, but the
+// registry learns from it that the start hooks have run, so a later lookup says "not configured"
+// rather than "called too early".
 //
-// 任何一个建不起来就把已经建好的全关掉再返回错误：启动钩子返回错误时，
-// 这一包的停止钩子不会被执行，不自己收拾就会漏掉那几个连接池。
-// 关不掉的那几个的错误并进返回的错误里，漏了哪个连接池看得见。
+// One that fails to build closes everything already built before the error is returned: when a
+// start hook returns an error, this package's stop hook does not run, and without cleaning up here
+// those connection pools would leak.
+// The errors of the ones that could not be closed are joined into the error returned, so a leaked
+// connection pool is visible.
 //
-// new 收到实例名：建好时的日志要写是哪一个——配了好几个时只写地址分不出来。
+// new receives the instance name: the log written once it is built has to say which one it is --
+// with several configured, an address alone tells them apart for nobody.
 //
-// ctx 一路传给 new，并在每个实例之前检查一次：配了五个库、第一个就要
-// 重试到超时的话，收到退出信号应当就此打住，而不是把剩下四个也挨个试一遍。
+// The ctx is passed all the way to new and checked once before each instance: with five databases
+// configured and the first one retrying until it times out, a shutdown signal should stop it right
+// there rather than having the remaining four tried one by one as well.
 func Build[C, T any](ctx context.Context, r *Registry[T], cfgs map[string]C,
 	new func(ctx context.Context, name string, cfg C) (T, io.Closer, error)) error {
 	built := make(map[string]T, len(cfgs))
 	var closers []io.Closer
-	// abort 关掉已经建好的，关不掉的并在 err 后面；都关掉了就原样返回 err，
-	// 最外层照旧是本模块的 *xerror.Error
+	// abort closes what was already built and joins whatever could not be closed after err; with
+	// everything closed it returns err unchanged, so the outermost layer is still this module's
+	// *xerror.Error
 	abort := func(err error) error {
 		if cerr := closeAll(r.module, closers); cerr != nil {
 			return errors.Join(err, cerr)
@@ -191,7 +212,8 @@ func Build[C, T any](ctx context.Context, r *Registry[T], cfgs map[string]C,
 		return err
 	}
 
-	// 名字排序后再建，让失败顺序可复现，日志顺序也稳定
+	// Built in sorted name order, so that the order of a failure can be reproduced and the order of
+	// the logs is stable
 	for _, name := range slices.Sorted(maps.Keys(cfgs)) {
 		if err := ctx.Err(); err != nil {
 			return abort(xerror.Newf(r.module, "new", "shutdown signal received before building instance %q: %w", name, err))
@@ -208,19 +230,21 @@ func Build[C, T any](ctx context.Context, r *Registry[T], cfgs map[string]C,
 	return nil
 }
 
-// Close 摘掉全部实例并逆序关闭它们，供停止钩子直接使用。
+// Close takes every instance out and closes them in reverse order, for a stop hook to use
+// directly.
 //
-// 先摘再关：反过来的话，关到一半时 C() 还能取到正在被关闭的实例。
+// Taken out before closing: the other way round, C() would still find an instance that is being
+// closed halfway through.
 func (r *Registry[T]) Close() error {
 	old := r.state.Swap(&snapshot[T]{items: map[string]T{}, phase: closed})
 	return closeAll(r.module, old.closers)
 }
 
-// safeNew 建一个实例并隔离 panic。
+// safeNew builds one instance and contains a panic.
 //
-// 不隔离的话，panic 会穿过 Build 往上抛，而已经建好的那几个实例的 Closer
-// 还只存在于 Build 这一帧的局部变量里——栈一展开就找不回来了，
-// 那是几个再也关不掉的连接池。
+// Uncontained, the panic is thrown up through Build while the Closers of the instances already
+// built exist only in Build's own frame as local variables -- once the stack unwinds they cannot be
+// found again, and those are connection pools that can never be closed.
 func safeNew[C, T any](ctx context.Context, module, name string, cfg C,
 	new func(context.Context, string, C) (T, io.Closer, error)) (v T, closer io.Closer, err error) {
 	defer func() {
@@ -237,15 +261,18 @@ func safeNew[C, T any](ctx context.Context, module, name string, cfg C,
 	return v, closer, err
 }
 
-// named 给错误点名是哪个实例，并保证一个模块边界只有一层 xerror。
+// named names the instance an error belongs to, and keeps one module boundary to one layer of
+// xerror.
 //
-// new 返回的通常已经是本模块的 xerror，带着 config / connect 这样的 op。
-// 再按 new 包一层，文本就成了
-// xone xgorm new failed, err=[instance "a": xone xgorm connect failed, err=[...]]：
-// 模块名重复一遍，真正有用的 op 被压进里层，errors.As 取出来的永远是 new。
-// 所以本模块的错误沿用它自己的 op、只在消息前补上实例名；其余的才按 new 包。
+// What new returns is usually this module's xerror already, carrying an op such as config or
+// connect. Another layer with new would turn the text into
+// xone xgorm new failed, err=[instance "a": xone xgorm connect failed, err=[...]]: the module name
+// repeated, the op that actually helps pushed inside, and errors.As always taking out new.
+// So an error of this module keeps its own op with the instance name added in front of the
+// message, and only the rest is wrapped with new.
 //
-// 只看最外层而不用 errors.As：后者会穿过别人包的那一层，改写时把那层的文字丢掉。
+// Only the outermost layer is looked at rather than errors.As: the latter walks past a layer
+// somebody else wrapped, and rewriting it would lose that layer's text.
 func named(module, name string, err error) error {
 	if xe, ok := err.(*xerror.Error); ok && xe.Module == module {
 		return xerror.Newf(module, xe.Op, "instance %q: %w", name, xe.Err)
@@ -253,10 +280,10 @@ func named(module, name string, err error) error {
 	return xerror.Newf(module, "new", "instance %q: %w", name, err)
 }
 
-// safeClose 关一个实例并隔离 panic。
+// safeClose closes one instance and contains a panic.
 //
-// 理由与 safeNew 对称：一个实例的 Close 炸了，不该让同一组里
-// 剩下的实例跟着关不掉。
+// The reasoning mirrors safeNew's: one instance's Close blowing up should not leave the rest of the
+// set unclosed.
 func safeClose(module string, c io.Closer) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -266,10 +293,11 @@ func safeClose(module string, c io.Closer) (err error) {
 	return c.Close()
 }
 
-// panicked 把 recover 到的值变成 error，与 xone.go 里的同名函数一致。
+// panicked turns a recovered value into an error, as the function of the same name in xone.go
+// does.
 //
-// panic 出来的本身是 error 时用 %w 接住：用 %v 的话它就只剩一段文本，
-// errors.Is / errors.As 到此为止。
+// When what was panicked with is an error itself, %w catches it: with %v it would be left as a
+// piece of text and errors.Is / errors.As would stop here.
 func panicked(r any) error {
 	if err, ok := r.(error); ok {
 		return fmt.Errorf("panicked: %w", err)
@@ -277,7 +305,7 @@ func panicked(r any) error {
 	return fmt.Errorf("panicked: %v", r)
 }
 
-// closeAll 逆序关闭，一个失败不影响其余
+// closeAll closes in reverse order, where one failure does not affect the rest
 func closeAll(module string, closers []io.Closer) error {
 	var errs []error
 	for i := len(closers) - 1; i >= 0; i-- {

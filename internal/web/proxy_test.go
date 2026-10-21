@@ -22,14 +22,14 @@ func TestProxies_Trusts(t *testing.T) {
 	ps := ParseProxies([]string{TrustPrivate, "203.0.113.7", "not-an-ip"})
 	for ip, want := range map[string]bool{
 		"10.1.2.3":        true,
-		"::ffff:10.1.2.3": true, // IPv4 映射成 IPv6 的写法也认
-		"100.64.0.1":      true, // 运营商级 NAT
+		"::ffff:10.1.2.3": true, // the IPv4-mapped IPv6 spelling is recognized too
+		"100.64.0.1":      true, // carrier-grade NAT
 		"fd00::1":         true, // ULA
-		"203.0.113.7":     true, // 单个 IP 当作只含它自己的网段
+		"203.0.113.7":     true, // a single IP counts as the range holding it alone
 		"203.0.113.8":     false,
 		"8.8.8.8":         false,
-		"":                false, // 解不出来的一律不信
-		"10.1.2.3:8080":   false, // 带端口的不是地址
+		"":                false, // what cannot be parsed is never trusted
+		"10.1.2.3:8080":   false, // one with a port is not an address
 	} {
 		if got := ps.Trusts(ip); got != want {
 			t.Errorf("Trusts(%q)=%v want %v", ip, got, want)
@@ -80,7 +80,7 @@ func TestProxies_ClientIP(t *testing.T) {
 		}
 	}
 
-	// 同名的头有好几行时拼成一个列表
+	// Several lines of the same header are joined into one list
 	r := httptest.NewRequest("GET", "/", nil)
 	r.RemoteAddr = "10.0.0.5:1"
 	r.Header.Add("X-Forwarded-For", "1.2.3.4")
@@ -94,8 +94,10 @@ func TestProxies_ClientIP(t *testing.T) {
 }
 
 func TestValidateProxies_RejectsIPv4MappedEntries(t *testing.T) {
-	// gin v1.12.0 把单个的 ::ffff:10.0.0.1 解成了信任 ::1、::5 这类地址、偏偏不信 10.0.0.1；
-	// 网段写法 gin 认对了，本包的 ParseProxies 却不 Unmap 网段。同一行配置两处判断不一样，所以直接拒掉
+	// gin v1.12.0 read a single ::ffff:10.0.0.1 as trusting addresses such as ::1 and ::5 while not
+	// trusting 10.0.0.1 itself; gin reads the range spelling right, while this package's ParseProxies
+	// does not Unmap a range. One line of configuration, two different decisions, so it is refused
+	// outright
 	for entry, suggest := range map[string]string{
 		"::ffff:10.0.0.1":     "10.0.0.1",
 		"::ffff:a00:1":        "10.0.0.1",

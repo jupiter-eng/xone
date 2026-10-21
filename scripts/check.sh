@@ -1,215 +1,259 @@
 #!/bin/sh
-# 把设计约束编译成检查。趁还没东西可违反的时候加上——
-# 晚了就得豁免一堆存量，那等于没加。
+# Compiles the design constraints into checks. Added while there is nothing to violate them yet --
+# added later it would have to exempt a pile of what is already there, which is the same as not
+# adding it.
 set -e
 cd "$(dirname "$0")/.."
 fail() { echo "✗ $1"; exit 1; }
 
 . scripts/lib.sh
 modules=$(modules)
-gosrc=$(files '*.go' | grep -v '_test\.go$')  # 非测试的 Go 源文件
+gosrc=$(files '*.go' | grep -v '_test\.go$')  # the non-test Go sources
 
-# ---- 1. 核心的依赖足迹 ----
-# 使用者 import 任何一个核心里的包，都会背上核心的全部依赖约束，所以核心必须极瘦。
-# 每加一个都要先问：能不能不加。
-# GOWORK=off 是必须的：工作区里 go list -m all 会把所有模块的依赖并在一起。
+# ---- 1. The core's dependency footprint ----
+# A caller importing any package of the core carries every dependency constraint of the core, so the
+# core has to stay extremely thin.
+# Every addition starts with the question: can it be left out.
+# GOWORK=off is required: inside a workspace, go list -m all merges every module's dependencies
+# together.
 deps=$(GOWORK=off go list -m all)
 n=$(echo "$deps" | grep -vc '^github.com/jupiter-eng/xone')
-[ "$n" -le 3 ] || fail "核心模块图 $n 个模块，超过上限 3（当前应为 yaml 及其测试依赖）"
-echo "✓ 核心模块图 $n 个（上限 3）"
+[ "$n" -le 3 ] || fail "the core module graph holds $n modules, above the limit of 3 (it should be yaml and its test dependencies)"
+echo "✓ the core module graph holds $n (limit 3)"
 
-# ---- 2. 核心不得依赖任何集成模块 ----
-# 反过来就把集成的依赖又带回给所有人了，分模块也就白分了
+# ---- 2. The core must depend on no integration module ----
+# The other way round would carry the integrations' dependencies back to everybody and splitting the
+# modules would have been pointless
 ! echo "$deps" | grep -q '^github.com/jupiter-eng/xone/' \
-  || fail "核心 require 了集成模块，分模块的意义没了"
-echo "✓ 核心不依赖任何集成模块"
+  || fail "the core requires an integration module, which defeats the point of splitting them"
+echo "✓ the core depends on no integration module"
 
-# ---- 3. xhook 与基础包必须零第三方依赖 ----
-# xhook 是每个集成都要认识的包（另一个是 xconfig），一旦它有依赖，所有集成都被迫背上。
-# xtls 同理：它是 xgorm / xredis / xhttp / xkafka 配置结构体里的一个字段类型。
-# internal/web 是各 Web 集成共用的那一半：混进一个三方包，每个 Web 集成都得背上
-# go list 的输出先落进变量：直接接管道的话，包挪走了、go list 报错，grep -c 数出 0，检查静默通过
+# ---- 3. xhook and the base packages must have zero third-party dependencies ----
+# xhook is a package every integration has to know (the other being xconfig), and one dependency of
+# its own is forced onto every integration.
+# xtls likewise: it is a field type inside xgorm / xredis / xhttp / xkafka's configuration structs.
+# internal/web is the half the web integrations share: one third-party package slipping in is
+# carried by every web integration.
+# go list's output goes into a variable first: piped directly, a package that moved has go list fail,
+# grep -c count 0, and the check pass without a word
 for pkg in ./xhook ./xerror ./xutil ./xtls ./internal/web; do
-  list=$(GOWORK=off go list -deps "$pkg") || fail "go list -deps $pkg 失败（包挪走了？同步这里的列表）"
+  list=$(GOWORK=off go list -deps "$pkg") || fail "go list -deps $pkg failed (did the package move? update the list here)"
   d=$(echo "$list" | grep -E '^[^/]*\.' | grep -vc jupiter-eng || true)
-  [ "$d" -eq 0 ] || fail "$pkg 混进了 $d 个第三方包"
+  [ "$d" -eq 0 ] || fail "$pkg has $d third-party packages in it"
 done
-echo "✓ xhook / xerror / xutil / xtls / internal/web 零第三方依赖"
+echo "✓ xhook / xerror / xutil / xtls / internal/web have zero third-party dependencies"
 
-# xlog 会换掉 slog.Default()，只跟着 xgin / xecho / xcron 来（它们是「进程的主体」：Web 服务、定时任务进程，
-# 要的就是 JSON 日志和 trace_id）。数据类集成、xtrace、xmetric 都不许把它带进来：
-# 否则只用 xgorm 的程序又被接管了日志。xtrace / xmetric / xkafka 往 internal/logext 注入，不 import xlog。
-# 查每个模块的全部包（./...），不只是模块根上那一个：核心里的 xflow、xonetest、internal/... 带进 xlog，
-# 使用者 import 它们同样被接管日志。xlog 自己的 Deps 里没有它自己，不用单独排掉
+# xlog replaces slog.Default() and comes along with xgin / xecho / xcron alone (they are "the body
+# of the process": a web service or a scheduled-job process, which want JSON logs and trace_id to
+# begin with). No data integration, xtrace or xmetric may bring it in: otherwise a program using only
+# xgorm would have its logging taken over again. xtrace / xmetric / xkafka install into
+# internal/logext and never import xlog.
+# Every package of every module is checked (./...), not the one at the module root alone: xflow,
+# xonetest and internal/... inside the core bringing xlog in would take a caller's logging over just
+# as well. xlog's own Deps do not hold itself, so it needs no exclusion
 xlog=github.com/jupiter-eng/xone/xlog
 for m in . xtrace xmetric xgorm xredis xhttp xcache xkafka; do
   out=$(cd "$m" && GOWORK=off go list -f "{{.ImportPath}}{{range .Deps}}{{if eq . \"$xlog\"}} <-xlog{{end}}{{end}}" ./...) \
-    || fail "$m: go list 失败（模块挪走了？同步这里的列表）"
-  [ -n "$out" ] || fail "$m: go list 一个包都没列出来"
+    || fail "$m: go list failed (did the module move? update the list here)"
+  [ -n "$out" ] || fail "$m: go list listed not one package"
   bad=$(echo "$out" | sed -n 's/ <-xlog$//p')
-  [ -z "$bad" ] || fail "$m 里这些包把 xlog 带进来了（根模块、数据类集成、xtrace、xmetric 都不该带）：
+  [ -z "$bad" ] || fail "these packages of $m bring xlog in (the root module, the data integrations, xtrace and xmetric all must not):
 $bad"
 done
-echo "✓ 只有 xgin / xecho / xcron 带着 xlog"
+echo "✓ xgin / xecho / xcron alone bring xlog along"
 
-# ---- 4. 只有集成包可以有 init() ----
-# 集成包的 init 只登记不初始化；核心自己则连登记都不该有。
-# 判据是「这个目录调没调 xhook.BeforeStart」，不是目录名也不是有没有 go.mod：
-# xlog 零依赖留在核心模块里，同样是集成包。
-# 两个登记入口：钩子登记进框架，方言登记进 xgorm。两者都只是「记下来」，
-# 不初始化任何东西，所以放在 init() 里是对的
-# xhook 自己要排掉：包注释里写着用法示例，会被这个 grep 认成集成包
+# ---- 4. Only an integration may have an init() ----
+# An integration's init registers and initializes nothing, while the core should not even register.
+# What decides is "does this directory call xhook.BeforeStart", not the directory's name and not
+# whether it has a go.mod: xlog has zero dependencies and stays in the core module while being an
+# integration all the same.
+# There are two registration entry points: a hook registers into the framework and a dialect into
+# xgorm. Both only "write it down" and initialize nothing, so an init() is the right place for them.
+# xhook itself has to be excluded: its package comment holds a usage example that this grep would
+# take for an integration
 integrations=$(grep -lE 'xhook\.BeforeStart\(|xgorm\.RegisterDialect\(' $gosrc | xargs -r -n1 dirname | sort -u | grep -vx 'xhook')
 for f in $(grep -l '^func init()' $gosrc); do
   d=$(dirname "$f")
-  echo "$integrations" | grep -qx "$d" || fail "$f 有 init()，但它不是集成包（没有 xhook.BeforeStart）"
+  echo "$integrations" | grep -qx "$d" || fail "$f has an init() while not being an integration (no xhook.BeforeStart)"
 done
-echo "✓ init() 只出现在集成包里"
+echo "✓ init() appears in the integrations alone"
 
-# ---- 5. 核心公开 API 数量上限 ----
-# 框架的 API 是永久的。让「加一个」有代价，超了就得先砍再加。
-# api 包：数导出的 func / type。go doc 失败要报出来（不然数成 0 就过了）；
-# 数到 0 时 grep -c 退出码是 1，set -e 下 a=$(...) 会让脚本静默退出，所以那一步 || true
+# ---- 5. The upper bound on the core's public API ----
+# A framework's API is permanent. Adding one has a price, and going over means cutting before
+# adding.
+# api <package>: counts the exported funcs and types. A failed go doc has to be reported (otherwise
+# counting 0 would pass); counting 0 has grep -c exit 1, which under set -e would have a=$(...) exit
+# the script without a word, hence the || true there
 api() {
   doc=$(go doc -all "$1") || return 1
   echo "$doc" | grep -cE '^(func|type) ' || true
 }
 a=$(api .)
-[ "$a" -le 15 ] || fail "根包公开 API $a 个，超过上限 15"
+[ "$a" -le 15 ] || fail "the root package has $a public APIs, above the limit of 15"
 
-# xhook / xconfig 是每个集成都必须认识的那两个包，所以它们的上限最要紧：
-# 每加一个导出，就是一条所有第三方集成都得跟着理解的规矩。
-# 这个数曾经在几轮重构里一路涨到 15 而没人拦，所以现在把它钉死。
+# xhook / xconfig are the two packages every integration has to know, so their limits matter most:
+# every export added is one more rule every third-party integration has to understand.
+# This count once climbed to 15 over a few refactors with nobody stopping it, which is why it is
+# pinned down now.
 r=$(api ./xhook)
-[ "$r" -le 6 ] || fail "xhook 公开 API $r 个，超过上限 6——先想清楚能不能砍掉一个再加"
+[ "$r" -le 6 ] || fail "xhook has $r public APIs, above the limit of 6 -- work out whether one can be cut before adding"
 x=$(api ./xconfig)
-[ "$x" -le 6 ] || fail "xconfig 公开 API $x 个，超过上限 6"
-# xonetest 是给使用者测试用的，同样是永久 API：换配置、跑钩子，就这些。
-# 想往里加「再帮你做一件事」的，先问那件事是不是该由 xone.Run 或被测包自己做
+[ "$x" -le 6 ] || fail "xconfig has $x public APIs, above the limit of 6"
+# xonetest is for a caller's tests and is a permanent API just the same: swapping a configuration
+# and running the hooks, and that is all.
+# Anything adding "let me do one more thing for you" starts with the question of whether that thing
+# belongs to xone.Run or to the package under test
 tt=$(api ./xonetest)
-[ "$tt" -le 3 ] || fail "xonetest 公开 API $tt 个，超过上限 3"
-# xtls 是各客户端集成共用的 TLS 块：一个配置类型，外加校验和装出 *tls.Config 两个方法。
-# 它出现在使用者的配置结构体里（xredis.ClientConfig.TLS），同样是永久 API。
-# 服务端那一侧（xgin、xecho 的 TLS 块，带 ClientCAFile / MinVersion）形状不同，在 internal/web 里，不往这里加
+[ "$tt" -le 3 ] || fail "xonetest has $tt public APIs, above the limit of 3"
+# xtls is the TLS block the client integrations share: one configuration type plus two methods, one
+# validating and one assembling a *tls.Config.
+# It appears inside a caller's configuration structs (xredis.ClientConfig.TLS) and is a permanent API
+# just the same.
+# The server side (xgin's and xecho's TLS block, with ClientCAFile / MinVersion) has a different
+# shape, lives in internal/web, and is not added here
 tl=$(api ./xtls)
-[ "$tl" -le 3 ] || fail "xtls 公开 API $tl 个，超过上限 3"
-echo "✓ 公开 API：根包 ${a}（上限 15）、xhook ${r}（上限 6）、xconfig ${x}（上限 6）、xonetest ${tt}（上限 3）、xtls ${tl}（上限 3）"
+[ "$tl" -le 3 ] || fail "xtls has $tl public APIs, above the limit of 3"
+echo "✓ public APIs: the root package ${a} (limit 15), xhook ${r} (limit 6), xconfig ${x} (limit 6), xonetest ${tt} (limit 3), xtls ${tl} (limit 3)"
 
-# ---- 6. 集成包必须导出纯构造器 New，且不得引用根包 ----
-# New 保证「零装配」永远只是默认路径，不是唯一路径：
-# 测试和特殊场景始终可以绕开框架直接造实例。
-# 不引用根包保证依赖是单向的——集成认识 registry，框架认识 registry，彼此不认识。
-[ -n "$integrations" ] || fail "一个集成包都没找到，第 4 步的判据失效了"
+# ---- 6. An integration must export the pure constructor New and must not reference the root
+# package ----
+# New keeps "zero wiring" the default path rather than the only one: a test, or an unusual case, can
+# always go around the framework and build an instance directly.
+# Not referencing the root package keeps the dependencies one-way -- an integration knows the
+# registry, the framework knows the registry, and the two do not know each other.
+[ -n "$integrations" ] || fail "not one integration was found, so step 4's criterion is broken"
 for d in $integrations; do
-  # 驱动包 import 的是 xgorm 而不是框架，这条对它不适用
+  # A driver package imports xgorm rather than the framework, so this does not apply to it
   grep -rq 'xhook\.BeforeStart(' "$d"/*.go || continue
-  ! grep -rq '"github.com/jupiter-eng/xone"' "$d"/*.go || fail "$d 引用了根包（只能 import xhook / xconfig）"
-  # 只读配置、不造任何东西的包（如 xapp、xflow）没有构造器可言，这条对它是空的
+  ! grep -rq '"github.com/jupiter-eng/xone"' "$d"/*.go || fail "$d references the root package (xhook / xconfig alone may be imported)"
+  # A package that only reads configuration and builds nothing (xapp, xflow) has no constructor to
+  # speak of, so this is empty for it
   grep -rq 'xhook\.BeforeStop(' "$d"/*.go || continue
-  # xcron 例外：它登记的是进程里唯一的那个调度器，没有「一个实例」可造；
-  # 测试直接调包内的调度器
+  # xcron is the exception: what it registers is the one scheduler of the process and there is no
+  # "one instance" to build; its tests call the scheduler inside the package directly
   [ "$d" != xcron ] || continue
-  # New[T any]( 也算：泛型构造器同样是「绕开框架直接造一个」的入口
-  grep -rqE '^func New[(\[]' "$d"/*.go || fail "$d 登记了组件，却没有纯构造器 New"
+  # New[T any]( counts as well: a generic constructor is just as much an entry point for "build one
+  # directly, around the framework"
+  grep -rqE '^func New[(\[]' "$d"/*.go || fail "$d registers a component while having no pure constructor New"
 done
-echo "✓ 集成包检查通过（$(echo "$integrations" | wc -w) 个）"
+echo "✓ the integrations pass ($(echo "$integrations" | wc -w) of them)"
 
-# ---- 6.1 示例只用使用者用得到的东西 ----
-# example/ 的 module 路径在 github.com/jupiter-eng/xone 之下，Go 的 internal 规则
-# 因此放它进来——但使用者的代码进不来。示例用了 internal/config、internal/hook，
-# 使用者照抄就编译不过。测试里要换配置、跑钩子，用 xonetest
+# ---- 6.1 The examples use only what a caller can use ----
+# example/'s module path sits under github.com/jupiter-eng/xone, so Go's internal rule lets it in --
+# while a caller's code does not get in. An example using internal/config or internal/hook would not
+# compile once a caller copied it. Swapping a configuration and running the hooks in a test is what
+# xonetest is for
 bad=$(files 'example/*.go' | xargs grep -ln '"github.com/jupiter-eng/xone/internal/' || true)
-[ -z "$bad" ] || fail "example/ 不能 import internal/（使用者 import 不到），改用 xonetest：
+[ -z "$bad" ] || fail "example/ must not import internal/ (a caller cannot import it); use xonetest instead:
 $bad"
-echo "✓ example/ 不 import internal/"
+echo "✓ example/ does not import internal/"
 
-# ---- 7. 配置字段都写进文档 ----
-# 配置是使用者唯一的操作界面，加了字段却没写文档，等于没加。
-# 反过来文档里多写一个不存在的 key，会让人配了半天发现不生效。
+# ---- 7. Every configuration field is documented ----
+# The configuration is the only interface a caller has, and a field added without documentation is
+# the same as a field not added.
+# The other way round, one key too many in the documentation has somebody configure something for a
+# while before finding it has no effect.
 #
-# example/ 不算：那里的配置是示例自带的，写在示例自己的注释和 application.yml 里，
-# 搬进框架的配置手册反而会让人以为它是框架的一部分。e2e/ 同理：被测服务的业务配置块
-# 是测试自己的，写在 e2e/service/application.yml 里
+# example/ does not count: the configuration there belongs to the examples and is written in their
+# own comments and application.yml, and moving it into the framework's configuration manual would
+# only make it look like part of the framework. e2e/ likewise: the business configuration block of
+# the service under test belongs to the tests and is written in e2e/service/application.yml.
 #
-# 按节查，两个方向都查（见 internal/schemagen/docs.go）：每个字段要出现在它那个模块
-# README 的「## 配置」一节里（xlog/README.md 之类），每一节的 YAML 示例要过得了 schema。
-# 从前是在整份文档里 grep 字段名：Name、Timeout、Enable 总能在别的节里找到，
-# 永远通过；[A-Za-z]+ 还漏掉了 UseH2C 这种带数字的名字；反方向根本没查。
+# It is checked per section and in both directions (see internal/schemagen/docs.go): every field has
+# to appear in the "## Configuration" section of its own module's README (xlog/README.md and the
+# like), and every section's YAML examples have to pass the schema.
+# It used to grep the whole document for the field name: Name, Timeout and Enable are always found
+# in some other section and always passed; [A-Za-z]+ also missed a name with a digit such as UseH2C;
+# and the other direction was never checked at all.
 #
-# 按节查依赖 schema 认得全部字段，所以先确认每个 yaml 标签都进了 schema——
-# 否则一个没挂到 Config 上的结构体的字段会同时躲过 schema 和这里
+# Checking per section rests on the schema knowing every field, so every yaml tag is confirmed to be
+# in the schema first -- otherwise a field of a struct that was never attached to a Config would
+# escape both the schema and this check
 missing=""
 for f in $(echo "$gosrc" | grep -vE '^(example|e2e)/' | xargs grep -hoE 'yaml:"[A-Za-z0-9]+"' | sed 's/yaml:"//; s/"//' | sort -u); do
   grep -q "\"$f\": {" config_schema.json || missing="$missing $f"
 done
-[ -z "$missing" ] || fail "这些配置字段没进 config_schema.json（结构体没挂到 Config 上？）：$missing"
-# schemagen 是独立的工具 module，从根目录经 go.work 调它
-out=$(go test -count=1 -run TestCheckDocs ./internal/schemagen 2>&1) || fail "模块 README 的「## 配置」与 Config 结构体对不上：
+[ -z "$missing" ] || fail "these configuration fields are not in config_schema.json (a struct never attached to a Config?):$missing"
+# schemagen is a tool module of its own, called from the root through go.work
+out=$(go test -count=1 -run TestCheckDocs ./internal/schemagen 2>&1) || fail "a module README's \"## Configuration\" does not agree with the Config structs:
 $out"
-echo "✓ 配置字段都写进文档了（按节，双向）"
+echo "✓ every configuration field is documented (per section, both directions)"
 
-# ---- 8. 运行期字符串必须是英文 ----
-# 注释写给读这份代码的人，用中文；但错误和日志会落进使用者的系统——
-# 进他们的告警、他们的日志检索、他们的 issue。中文的日志字段名还会变成
-# JSON 的 key，让日志平台的索引和看板直接对不上。
-# internal/schemagen 是构建工具，输出给的是改这份代码的人，不适用。
+# ---- 8. The strings that reach run time have to be English ----
+# The whole repository is English (step 8.1), while this check is the stricter one and has no
+# allowlist: an error or a log lands in a caller's systems -- in their alerts, their log searches
+# and their issues. A Chinese log field name would also become a JSON key and put the logging
+# platform's indexes and dashboards out of step outright.
+# internal/schemagen is a build tool whose output goes to whoever is changing this code, so it does
+# not apply.
 zh=$(GOFILES=$(files '*.go') python3 scripts/check_zh.py)
-[ -z "$zh" ] || fail "这些地方的运行期字符串还是中文（错误和日志要用英文）：
+[ -z "$zh" ] || fail "the strings that reach run time are still Chinese here (an error and a log have to be English):
 $zh"
-echo "✓ 运行期字符串都是英文"
+echo "✓ the strings that reach run time are English"
 
-# ---- 8.1 仓库里不得出现中文 ----
-# 规则见 .claude/CLAUDE.md 的 Language 一节。规则落地之前写的文件列在
-# scripts/zh_allowlist.txt 里，那份清单只会变短：翻完一个就删一行，
-# 删漏了（文件已经没有中文、清单里还留着）同样报错，清单因此不会变成一纸空文
-python3 scripts/check_no_zh.py || fail "仓库里出现了新的中文，或者豁免清单有过期条目（见上面的清单）"
-echo "✓ 仓库无新增中文（豁免清单 $(grep -cvE '^\s*(#|$)' scripts/zh_allowlist.txt) 个文件待翻译）"
+# ---- 8.1 No Chinese anywhere in the repository ----
+# The rule is in the Language section of .claude/CLAUDE.md. The files written before the rule landed
+# are listed in scripts/zh_allowlist.txt, and that list only ever shrinks: one translated is one line
+# deleted, and a line left behind (the file holds no Chinese while the list still lists it) is
+# reported just the same, so the list never becomes a dead letter
+python3 scripts/check_no_zh.py || fail "new Chinese appeared in the repository, or the allowlist holds a stale entry (see the list above)"
+echo "✓ no new Chinese in the repository ($(grep -cvE '^\s*(#|$)' scripts/zh_allowlist.txt) files on the allowlist still to translate)"
 
-# ---- 9. config_schema.json 与结构体一致 ----
-# schema 给 IDE 用：YAML 里字段补全、拼错标红、悬停看说明。
-# 它是生成的，不是手写的——上百个字段手工同步迟早对不上，
-# 而对不上的表现是补全出一个根本不存在的字段，比没有 schema 更糟。
-go run ./internal/schemagen -check || fail "config_schema.json 与 Config 结构体对不上，跑一次：go run ./internal/schemagen"
-echo "✓ config_schema.json 与结构体一致"
+# ---- 9. config_schema.json agrees with the structs ----
+# The schema is for the editor: completing a field in YAML, flagging a misspelling, showing the
+# description on hover.
+# It is generated rather than written by hand -- hundreds of fields kept in step by hand sooner or
+# later disagree, and a disagreement shows up as completing a field that does not exist at all,
+# which is worse than having no schema.
+go run ./internal/schemagen -check || fail "config_schema.json does not agree with the Config structs; run: go run ./internal/schemagen"
+echo "✓ config_schema.json agrees with the structs"
 
-# ---- 10. 错误一律走 xerror ----
-# 模块对外返回的错误都带模块名和操作名，调用方因此能问「这是谁报的」，
-# 而不必去匹配错误消息里的字符串前缀。两种退回旧写法的情况在这里拦下：
-#   1. fmt.Errorf("xgorm: ...")  —— 前缀写进消息，等于没有结构
-#   2. xerror.Newf(..., "...err=[%v]", err) —— %v 把错误变成文本，
-#      errors.Is / errors.As 到此为止，调用方再也判断不了根因
+# ---- 10. Every error goes through xerror ----
+# An error a module returns outwards carries the module name and the operation name, so a caller can
+# ask "who reported this" rather than match a string prefix in the error message. Two ways of
+# falling back to the old spelling are caught here:
+#   1. fmt.Errorf("xgorm: ...") -- the prefix is written into the message, which is no structure at
+#      all
+#   2. xerror.Newf(..., "...err=[%v]", err) -- %v turns the error into text, errors.Is / errors.As
+#      stop there, and a caller can never tell the root cause again
 bad=$(grep -nE 'fmt\.Errorf\("x[a-z]+: ' $gosrc || true)
-[ -z "$bad" ] || fail "这些地方还在用带模块前缀的 fmt.Errorf，应改成 xerror：
+[ -z "$bad" ] || fail "these places still use an fmt.Errorf with a module prefix and have to become xerror:
 $bad"
 
 bad=$(grep -n 'xerror.Newf' $gosrc | grep 'err=\[%v\]' || true)
-[ -z "$bad" ] || fail "这些 xerror 用 %v 包装底层错误，错误链会断，应改成 %w：
+[ -z "$bad" ] || fail "these xerrors wrap the underlying error with %v, which breaks the error chain; use %w:
 $bad"
-echo "✓ 错误都走 xerror（%w 保住错误链）"
+echo "✓ every error goes through xerror (%w keeps the error chain)"
 
-# ---- 11. 文档和示例里不再出现已经删掉的名字 ----
-# 使用者照着 README 和 example/ 抄。几轮重构之后，那里还留着 Component.Init、
-# registry.Register 这些早就不存在的名字，注释里还在教一个已经撤掉的写法——
-# 比没有文档更糟，因为它看上去是对的。删掉一个公开名字时，把它加进这张表
+# ---- 11. No name that was removed still appears in the documentation or the examples ----
+# A caller copies from the README and from example/. After a few refactors those still held names
+# such as Component.Init and registry.Register that had long stopped existing, with comments
+# teaching a spelling that had been withdrawn -- worse than no documentation, because it looks
+# right. A public name being removed is added to this table.
 #
-# docs/CHANGELOG.md 不扫，而且是对整张表都不扫：它是历史记录，按约定每个删掉的公开名字都要在那里
-# 写明「旧写法怎么迁移」，也就是必然点名——表里的每一条迟早都会在那里出现一次，这不是残留。
-# 别的文档照查
+# docs/CHANGELOG.md is not scanned, and not for any entry of the table: it is a historical record,
+# and by convention every removed public name has "how to migrate from the old spelling" written
+# there, which means naming it -- every entry of the table appears there sooner or later, and that is
+# not a leftover.
+# Every other document is checked as usual
 gone='xutil\.(GetOrDefault|ToPtr)\b|xredis\.TLSConfig|Component\.Init|registry\.(Declare|Provide|Register)|ProvideEach|xconfig\.(HasKey|DecodeClients)\b|\.OnInit\(|xgin\.With(Config|Log|Trace|Metric|MetricPath|SkipPaths|RequestBodyLog|ResponseBodyLog|ZHTranslations)\('
 hits=$(files '*.go' '*.md' '*.yml' ':(exclude)docs/CHANGELOG.md' | xargs grep -nE "$gone" || true)
-[ -z "$hits" ] || fail "还在提已经删掉的名字（改文档，或者确认它真的还在）：
+[ -z "$hits" ] || fail "a name that was removed is still mentioned (fix the documentation, or confirm it really is still there):
 $hits"
-echo "✓ 文档和示例里没有已经删掉的名字"
+echo "✓ no removed name appears in the documentation or the examples"
 
-# ---- 12. 变异模式都还对得上代码 ----
-# 全量变异测试要几分钟，不在这里跑；但「模式恰好匹配 N 处」只是字符串比对，
-# 不到一秒。代码挪走了、变异没跟着挪，这里当场就红，不用等下一次想起来跑全量
-python3 scripts/mutate.py --dry-run || fail "有变异的模式对不上代码了，改 scripts/mutations/ 下对应的那条"
+# ---- 12. The mutation patterns still match the code ----
+# A full mutation run takes minutes and is not run here; but "the pattern matches exactly N places"
+# is a string comparison alone and takes under a second. Code that moved with the mutation left
+# behind goes red here on the spot, rather than waiting for somebody to remember a full run
+python3 scripts/mutate.py --dry-run || fail "a mutation pattern no longer matches the code; fix the matching line under scripts/mutations/"
 
-# ---- 12.2 release.sh 认得出钩子日志 ----
-# --smoke / --verify 靠 hooks()（scripts/lib.sh）从日志里认出每个钩子的启停，再比对是不是逆序。
-# xlog 在 msg 和 hook 之间加 hostname、pid 之后，只认挨着的 sed 一个都认不出来，
-# 红在 tag 推出去之后的 --verify 上。拿固定的样例日志测一遍：日志格式再变，先红的是这里
+# ---- 12.2 release.sh recognizes the hook logs ----
+# --smoke / --verify rest on hooks() (scripts/lib.sh) recognizing each hook's start and stop in the
+# log and then comparing whether the order is reversed.
+# Once xlog added hostname and pid between msg and hook, a sed accepting only adjacent ones
+# recognized not a single hook and went red in the --verify after the tags had been pushed. It is
+# tested against a fixed sample log: whatever the log format becomes, what goes red first is here
 t=$(mktemp)
 cat > "$t" <<'LOG_EOF'
 2026/01/02 15:04:05 INFO starting hook=xlog.initXLog stage=0
@@ -223,27 +267,30 @@ cat > "$t" <<'LOG_EOF'
 2026/01/02 15:04:06 INFO stopping hook=xlog.closeXLog
 LOG_EOF
 got=$(hooks starting "$t" | tr '\n' ' ')
-[ "$got" = "xlog xtrace xgin " ] || { rm -f "$t"; fail "hooks() 认错了启动钩子：want=[xlog xtrace xgin ] got=[$got]（改了日志格式？同步 scripts/lib.sh 的 hooks）"; }
+[ "$got" = "xlog xtrace xgin " ] || { rm -f "$t"; fail "hooks() recognized the start hooks wrong: want=[xlog xtrace xgin ] got=[$got] (did the log format change? update hooks in scripts/lib.sh)"; }
 got=$(hooks stopping "$t" | tr '\n' ' ')
-[ "$got" = "xgin xtrace xlog " ] || { rm -f "$t"; fail "hooks() 认错了停止钩子：want=[xgin xtrace xlog ] got=[$got]（改了日志格式？同步 scripts/lib.sh 的 hooks）"; }
+[ "$got" = "xgin xtrace xlog " ] || { rm -f "$t"; fail "hooks() recognized the stop hooks wrong: want=[xgin xtrace xlog ] got=[$got] (did the log format change? update hooks in scripts/lib.sh)"; }
 rm -f "$t"
-echo "✓ release.sh 认得出钩子日志（xlog JSON 带额外字段、字段挨着、xlog 之前的文本格式）"
+echo "✓ release.sh recognizes the hook logs (xlog JSON with extra fields, with adjacent fields, and the text format from before xlog)"
 
-# ---- 12.1 测试函数名用英文 ----
-# 测试名会出现在 go test -run、CI 的失败列表和变异表的过滤里，写英文才好搜、好复制
-# 用 perl 而不是 grep -P：macOS 的 BSD grep 没有 -P，报错又被 || true 吞掉，这条检查在那里永远通过
+# ---- 12.1 Test function names are English ----
+# A test name appears in go test -run, in CI's list of failures and in the mutation tables' filters,
+# and English is what makes it searchable and copyable.
+# perl rather than grep -P: macOS's BSD grep has no -P, the error is swallowed by the || true, and
+# this check would pass there forever
 zhtest=$(files '*_test.go' | xargs perl -ne 'print "$ARGV:$.:$_" if /^func (Test|Benchmark|Fuzz|Example)\w*[^\x00-\x7F]/; close ARGV if eof') \
-  || fail "扫描测试函数名失败"
-[ -z "$zhtest" ] || fail "测试函数名要用英文（描述场景，如 TestNew_FailsFastOnTypo）：
+  || fail "scanning the test function names failed"
+[ -z "$zhtest" ] || fail "a test function name has to be English (describing the scenario, as TestNew_FailsFastOnTypo does):
 $zhtest"
-echo "✓ 测试函数名都是英文"
+echo "✓ the test function names are English"
 
-# ---- 13. 基本卫生 ----
+# ---- 13. Basic hygiene ----
 unformatted=$(files '*.go' | xargs gofmt -l)
-[ -z "$unformatted" ] || fail "有文件未格式化：$unformatted"
-# 过了不出声，不过的话把 vet 的原话带出来：只说「未通过」得自己再跑一遍才知道是哪一行
+[ -z "$unformatted" ] || fail "these files are not formatted: $unformatted"
+# It says nothing when it passes, and carries vet's own words out when it does not: "did not pass"
+# alone would mean running it again to find out which line
 for m in $modules; do
-  out=$(cd "$m" && GOWORK=off go vet ./... 2>&1) || fail "$m go vet 未通过：
+  out=$(cd "$m" && GOWORK=off go vet ./... 2>&1) || fail "$m did not pass go vet:
 $out"
 done
-echo "✓ gofmt / go vet（$(echo "$modules" | wc -w) 个模块）"
+echo "✓ gofmt / go vet ($(echo "$modules" | wc -w) modules)"

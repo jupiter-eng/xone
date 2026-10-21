@@ -1,31 +1,40 @@
-# check.sh / test.sh / release.sh 共用的函数。调用方先 cd 到仓库根目录再 . scripts/lib.sh
+# The functions check.sh / test.sh / release.sh share. A caller cds to the repository root first and
+# then . scripts/lib.sh
 #
-# 查的是仓库里的文件：签入的，加上新建了还没 git add 的。不用 find / grep -r：
-# .gitignore 挡住的副本（比如 .claude/worktrees 下的工作树）不算，也不该被检查。
-# 删了还没暂存的要排掉——index 里还有它，磁盘上已经没了，交给 gofmt 就是一个
-# 藏在 $(...) 里的失败，set -e 让脚本一声不吭地退出
+# What is looked at are the repository's files: the checked-in ones plus the newly created ones that
+# have not been git added. Not find / grep -r: a copy .gitignore keeps out (a worktree under
+# .claude/worktrees, say) does not count and must not be checked.
+# One deleted but not staged has to be left out -- the index still holds it while the disk no longer
+# does, and handing it to gofmt is a failure hiding inside a $(...) that has set -e exit the script
+# without a word
 files() {
   git ls-files -co --exclude-standard -- "$@" | while IFS= read -r f; do
     if [ -e "$f" ]; then echo "$f"; fi
   done
 }
 
-# 仓库里的全部 Go 模块目录（根模块是 .），取法同 files：新加的模块在 git add 之前
-# check.sh 已经在查它，test.sh 也得跑它的测试
+# Every Go module directory in the repository (the root module being .), taken as files takes them:
+# check.sh is already checking a newly added module before it is git added, so test.sh has to run its
+# tests as well
 modules() {
   files go.mod '*/go.mod' | xargs -n1 dirname | sort
 }
 
-# hooks 事件 日志文件：按出现顺序列出跑过这个事件（starting / stopping）的钩子所在的包，一行一个。
-# release.sh 的 --smoke / --verify 拿它比对启动和关闭的顺序；放在这里是为了让 check.sh
-# 能拿固定的样例日志测它——日志格式一变，红的是 check.sh，而不是推完 tag 之后的 --verify
+# hooks <event> <log file>: lists, in the order they appear, the packages of the hooks that ran this
+# event (starting / stopping), one per line.
+# release.sh's --smoke / --verify compare the start and stop orders with it; it lives here so that
+# check.sh can test it against a fixed sample log -- when the log format changes, what goes red is
+# check.sh and not the --verify after the tags have been pushed.
 #
-# 框架每跑一个钩子记一行 starting / stopping，字段 hook=包名.函数名。
-# 日志前半截是 xlog 装好之前的 slog 默认格式（... INFO starting hook=xlog.initXLog），
-# 后半截是 xlog 的 JSON（"msg":"stopping",…,"hook":"xredis.closeXRedis"），两种都认。
-# JSON 里 msg 和 hook 之间不一定挨着：xlog 给每条日志带的 hostname、pid 就插在中间，
-# 挨着才认的话 --verify 一个钩子都认不出来。[^}]* 保证两者在同一条日志里
-# 取到包名为止：一个包可能登记多个启动钩子，配对的单位是包
+# The framework writes one starting / stopping line per hook, with the field hook=<package>.<func>.
+# The first half of the log is slog's default format from before xlog was installed
+# (... INFO starting hook=xlog.initXLog) and the second half is xlog's JSON
+# ("msg":"stopping",…,"hook":"xredis.closeXRedis"); both are recognized.
+# In the JSON, msg and hook need not be adjacent: the hostname and pid xlog puts on every line sit
+# between them, and requiring them to be adjacent would have --verify recognize not one hook. The
+# [^}]* keeps the two inside one log line.
+# Only the package name is taken: one package may register several start hooks, and the unit of
+# pairing is the package
 hooks() {
   sed -n -e "s/.*\"msg\":\"$1\"[^}]*\"hook\":\"\([^\"]*\)\".*/\1/p" \
          -e "s/.* INFO $1 hook=\([^ ]*\).*/\1/p" "$2" | cut -d. -f1 | uniq

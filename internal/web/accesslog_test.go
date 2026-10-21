@@ -26,7 +26,7 @@ func TestIsText(t *testing.T) {
 	}
 }
 
-// countingBody 记下被读走了多少字节，用来看清究竟缓冲了多少
+// countingBody records how many bytes were read, to make clear how much was really buffered
 type countingBody struct {
 	r      io.Reader
 	read   int
@@ -41,9 +41,9 @@ func (b *countingBody) Read(p []byte) (int, error) {
 func (b *countingBody) Close() error { b.closed = true; return nil }
 
 func TestSnapshotBody_BuffersOnlyPrefix(t *testing.T) {
-	// maxRequestBody 限的是「记多少日志」，不该顺手变成「缓冲多少请求体」。
-	// 整个读进来的话，一个大上传会躺进内存，而且 handler 要等它全部落地
-	// 才能开始处理
+	// maxRequestBody bounds "how much is logged" and must not casually become "how much of the
+	// request body is buffered". Read whole, a large upload would lie in memory and the handler
+	// could not begin until all of it had landed
 	const total = 3 * maxRequestBody
 	body := &countingBody{r: bytes.NewReader(bytes.Repeat([]byte("x"), total))}
 	req := httptest.NewRequest("POST", "/", nil)
@@ -53,24 +53,24 @@ func TestSnapshotBody_BuffersOnlyPrefix(t *testing.T) {
 	got := SnapshotBody(req)
 
 	if len(got) != maxRequestBody {
-		t.Errorf("记日志只该留前 %d 字节，got=%d", maxRequestBody, len(got))
+		t.Errorf("the log must keep the first %d bytes alone, got=%d", maxRequestBody, len(got))
 	}
 	if body.read > maxRequestBody+4096 {
-		t.Errorf("只该读走前缀，实际已读 %d 字节（共 %d）", body.read, total)
+		t.Errorf("only the prefix may be read, %d bytes were read (of %d)", body.read, total)
 	}
 
-	// 下游仍要读得到完整的请求体
+	// Downstream still has to read the whole request body
 	rest, err := io.ReadAll(req.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(rest) != total {
-		t.Errorf("下游该拿到完整请求体 %d 字节，got=%d", total, len(rest))
+		t.Errorf("downstream must get the whole request body of %d bytes, got=%d", total, len(rest))
 	}
 }
 
 func TestSnapshotBody_CloseReachesOriginalBody(t *testing.T) {
-	// 换成 io.NopCloser 就等于把 http.Request 的关闭语义吃掉了
+	// Swapping in an io.NopCloser would swallow http.Request's close semantics
 	body := &countingBody{r: bytes.NewReader([]byte(`{"a":1}`))}
 	req := httptest.NewRequest("POST", "/", nil)
 	req.Body, req.GetBody = body, nil
@@ -81,12 +81,13 @@ func TestSnapshotBody_CloseReachesOriginalBody(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !body.closed {
-		t.Error("Close 该落到原始 body 上")
+		t.Error("Close must land on the original body")
 	}
 }
 
-// partialThenEOF 先返回「部分数据 + 错误」，下一次调用返回 EOF。
-// 这是合法的 io.Reader 行为，也是一个被截断的请求在网络层的样子。
+// partialThenEOF returns "some data plus an error" first and EOF on the next call.
+// That is valid io.Reader behavior, and it is what a truncated request looks like at the network
+// layer.
 type partialThenEOF struct {
 	data []byte
 	done bool
@@ -103,8 +104,9 @@ func (r *partialThenEOF) Read(p []byte) (int, error) {
 func (r *partialThenEOF) Close() error { return nil }
 
 func TestSnapshotBody_PrereadErrorPassedDownstream(t *testing.T) {
-	// 只把字节接回去的话，下游读到的是「前缀 + EOF」——一个被截断的请求
-	// 看上去和一个正常的请求一模一样，业务层据此判断「收全了」
+	// Putting only the bytes back would have downstream read "the prefix plus EOF" -- a truncated
+	// request looking exactly like a complete one, from which the business layer concludes "it all
+	// arrived"
 	boom := errors.New("connection reset by peer")
 	req := httptest.NewRequest("POST", "/", nil)
 	req.Body, req.GetBody = &partialThenEOF{data: []byte("partial"), err: boom}, nil
@@ -114,43 +116,44 @@ func TestSnapshotBody_PrereadErrorPassedDownstream(t *testing.T) {
 
 	got, err := io.ReadAll(req.Body)
 	if string(got) != "partial" {
-		t.Errorf("已经读到的字节要还给下游，got=%q", got)
+		t.Errorf("the bytes already read have to go back downstream, got=%q", got)
 	}
 	if !errors.Is(err, boom) {
-		t.Errorf("预读时撞上的错误也要还给下游，got=%v", err)
+		t.Errorf("the error the read-ahead hit has to go back downstream too, got=%v", err)
 	}
 }
 
 func TestSnapshotBody_EmptyWithoutBody(t *testing.T) {
 	if got := SnapshotBody(nil); got != nil {
-		t.Errorf("nil 请求应当返回 nil，got=%v", got)
+		t.Errorf("a nil request must return nil, got=%v", got)
 	}
 	req := httptest.NewRequest("GET", "/hello", nil)
 	req.Body = http.NoBody
 	if got := SnapshotBody(req); got != nil {
-		t.Errorf("NoBody 应当返回 nil，got=%v", got)
+		t.Errorf("NoBody must return nil, got=%v", got)
 	}
 	req2 := httptest.NewRequest("GET", "/hello", nil)
 	req2.Body = nil
 	if got := SnapshotBody(req2); got != nil {
-		t.Errorf("没有 body 应当返回 nil，got=%v", got)
+		t.Errorf("no body must return nil, got=%v", got)
 	}
 }
 
 func TestSnapshotBody_MediaTypeCaseInsensitive(t *testing.T) {
-	// 媒体类型按 RFC 9110 大小写不敏感。照字面比的话，
-	// Multipart/Form-Data 的上传绕过判断，文件内容整个进日志
+	// A media type is case-insensitive under RFC 9110. Compared literally, a Multipart/Form-Data
+	// upload goes around the check and the whole file reaches the log
 	for _, ct := range []string{"Multipart/Form-Data; boundary=x", "Application/Octet-Stream"} {
-		req := httptest.NewRequest("POST", "/hello", strings.NewReader("文件内容"))
+		req := httptest.NewRequest("POST", "/hello", strings.NewReader("file contents"))
 		req.Header.Set("Content-Type", ct)
 		if got := string(SnapshotBody(req)); !strings.Contains(got, "omitted") {
-			t.Errorf("Content-Type=%q 的 body 不该被读进日志，got=%q", ct, got)
+			t.Errorf("a body with Content-Type=%q must not be read into the log, got=%q", ct, got)
 		}
 	}
 }
 
 func TestAccessLog_ErrorsFieldIsRedacted(t *testing.T) {
-	// 两个 Web 集成都经这里写 errors：驱动、下游报的错里常夹着凭证
+	// Both web integrations write errors through here: an error reported by a driver or a
+	// downstream often hides a credential
 	var buf bytes.Buffer
 	old := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
@@ -161,13 +164,13 @@ func TestAccessLog_ErrorsFieldIsRedacted(t *testing.T) {
 		buf.Reset()
 		l.Log(&Access{Request: httptest.NewRequest("GET", "/x", nil), Route: "/x", Status: 500, Errors: msg})
 		if !strings.Contains(buf.String(), want) || strings.Contains(buf.String(), "hunter2") {
-			t.Errorf("errors 该记成 %s，got=%s", want, buf.String())
+			t.Errorf("errors must be recorded as %s, got=%s", want, buf.String())
 		}
 	}
 }
 
 func TestAccessLog_EncodedResponseBodyOmitted(t *testing.T) {
-	// 压缩过的字节进日志是一串乱码；identity 就是没压缩
+	// Compressed bytes in a log are a run of garbage; identity means no compression
 	var buf bytes.Buffer
 	old := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
@@ -187,7 +190,7 @@ func TestAccessLog_EncodedResponseBodyOmitted(t *testing.T) {
 		}
 		l.Log(&Access{Request: httptest.NewRequest("GET", "/x", nil), RespHeader: h, RespBody: []byte("hello")})
 		if !strings.Contains(buf.String(), want) {
-			t.Errorf("Content-Encoding=%q 该记 %s，got=%s", enc, want, buf.String())
+			t.Errorf("Content-Encoding=%q must record %s, got=%s", enc, want, buf.String())
 		}
 	}
 }

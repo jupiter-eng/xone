@@ -11,7 +11,7 @@ import (
 	"github.com/jupiter-eng/xone/xerror"
 )
 
-// conn 一个假的连接池：记得自己关没关过
+// conn is a fake connection pool that remembers whether it was closed
 type conn struct {
 	name string
 	log  *log
@@ -44,8 +44,9 @@ type cfg struct {
 	boom bool
 }
 
-// builder 造一个 new 函数：按配置决定建成功、返回错误还是 panic。
-// 日志里记的是 Build 交进来的实例名，顺带验证名字传对了
+// builder makes a new function that, as its configuration says, builds successfully, returns an
+// error or panics.
+// What it records is the instance name Build handed in, which verifies the name along the way
 func builder(l *log) func(context.Context, string, cfg) (*conn, io.Closer, error) {
 	return func(_ context.Context, name string, c cfg) (*conn, io.Closer, error) {
 		if c.boom {
@@ -72,12 +73,13 @@ func mustPanic(t *testing.T, f func()) any {
 		f()
 	}()
 	if got == nil {
-		t.Fatal("期望 panic，但没有")
+		t.Fatal("a panic was expected and did not come")
 	}
 	return got
 }
 
-// publish 把一组现成的实例经 Build 发布出去：这些测试要的只是「注册表里有这些」
+// publish publishes a set of ready-made instances through Build: these tests only want "the
+// registry holds these"
 func publish(r *Registry[*conn], items map[string]*conn) {
 	keep := func(_ context.Context, _ string, c *conn) (*conn, io.Closer, error) { return c, nil, nil }
 	if err := Build(context.Background(), r, items, keep); err != nil {
@@ -85,7 +87,7 @@ func publish(r *Registry[*conn], items map[string]*conn) {
 	}
 }
 
-// ---- 取实例 ----
+// ---- Taking an instance ----
 
 func TestGet_NoArgReturnsDefault(t *testing.T) {
 	r := newReg()
@@ -95,13 +97,14 @@ func TestGet_NoArgReturnsDefault(t *testing.T) {
 		t.Errorf("want %v, got %v", want, got)
 	}
 	if got := r.Get(DefaultName); got != want {
-		t.Errorf("显式写 default 应当取到同一个，got %v", got)
+		t.Errorf("writing default explicitly must give the same one, got %v", got)
 	}
 }
 
 func TestGet_PanicsInsteadOfReturningZeroWhenMissing(t *testing.T) {
-	// 返回 nil 只是把同一个 panic 推迟到调用方第一次用它的时候，
-	// 那里的栈里只剩 "invalid memory address"，看不出根因是配置没配
+	// Returning nil only defers the same panic to the caller's first use of it, where the stack
+	// holds nothing but "invalid memory address" and says nothing about the configuration being the
+	// root cause
 	r := newReg()
 	publish(r, map[string]*conn{"read": {}, "write": {}})
 
@@ -109,35 +112,36 @@ func TestGet_PanicsInsteadOfReturningZeroWhenMissing(t *testing.T) {
 	s, _ := msg.(string)
 	for _, want := range []string{"xfake", `"relay"`, "read", "write"} {
 		if !strings.Contains(s, want) {
-			t.Errorf("panic 文案里应当有 %q，实际是：%s", want, s)
+			t.Errorf("the panic text must contain %q, got: %s", want, s)
 		}
 	}
 }
 
 func TestGet_NamesConfigKeyWhenNoneConfigured(t *testing.T) {
-	// 名字写错和整块没配是两个不同的问题，文案要能一眼分开：
-	// 前者去查名字，后者去查有没有写这一块、有没有 import 对应的包
+	// A misspelled name and an unconfigured block are two different problems and the wording has to
+	// tell them apart at a glance: the first sends somebody to the name, the second to whether the
+	// block was written at all and whether the matching package was imported
 	r := newReg()
-	publish(r, nil) // 这一块没配：启动钩子照样走一遍 Build，一个都不建
+	publish(r, nil) // the block is unconfigured: the start hook still goes through Build and builds none
 	s, _ := mustPanic(t, func() { r.Get() }).(string)
 	if !strings.Contains(s, "XFake") {
-		t.Errorf("一个都没配时要指明去看哪一块配置，实际是：%s", s)
+		t.Errorf("with none configured it has to name the configuration block to look at, got: %s", s)
 	}
 	if !strings.Contains(s, "none is configured") {
-		t.Errorf("要说清是整块没配而不是名字写错，实际是：%s", s)
+		t.Errorf("it has to say the whole block is unconfigured rather than the name being misspelled, got: %s", s)
 	}
 }
 
 func TestGet_SaysTooEarlyBeforeStartHook(t *testing.T) {
-	// 从前这时候报的是「整块没配」，于是在 main 里、在 Run 之前取实例的人
-	// 会去翻一份明明写对了的配置文件
+	// This used to report "the whole block is unconfigured", sending whoever took an instance in
+	// main, before Run, to a configuration file that was perfectly correct
 	r := newReg()
 	s, _ := mustPanic(t, func() { r.Get() }).(string)
 	if !strings.Contains(s, "before xone.Run started") {
-		t.Errorf("要说清是调早了，实际是：%s", s)
+		t.Errorf("it has to say it was called too early, got: %s", s)
 	}
 	if strings.Contains(s, "none is configured") {
-		t.Errorf("调早了不该被说成没配，实际是：%s", s)
+		t.Errorf("called too early must not be reported as unconfigured, got: %s", s)
 	}
 }
 
@@ -149,21 +153,21 @@ func TestGet_SaysTooLateAfterClose(t *testing.T) {
 	}
 	s, _ := mustPanic(t, func() { r.Get() }).(string)
 	if !strings.Contains(s, "after xfake was closed") {
-		t.Errorf("要说清是调晚了，实际是：%s", s)
+		t.Errorf("it has to say it was called too late, got: %s", s)
 	}
 }
 
 func TestLookup_ReturnsZeroAndFalseWhenMissing(t *testing.T) {
 	r := newReg()
 	if v, ok := r.Lookup("nope"); ok || v != nil {
-		t.Errorf("want nil,false，got %v,%v", v, ok)
+		t.Errorf("want nil,false, got %v,%v", v, ok)
 	}
 }
 
 func TestHas_ForOptionalDependencies(t *testing.T) {
 	r := newReg()
 	if r.Has() {
-		t.Error("空注册表不该报告有 default")
+		t.Error("an empty registry must not report a default")
 	}
 	publish(r, map[string]*conn{DefaultName: {}})
 	if !r.Has() || r.Has("other") {
@@ -172,7 +176,7 @@ func TestHas_ForOptionalDependencies(t *testing.T) {
 }
 
 func TestNames_SortedByName(t *testing.T) {
-	// 顺序稳定，日志和错误文案才可复现
+	// A stable order is what makes the logs and the error texts reproducible
 	r := newReg()
 	publish(r, map[string]*conn{"write": {}, "read": {}, "archive": {}})
 	if got, want := strings.Join(r.Names(), " "), "archive read write"; got != want {
@@ -182,7 +186,7 @@ func TestNames_SortedByName(t *testing.T) {
 
 func TestNames_EmptyRegistryReturnsEmptySlice(t *testing.T) {
 	if got := newReg().Names(); len(got) != 0 {
-		t.Errorf("want 空，got %v", got)
+		t.Errorf("want empty, got %v", got)
 	}
 }
 
@@ -193,34 +197,35 @@ func TestAll_ReturnsEveryInstanceAsACopy(t *testing.T) {
 
 	got := r.All()
 	if len(got) != 2 || got["a"] != a || got["b"] != b {
-		t.Fatalf("want a、b 两个实例，got %v", got)
+		t.Fatalf("want the two instances a and b, got %v", got)
 	}
-	// 快照发布之后不许改：调用方改的是自己那份
+	// A snapshot is immutable once published: what the caller changes is a copy of their own
 	delete(got, "a")
 	got["c"] = &conn{}
 	if !r.Has("a") || r.Has("c") {
-		t.Errorf("改 All 的返回值不该改到注册表，got %v", r.Names())
+		t.Errorf("changing what All returned must not change the registry, got %v", r.Names())
 	}
 }
 
 func TestAll_EmptyBeforeStartAndAfterClose(t *testing.T) {
 	r := newReg()
 	if got := r.All(); got == nil || len(got) != 0 {
-		t.Errorf("启动前 want 非 nil 的空 map，got %v", got)
+		t.Errorf("before startup, want a non-nil empty map, got %v", got)
 	}
 	publish(r, map[string]*conn{"a": {}})
 	if err := r.Close(); err != nil {
 		t.Fatal(err)
 	}
 	if got := r.All(); got == nil || len(got) != 0 {
-		t.Errorf("关闭后 want 非 nil 的空 map，got %v", got)
+		t.Errorf("after closing, want a non-nil empty map, got %v", got)
 	}
 }
 
-// ---- 建实例 ----
+// ---- Building the instances ----
 
 func TestBuild_BuildsInNameOrder(t *testing.T) {
-	// 建的顺序要可复现，否则「配了五个库，挂的是哪一个」每次都不一样
+	// The order they are built in has to be reproducible, or "five databases configured, which one
+	// broke" is different every time
 	l := &log{}
 	r := newReg()
 	err := Build(context.Background(), r, map[string]cfg{
@@ -233,7 +238,7 @@ func TestBuild_BuildsInNameOrder(t *testing.T) {
 		t.Errorf("want %s\ngot  %s", want, got)
 	}
 	if got, want := strings.Join(r.Names(), " "), "archive read write"; got != want {
-		t.Errorf("建完应当全部发布出去，want %s, got %s", want, got)
+		t.Errorf("everything built must be published, want %s, got %s", want, got)
 	}
 }
 
@@ -243,13 +248,13 @@ func TestBuild_PublishesEmptyRegistryWithoutConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(r.Names()) != 0 {
-		t.Errorf("want 空，got %v", r.Names())
+		t.Errorf("want empty, got %v", r.Names())
 	}
 }
 
 func TestBuild_ClosesBuiltOnesOnMidwayFailure(t *testing.T) {
-	// 启动钩子返回错误时这一包的停止钩子不会被执行，不自己收拾
-	// 就会漏掉前面那几个连接池
+	// When a start hook returns an error, this package's stop hook does not run, and without
+	// cleaning up here those earlier connection pools would leak
 	l := &log{}
 	boom := errors.New("dial refused")
 	err := Build(context.Background(), newReg(), map[string]cfg{
@@ -257,19 +262,19 @@ func TestBuild_ClosesBuiltOnesOnMidwayFailure(t *testing.T) {
 	}, builder(l))
 
 	if err == nil {
-		t.Fatal("want 错误")
+		t.Fatal("want an error")
 	}
 	if !errors.Is(err, boom) {
-		t.Errorf("要能顺着 errors.Is 找到底层错误，got %v", err)
+		t.Errorf("the underlying error must be reachable through errors.Is, got %v", err)
 	}
 	if got, want := l.String(), "new:a new:b fail:c close:b close:a"; got != want {
-		t.Errorf("已建好的要逆序关掉\nwant %s\ngot  %s", want, got)
+		t.Errorf("what was built must be closed in reverse order\nwant %s\ngot  %s", want, got)
 	}
 }
 
 func TestBuild_RegistryUnchangedOnFailure(t *testing.T) {
-	// 半套实例发布出去比一个都没有更糟：C() 取得到 a 取不到 b，
-	// 而启动其实已经失败了
+	// Publishing half a set is worse than publishing none: C() finds a and not b, while startup has
+	// in fact failed
 	l := &log{}
 	r := newReg()
 	old := &conn{name: "old"}
@@ -279,10 +284,10 @@ func TestBuild_RegistryUnchangedOnFailure(t *testing.T) {
 		"a": {}, "b": {err: errors.New("nope")},
 	}, builder(l))
 	if err == nil {
-		t.Fatal("want 错误")
+		t.Fatal("want an error")
 	}
 	if got, ok := r.Lookup(DefaultName); !ok || got != old {
-		t.Errorf("注册表被半套实例污染了，got %v", r.Names())
+		t.Errorf("the registry was polluted with half a set, got %v", r.Names())
 	}
 }
 
@@ -291,17 +296,17 @@ func TestBuild_ErrorNamesInstance(t *testing.T) {
 		"replica": {err: errors.New("dial refused")},
 	}, builder(&log{}))
 	if err == nil || !strings.Contains(err.Error(), `"replica"`) {
-		t.Errorf("错误里要说清是哪个实例，got %v", err)
+		t.Errorf("the error has to say which instance it is, got %v", err)
 	}
 	if !xerror.Is(err, "xfake") {
-		t.Errorf("错误应归到本模块名下，got %v", err)
+		t.Errorf("the error must be credited to this module, got %v", err)
 	}
 }
 
 func TestBuild_OwnModuleErrorNotRewrappedAndKeepsOp(t *testing.T) {
-	// 一个模块边界一个 xerror。New 已经报了 connect，再按 new 包一层的话
-	// 文本里模块名出现两次，errors.As 取出来的 op 永远是 new，
-	// 调用方再也分不清是配置错了还是连不上
+	// One xerror per module boundary. New reported connect already, and another layer with new
+	// would put the module name in the text twice and have errors.As always take out new, leaving
+	// the caller unable to tell a misconfiguration from an unreachable server
 	root := errors.New("dial refused")
 	err := Build(context.Background(), newReg(), map[string]cfg{
 		"replica": {err: xerror.Newf("xfake", "connect", "cannot reach h:1: %w", root)},
@@ -309,20 +314,20 @@ func TestBuild_OwnModuleErrorNotRewrappedAndKeepsOp(t *testing.T) {
 
 	var xe *xerror.Error
 	if !errors.As(err, &xe) {
-		t.Fatalf("应当是 xerror，got %v", err)
+		t.Fatalf("this must be an xerror, got %v", err)
 	}
 	if xe.Module != "xfake" || xe.Op != "connect" {
-		t.Errorf("该保留 New 报的 op，got module=%s op=%s", xe.Module, xe.Op)
+		t.Errorf("the op New reported must be kept, got module=%s op=%s", xe.Module, xe.Op)
 	}
 	var inner *xerror.Error
 	if errors.As(xe.Err, &inner) {
-		t.Errorf("同一个模块只该有一层 xerror，got %v", err)
+		t.Errorf("one module may have one layer of xerror only, got %v", err)
 	}
 	if strings.Count(err.Error(), "xfake") != 1 {
-		t.Errorf("模块名只该出现一次，got %v", err)
+		t.Errorf("the module name may appear once only, got %v", err)
 	}
 	if !strings.Contains(err.Error(), `"replica"`) || !errors.Is(err, root) {
-		t.Errorf("实例名和根因都得留着，got %v", err)
+		t.Errorf("both the instance name and the root cause must be kept, got %v", err)
 	}
 }
 
@@ -332,16 +337,16 @@ func TestBuild_OtherErrorsWrappedOnceAsNew(t *testing.T) {
 	}, builder(&log{}))
 	var xe *xerror.Error
 	if !errors.As(err, &xe) || xe.Module != "xfake" || xe.Op != "new" {
-		t.Errorf("外来的错误要归到本模块的 new 名下，got %v", err)
+		t.Errorf("an error from elsewhere must be credited to this module's new, got %v", err)
 	}
 	if !xerror.Is(err, "xother") {
-		t.Errorf("里层的模块要留着，got %v", err)
+		t.Errorf("the inner layer's module must be kept, got %v", err)
 	}
 }
 
 func TestBuild_StopsBuildingOnShutdownSignal(t *testing.T) {
-	// 配了五个库、第一个就要重试到超时的话，收到退出信号应当就此打住，
-	// 而不是把剩下四个也挨个试一遍
+	// With five databases configured and the first one retrying until it times out, a shutdown
+	// signal should stop it right there rather than having the remaining four tried one by one
 	l := &log{}
 	ctx, cancel := context.WithCancel(context.Background())
 	var n int
@@ -358,13 +363,13 @@ func TestBuild_StopsBuildingOnShutdownSignal(t *testing.T) {
 	})
 
 	if err == nil {
-		t.Fatal("want 错误：被打断的启动不能报成功")
+		t.Fatal("want an error: an interrupted startup cannot be reported as a success")
 	}
 	if !errors.Is(err, context.Canceled) {
-		t.Errorf("要能看出是被取消的，got %v", err)
+		t.Errorf("it must be visible that this was cancelled, got %v", err)
 	}
 	if got, want := l.String(), "new:a new:b close:b close:a"; got != want {
-		t.Errorf("已建好的要关掉，且不该再建 c\nwant %s\ngot  %s", want, got)
+		t.Errorf("what was built must be closed and c must not be built\nwant %s\ngot  %s", want, got)
 	}
 }
 
@@ -374,26 +379,27 @@ func TestBuild_BuildsNothingWhenAlreadyCanceled(t *testing.T) {
 	l := &log{}
 	err := Build(ctx, newReg(), map[string]cfg{"a": {}}, builder(l))
 	if err == nil {
-		t.Fatal("want 错误")
+		t.Fatal("want an error")
 	}
 	if l.String() != "" {
-		t.Errorf("一个都不该建，got %s", l.String())
+		t.Errorf("not one may be built, got %s", l.String())
 	}
 }
 
 func TestBuild_new_PanicDoesNotLeakBuiltOnes(t *testing.T) {
-	// 不隔离的话 panic 会穿过 Build 往上抛，而已经建好的那几个 Closer
-	// 还只存在于 Build 这一帧的局部变量里——栈一展开就找不回来了
+	// Uncontained, the panic is thrown up through Build while the Closers of what was already built
+	// exist only in Build's own frame as local variables -- once the stack unwinds they cannot be
+	// found again
 	l := &log{}
 	err := Build(context.Background(), newReg(), map[string]cfg{
 		"a": {}, "b": {boom: true},
 	}, builder(l))
 
 	if err == nil {
-		t.Fatal("panic 要变成普通错误，而不是打穿整个进程")
+		t.Fatal("a panic must become an ordinary error rather than taking the whole process down")
 	}
 	if !strings.Contains(err.Error(), "panicked") || !strings.Contains(err.Error(), `"b"`) {
-		t.Errorf("错误里要说清是哪个实例炸的，got %v", err)
+		t.Errorf("the error has to say which instance blew up, got %v", err)
 	}
 	if got, want := l.String(), "new:a panic:b close:a"; got != want {
 		t.Errorf("want %s\ngot  %s", want, got)
@@ -401,7 +407,7 @@ func TestBuild_new_PanicDoesNotLeakBuiltOnes(t *testing.T) {
 }
 
 func TestBuild_new_NilCloserIsHarmless(t *testing.T) {
-	// 有的实例没有要关的东西，返回 nil Closer 是合法的
+	// Some instances have nothing to close, and returning a nil Closer is valid
 	r := newReg()
 	err := Build(context.Background(), r, map[string]cfg{"a": {}},
 		func(context.Context, string, cfg) (*conn, io.Closer, error) {
@@ -411,11 +417,11 @@ func TestBuild_new_NilCloserIsHarmless(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := r.Close(); err != nil {
-		t.Errorf("关一个没有 Closer 的实例不该出错，got %v", err)
+		t.Errorf("closing an instance with no Closer must not be an error, got %v", err)
 	}
 }
 
-// ---- 关实例 ----
+// ---- Closing the instances ----
 
 func TestClose_ClosesInReverseOrder(t *testing.T) {
 	l := &log{}
@@ -434,7 +440,7 @@ func TestClose_ClosesInReverseOrder(t *testing.T) {
 }
 
 func TestClose_UnpublishesBeforeClosing(t *testing.T) {
-	// 反过来的话，关到一半时 C() 还能取到正在被关闭的实例
+	// The other way round, C() would still find an instance that is being closed halfway through
 	r := newReg()
 	var namesDuringClose []string
 	err := Build(context.Background(), r, map[string]cfg{"a": {}},
@@ -451,7 +457,7 @@ func TestClose_UnpublishesBeforeClosing(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(namesDuringClose) != 0 {
-		t.Errorf("关闭进行中时实例就不该还取得到了，got %v", namesDuringClose)
+		t.Errorf("an instance must no longer be findable while closing is under way, got %v", namesDuringClose)
 	}
 }
 
@@ -460,7 +466,7 @@ type closerFunc func() error
 func (f closerFunc) Close() error { return f() }
 
 func TestClose_OneFailureDoesNotAffectOthers(t *testing.T) {
-	// 退出阶段要尽量把能关的都关掉
+	// Shutdown closes as much as it can
 	l := &log{}
 	boom := errors.New("close failed")
 	r := newReg()
@@ -475,10 +481,10 @@ func TestClose_OneFailureDoesNotAffectOthers(t *testing.T) {
 
 	err := r.Close()
 	if !errors.Is(err, boom) {
-		t.Errorf("失败要汇总上来，got %v", err)
+		t.Errorf("the failures have to be gathered up, got %v", err)
 	}
 	if got, want := l.String(), "close:c close:b close:a"; got != want {
-		t.Errorf("其余的照常关\nwant %s\ngot  %s", want, got)
+		t.Errorf("the rest are closed as usual\nwant %s\ngot  %s", want, got)
 	}
 }
 
@@ -493,15 +499,15 @@ func TestClose_OnePanicDoesNotAffectOthers(t *testing.T) {
 
 	err := r.Close()
 	if err == nil || !strings.Contains(err.Error(), "panicked") {
-		t.Errorf("panic 要变成普通错误，got %v", err)
+		t.Errorf("a panic must become an ordinary error, got %v", err)
 	}
 	if got, want := l.String(), "close:c close:a"; got != want {
-		t.Errorf("其余的照常关\nwant %s\ngot  %s", want, got)
+		t.Errorf("the rest are closed as usual\nwant %s\ngot  %s", want, got)
 	}
 }
 
 func TestClose_RepeatedCallIsNoop(t *testing.T) {
-	// 停止钩子可能被重试，关第二次不该把同一个连接池再关一遍
+	// A stop hook may be retried, and a second close must not close the same connection pool again
 	l := &log{}
 	r := newReg()
 	if err := Build(context.Background(), r, map[string]cfg{"a": {}}, builder(l)); err != nil {
@@ -511,7 +517,7 @@ func TestClose_RepeatedCallIsNoop(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := r.Close(); err != nil {
-		t.Fatalf("第二次关不该出错，got %v", err)
+		t.Fatalf("a second close must not be an error, got %v", err)
 	}
 	if got, want := l.String(), "new:a close:a"; got != want {
 		t.Errorf("only closed once expected\nwant %s\ngot  %s", want, got)
@@ -519,15 +525,16 @@ func TestClose_RepeatedCallIsNoop(t *testing.T) {
 }
 
 func TestBuild_new_panic_ErrorStaysInChain(t *testing.T) {
-	// 用 %v 接住的话它只剩一段文本，调用方再也问不出根因是什么
+	// Caught with %v it would be left as a piece of text and the caller could never ask what the
+	// root cause was
 	cause := errors.New("driver exploded")
 	explode := func(context.Context, string, cfg) (*conn, io.Closer, error) { panic(cause) }
 	err := Build(context.Background(), newReg(), map[string]cfg{"a": {}}, explode)
 	if !errors.Is(err, cause) {
-		t.Fatalf("panic 出来的 error 应当还在错误链上，got %v", err)
+		t.Fatalf("the error panicked with must still be in the chain, got %v", err)
 	}
 	if !strings.Contains(err.Error(), `instance "a" panicked: driver exploded`) {
-		t.Errorf("文案应当说清是哪个实例 panic 了，got %v", err)
+		t.Errorf("the wording has to say which instance panicked, got %v", err)
 	}
 }
 
@@ -538,7 +545,7 @@ func TestClose_panic_ErrorStaysInChain(t *testing.T) {
 
 	err := r.Close()
 	if !errors.Is(err, cause) {
-		t.Fatalf("panic 出来的 error 应当还在错误链上，got %v", err)
+		t.Fatalf("the error panicked with must still be in the chain, got %v", err)
 	}
 	if !strings.Contains(err.Error(), "close panicked: close exploded") {
 		t.Errorf("got %v", err)
@@ -552,7 +559,7 @@ func TestClose_InstancesGoneAfterClose(t *testing.T) {
 		t.Fatal(err)
 	}
 	if r.Has() {
-		t.Error("关完还取得到实例，调用方会摸到一个已经关掉的连接池")
+		t.Error("an instance is still findable after closing, so a caller would reach a connection pool that is already closed")
 	}
 }
 
@@ -580,7 +587,7 @@ func TestRegistry_NoDataRaceUnderConcurrentAccess(t *testing.T) {
 	wg.Wait()
 }
 
-// C() 每次数据访问都要走一遍 Get
+// C() goes through Get on the path of every data access
 func BenchmarkGet_Default(b *testing.B) {
 	r := newReg()
 	publish(r, map[string]*conn{DefaultName: {}, "b": {}})
@@ -602,18 +609,18 @@ func BenchmarkGet_Default_Parallel(b *testing.B) {
 }
 
 func TestBuild_CloseErrorsOfBuiltOnesJoinedIntoBuildError(t *testing.T) {
-	// 建到一半失败、回头关已经建好的那几个时，关不掉的错误从前被丢掉：
-	// 漏着的连接池在日志里一个字都没有
+	// When building failed halfway and what was built was closed again, an error from a failed close
+	// used to be dropped: the leaked connection pool left not one word in the logs
 	closeErr := errors.New("close a failed")
 	boom := errors.New("dial refused")
 	for name, fail := range map[string]func(context.CancelFunc, string) error{
-		"new 失败": func(_ context.CancelFunc, n string) error {
+		"new failed": func(_ context.CancelFunc, n string) error {
 			if n == "b" {
 				return boom
 			}
 			return nil
 		},
-		"收到退出信号": func(cancel context.CancelFunc, n string) error {
+		"a shutdown signal arrived": func(cancel context.CancelFunc, n string) error {
 			if n == "a" {
 				cancel()
 			}
@@ -631,10 +638,10 @@ func TestBuild_CloseErrorsOfBuiltOnesJoinedIntoBuildError(t *testing.T) {
 		})
 		cancel()
 		if !errors.Is(err, closeErr) {
-			t.Errorf("%s：关不掉的错误要并进 Build 的错误，got %v", name, err)
+			t.Errorf("%s: a failed close must be joined into Build's error, got %v", name, err)
 		}
 		if !errors.Is(err, boom) && !errors.Is(err, context.Canceled) {
-			t.Errorf("%s：原来的错误要留着，got %v", name, err)
+			t.Errorf("%s: the original error must be kept, got %v", name, err)
 		}
 	}
 }

@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://github.com/jupiter-eng/xone",
-  "title": "XOne 配置",
+  "title": "XOne configuration",
   "type": "object",
   "properties": {
     "XApp": {
@@ -16,7 +16,7 @@
             "string",
             "array"
           ],
-          "description": "引入别的配置文件，对应 Spring 的 spring.config.import。引进来的压过引它的那个文件；相对路径按引它的文件所在目录解析；optional: 前缀表示文件不存在就跳过",
+          "description": "Imports other configuration files, as Spring's spring.config.import does. An imported file overrides the one importing it; a relative path resolves against the directory of the file importing it; an optional: prefix skips a file that does not exist",
           "items": {
             "type": "string"
           }
@@ -30,7 +30,7 @@
             "string",
             "array"
           ],
-          "description": "激活哪些 profile，对应 Spring 的 spring.profiles.active：一个名字、逗号分隔的字符串或列表，靠后的压过靠前的。优先级低于 --profile 和 XONE_PROFILE；只能写在主配置文件里",
+          "description": "Which profiles are active, as Spring's spring.profiles.active is: one name, a comma-separated string, or a list, where a later one overrides an earlier one. It ranks below --profile and XONE_PROFILE, and may be written in the main configuration file only",
           "items": {
             "type": "string"
           }
@@ -58,7 +58,7 @@
             },
             "DefaultTTL": {
               "type": "string",
-              "description": "is the expiry used by the package-level Set. It defaults to 5m. 0 means it never expires; a negative value fails startup -- ristretto drops a write with ttl\u003c0 outright.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+              "description": "is the expiry used by the package-level Set. It defaults to 5m. 0 means it never expires; a negative value fails startup -- ristretto drops a write with ttl\u003c0 outright. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
             },
             "MaxCost": {
               "type": [
@@ -92,7 +92,7 @@
           "properties": {
             "Clients": {
               "type": "object",
-              "description": "按名字组织的多个实例，实例名就是 key",
+              "description": "Several instances organized by name, where the instance name is the key",
               "additionalProperties": {
                 "type": "object",
                 "properties": {
@@ -106,7 +106,7 @@
                   },
                   "DefaultTTL": {
                     "type": "string",
-                    "description": "is the expiry used by the package-level Set. It defaults to 5m. 0 means it never expires; a negative value fails startup -- ristretto drops a write with ttl\u003c0 outright.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                    "description": "is the expiry used by the package-level Set. It defaults to 5m. 0 means it never expires; a negative value fails startup -- ristretto drops a write with ttl\u003c0 outright. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                   },
                   "MaxCost": {
                     "type": [
@@ -169,7 +169,7 @@
         },
         "IdleTimeout": {
           "type": "string",
-          "description": "bounds how long a keep-alive connection may sit idle. Defaults to 60s, must be \u003e 0. Same reasoning as ReadHeaderTimeout: 0 falls back to ReadTimeout (itself 0 by default), which means idle connections are never reclaimed.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+          "description": "bounds how long a keep-alive connection may sit idle. Defaults to 60s, must be \u003e 0. Same reasoning as ReadHeaderTimeout: 0 falls back to ReadTimeout (itself 0 by default), which means idle connections are never reclaimed. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
         },
         "Log": {
           "type": [
@@ -248,11 +248,11 @@
         },
         "ReadHeaderTimeout": {
           "type": "string",
-          "description": "bounds reading the request headers. Defaults to 10s, must be \u003e 0. This is the main defense against slow-connection attacks: without a limit, a slow client holds a connection indefinitely, and once the connection count is exhausted the whole service is unavailable. All four timeouts on echo's own e.Server are 0; this module does not use it and builds an http.Server from these fields instead. 0 does not mean \"use some default\": net/http falls back to ReadTimeout, whose default is also 0, so there is no limit at all (measured: a connection sending half a request header is never closed). Both 0 and negative values are therefore rejected.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+          "description": "bounds reading the request headers. Defaults to 10s, must be \u003e 0. This is the main defense against slow-connection attacks: without a limit, a slow client holds a connection indefinitely, and once the connection count is exhausted the whole service is unavailable. All four timeouts on echo's own e.Server are 0; this module does not use it and builds an http.Server from these fields instead. 0 does not mean \"use some default\": net/http falls back to ReadTimeout, whose default is also 0, so there is no limit at all (measured: a connection sending half a request header is never closed). Both 0 and negative values are therefore rejected. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
         },
         "ReadTimeout": {
           "type": "string",
-          "description": "bounds reading the whole request, body included. Unlimited by default. Unlimited by default because a limit cuts off large uploads. A value matching the business ceiling is better, but only the business knows that value. 0 means unlimited; a negative value fails startup.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+          "description": "bounds reading the whole request, body included. Unlimited by default. Unlimited by default because a limit cuts off large uploads. A value matching the business ceiling is better, but only the business knows that value. 0 means unlimited; a negative value fails startup. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
         },
         "TLS": {
           "type": "object",
@@ -302,7 +302,7 @@
         },
         "WriteTimeout": {
           "type": "string",
-          "description": "bounds writing the response. Unlimited by default. Unlimited by default because a limit cuts off SSE, long polling and large downloads. 0 means unlimited; a negative value fails startup.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+          "description": "bounds writing the response. Unlimited by default. Unlimited by default because a limit cuts off SSE, long polling and large downloads. 0 means unlimited; a negative value fails startup. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
         }
       },
       "additionalProperties": false
@@ -324,7 +324,7 @@
         },
         "RollbackTimeout": {
           "type": "string",
-          "description": "is the total budget for rolling every step back. It defaults to 30s. A rollback does not inherit the caller's context (a request timing out would otherwise make every compensation fail); it is limited by this setting instead, so compensation logic cannot hang the shutdown sequence indefinitely. A Rollback that ignores the ctx cannot hang it either: once the budget is reached it is no longer waited for and is recorded in RollbackErrors, as is every step that never got a turn; the abandoned step's goroutine keeps running in the background.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+          "description": "is the total budget for rolling every step back. It defaults to 30s. A rollback does not inherit the caller's context (a request timing out would otherwise make every compensation fail); it is limited by this setting instead, so compensation logic cannot hang the shutdown sequence indefinitely. A Rollback that ignores the ctx cannot hang it either: once the budget is reached it is no longer waited for and is recorded in RollbackErrors, as is every step that never got a turn; the abandoned step's goroutine keeps running in the background. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
         }
       },
       "additionalProperties": false
@@ -342,7 +342,7 @@
         },
         "IdleTimeout": {
           "type": "string",
-          "description": "bounds how long a keep-alive connection may sit idle. Defaults to 60s, must be \u003e 0. Same reasoning as ReadHeaderTimeout: 0 falls back to ReadTimeout (itself 0 by default), which means idle connections are never reclaimed.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+          "description": "bounds how long a keep-alive connection may sit idle. Defaults to 60s, must be \u003e 0. Same reasoning as ReadHeaderTimeout: 0 falls back to ReadTimeout (itself 0 by default), which means idle connections are never reclaimed. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
         },
         "Log": {
           "type": [
@@ -433,11 +433,11 @@
         },
         "ReadHeaderTimeout": {
           "type": "string",
-          "description": "bounds reading the request headers. Defaults to 10s, must be \u003e 0. This is the main defense against slow-connection attacks: without a limit, a slow client holds a connection indefinitely, and once the connection count is exhausted the whole service is unavailable. 0 does not mean \"use some default\": net/http falls back to ReadTimeout, whose default is also 0, so there is no limit at all (measured: a connection sending half a request header is never closed). Both 0 and negative values are therefore rejected.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+          "description": "bounds reading the request headers. Defaults to 10s, must be \u003e 0. This is the main defense against slow-connection attacks: without a limit, a slow client holds a connection indefinitely, and once the connection count is exhausted the whole service is unavailable. 0 does not mean \"use some default\": net/http falls back to ReadTimeout, whose default is also 0, so there is no limit at all (measured: a connection sending half a request header is never closed). Both 0 and negative values are therefore rejected. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
         },
         "ReadTimeout": {
           "type": "string",
-          "description": "bounds reading the whole request, body included. Unlimited by default. Unlimited by default because a limit cuts off large uploads. A value matching the business ceiling is better, but only the business knows that value. 0 means unlimited; a negative value fails startup.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+          "description": "bounds reading the whole request, body included. Unlimited by default. Unlimited by default because a limit cuts off large uploads. A value matching the business ceiling is better, but only the business knows that value. 0 means unlimited; a negative value fails startup. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
         },
         "TLS": {
           "type": "object",
@@ -487,7 +487,7 @@
         },
         "WriteTimeout": {
           "type": "string",
-          "description": "bounds writing the response. Unlimited by default. Unlimited by default because a limit cuts off SSE, long polling and large downloads. 0 means unlimited; a negative value fails startup.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+          "description": "bounds writing the response. Unlimited by default. Unlimited by default because a limit cuts off SSE, long polling and large downloads. 0 means unlimited; a negative value fails startup. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
         },
         "ZHTranslations": {
           "type": [
@@ -557,7 +557,7 @@
             },
             "DialTimeout": {
               "type": "string",
-              "description": "is the connect timeout. Defaults to 500ms. It is injected as timeout for MySQL and as connect_timeout for PostgreSQL (rounded up to whole seconds). At 0 nothing is injected and the driver's own applies (both drivers: no limit). It must not be negative, and neither may any duration below.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+              "description": "is the connect timeout. Defaults to 500ms. It is injected as timeout for MySQL and as connect_timeout for PostgreSQL (rounded up to whole seconds). At 0 nothing is injected and the driver's own applies (both drivers: no limit). It must not be negative, and neither may any duration below. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
             },
             "DisableForeignKeyConstraintWhenMigrating": {
               "type": [
@@ -597,11 +597,11 @@
             },
             "MaxIdleTime": {
               "type": "string",
-              "description": "is how long an idle connection may live. Defaults to 5m, and 0 means no limit.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+              "description": "is how long an idle connection may live. Defaults to 5m, and 0 means no limit. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
             },
             "MaxLifetime": {
               "type": "string",
-              "description": "is how long a connection may live. Defaults to 5m, and 0 means no limit.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+              "description": "is how long a connection may live. Defaults to 5m, and 0 means no limit. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
             },
             "MaxOpenConns": {
               "type": [
@@ -625,11 +625,11 @@
               "properties": {
                 "ReadTimeout": {
                   "type": "string",
-                  "description": "is the read timeout, the DSN's readTimeout. Defaults to 3s, and 0 injects nothing (so the driver has no limit).（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                  "description": "is the read timeout, the DSN's readTimeout. Defaults to 3s, and 0 injects nothing (so the driver has no limit). (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                 },
                 "WriteTimeout": {
                   "type": "string",
-                  "description": "is the write timeout, the DSN's writeTimeout. Defaults to 5s, and 0 injects nothing (so the driver has no limit).（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                  "description": "is the write timeout, the DSN's writeTimeout. Defaults to 5s, and 0 injects nothing (so the driver has no limit). (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                 }
               },
               "additionalProperties": false
@@ -640,11 +640,11 @@
               "properties": {
                 "IdleInTxTimeout": {
                   "type": "string",
-                  "description": "disconnects after this long idle inside a transaction. No limit by default.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                  "description": "disconnects after this long idle inside a transaction. No limit by default. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                 },
                 "LockTimeout": {
                   "type": "string",
-                  "description": "is how long to wait for a lock. No limit by default.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                  "description": "is how long to wait for a lock. No limit by default. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                 },
                 "Params": {
                   "type": "object",
@@ -655,7 +655,7 @@
                 },
                 "StatementTimeout": {
                   "type": "string",
-                  "description": "is how long one statement may run. No limit by default. It is the server's clock and governs how long the server has been executing a statement it received. The PG client side has no read timeout the way MySQL does: when a pooled connection meets an unresponsive peer (a stuck process, a network broken midway) and the caller's ctx has no deadline, the query waits until the caller gives up. Measured, setting this to 1s still waited: 30s later it had not returned — the statement never reached the server, which therefore had nothing to time. The only thing governing that stretch is the caller's deadline: pass a ctx with one through CWithCtx, and measured with 200ms it returned in 200ms.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                  "description": "is how long one statement may run. No limit by default. It is the server's clock and governs how long the server has been executing a statement it received. The PG client side has no read timeout the way MySQL does: when a pooled connection meets an unresponsive peer (a stuck process, a network broken midway) and the caller's ctx has no deadline, the query waits until the caller gives up. Measured, setting this to 1s still waited: 30s later it had not returned — the statement never reached the server, which therefore had nothing to time. The only thing governing that stretch is the caller's deadline: pass a ctx with one through CWithCtx, and measured with 200ms it returned in 200ms. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                 }
               },
               "additionalProperties": false
@@ -678,7 +678,7 @@
             },
             "SlowThreshold": {
               "type": "string",
-              "description": "logs a warn line for any statement slower than this. Defaults to 3s, needs Log on, and 0 records none.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+              "description": "logs a warn line for any statement slower than this. Defaults to 3s, needs Log on, and 0 records none. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
             },
             "TLS": {
               "type": "object",
@@ -727,7 +727,7 @@
           "properties": {
             "Clients": {
               "type": "object",
-              "description": "按名字组织的多个实例，实例名就是 key",
+              "description": "Several instances organized by name, where the instance name is the key",
               "additionalProperties": {
                 "type": "object",
                 "properties": {
@@ -745,7 +745,7 @@
                   },
                   "DialTimeout": {
                     "type": "string",
-                    "description": "is the connect timeout. Defaults to 500ms. It is injected as timeout for MySQL and as connect_timeout for PostgreSQL (rounded up to whole seconds). At 0 nothing is injected and the driver's own applies (both drivers: no limit). It must not be negative, and neither may any duration below.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                    "description": "is the connect timeout. Defaults to 500ms. It is injected as timeout for MySQL and as connect_timeout for PostgreSQL (rounded up to whole seconds). At 0 nothing is injected and the driver's own applies (both drivers: no limit). It must not be negative, and neither may any duration below. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                   },
                   "DisableForeignKeyConstraintWhenMigrating": {
                     "type": [
@@ -785,11 +785,11 @@
                   },
                   "MaxIdleTime": {
                     "type": "string",
-                    "description": "is how long an idle connection may live. Defaults to 5m, and 0 means no limit.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                    "description": "is how long an idle connection may live. Defaults to 5m, and 0 means no limit. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                   },
                   "MaxLifetime": {
                     "type": "string",
-                    "description": "is how long a connection may live. Defaults to 5m, and 0 means no limit.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                    "description": "is how long a connection may live. Defaults to 5m, and 0 means no limit. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                   },
                   "MaxOpenConns": {
                     "type": [
@@ -813,11 +813,11 @@
                     "properties": {
                       "ReadTimeout": {
                         "type": "string",
-                        "description": "is the read timeout, the DSN's readTimeout. Defaults to 3s, and 0 injects nothing (so the driver has no limit).（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                        "description": "is the read timeout, the DSN's readTimeout. Defaults to 3s, and 0 injects nothing (so the driver has no limit). (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                       },
                       "WriteTimeout": {
                         "type": "string",
-                        "description": "is the write timeout, the DSN's writeTimeout. Defaults to 5s, and 0 injects nothing (so the driver has no limit).（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                        "description": "is the write timeout, the DSN's writeTimeout. Defaults to 5s, and 0 injects nothing (so the driver has no limit). (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                       }
                     },
                     "additionalProperties": false
@@ -828,11 +828,11 @@
                     "properties": {
                       "IdleInTxTimeout": {
                         "type": "string",
-                        "description": "disconnects after this long idle inside a transaction. No limit by default.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                        "description": "disconnects after this long idle inside a transaction. No limit by default. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                       },
                       "LockTimeout": {
                         "type": "string",
-                        "description": "is how long to wait for a lock. No limit by default.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                        "description": "is how long to wait for a lock. No limit by default. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                       },
                       "Params": {
                         "type": "object",
@@ -843,7 +843,7 @@
                       },
                       "StatementTimeout": {
                         "type": "string",
-                        "description": "is how long one statement may run. No limit by default. It is the server's clock and governs how long the server has been executing a statement it received. The PG client side has no read timeout the way MySQL does: when a pooled connection meets an unresponsive peer (a stuck process, a network broken midway) and the caller's ctx has no deadline, the query waits until the caller gives up. Measured, setting this to 1s still waited: 30s later it had not returned — the statement never reached the server, which therefore had nothing to time. The only thing governing that stretch is the caller's deadline: pass a ctx with one through CWithCtx, and measured with 200ms it returned in 200ms.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                        "description": "is how long one statement may run. No limit by default. It is the server's clock and governs how long the server has been executing a statement it received. The PG client side has no read timeout the way MySQL does: when a pooled connection meets an unresponsive peer (a stuck process, a network broken midway) and the caller's ctx has no deadline, the query waits until the caller gives up. Measured, setting this to 1s still waited: 30s later it had not returned — the statement never reached the server, which therefore had nothing to time. The only thing governing that stretch is the caller's deadline: pass a ctx with one through CWithCtx, and measured with 200ms it returned in 200ms. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                       }
                     },
                     "additionalProperties": false
@@ -866,7 +866,7 @@
                   },
                   "SlowThreshold": {
                     "type": "string",
-                    "description": "logs a warn line for any statement slower than this. Defaults to 3s, needs Log on, and 0 records none.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                    "description": "logs a warn line for any statement slower than this. Defaults to 3s, needs Log on, and 0 records none. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                   },
                   "TLS": {
                     "type": "object",
@@ -932,15 +932,15 @@
       "properties": {
         "DialKeepAlive": {
           "type": "string",
-          "description": "is the TCP keep-alive probe interval. It defaults to 30s. It is the one duration where a negative value is meaningful: the standard library's net.Dialer takes a negative value as \"send no probes\", which is why it is not in Validate's non-negative check.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+          "description": "is the TCP keep-alive probe interval. It defaults to 30s. It is the one duration where a negative value is meaningful: the standard library's net.Dialer takes a negative value as \"send no probes\", which is why it is not in Validate's non-negative check. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
         },
         "DialTimeout": {
           "type": "string",
-          "description": "is the timeout for establishing a TCP connection. It defaults to 30s.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+          "description": "is the timeout for establishing a TCP connection. It defaults to 30s. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
         },
         "IdleConnTimeout": {
           "type": "string",
-          "description": "is how long an idle connection is kept. It defaults to 90s, as in the standard library. When the downstream (or a load balancer in between) closes an idle connection first, a request reusing it at exactly that moment fails: measured with a 200ms server-side idle timeout and request intervals around 200ms, 27 of 300 POSTs failed (connection reset by peer / use of closed network connection); GETs are resent automatically on a new connection and none of 200 failed. So it has to be shorter than the downstream's keep-alive timeout.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+          "description": "is how long an idle connection is kept. It defaults to 90s, as in the standard library. When the downstream (or a load balancer in between) closes an idle connection first, a request reusing it at exactly that moment fails: measured with a 200ms server-side idle timeout and request intervals around 200ms, 27 of 300 POSTs failed (connection reset by peer / use of closed network connection); GETs are resent automatically on a new connection and none of 200 failed. So it has to be shorter than the downstream's keep-alive timeout. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
         },
         "Log": {
           "type": [
@@ -992,7 +992,7 @@
         },
         "RetryMaxWaitTime": {
           "type": "string",
-          "description": "is the upper bound on the retry wait. It defaults to 2s.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+          "description": "is the upper bound on the retry wait. It defaults to 2s. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
         },
         "RetryOnlyIdempotent": {
           "type": [
@@ -1004,11 +1004,11 @@
         },
         "RetryWaitTime": {
           "type": "string",
-          "description": "is the initial retry wait. It defaults to 100ms.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+          "description": "is the initial retry wait. It defaults to 100ms. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
         },
         "SlowThreshold": {
           "type": "string",
-          "description": "records one warn line when the whole logical request (retries and backoff included) takes longer than this. It defaults to 1s, requires Log, and 0 records nothing.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+          "description": "records one warn line when the whole logical request (retries and backoff included) takes longer than this. It defaults to 1s, requires Log, and 0 records nothing. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
         },
         "TLS": {
           "type": "object",
@@ -1043,7 +1043,7 @@
         },
         "Timeout": {
           "type": "string",
-          "description": "is the timeout of one attempt. It defaults to 60s. 0 means \"never time out\", not \"use some default\": with an unresponsive peer the request hangs forever. Note that it governs one attempt, not one logical request: with RetryCount on, the worst case is (RetryCount+1) x Timeout plus the backoff waits (measured at a full 1.24s with Timeout=300ms and RetryCount=3). To cap the whole logical request, use the caller's ctx -- both the retry backoff and each attempt honor it（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+          "description": "is the timeout of one attempt. It defaults to 60s. 0 means \"never time out\", not \"use some default\": with an unresponsive peer the request hangs forever. Note that it governs one attempt, not one logical request: with RetryCount on, the worst case is (RetryCount+1) x Timeout plus the backoff waits (measured at a full 1.24s with Timeout=300ms and RetryCount=3). To cap the whole logical request, use the caller's ctx -- both the retry backoff and each attempt honor it (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
         },
         "Trace": {
           "type": [
@@ -1086,7 +1086,7 @@
             },
             "DialTimeout": {
               "type": "string",
-              "description": "is the timeout for making one connection (TCP, plus the TLS handshake). It defaults to 1s; franz-go's own default is 10s. Each attempt of the connectivity probe at startup has a budget of 2 x DialTimeout: a connection plus one round trip, see the README's \"Behavior (measured)\".（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+              "description": "is the timeout for making one connection (TCP, plus the TLS handshake). It defaults to 1s; franz-go's own default is 10s. Each attempt of the connectivity probe at startup has a budget of 2 x DialTimeout: a connection plus one round trip, see the README's \"Behavior (measured)\". (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
             },
             "Log": {
               "type": [
@@ -1118,7 +1118,7 @@
                 },
                 "Linger": {
                   "type": "string",
-                  "description": "is how long a batch waits at most before being sent, for batching. It defaults to 10ms (franz-go's default); 0 means no waiting, send what there is.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                  "description": "is how long a batch waits at most before being sent, for batching. It defaults to 10ms (franz-go's default); 0 means no waiting, send what there is. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                 }
               },
               "additionalProperties": false
@@ -1189,7 +1189,7 @@
           "properties": {
             "Clients": {
               "type": "object",
-              "description": "按名字组织的多个实例，实例名就是 key",
+              "description": "Several instances organized by name, where the instance name is the key",
               "additionalProperties": {
                 "type": "object",
                 "properties": {
@@ -1217,7 +1217,7 @@
                   },
                   "DialTimeout": {
                     "type": "string",
-                    "description": "is the timeout for making one connection (TCP, plus the TLS handshake). It defaults to 1s; franz-go's own default is 10s. Each attempt of the connectivity probe at startup has a budget of 2 x DialTimeout: a connection plus one round trip, see the README's \"Behavior (measured)\".（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                    "description": "is the timeout for making one connection (TCP, plus the TLS handshake). It defaults to 1s; franz-go's own default is 10s. Each attempt of the connectivity probe at startup has a budget of 2 x DialTimeout: a connection plus one round trip, see the README's \"Behavior (measured)\". (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                   },
                   "Log": {
                     "type": [
@@ -1249,7 +1249,7 @@
                       },
                       "Linger": {
                         "type": "string",
-                        "description": "is how long a batch waits at most before being sent, for batching. It defaults to 10ms (franz-go's default); 0 means no waiting, send what there is.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                        "description": "is how long a batch waits at most before being sent, for batching. It defaults to 10ms (franz-go's default); 0 means no waiting, send what there is. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                       }
                     },
                     "additionalProperties": false
@@ -1372,7 +1372,7 @@
             },
             "MaxAge": {
               "type": "string",
-              "description": "is how long historical files are kept; 0 means no cleanup. It defaults to 7 days and must not be negative. Cleanup runs once at startup and once per rotation after that. It only removes files named {Name}.{time suffix} the way this package names them, and never touches an app.log.bak or app.log.1.gz in the same directory.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+              "description": "is how long historical files are kept; 0 means no cleanup. It defaults to 7 days and must not be negative. Cleanup runs once at startup and once per rotation after that. It only removes files named {Name}.{time suffix} the way this package names them, and never touches an app.log.bak or app.log.1.gz in the same directory. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
             },
             "Name": {
               "type": "string",
@@ -1388,7 +1388,7 @@
             },
             "RotateTime": {
               "type": "string",
-              "description": "is the rotation period. It defaults to one day, aligned to the local time zone. The minimum is 1 minute. The time suffix in the file name goes down to the minute: writing 0s would give one file per minute, and writing 30s would put two periods in the same file name while still rotating once a minute -- both are \"configure A and get B\", so anything shorter than a minute fails startup outright.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+              "description": "is the rotation period. It defaults to one day, aligned to the local time zone. The minimum is 1 minute. The time suffix in the file name goes down to the minute: writing 0s would give one file per minute, and writing 30s would put two periods in the same file name while still rotating once a minute -- both are \"configure A and get B\", so anything shorter than a minute fails startup outright. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
             }
           },
           "additionalProperties": false
@@ -1487,11 +1487,11 @@
             },
             "ConnMaxIdleTime": {
               "type": "string",
-              "description": "is how long an idle connection lives at most. It defaults to 5m; 0 leaves it to go-redis (30m).（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+              "description": "is how long an idle connection lives at most. It defaults to 5m; 0 leaves it to go-redis (30m). (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
             },
             "ConnMaxLifetime": {
               "type": "string",
-              "description": "is how long a connection lives at most. It defaults to 5m; 0 means connections are not replaced by age (go-redis's default). Replacing connections periodically is what lets traffic spread out again after the server scales.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+              "description": "is how long a connection lives at most. It defaults to 5m; 0 means connections are not replaced by age (go-redis's default). Replacing connections periodically is what lets traffic spread out again after the server scales. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
             },
             "DB": {
               "type": [
@@ -1503,7 +1503,7 @@
             },
             "DialTimeout": {
               "type": "string",
-              "description": "is the connection timeout. It defaults to 500ms; 0 leaves it to go-redis (5s). None of the durations below means \"no limit\" at 0; 0 is go-redis v9.22.0's default (options.go init, measured to match). The per-attempt budget of the connection check at startup is the resolved DialTimeout + ReadTimeout.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+              "description": "is the connection timeout. It defaults to 500ms; 0 leaves it to go-redis (5s). None of the durations below means \"no limit\" at 0; 0 is go-redis v9.22.0's default (options.go init, measured to match). The per-attempt budget of the connection check at startup is the resolved DialTimeout + ReadTimeout. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
             },
             "Log": {
               "type": [
@@ -1539,7 +1539,7 @@
             },
             "MaxRetryBackoff": {
               "type": "string",
-              "description": "is the maximum retry backoff. It defaults to 0, left to go-redis (1s, measured on v9.22.0); -1ns turns the backoff off, as above.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+              "description": "is the maximum retry backoff. It defaults to 0, left to go-redis (1s, measured on v9.22.0); -1ns turns the backoff off, as above. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
             },
             "Metric": {
               "type": [
@@ -1559,7 +1559,7 @@
             },
             "MinRetryBackoff": {
               "type": "string",
-              "description": "is the minimum retry backoff. It defaults to 0, left to go-redis (10ms, measured on v9.22.0); -1ns turns the backoff off (the unit is required, since a bare -1 does not parse as a duration and fails startup).（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+              "description": "is the minimum retry backoff. It defaults to 0, left to go-redis (10ms, measured on v9.22.0); -1ns turns the backoff off (the unit is required, since a bare -1 does not parse as a duration and fails startup). (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
             },
             "Password": {
               "type": "string",
@@ -1575,15 +1575,15 @@
             },
             "PoolTimeout": {
               "type": "string",
-              "description": "is the upper bound on waiting when the pool has no idle connection. It defaults to 1s; 0 is the resolved ReadTimeout + 1s.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+              "description": "is the upper bound on waiting when the pool has no idle connection. It defaults to 1s; 0 is the resolved ReadTimeout + 1s. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
             },
             "ReadTimeout": {
               "type": "string",
-              "description": "is the read timeout. It defaults to 500ms; 0 leaves it to go-redis (5s).（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+              "description": "is the read timeout. It defaults to 500ms; 0 leaves it to go-redis (5s). (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
             },
             "SlowThreshold": {
               "type": "string",
-              "description": "records one warn line for a command (or pipeline) taking longer than this. It defaults to 100ms, requires Log, and 0 records nothing.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+              "description": "records one warn line for a command (or pipeline) taking longer than this. It defaults to 100ms, requires Log, and 0 records nothing. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
             },
             "TLS": {
               "type": "object",
@@ -1630,7 +1630,7 @@
             },
             "WriteTimeout": {
               "type": "string",
-              "description": "is the write timeout. It defaults to 500ms; 0 follows the resolved ReadTimeout.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+              "description": "is the write timeout. It defaults to 500ms; 0 follows the resolved ReadTimeout. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
             }
           },
           "additionalProperties": false
@@ -1640,7 +1640,7 @@
           "properties": {
             "Clients": {
               "type": "object",
-              "description": "按名字组织的多个实例，实例名就是 key",
+              "description": "Several instances organized by name, where the instance name is the key",
               "additionalProperties": {
                 "type": "object",
                 "properties": {
@@ -1650,11 +1650,11 @@
                   },
                   "ConnMaxIdleTime": {
                     "type": "string",
-                    "description": "is how long an idle connection lives at most. It defaults to 5m; 0 leaves it to go-redis (30m).（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                    "description": "is how long an idle connection lives at most. It defaults to 5m; 0 leaves it to go-redis (30m). (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                   },
                   "ConnMaxLifetime": {
                     "type": "string",
-                    "description": "is how long a connection lives at most. It defaults to 5m; 0 means connections are not replaced by age (go-redis's default). Replacing connections periodically is what lets traffic spread out again after the server scales.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                    "description": "is how long a connection lives at most. It defaults to 5m; 0 means connections are not replaced by age (go-redis's default). Replacing connections periodically is what lets traffic spread out again after the server scales. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                   },
                   "DB": {
                     "type": [
@@ -1666,7 +1666,7 @@
                   },
                   "DialTimeout": {
                     "type": "string",
-                    "description": "is the connection timeout. It defaults to 500ms; 0 leaves it to go-redis (5s). None of the durations below means \"no limit\" at 0; 0 is go-redis v9.22.0's default (options.go init, measured to match). The per-attempt budget of the connection check at startup is the resolved DialTimeout + ReadTimeout.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                    "description": "is the connection timeout. It defaults to 500ms; 0 leaves it to go-redis (5s). None of the durations below means \"no limit\" at 0; 0 is go-redis v9.22.0's default (options.go init, measured to match). The per-attempt budget of the connection check at startup is the resolved DialTimeout + ReadTimeout. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                   },
                   "Log": {
                     "type": [
@@ -1702,7 +1702,7 @@
                   },
                   "MaxRetryBackoff": {
                     "type": "string",
-                    "description": "is the maximum retry backoff. It defaults to 0, left to go-redis (1s, measured on v9.22.0); -1ns turns the backoff off, as above.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                    "description": "is the maximum retry backoff. It defaults to 0, left to go-redis (1s, measured on v9.22.0); -1ns turns the backoff off, as above. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                   },
                   "Metric": {
                     "type": [
@@ -1722,7 +1722,7 @@
                   },
                   "MinRetryBackoff": {
                     "type": "string",
-                    "description": "is the minimum retry backoff. It defaults to 0, left to go-redis (10ms, measured on v9.22.0); -1ns turns the backoff off (the unit is required, since a bare -1 does not parse as a duration and fails startup).（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                    "description": "is the minimum retry backoff. It defaults to 0, left to go-redis (10ms, measured on v9.22.0); -1ns turns the backoff off (the unit is required, since a bare -1 does not parse as a duration and fails startup). (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                   },
                   "Password": {
                     "type": "string",
@@ -1738,15 +1738,15 @@
                   },
                   "PoolTimeout": {
                     "type": "string",
-                    "description": "is the upper bound on waiting when the pool has no idle connection. It defaults to 1s; 0 is the resolved ReadTimeout + 1s.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                    "description": "is the upper bound on waiting when the pool has no idle connection. It defaults to 1s; 0 is the resolved ReadTimeout + 1s. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                   },
                   "ReadTimeout": {
                     "type": "string",
-                    "description": "is the read timeout. It defaults to 500ms; 0 leaves it to go-redis (5s).（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                    "description": "is the read timeout. It defaults to 500ms; 0 leaves it to go-redis (5s). (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                   },
                   "SlowThreshold": {
                     "type": "string",
-                    "description": "records one warn line for a command (or pipeline) taking longer than this. It defaults to 100ms, requires Log, and 0 records nothing.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                    "description": "records one warn line for a command (or pipeline) taking longer than this. It defaults to 100ms, requires Log, and 0 records nothing. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                   },
                   "TLS": {
                     "type": "object",
@@ -1793,7 +1793,7 @@
                   },
                   "WriteTimeout": {
                     "type": "string",
-                    "description": "is the write timeout. It defaults to 500ms; 0 follows the resolved ReadTimeout.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+                    "description": "is the write timeout. It defaults to 500ms; 0 follows the resolved ReadTimeout. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                   }
                 },
                 "additionalProperties": false
@@ -1876,7 +1876,7 @@
         },
         "ShutdownTimeout": {
           "type": "string",
-          "description": "is the upper bound on waiting for Spans to be exported during shutdown. It defaults to 5s and must be greater than 0. There has to be an upper bound: with the export endpoint unreachable, Shutdown blocks forever, and without a deadline that is a hang on exit. Likewise, 0 does not mean \"no limit\" but \"do not wait at all\": Shutdown receives an already expired context, and the Spans still in the buffer are dropped outright.（时长，写成 30s / 1500ms / 1h30m 这种形式；写裸数字会启动失败）"
+          "description": "is the upper bound on waiting for Spans to be exported during shutdown. It defaults to 5s and must be greater than 0. There has to be an upper bound: with the export endpoint unreachable, Shutdown blocks forever, and without a deadline that is a hang on exit. Likewise, 0 does not mean \"no limit\" but \"do not wait at all\": Shutdown receives an already expired context, and the Spans still in the buffer are dropped outright. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
         }
       },
       "additionalProperties": false
