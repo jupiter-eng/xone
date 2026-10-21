@@ -1,28 +1,32 @@
 package e2e
 
-// 故障端到端测试：TestFault_* 系列。
+// The fault end-to-end tests: the TestFault_* family.
 //
 //	scripts/e2e.sh -run Fault
 //
-// 故障一律经 harness 的 TCP 代理注入，不去停真实的 PG / Redis：
+// Every fault is injected through the harness's TCP proxy, and the real PG / Redis is never
+// stopped:
 //
-//	Proxy.Cut()        进程挂了：现有连接断开，新连接 connection refused
-//	Proxy.Blackhole()  主机宕机：现有连接不再回话，新连接的 SYN 没有回音
-//	Proxy.SetDelay(d)  对端变慢；time.Hour 就是「连得上、但一个字节都不回」
+//	Proxy.Cut()        the process died: the connections open are broken and a new one is refused
+//	Proxy.Blackhole()  the host is down: the connections open answer nothing and a new one's SYN is never answered
+//	Proxy.SetDelay(d)  the far end slows down; time.Hour is "it connects and not a byte comes back"
 //
-// 断言对照 README.md / docs/architecture.md / docs/config.md / 各模块 README 写下的行为，失败信息写成「文档说 X，实际 Y」；
-// 文档没写死的数（比如「恢复要多久」）只量、不卡，打在 t.Logf 里。
-// 数字都以「数字：」开头，方便从 -v 的输出里 grep。
+// The assertions follow the behavior written down in README.md / docs/architecture.md /
+// docs/config.md / each module's README, and a failure message reads "the documentation says X,
+// got Y"; a number the documentation does not pin down (how long a recovery takes, say) is
+// measured and not asserted, and printed with t.Logf.
+// Every number carries a "numbers:" prefix, to grep out of a -v run.
 //
-// 文件划分：
+// How the files divide up:
 //
-//	fault_test.go             本文件：共用的小工具，运行中切断 Redis / PG
-//	fault_timeout_test.go     go-redis / gorm 的超时听不听调用方的 ctx、听不听配置
-//	fault_downstream_test.go  下游慢、下游报错时 xhttp 的超时与重试
-//	fault_startup_test.go     启动时依赖不可达、密码错、DSN 写错
+//	fault_test.go             this file: the shared helpers, and Redis / PG cut off while running
+//	fault_timeout_test.go     whether go-redis / gorm timeouts honor the caller's ctx and the configuration
+//	fault_downstream_test.go  xhttp's timeout and retries with a slow or failing downstream
+//	fault_startup_test.go     a dependency unreachable at the start, a wrong password, a malformed DSN
 //
-// 耗时的余量：本机（4 核）上故障路径的耗时由超时决定，抖动在几毫秒到几十毫秒；
-// 断言的上限在文档推出来的数上统一加 faultSlack，理由见它的注释。
+// The slack on the timings: on this machine (4 cores) the time a fault path takes is decided by the
+// timeouts, and the jitter is a few to a few dozen milliseconds; the asserted upper bounds add
+// faultSlack to the number the documentation implies, for the reason in its comment.
 
 import (
 	"context"
@@ -39,53 +43,59 @@ import (
 	"github.com/jupiter-eng/xone/e2e/harness"
 )
 
-// faultSlack 文档推出来的时长上限之外再给的余量。
+// faultSlack is the slack added on top of the upper bound the documentation implies.
 //
-// 被测的耗时由超时决定（几百毫秒到几秒），本机实测它们比超时多出来的部分
-// 在 1–30ms（全部 TestFault 并行、-count=3）。给到 300ms，是量出来的十倍，
-// 又远小于任何一条被测的超时，不会把「超时没生效」放过去
+// What is measured is decided by the timeouts (hundreds of milliseconds to seconds), and measured
+// here, what they take beyond their timeout is 1 to 30ms (every TestFault in parallel, -count=3).
+// 300ms is ten times that and still far under every timeout under test, so it lets no "the timeout
+// did not take" through
 const faultSlack = 300 * time.Millisecond
 
-// faultUnaffected 「不碰出故障的依赖，照常而且快」的上限。
+// faultUnaffected is the upper bound of "it does not touch the broken dependency, works as usual
+// and is fast".
 //
-// 这些请求实测 1–5ms（全部 TestFault 并行）。出故障的依赖真把它们拖住的话，
-// 拖的是一次超时，被测的超时里最短的是 500ms（XRedis.DialTimeout / ReadTimeout、XGorm.DialTimeout）。
-// 给到 400ms：比量出来的大两个数量级，服务带 -race、机器满载也够，又仍短于最短的那个超时
+// These requests measured 1 to 5ms (every TestFault in parallel). Were the broken dependency really
+// to hold them up, it would hold them for a timeout, and the shortest timeout under test is 500ms
+// (XRedis.DialTimeout / ReadTimeout, XGorm.DialTimeout).
+// 400ms is two orders of magnitude over what was measured, enough for a service with -race on a
+// loaded machine, and still shorter than the shortest of those timeouts
 const faultUnaffected = 400 * time.Millisecond
 
-// xredis/README.md XRedis 的默认值；service/application.yml 没改这几项
+// The defaults of XRedis in xredis/README.md; service/application.yml changes none of them
 const (
 	faultRedisDialTimeout     = 500 * time.Millisecond
 	faultRedisReadTimeout     = 500 * time.Millisecond
-	faultRedisMaxRetries      = 3           // 「MaxRetries: 0 交给 go-redis（3 次）」
-	faultRedisMaxRetryBackoff = time.Second // 「MaxRetryBackoff: 0 交给 go-redis（1s）」
+	faultRedisMaxRetries      = 3           // "MaxRetries: 0 leaves it to go-redis (3 times)"
+	faultRedisMaxRetryBackoff = time.Second // "MaxRetryBackoff: 0 leaves it to go-redis (1s)"
 )
 
-// faultRedisAttemptBudget 一次尝试的上限：建连加一个往返。
-// 这是 xredis 自己的模型——xredis.go 的 pingTimeout 就是这么算的（DialTimeout + ReadTimeout）
+// faultRedisAttemptBudget is the upper bound of one attempt: a connect plus one round trip.
+// That is xredis's own model -- pingTimeout in xredis.go is worked out exactly this way
+// (DialTimeout + ReadTimeout)
 const faultRedisAttemptBudget = faultRedisDialTimeout + faultRedisReadTimeout
 
-// faultRedisCmdBudget 按文档的默认值推出来的一条命令最多要多久：
-// MaxRetries+1 次尝试，每次不超过 faultRedisAttemptBudget，两次之间的退避不超过 MaxRetryBackoff
+// faultRedisCmdBudget is how long one command takes at most, following the documented defaults:
+// MaxRetries+1 attempts, each under faultRedisAttemptBudget, with a backoff between two of them
+// under MaxRetryBackoff
 const faultRedisCmdBudget = (faultRedisMaxRetries+1)*faultRedisAttemptBudget + faultRedisMaxRetries*faultRedisMaxRetryBackoff // 7s
 
-// faultDepResult GET /dep 的结果
+// faultDepResult is the result of a GET /dep
 type faultDepResult struct {
 	Status int
-	Took   time.Duration // 客户端量的整个请求
-	Server time.Duration // handler 里量的那一下依赖操作
-	Error  string        // 依赖操作的错误
-	ReqErr error         // 请求本身没完成（客户端到点放弃）时非 nil
+	Took   time.Duration // the whole request, measured by the client
+	Server time.Duration // the one dependency operation, measured inside the handler
+	Error  string        // the dependency operation's error
+	ReqErr error         // non-nil when the request itself did not finish (the client gave up at its deadline)
 }
 
 func (r faultDepResult) String() string {
 	if r.ReqErr != nil {
-		return fmt.Sprintf("请求 %v 后放弃：%v", r.Took.Round(time.Millisecond), r.ReqErr)
+		return fmt.Sprintf("the request gave up after %v: %v", r.Took.Round(time.Millisecond), r.ReqErr)
 	}
-	return fmt.Sprintf("status=%d 用时 %v（依赖操作 %v）error=%q", r.Status, r.Took.Round(time.Millisecond), r.Server.Round(time.Millisecond), r.Error)
+	return fmt.Sprintf("status=%d took %v (the dependency operation %v) error=%q", r.Status, r.Took.Round(time.Millisecond), r.Server.Round(time.Millisecond), r.Error)
 }
 
-// faultDep 调 GET /dep?target=...[&timeout=...]，客户端最多等 wait。不带 t，哪个协程里都能调
+// faultDep calls GET /dep?target=...[&timeout=...] with the client waiting wait at most. It takes no t and can be called from any goroutine
 func faultDep(p *harness.Process, target, timeout string, wait time.Duration) faultDepResult {
 	path := "/dep?target=" + target
 	if timeout != "" {
@@ -108,7 +118,7 @@ func faultDep(p *harness.Process, target, timeout string, wait time.Duration) fa
 	return res
 }
 
-// faultTimed 发一个请求并计时，失败时 t.Fatal
+// faultTimed sends one request and times it, and t.Fatals when it fails
 func faultTimed(t *testing.T, p *harness.Process, method, path string, body any) (harness.Response, time.Duration) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
@@ -117,12 +127,12 @@ func faultTimed(t *testing.T, p *harness.Process, method, path string, body any)
 	r, err := p.Request(ctx, method, path, body)
 	took := time.Since(start)
 	if err != nil {
-		t.Fatalf("%s %s 在 %v 后仍没有返回：%v", method, path, took, err)
+		t.Fatalf("%s %s had still not returned after %v: %v", method, path, took, err)
 	}
 	return r, took
 }
 
-// faultWaitRecover 反复探一个依赖，直到它回 200，返回用了多久；limit 内没恢复就 t.Fatal
+// faultWaitRecover probes one dependency until it answers 200 and returns how long that took; it t.Fatals when it has not recovered within limit
 func faultWaitRecover(t *testing.T, p *harness.Process, target string, limit time.Duration) (time.Duration, int) {
 	t.Helper()
 	start := time.Now()
@@ -132,32 +142,33 @@ func faultWaitRecover(t *testing.T, p *harness.Process, target string, limit tim
 			return time.Since(start), n
 		}
 		if time.Since(start) > limit {
-			t.Fatalf("故障恢复之后 %v 内 %s 仍不可用（第 %d 次探测：%v）", limit, target, n, r)
+			t.Fatalf("%s was still unavailable %v after the fault was lifted (probe %d: %v)", target, limit, n, r)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 }
 
-// faultMS 毫秒，保留一位小数
+// faultMS is milliseconds with one decimal
 func faultMS(d time.Duration) string { return fmt.Sprintf("%.1fms", float64(d.Microseconds())/1000) }
 
-// faultSummary 一组耗时的最小 / 中位 / 最大
+// faultSummary is the min / median / max of a set of timings
 func faultSummary(ds []time.Duration) string {
 	if len(ds) == 0 {
-		return "（无）"
+		return "(none)"
 	}
 	s := append([]time.Duration(nil), ds...)
 	sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
 	return fmt.Sprintf("n=%d min=%s p50=%s max=%s", len(s), faultMS(s[0]), faultMS(s[len(s)/2]), faultMS(s[len(s)-1]))
 }
 
-// faultGoRedisLogLine go-redis 自带的 logger（internal.Logger，标准库 log 的格式）写出来的一行
+// faultGoRedisLogLine is a line written by go-redis's own logger (internal.Logger, in the standard library log's format)
 var faultGoRedisLogLine = regexp.MustCompile(`(?m)^redis: \d{4}/\d{2}/\d{2} .*$`)
 
-// faultRedisACLUser 在 Redis 上建一个带密码的 ACL 用户，测试结束时删掉。
+// faultRedisACLUser creates an ACL user with a password on Redis and deletes it when the test ends.
 //
-// 本机的 Redis 没有设密码，直接给 xredis 配 Password 会在 AUTH 时被拒；
-// 建一个专用的 ACL 用户，才测得到「密码不进日志」。用户名带随机后缀，并行不冲突
+// The Redis on this host has no password, so configuring a Password for xredis would be refused at
+// the AUTH; an ACL user of its own is what makes "the password stays out of the logs" testable. The
+// user name carries a random suffix, so running in parallel does not collide
 func faultRedisACLUser(t *testing.T) (name, password string) {
 	t.Helper()
 	rc := harness.Redis(t)
@@ -167,7 +178,7 @@ func faultRedisACLUser(t *testing.T) (name, password string) {
 	if err := rc.Do(ctx, "ACL", "SETUSER", name, "on", ">"+password, "~*", "&*", "+@all").Err(); err != nil {
 		t.Fatalf("create redis ACL user: %v", err)
 	}
-	t.Cleanup(func() { // 比 rc 的关闭登记得晚，所以先跑，rc 还开着
+	t.Cleanup(func() { // registered after rc's close, so it runs first while rc is still open
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := rc.Do(ctx, "ACL", "DELUSER", name).Err(); err != nil {
@@ -177,7 +188,7 @@ func faultRedisACLUser(t *testing.T) (name, password string) {
 	return name, password
 }
 
-// faultBurst 并发发 n 个同样的 /dep 请求，返回各自的结果
+// faultBurst sends n identical /dep requests concurrently and returns each one's result
 func faultBurst(p *harness.Process, n int, target string, wait time.Duration) []faultDepResult {
 	out := make([]faultDepResult, n)
 	var wg sync.WaitGroup
@@ -192,27 +203,30 @@ func faultBurst(p *harness.Process, n int, target string, wait time.Duration) []
 	return out
 }
 
-// faultQuick 断言一个不碰故障依赖的请求照常返回，而且快
+// faultQuick asserts that a request not touching the broken dependency answers as usual, and fast
 func faultQuick(t *testing.T, p *harness.Process, what, path string, want int) harness.Response {
 	t.Helper()
 	r, took := faultTimed(t, p, http.MethodGet, path, nil)
 	if r.Status != want {
-		t.Errorf("%s 不碰出故障的依赖，应照常回 %d，实际 %v", what, want, r)
+		t.Errorf("%s does not touch the broken dependency and should answer %d as usual, got %v", what, want, r)
 	}
 	if took > faultUnaffected {
-		t.Errorf("%s 不碰出故障的依赖，应该不受影响（< %v），实际用了 %v", what, faultUnaffected, took)
+		t.Errorf("%s does not touch the broken dependency and should be unaffected (< %v), and it took %v", what, faultUnaffected, took)
 	}
-	t.Logf("数字：故障期间 %s 用了 %s", what, faultMS(took))
+	t.Logf("numbers: %s took %s during the fault", what, faultMS(took))
 	return r
 }
 
-// 运行中 Redis 进程挂了（端口拒绝连接）：
+// The Redis process dies while running (the port refuses connections):
 //
-//   - 用到 Redis 的一下操作在文档推出来的预算（faultRedisCmdBudget）内报错，不挂住；并发地打也一样
-//   - 三级读降级到 PG（service/users.go：Redis 出错记 WARN，降级到 PG），下单在扣款那一步失败并回滚
-//   - 不碰 Redis 的接口不受影响：/ping、?cache=off、本地缓存命中
-//   - Redis 回来之后不用重启就恢复
-//   - 全程的输出里没有 Redis 的密码（xredis/README.md XRedis.Password：「本模块不会把它写进任何日志」）
+//   - an operation using Redis fails within the budget the documentation implies
+//     (faultRedisCmdBudget) and does not hang; the same holds under concurrency
+//   - the three-level read falls back to PG (service/users.go: a Redis error records a WARN and
+//     falls back to PG), and placing an order fails at the charge step and rolls back
+//   - the endpoints that do not touch Redis are unaffected: /ping, ?cache=off, a local cache hit
+//   - once Redis is back it recovers without a restart
+//   - the Redis password appears nowhere in the output (xredis/README.md, XRedis.Password: "this
+//     module writes it into no log at all")
 func TestFault_RedisRefusedAtRuntime_ErrsInBudget_ReadsFallBackToPG_Recovers(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -224,75 +238,75 @@ func TestFault_RedisRefusedAtRuntime_ErrsInBudget_ReadsFallBackToPG_Recovers(t *
 	})
 
 	cached := createUser(t, p, "cached", "cached@example.com")
-	getUser(t, p, cached.ID) // db → 写进本地缓存和 Redis
+	getUser(t, p, cached.ID) // db -> written into the local cache and into Redis
 	if u, _, _ := getUser(t, p, cached.ID); u.Source != "local" {
-		t.Fatalf("故障前第二次读应命中本地缓存，实际 source=%s", u.Source)
+		t.Fatalf("the second read before the fault should hit the local cache, got source=%s", u.Source)
 	}
-	cold := createUser(t, p, "cold", "cold@example.com") // 还没读过：两级缓存里都没有
+	cold := createUser(t, p, "cold", "cold@example.com") // never read: in neither cache level
 	if r := faultDep(p, "redis", "", 10*time.Second); r.Status != http.StatusOK {
-		t.Fatalf("故障前 Redis 应该是好的：%v", r)
+		t.Fatalf("Redis should be fine before the fault: %v", r)
 	}
 
 	rp.Cut()
 
-	t.Run("用到Redis的操作在预算内报错", func(t *testing.T) {
+	t.Run("an operation using Redis fails within the budget", func(t *testing.T) {
 		var took []time.Duration
 		for i := range 8 {
 			r := faultDep(p, "redis", "", 2*faultRedisCmdBudget)
 			if r.ReqErr != nil || r.Status != http.StatusServiceUnavailable {
-				t.Fatalf("第 %d 次：Redis 拒绝连接时 /dep 应回 503，实际 %v", i+1, r)
+				t.Fatalf("attempt %d: /dep should answer 503 while Redis refuses connections, got %v", i+1, r)
 			}
 			if !strings.Contains(r.Error, "connection refused") {
-				t.Errorf("第 %d 次：错误应说清是连接被拒，实际 %q", i+1, r.Error)
+				t.Errorf("attempt %d: the error should say the connection was refused, got %q", i+1, r.Error)
 			}
 			if r.Server > faultRedisCmdBudget+faultSlack {
-				t.Errorf("第 %d 次：按文档的默认值一条命令最多 %v（(MaxRetries+1)×(DialTimeout+ReadTimeout)+MaxRetries×MaxRetryBackoff），实际 %v",
+				t.Errorf("attempt %d: by the documented defaults one command takes %v at most ((MaxRetries+1)x(DialTimeout+ReadTimeout)+MaxRetriesxMaxRetryBackoff), got %v",
 					i+1, faultRedisCmdBudget, r.Server)
 			}
 			took = append(took, r.Server)
 		}
-		// 实测 70–150ms（两轮），全是命令级重试的退避：xredis 把 DialerRetries 配成 1，拒绝连接时建连当场失败。
-		// 从前 go-redis 默认每次建连内部重拨 5 次、间隔 100ms，前两次命令要 1.69–1.74s
-		t.Logf("数字：Redis 拒绝连接时一条命令依次用了 %v；%s（预算 %v）", took, faultSummary(took), faultRedisCmdBudget)
+		// Measured at 70 to 150ms (two rounds), all of it the command-level retry backoff: xredis sets DialerRetries to 1, so a connect fails there and then when connections are refused.
+		// go-redis used to redial 5 times inside every connect, 100ms apart, which made the first two commands take 1.69 to 1.74s
+		t.Logf("numbers: one command took %v in turn while Redis refused connections; %s (the budget being %v)", took, faultSummary(took), faultRedisCmdBudget)
 
 		burst := faultBurst(p, 20, "redis", 2*faultRedisCmdBudget)
 		var bt []time.Duration
 		for i, r := range burst {
 			if r.ReqErr != nil || r.Status != http.StatusServiceUnavailable || r.Server > faultRedisCmdBudget+faultSlack {
-				t.Errorf("并发第 %d 个：应在 %v 内回 503，实际 %v", i, faultRedisCmdBudget, r)
+				t.Errorf("concurrent request %d: it should answer 503 within %v, got %v", i, faultRedisCmdBudget, r)
 			}
 			bt = append(bt, r.Took)
 		}
-		t.Logf("数字：20 个并发 /dep?target=redis：%s", faultSummary(bt))
+		t.Logf("numbers: 20 concurrent /dep?target=redis: %s", faultSummary(bt))
 	})
 
-	t.Run("三级读降级到PG_下单失败并回滚", func(t *testing.T) {
+	t.Run("the three-level read falls back to PG and the order fails and rolls back", func(t *testing.T) {
 		r, took := faultTimed(t, p, http.MethodGet, fmt.Sprintf("/users/%d", cold.ID), nil)
 		var u user
 		r.JSON(t, &u)
 		if r.Status != http.StatusOK || u.Source != "db" || u.Name != "cold" {
-			t.Errorf("Redis 出错时读用户应降级到 PG（200，source=db），实际 %v", r)
+			t.Errorf("a read of a user should fall back to PG when Redis fails (200, source=db), got %v", r)
 		}
-		// GET 和回填的 SET 各碰一次 Redis
+		// The GET and the SET that fills it back in each touch Redis once
 		if took > 2*faultRedisCmdBudget+faultSlack {
-			t.Errorf("一次三级读碰两次 Redis，按文档最多 %v，实际 %v", 2*faultRedisCmdBudget, took)
+			t.Errorf("one three-level read touches Redis twice, which the documentation puts at %v at most, got %v", 2*faultRedisCmdBudget, took)
 		}
 		trace := traceIDOf(t, r)
 		warn, ok := p.LookForLog(waitFor, func(l harness.Log) bool {
 			return l.Msg() == "redis read failed, falling back to the database" && l.Str("trace_id") == trace
 		})
 		if !ok {
-			t.Fatalf("降级时应记一条带这个请求 trace_id（%s）的 WARN（redis read failed, falling back to the database），%v 内没有；同名消息 %d 条",
+			t.Fatalf("falling back should record one WARN carrying this request's trace_id (%s) (redis read failed, falling back to the database), and there is none within %v; there are %d lines with that message",
 				trace, waitFor, len(p.FindLogs(func(l harness.Log) bool { return l.Msg() == "redis read failed, falling back to the database" })))
 		}
 		if warn.Level() != "WARN" {
-			t.Errorf("降级应记 WARN，实际 %s：%s", warn.Level(), warn.Line)
+			t.Errorf("falling back should record a WARN, got %s: %s", warn.Level(), warn.Line)
 		}
-		t.Logf("数字：Redis 拒绝连接时一次降级读用了 %s", faultMS(took))
+		t.Logf("numbers: one falling-back read took %s while Redis refused connections", faultMS(took))
 
 		r, took = faultTimed(t, p, http.MethodPost, "/orders", map[string]any{"user_id": cold.ID, "amount": 7})
 		if r.Status != http.StatusInternalServerError {
-			t.Fatalf("Redis 不可用时下单（第 2 步写 Redis）应失败 500，实际 %v", r)
+			t.Fatalf("placing an order (whose step 2 writes Redis) should fail with 500 while Redis is unavailable, got %v", r)
 		}
 		var o struct {
 			ID     string `json:"id"`
@@ -301,131 +315,135 @@ func TestFault_RedisRefusedAtRuntime_ErrsInBudget_ReadsFallBackToPG_Recovers(t *
 		}
 		r.JSON(t, &o)
 		if !strings.Contains(o.Error, `step "charge"`) || !o.Rolled {
-			t.Errorf("应在 charge 这一步失败、回滚已做完的 create，实际 %v", r)
+			t.Errorf("it should fail at the charge step and roll the create that was done back, got %v", r)
 		}
 		if st := orderStatus(t, harness.DB(t), p, o.ID); st != "" {
-			t.Errorf("回滚之后 PG 里不该还有这张订单，实际 status=%q", st)
+			t.Errorf("after the rollback PG should hold no such order, got status=%q", st)
 		}
 		if took > faultRedisCmdBudget+faultSlack {
-			t.Errorf("下单只碰一次 Redis，按文档最多 %v，实际 %v", faultRedisCmdBudget, took)
+			t.Errorf("placing an order touches Redis once, which the documentation puts at %v at most, got %v", faultRedisCmdBudget, took)
 		}
-		t.Logf("数字：Redis 拒绝连接时一次下单（失败 + 回滚）用了 %s", faultMS(took))
+		t.Logf("numbers: one order (failing and rolling back) took %s while Redis refused connections", faultMS(took))
 	})
 
-	t.Run("不碰Redis的接口不受影响", func(t *testing.T) {
+	t.Run("the endpoints that do not touch Redis are unaffected", func(t *testing.T) {
 		faultQuick(t, p, "GET /ping", "/ping", http.StatusOK)
-		faultQuick(t, p, "GET /users/:id?cache=off（只读 PG）", fmt.Sprintf("/users/%d?cache=off", cold.ID), http.StatusOK)
+		faultQuick(t, p, "GET /users/:id?cache=off (PG alone)", fmt.Sprintf("/users/%d?cache=off", cold.ID), http.StatusOK)
 		var u user
-		faultQuick(t, p, "GET /users/:id（本地缓存命中）", fmt.Sprintf("/users/%d", cached.ID), http.StatusOK).JSON(t, &u)
+		faultQuick(t, p, "GET /users/:id (a local cache hit)", fmt.Sprintf("/users/%d", cached.ID), http.StatusOK).JSON(t, &u)
 		if u.Source != "local" {
-			t.Errorf("本地缓存里有的用户应直接命中 local，实际 source=%s", u.Source)
+			t.Errorf("a user the local cache holds should hit local outright, got source=%s", u.Source)
 		}
 	})
 
-	t.Run("Redis回来之后自动恢复", func(t *testing.T) {
+	t.Run("it recovers by itself once Redis is back", func(t *testing.T) {
 		rp.Restore()
 		took, n := faultWaitRecover(t, p, "redis", 10*time.Second)
-		t.Logf("数字：Redis 恢复监听之后 %s（第 %d 次探测）/dep 回到 200", faultMS(took), n)
+		t.Logf("numbers: /dep was back to 200 %s after Redis started listening again (probe %d)", faultMS(took), n)
 
 		fresh := createUser(t, p, "after", "after@example.com")
 		if u, _, _ := getUser(t, p, fresh.ID); u.Source != "db" {
-			t.Errorf("恢复后第一次读应落到 PG，实际 source=%s", u.Source)
+			t.Errorf("the first read after the recovery should reach PG, got source=%s", u.Source)
 		}
-		// 回填 Redis 成功：直连 Redis 看得到这个 key
+		// Filling Redis back in succeeded: Redis read directly holds this key
 		key := p.KeyPrefix + "user:" + fmt.Sprint(fresh.ID)
 		if n, err := harness.Redis(t).Exists(context.Background(), key).Result(); err != nil || n != 1 {
-			t.Errorf("恢复后三级读应把用户回填进 Redis（%s），实际 exists=%d err=%v", key, n, err)
+			t.Errorf("after the recovery a three-level read should fill the user back into Redis (%s), got exists=%d err=%v", key, n, err)
 		}
 		if r := p.PostJSON(t, "/orders", map[string]any{"user_id": fresh.ID, "amount": 1}); r.Status != http.StatusCreated {
-			t.Errorf("恢复后下单应成功，实际 %v", r)
+			t.Errorf("placing an order should succeed after the recovery, got %v", r)
 		}
 	})
 
-	t.Run("输出里没有Redis密码", func(t *testing.T) {
+	t.Run("the Redis password is not in the output", func(t *testing.T) {
 		exit := p.Terminate(t, 20*time.Second)
 		if exit.Code != 0 {
-			t.Errorf("SIGTERM 之后应以 0 退出，实际 %v", exit)
+			t.Errorf("it should exit with 0 after the SIGTERM, got %v", exit)
 		}
 		out := p.Output()
-		mustNotContain(t, "进程的 stdout / stderr", out, pw)
+		mustNotContain(t, "the process's stdout / stderr", out, pw)
 		if !strings.Contains(out, "connection refused") {
-			t.Errorf("这一圈应该在日志里留下过 connection refused，一条都没有：核对范围不够")
+			t.Errorf("this round should have left a connection refused in the log and there is not one: the check does not cover enough")
 		}
-		t.Logf("数字：核对了 %d 字节输出", len(out))
+		t.Logf("numbers: checked %d bytes of output", len(out))
 	})
 
-	// docs/behavior.md「总表」：GORM 默认的 stdout logger、resty 写 stderr 的 logger
-	// 都被接回了 slog，理由是「绕开 slog 的日志进不了日志平台」。go-redis 的 internal.Logger
-	// 是同一类东西：xredis 在 init 里用 redis.SetLogger 接到 slog，消息是 xredis go-redis log、
-	// 级别 WARN（xredis/README.md XRedis）。这一圈 Redis 拒绝连接，go-redis 每次建连失败都记一句
-	// failed to dial。trace_id 不断言：xredis/README.md 写明了建连在 go-redis 自己的协程里、
-	// 用它自己的 context.Background()，这类日志带不上请求的 trace_id（实测 45 条一条都没有）
-	t.Run("go-redis自己的日志也走slog", func(t *testing.T) {
+	// The summary table in docs/behavior.md: GORM's default stdout logger and resty's logger that
+	// writes to stderr are both wired back into slog, for the reason that "a log that goes around
+	// slog never reaches the logging platform". go-redis's internal.Logger is the same kind of
+	// thing: xredis wires it into slog with redis.SetLogger in init, with the message xredis
+	// go-redis log at WARN (xredis/README.md, XRedis). Redis refuses connections in this round, so
+	// go-redis records a failed to dial on every failed connect. trace_id is not asserted:
+	// xredis/README.md writes down that a connect happens on go-redis's own goroutine with its own
+	// context.Background(), so such a log line cannot carry the request's trace_id (measured: not
+	// one of 45 lines did)
+	t.Run("go-redis's own log goes through slog as well", func(t *testing.T) {
 		lines := faultGoRedisLogLine.FindAllString(p.Stderr(), -1)
 		if len(lines) > 0 {
-			t.Errorf("go-redis 自己的日志应进 slog，实际 stderr 里有 %d 行纯文本，例：%s", len(lines), lines[0])
+			t.Errorf("go-redis's own log should reach slog, and stderr holds %d lines of plain text, for instance: %s", len(lines), lines[0])
 		}
 		logs := p.FindLogs(func(l harness.Log) bool { return l.Msg() == "xredis go-redis log" })
 		if len(logs) == 0 {
-			t.Fatalf("Redis 拒绝连接时 go-redis 会记 failed to dial，slog 里应当有 xredis go-redis log，一条都没有")
+			t.Fatalf("go-redis records a failed to dial while Redis refuses connections, so slog should hold an xredis go-redis log, and there is not one")
 		}
 		traced := 0
 		for _, l := range logs {
 			if l.Level() != "WARN" {
-				t.Errorf("go-redis 的日志应记成 WARN，实际 %s", l.Line)
+				t.Errorf("go-redis's log should be recorded at WARN, got %s", l.Line)
 			}
 			if l.Str("trace_id") != "" {
 				traced++
 			}
 		}
-		t.Logf("数字：slog 里有 %d 条 go-redis 自己的日志，%d 条带 trace_id；例：%s", len(logs), traced, logs[0].Line)
+		t.Logf("numbers: slog holds %d of go-redis's own log lines, %d of them with a trace_id; for instance: %s", len(logs), traced, logs[0].Line)
 	})
 }
 
-// 运行中 PG 进程挂了（端口拒绝连接）：
+// The PG process dies while running (the port refuses connections):
 //
-//   - 用到 PG 的操作当场报错（新连接被拒不需要等任何超时），错误里有地址、没有密码
-//   - 不碰 PG 的接口不受影响：/ping、Redis、本地缓存命中
-//   - PG 回来之后不用重启就恢复
+//   - an operation using PG fails there and then (a refused connection waits for no timeout), with
+//     the address in the error and no password
+//   - the endpoints that do not touch PG are unaffected: /ping, Redis, a local cache hit
+//   - once PG is back it recovers without a restart
 func TestFault_PGRefusedAtRuntime_FailsFast_OthersUnaffected_Recovers(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
 	pw := pgPassword(t)
 	pg := harness.NewProxy(t, harness.PGAddr())
-	// DialTimeout 从默认的 500ms 调到 2s：「被拒不等超时」的上限取 1s，离实测（几毫秒）
-	// 和反例（等满一次 DialTimeout）都远。上限贴着 500ms 的话，满载的机器上会误报
+	// DialTimeout is raised from the default 500ms to 2s: the bound of "a refusal waits for no timeout" is 1s, which is far
+	// from both what was measured (milliseconds) and the counterexample (waiting out one DialTimeout). A bound hugging 500ms would misfire on a loaded machine
 	p := harness.Start(t, harness.Options{PGAddr: pg.Addr(), Overlay: "XGorm:\n  Clients:\n    default:\n      DialTimeout: 2s\n"})
 
 	cached := createUser(t, p, "cached", "cached@example.com")
 	getUser(t, p, cached.ID)
 	if u, _, _ := getUser(t, p, cached.ID); u.Source != "local" {
-		t.Fatalf("故障前第二次读应命中本地缓存，实际 source=%s", u.Source)
+		t.Fatalf("the second read before the fault should hit the local cache, got source=%s", u.Source)
 	}
 
 	pg.Cut()
 
-	t.Run("用到PG的操作当场报错", func(t *testing.T) {
+	t.Run("an operation using PG fails there and then", func(t *testing.T) {
 		var took []time.Duration
 		for i := range 5 {
 			r := faultDep(p, "db", "", 30*time.Second)
 			if r.ReqErr != nil || r.Status != http.StatusServiceUnavailable {
-				t.Fatalf("第 %d 次：PG 拒绝连接时 /dep?target=db 应回 503，实际 %v", i+1, r)
+				t.Fatalf("attempt %d: /dep?target=db should answer 503 while PG refuses connections, got %v", i+1, r)
 			}
 			if !strings.Contains(r.Error, "connection refused") || !strings.Contains(r.Error, pg.Addr()) {
-				t.Errorf("第 %d 次：错误应说清连不上哪（%s，connection refused），实际 %q", i+1, pg.Addr(), r.Error)
+				t.Errorf("attempt %d: the error should say what it cannot reach (%s, connection refused), got %q", i+1, pg.Addr(), r.Error)
 			}
-			// 连接被拒是立即的：database/sql 丢掉坏连接重拨，pgx 拨号立刻失败，没有要等的超时。
-			// 上限给 DialTimeout（上面调成了 2s）的一半：真等了哪怕一次超时也会超过它
+			// A refused connection is immediate: database/sql drops the broken connection and redials, pgx's dial fails at once and there is no timeout to wait out.
+			// The bound is half of DialTimeout (raised to 2s above): waiting out even one timeout would pass it
 			if r.Server > time.Second {
-				t.Errorf("第 %d 次：新连接被拒不该等任何超时，实际 %v", i+1, r.Server)
+				t.Errorf("attempt %d: a refused connection should wait for no timeout, got %v", i+1, r.Server)
 			}
 			took = append(took, r.Server)
 		}
-		t.Logf("数字：PG 拒绝连接时 SELECT 1 依次用了 %v；%s", took, faultSummary(took))
+		t.Logf("numbers: SELECT 1 took %v in turn while PG refused connections; %s", took, faultSummary(took))
 
 		r, took2 := faultTimed(t, p, http.MethodPost, "/users", map[string]string{"name": "while-cut"})
 		if r.Status != http.StatusInternalServerError {
-			t.Errorf("PG 不可用时建用户应 500，实际 %v", r)
+			t.Errorf("creating a user should answer 500 while PG is unavailable, got %v", r)
 		}
 		r, took3 := faultTimed(t, p, http.MethodPost, "/orders", map[string]any{"user_id": cached.ID, "amount": 1})
 		var o struct {
@@ -434,41 +452,41 @@ func TestFault_PGRefusedAtRuntime_FailsFast_OthersUnaffected_Recovers(t *testing
 		}
 		r.JSON(t, &o)
 		if r.Status != http.StatusInternalServerError || !strings.Contains(o.Error, `step "create"`) || o.Rolled {
-			t.Errorf("PG 不可用时下单应在第 1 步失败、没有要回滚的，实际 %v", r)
+			t.Errorf("placing an order should fail at step 1 with nothing to roll back while PG is unavailable, got %v", r)
 		}
-		t.Logf("数字：PG 拒绝连接时 POST /users 用了 %s，POST /orders 用了 %s", faultMS(took2), faultMS(took3))
+		t.Logf("numbers: POST /users took %s and POST /orders took %s while PG refused connections", faultMS(took2), faultMS(took3))
 	})
 
-	t.Run("不碰PG的接口不受影响", func(t *testing.T) {
+	t.Run("the endpoints that do not touch PG are unaffected", func(t *testing.T) {
 		faultQuick(t, p, "GET /ping", "/ping", http.StatusOK)
 		faultQuick(t, p, "GET /dep?target=redis", "/dep?target=redis", http.StatusOK)
 		var u user
-		faultQuick(t, p, "GET /users/:id（本地缓存命中）", fmt.Sprintf("/users/%d", cached.ID), http.StatusOK).JSON(t, &u)
+		faultQuick(t, p, "GET /users/:id (a local cache hit)", fmt.Sprintf("/users/%d", cached.ID), http.StatusOK).JSON(t, &u)
 		if u.Source != "local" {
-			t.Errorf("本地缓存里有的用户应直接命中 local，实际 source=%s", u.Source)
+			t.Errorf("a user the local cache holds should hit local outright, got source=%s", u.Source)
 		}
 	})
 
-	t.Run("PG回来之后自动恢复", func(t *testing.T) {
+	t.Run("it recovers by itself once PG is back", func(t *testing.T) {
 		pg.Restore()
 		took, n := faultWaitRecover(t, p, "db", 10*time.Second)
-		t.Logf("数字：PG 恢复监听之后 %s（第 %d 次探测）SELECT 1 回到 200", faultMS(took), n)
+		t.Logf("numbers: SELECT 1 was back to 200 %s after PG started listening again (probe %d)", faultMS(took), n)
 		fresh := createUser(t, p, "after", "after@example.com")
 		if u, _, _ := getUser(t, p, fresh.ID); u.Source != "db" || u.Name != "after" {
-			t.Errorf("恢复后读写应照常，实际 %+v", u)
+			t.Errorf("reads and writes should work as usual after the recovery, got %+v", u)
 		}
 	})
 
-	t.Run("输出里没有PG密码", func(t *testing.T) {
+	t.Run("the PG password is not in the output", func(t *testing.T) {
 		exit := p.Terminate(t, 20*time.Second)
 		if exit.Code != 0 {
-			t.Errorf("SIGTERM 之后应以 0 退出，实际 %v", exit)
+			t.Errorf("it should exit with 0 after the SIGTERM, got %v", exit)
 		}
 		out := p.Output()
-		mustNotContain(t, "进程的 stdout / stderr", out, pw, harness.PGDSN(pg.Addr()))
+		mustNotContain(t, "the process's stdout / stderr", out, pw, harness.PGDSN(pg.Addr()))
 		if !strings.Contains(out, "connection refused") {
-			t.Errorf("这一圈应该在日志里留下过 connection refused，一条都没有：核对范围不够")
+			t.Errorf("this round should have left a connection refused in the log and there is not one: the check does not cover enough")
 		}
-		t.Logf("数字：核对了 %d 字节输出", len(out))
+		t.Logf("numbers: checked %d bytes of output", len(out))
 	})
 }

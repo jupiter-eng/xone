@@ -14,25 +14,32 @@ import (
 	"github.com/jupiter-eng/xone/e2e/harness"
 )
 
-// 优雅退出这一类：真的进程、真的信号、真的 PG / Redis。
-// 对照的承诺出自 docs/architecture.md「退出信号：从进程起步的第一毫秒就接管」「停止预算是一份」
-// 两节，和 xgin/README.md 里 XGin 的停止说明、xone.WithStopTimeout 的注释。
+// The graceful exit family: real processes, real signals, a real PG / Redis.
+// The promises they follow come from docs/architecture.md, "Exit signals: taken over from the
+// process's first millisecond" and "The stop budget is one", from the shutdown notes of XGin in
+// xgin/README.md, and from xone.WithStopTimeout's comment.
 
 // TestShutdown_SIGTERMUnderLoad_FinishesInFlight_RefusesNew_ExitsZero
 //
-// 文档的承诺（docs/architecture.md「停止预算是一份」、xgin/README.md XGin 一节）：
-//   - Stop 等在途请求做完，最多等到服务那一段预算（WithStopTimeout 的 2/3）；
-//   - 服务那一段（Stop + 等 Start 返回）结束之后才关数据库和缓存，在途请求摸不到已经关掉的连接池；
-//   - 整个退出流程在 WithStopTimeout 之内结束，服务自己按要求退出是 0。
+// What the documentation promises (docs/architecture.md, "The stop budget is one", and the XGin
+// section of xgin/README.md):
+//   - Stop waits for the requests in flight, up to the service's share of the budget
+//     (two thirds of WithStopTimeout);
+//   - the databases and the cache are closed only once the service's share (Stop plus waiting for
+//     Start to return) is over, so a request in flight never meets a pool that is already closed;
+//   - the whole shutdown is over within WithStopTimeout, and a service exiting as asked is 0.
 //
-// 在途请求是 xgin.Stop 自己等的（Shutdown 之后再等 handler 返回）：xgin 的 Start 在
-// Shutdown 一开始就返回了，所以这个用例测不到 Run 里「等 Start 返回」那一半，
-// 那一半见 TestShutdown_StartReturnsBeforeDBAndCacheClose。
+// The requests in flight are waited for by xgin.Stop itself (which waits for the handlers to
+// return after the Shutdown): xgin's Start returns as soon as the Shutdown begins, so this case
+// cannot test Run's half, "waiting for Start to return" -- that half is
+// TestShutdown_StartReturnsBeforeDBAndCacheClose.
 //
-// 流量：/slow?ms=300 ×16（看 ctx 的慢请求）、读 PG 的 GET /users/:id?cache=off ×4、
-// 写 PG 再删 Redis 的 PUT /users/:id ×2、不看 ctx 睡 300ms 再查库和 Redis 的 /stuck ×4。
-// 最后这一路是「资源关早了」最灵敏的探针：它在信号之后 300ms 才去碰 PG / Redis，
-// 框架要是没等 handler 返回就关了它们，它的日志里 db_error / redis_error 就不是 none。
+// The traffic: /slow?ms=300 x16 (slow requests that watch ctx), GET /users/:id?cache=off x4
+// (reading PG), PUT /users/:id x2 (writing PG and dropping Redis) and /stuck x4 (sleeping 300ms
+// without watching ctx and then querying the database and Redis).
+// That last lane is the most sensitive probe of "a resource was closed too early": it touches
+// PG / Redis 300ms after the signal, and were the framework to close them without waiting for the
+// handler to return, its log would carry a db_error / redis_error other than none.
 func TestShutdown_SIGTERMUnderLoad_FinishesInFlight_RefusesNew_ExitsZero(t *testing.T) {
 	harness.Require(t)
 	const budget = 5 * time.Second
@@ -57,7 +64,7 @@ func TestShutdown_SIGTERMUnderLoad_FinishesInFlight_RefusesNew_ExitsZero(t *test
 		}},
 		lane{name: "stuck-db", conc: 4, req: getReq(p.URL("/stuck?ms=300&db=1&redis=1"))},
 	)
-	// 先跑满一秒：每一路都有请求在途，连接池、缓存都热了
+	// Run at full tilt for a second first: every lane has requests in flight, and the pools and caches are warm
 	time.Sleep(time.Second)
 	gauges := p.Metrics(t)
 	slowInflight, stuckInflight := gauges.Sum("e2e_slow_inflight"), gauges.Sum("e2e_stuck_inflight")
@@ -73,18 +80,22 @@ func TestShutdown_SIGTERMUnderLoad_FinishesInFlight_RefusesNew_ExitsZero(t *test
 	probes := <-probesCh
 	shots := tr.stop()
 	if !ok {
-		t.Fatalf("文档说整个退出流程不超过 WithStopTimeout=%v，实际发出 SIGTERM %v 之后进程还活着", budget, budget+5*time.Second)
+		t.Fatalf("the documentation says the whole shutdown stays within WithStopTimeout=%v, and the process is still alive %v after the SIGTERM was sent", budget, budget+5*time.Second)
 	}
 
-	// ---- 信号那一刻的在途请求：每一个都拿到 200 ----
+	// ---- The requests in flight at the moment of the signal: every one of them gets a 200 ----
 	//
-	// guard：信号前最后这一小段发出的请求不算「已经开始」。net/http 的 Shutdown 一上来
-	// 就关掉空闲的长连接，客户端刚写进这种连接、服务端还没读到的请求，在服务端看来
-	// 根本没开始——客户端（GET 可重放）会换一条新连接重试，撞上已经关掉的监听，
-	// 拿到 connection refused。这是 net/http 的语义，不是框架的承诺，所以这一段
-	// 只要求「不挂住」，失败的个数单独打出来。信号从发出到 Shutdown 关掉监听和空闲连接
-	// 是毫秒级（第一次被拒的探测在信号后 5~6ms，探测每 5ms 一次），20ms 是它的几倍。
-	// 实测这 20ms 里每轮发出 150~170 个请求，一个都没失败过——竞态存在，只是很难撞上
+	// guard: the requests sent in the last stretch before the signal do not count as "already
+	// started". net/http's Shutdown closes the idle keep-alive connections right away, and a request
+	// the client has just written into such a connection that the server has not read yet never
+	// started as far as the server is concerned -- the client (a GET being replayable) takes a new
+	// connection and retries, meets the listener that is already closed, and gets a connection
+	// refused. That is net/http's semantics and no promise of the framework, so this stretch only
+	// has to "not hang", and the failures in it are printed separately. From the signal to Shutdown
+	// closing the listener and the idle connections is milliseconds (the first refused probe lands
+	// 5 to 6ms after the signal, with a probe every 5ms), and 20ms is several times that.
+	// Measured, 150 to 170 requests go out in those 20ms per round and not one has ever failed --
+	// the race is there, it is simply hard to hit
 	const guard = 20 * time.Millisecond
 	type laneStat struct{ pre, inflight, window, windowBad, post, postOK int }
 	stats := map[string]*laneStat{}
@@ -119,13 +130,13 @@ func TestShutdown_SIGTERMUnderLoad_FinishesInFlight_RefusesNew_ExitsZero(t *test
 			case ok:
 				st.postOK++
 			case s.err == nil:
-				// 信号之后被接下的（端口还没关的那一瞬间）也要照常做完
+				// One accepted after the signal (in the instant before the port closes) has to finish as usual too
 				postBad = append(postBad, s)
 			case len(postErrs) < 3 && !slices.Contains(postErrs, errKind(s.err)):
 				postErrs = append(postErrs, errKind(s.err))
 			}
 		}
-		// 最长的正常请求是 300ms 的 slow / stuck。超过 1.5s 的只能是挂住了
+		// The longest ordinary request is a 300ms slow / stuck. Anything over 1.5s can only have hung
 		if s.end.After(sigAt) && s.latency() > 1500*time.Millisecond {
 			hung = append(hung, s)
 		}
@@ -133,27 +144,27 @@ func TestShutdown_SIGTERMUnderLoad_FinishesInFlight_RefusesNew_ExitsZero(t *test
 	for _, name := range []string{"slow", "pg-read", "pg-write", "stuck-db"} {
 		st := stats[name]
 		if st == nil {
-			t.Fatalf("%s 这一路一个请求都没发出去", name)
+			t.Fatalf("the %s lane sent not one request", name)
 		}
-		t.Logf("%-8s 信号前发出 %5d，信号时刻在途 %2d；信号前 %v 内发出 %3d（失败 %d）；信号后发出 %4d（200 的 %d 个，其余出错）",
-			name, st.pre, st.inflight, guard, st.window, st.windowBad, st.post, st.postOK)
+		t.Logf("%-8s sent %5d before the signal, %2d in flight at it; %3d sent in the %v before it (%d failed); %4d sent after it (%d of them 200, the rest failing)",
+			name, st.pre, st.inflight, st.window, guard, st.windowBad, st.post, st.postOK)
 	}
-	t.Logf("信号前一刻的指标：e2e_slow_inflight=%v e2e_stuck_inflight=%v；信号后出错的样子：%v", slowInflight, stuckInflight, postErrs)
-	// 在途的太少，这个用例就没测到东西。16 / 4 个 worker 连着发 300ms 的请求，实测在途正好 16 / 4
+	t.Logf("the metrics an instant before the signal: e2e_slow_inflight=%v e2e_stuck_inflight=%v; how the ones after it failed: %v", slowInflight, stuckInflight, postErrs)
+	// Too few in flight and this case tests nothing. 16 / 4 workers sending 300ms requests back to back measured exactly 16 / 4 in flight
 	if stats["slow"].inflight < 8 || stats["stuck-db"].inflight < 2 {
-		t.Fatalf("信号时刻在途的请求太少（slow %d、stuck-db %d），测不出优雅退出", stats["slow"].inflight, stats["stuck-db"].inflight)
+		t.Fatalf("too few requests were in flight at the signal (slow %d, stuck-db %d) to tell anything about the graceful exit", stats["slow"].inflight, stats["stuck-db"].inflight)
 	}
 	if len(preBad) > 0 {
-		t.Errorf("文档说 Stop 等在途请求做完，实际信号之前发出的请求里有 %d 个没拿到 200，前几个：%v", len(preBad), firstN(preBad, 5))
+		t.Errorf("the documentation says Stop waits for the requests in flight, and %d of those sent before the signal did not get a 200, the first few: %v", len(preBad), firstN(preBad, 5))
 	}
 	if len(postBad) > 0 {
-		t.Errorf("信号之后被接下的请求应当照常做完（200），实际 %d 个不是，前几个：%v", len(postBad), firstN(postBad, 5))
+		t.Errorf("a request accepted after the signal should still finish (200), and %d did not, the first few: %v", len(postBad), firstN(postBad, 5))
 	}
 	if len(hung) > 0 {
-		t.Errorf("信号之后不该有挂住的请求，实际 %d 个超过 1.5s，前几个：%v", len(hung), firstN(hung, 5))
+		t.Errorf("no request should hang after the signal, and %d took over 1.5s, the first few: %v", len(hung), firstN(hung, 5))
 	}
 
-	// ---- 新连接：端口马上关掉，被拒而不是挂住 ----
+	// ---- New connections: the port closes at once and they are refused rather than hanging ----
 	firstRefused := -1
 	var probeMax time.Duration
 	for i, pr := range probes {
@@ -162,86 +173,93 @@ func TestShutdown_SIGTERMUnderLoad_FinishesInFlight_RefusesNew_ExitsZero(t *test
 			firstRefused = i
 		}
 		if firstRefused >= 0 && pr.err == nil {
-			t.Errorf("端口关掉之后又有新连接拿到了响应（第 %d 次探测，status=%d）", i, pr.status)
+			t.Errorf("a new connection got a response after the port had closed (probe %d, status=%d)", i, pr.status)
 		}
 	}
 	if firstRefused < 0 {
-		t.Fatalf("信号之后的 %d 次新连接探测没有一次被拒（connection refused）：端口在进程退出之前一直开着", len(probes))
+		t.Fatalf("not one of the %d new-connection probes after the signal was refused (connection refused): the port stayed open until the process exited", len(probes))
 	}
 	refusedAfter := probes[firstRefused].at.Sub(sigAt)
-	t.Logf("新连接探测 %d 次：第一次被拒在信号后 %s，此前 %d 次拿到响应；单次最长 %s",
+	t.Logf("%d new-connection probes: the first refusal came %s after the signal, with %d getting a response before it; the longest one took %s",
 		len(probes), fmtMS(refusedAfter), firstRefused, fmtMS(probeMax))
 	if probeMax > time.Second {
-		t.Errorf("信号之后新连接应被拒或很快出错，实际有一次探测等了 %v", probeMax)
+		t.Errorf("a new connection after the signal should be refused or fail quickly, and one probe waited %v", probeMax)
 	}
-	// 监听要在一开始就关，不是等在途请求做完、进程退出时才顺带关
+	// The listener has to close right away and not along the way once the requests in flight are done and the process exits
 	if !probes[firstRefused].at.Before(lastInflightEnd) {
-		t.Errorf("端口应在在途请求做完之前就不再接新连接：第一次被拒在信号后 %s，最后一个在途请求在信号后 %s 才做完",
+		t.Errorf("the port should stop accepting new connections before the requests in flight are done: the first refusal came %s after the signal and the last request in flight finished %s after it",
 			fmtMS(refusedAfter), fmtMS(lastInflightEnd.Sub(sigAt)))
 	}
 
-	// ---- 在途请求碰到的 PG / Redis 都还开着 ----
+	// ---- The PG / Redis the requests in flight met were both still open ----
 	for _, pat := range afterCloseErrors {
 		if strings.Contains(p.Output(), pat) {
-			t.Errorf("文档说服务停干净之后才关数据库和缓存，实际输出里出现了 %q：\n%s", pat, grepLines(p.Output(), pat, 5))
+			t.Errorf("the documentation says the databases and the cache are closed only once the service has stopped cleanly, and the output holds %q:\n%s", pat, grepLines(p.Output(), pat, 5))
 		}
 	}
 	stuckDone := p.FindLogs(func(l harness.Log) bool { return l.Msg() == "stuck request finished" })
 	var stuckAfterSignal int
 	for _, l := range stuckDone {
 		if l.Str("db_error") != "none" || l.Str("redis_error") != "none" {
-			t.Errorf("在途的 /stuck 睡完再碰 PG / Redis 应当成功，实际 db_error=%q redis_error=%q", l.Str("db_error"), l.Str("redis_error"))
+			t.Errorf("a /stuck in flight should reach PG / Redis after its sleep, got db_error=%q redis_error=%q", l.Str("db_error"), l.Str("redis_error"))
 		}
 		if ts, err := time.Parse(time.RFC3339Nano, l.Str("time")); err == nil && ts.After(sigAt) {
 			stuckAfterSignal++
 		}
 	}
 	if stuckAfterSignal == 0 {
-		t.Errorf("信号之后没有一个 /stuck 做完：在途的那几个要么没等就被关了，要么日志没写出来")
+		t.Errorf("not one /stuck finished after the signal: either the ones in flight were closed without being waited for, or their log lines never came out")
 	}
 	for _, l := range p.Logs() {
 		if l.Level() == "ERROR" {
-			t.Errorf("优雅退出期间不该有 ERROR 日志，实际：%s", l.Line)
+			t.Errorf("there should be no ERROR log line during a graceful exit, got: %s", l.Line)
 		}
 	}
 
-	// ---- 退出码与耗时 ----
+	// ---- The exit code and the timings ----
 	sinceSig := exit.SinceSignal
-	// 拆开看时间花在哪：第一条 stopping 说明服务那一段（Stop + 等 Start 返回）结束了，
-	// 最后一条是 xlog 自己的
+	// Broken out to see where the time went: the first stopping line means the service's share (Stop
+	// plus waiting for Start to return) is over, and the last one is xlog's own
 	if stops := p.FindLogs(func(l harness.Log) bool { return l.Msg() == "stopping" }); len(stops) > 0 {
 		first, _ := time.Parse(time.RFC3339Nano, stops[0].Str("time"))
 		last, _ := time.Parse(time.RFC3339Nano, stops[len(stops)-1].Str("time"))
-		t.Logf("服务那一段在信号后 %s 结束（比最后一个在途请求晚 %s），%d 个停止钩子从第一个到 xlog 用了 %s",
+		t.Logf("the service's share ended %s after the signal (%s after the last request in flight), and the %d stop hooks took %s from the first one to xlog",
 			fmtMS(first.Sub(sigAt)), fmtMS(first.Sub(lastInflightEnd)), len(stops), fmtMS(last.Sub(first)))
 	}
-	t.Logf("退出：%v；信号 → 最后一个在途请求做完 %s，→ 进程退出 %s（预算 %v）；信号后 /stuck 做完 %d 个",
+	t.Logf("exit: %v; signal -> the last request in flight finished %s, -> the process exited %s (budget %v); %d /stuck finished after the signal",
 		exit, fmtMS(lastInflightEnd.Sub(sigAt)), fmtMS(sinceSig), budget, stuckAfterSignal)
 	if exit.Code != 0 || exit.Signal != nil {
-		t.Errorf("按要求退出、在途请求都做完了，文档说以 0 退出，实际 %v\nstderr:\n%s", exit, lastLines(p.Stderr(), 20))
+		t.Errorf("it exited as asked with every request in flight finished, which the documentation says exits with 0, got %v\nstderr:\n%s", exit, lastLines(p.Stderr(), 20))
 	}
 	if sinceSig > budget {
-		t.Errorf("文档说整个退出流程不超过 WithStopTimeout=%v，实际信号之后 %v 才退出", budget, sinceSig)
+		t.Errorf("the documentation says the whole shutdown stays within WithStopTimeout=%v, and it exited only %v after the signal", budget, sinceSig)
 	}
-	// 在途请求最长 300ms，做完就该往下走，而不是把预算等满。
-	// 实测最后一个在途请求做完到进程退出 65~85ms：其中 60~80ms 是 net/http 的 Shutdown
-	// 轮询「连接都空闲了没有」的间隔（从 1ms 起翻倍、封顶 500ms，等了 200ms 时一次要隔
-	// 上百毫秒），6 个停止钩子一共 4~7ms。给 1s：真把预算等满的话这里是 3s 以上
+	// A request in flight takes 300ms at most, and once they are done it should move on rather than
+	// sitting out the budget.
+	// Measured, 65 to 85ms pass from the last request in flight to the process exiting: 60 to 80ms of
+	// it is net/http's Shutdown polling "are all the connections idle yet" (doubling from 1ms, capped
+	// at 500ms, so at 200ms in one poll is a hundred milliseconds apart), and the 6 stop hooks take 4
+	// to 7ms in all. 1s is given: really sitting out the budget would be over 3s here
 	if tail := exitAt.Sub(lastInflightEnd); lastInflightEnd.IsZero() || tail > time.Second {
-		t.Errorf("在途请求做完之后应当很快退出，实际最后一个在途请求做完 %v 之后进程才退出", tail)
+		t.Errorf("it should exit soon after the requests in flight are done, and the process exited %v after the last one finished", tail)
 	}
 }
 
 // TestShutdown_StartReturnsBeforeDBAndCacheClose
 //
-// 文档（docs/architecture.md「停止预算是一份」、xone.Runnable 与 Run 的注释）：服务那一段是
-// 「Stop + 等 Start 返回」；Stop 返回不等于服务已经停干净，框架等 Start 真正返回
-// 才关其余组件，不然还在跑的活会摸到已经关掉的数据库和缓存。
+// The documentation (docs/architecture.md, "The stop budget is one", and the comments of
+// xone.Runnable and Run): the service's share is "Stop plus waiting for Start to return"; Stop
+// returning does not mean the service has stopped cleanly, and the framework waits for Start to
+// really return before it closes the rest, or work that is still running would meet a database and
+// a cache that are already closed.
 //
-// 服务配 Service.Drain：Start 在 xgin 返回之后再收 drain 这么久的尾（不看 ctx），
-// 然后查一次 PG、Ping 一次 Redis，记一条 drain finished（见 service/drain.go）。
-// xgin.Stop 没有在途请求要等，一上来就返回——此后还没关组件，全靠 Run 在等 Start。
-// 框架要是 Stop 一返回就去关组件，收尾要么摸到关掉的连接池，要么进程先退出、它根本没做完
+// The service is configured with Service.Drain: Start winds down for drain after xgin has returned
+// (without watching ctx), then queries PG once and Pings Redis once and records a drain finished
+// (see service/drain.go).
+// xgin.Stop has no request in flight to wait for and returns right away -- and nothing is closed
+// after that except through Run waiting for Start.
+// Were the framework to close the components as soon as Stop returns, the wind-down would either
+// meet a closed pool or never finish before the process exits
 func TestShutdown_StartReturnsBeforeDBAndCacheClose(t *testing.T) {
 	harness.Require(t)
 	const (
@@ -251,41 +269,43 @@ func TestShutdown_StartReturnsBeforeDBAndCacheClose(t *testing.T) {
 	p := harness.Start(t, harness.Options{Overlay: fmt.Sprintf("Service:\n  StopTimeout: %v\n  Drain: %v\n", budget, drain)})
 
 	exit := p.Terminate(t, budget+5*time.Second)
-	t.Logf("退出：%v（收尾 %v，预算 %v）", exit, drain, budget)
+	t.Logf("exit: %v (the wind-down %v, the budget %v)", exit, drain, budget)
 	if exit.Code != 0 || exit.Signal != nil {
-		t.Errorf("收尾做完、组件关干净，应以 0 退出，实际 %v\nstderr:\n%s", exit, lastLines(p.Stderr(), 20))
+		t.Errorf("with the wind-down done and the components closed cleanly it should exit with 0, got %v\nstderr:\n%s", exit, lastLines(p.Stderr(), 20))
 	}
 
 	drains := p.FindLogs(func(l harness.Log) bool { return l.Msg() == "drain finished" })
 	if len(drains) != 1 {
-		t.Fatalf("文档说框架等 Start 真正返回才关其余组件，实际 Start 的收尾没做完进程就退出了（drain finished %d 条），退出在信号后 %v\n%s",
+		t.Fatalf("the documentation says the framework waits for Start to really return before it closes the rest, and the process exited before Start's wind-down was done (%d drain finished lines), exiting %v after the signal\n%s",
 			len(drains), exit.SinceSignal, lastLines(p.Output(), 20))
 	}
 	d := drains[0]
 	if d.Str("db_error") != "none" || d.Str("mysql_error") != "none" || d.Str("redis_error") != "none" {
-		t.Errorf("Start 返回之前 PG / MySQL / Redis 应当都还开着，实际收尾时 db_error=%q mysql_error=%q redis_error=%q",
+		t.Errorf("PG / MySQL / Redis should all still be open before Start returns, and the wind-down got db_error=%q mysql_error=%q redis_error=%q",
 			d.Str("db_error"), d.Str("mysql_error"), d.Str("redis_error"))
 	}
 	drainAt, _ := time.Parse(time.RFC3339Nano, d.Str("time"))
 	stops := p.FindLogs(func(l harness.Log) bool { return l.Msg() == "stopping" })
 	if len(stops) == 0 {
-		t.Fatalf("没有一条 stopping 日志\n%s", lastLines(p.Output(), 30))
+		t.Fatalf("there is not one stopping log line\n%s", lastLines(p.Output(), 30))
 	}
 	firstStop, _ := time.Parse(time.RFC3339Nano, stops[0].Str("time"))
-	t.Logf("收尾做完在第一个停止钩子（%s）之前 %s", stops[0].Str("hook"), fmtMS(firstStop.Sub(drainAt)))
+	t.Logf("the wind-down finished %s before the first stop hook (%s)", fmtMS(firstStop.Sub(drainAt)), stops[0].Str("hook"))
 	if !firstStop.After(drainAt) {
-		t.Errorf("停止钩子应在 Start 返回之后才开始，实际 %s 在收尾做完之前 %s 就开始了", stops[0].Str("hook"), fmtMS(drainAt.Sub(firstStop)))
+		t.Errorf("the stop hooks should begin only after Start returns, and %s began %s before the wind-down was done", stops[0].Str("hook"), fmtMS(drainAt.Sub(firstStop)))
 	}
 	if exit.SinceSignal < drain || exit.SinceSignal > budget {
-		t.Errorf("退出应在收尾（%v）之后、预算（%v）之内，实际信号之后 %v", drain, budget, exit.SinceSignal)
+		t.Errorf("it should exit after the wind-down (%v) and within the budget (%v), and it exited %v after the signal", drain, budget, exit.SinceSignal)
 	}
 }
 
 // TestShutdown_CloseOrderIsReverseStartOrder_XLogLast
 //
-// 文档：「按阶段初始化、逆序关闭」；docs/architecture.md「停止预算是一份」里「排在最后的 xlog 总还有时间关文件」。
-// xlog 最后关，前面每个组件的关闭日志才写得出去——所以除了 stdout 里的顺序，
-// 还核对日志文件：每一条 stopping（包括 xlog 自己那条）都要落进文件
+// The documentation: "Staged initialization, reverse-order shutdown"; and in docs/architecture.md,
+// "The stop budget is one", "xlog, which comes last, always has time left to close its file".
+// xlog closes last, which is what lets every component before it write its shutdown line -- so
+// besides the order in stdout, the log file is checked too: every stopping line (xlog's own
+// included) has to land in the file
 func TestShutdown_CloseOrderIsReverseStartOrder_XLogLast(t *testing.T) {
 	harness.Require(t)
 	p := harness.Start(t, harness.Options{LogFile: true})
@@ -293,38 +313,38 @@ func TestShutdown_CloseOrderIsReverseStartOrder_XLogLast(t *testing.T) {
 
 	exit := p.Terminate(t, 20*time.Second)
 	if exit.Code != 0 || exit.Signal != nil {
-		t.Fatalf("SIGTERM 之后应以 0 退出，实际 %v\n%s", exit, lastLines(p.Output(), 30))
+		t.Fatalf("it should exit with 0 after the SIGTERM, got %v\n%s", exit, lastLines(p.Output(), 30))
 	}
 
 	starts, stops := hookSeq(p, "starting"), hookSeq(p, "stopping")
-	t.Logf("启动顺序：%v", starts)
-	t.Logf("关闭顺序：%v", stops)
+	t.Logf("the start order: %v", starts)
+	t.Logf("the shutdown order: %v", stops)
 	if len(stops) == 0 {
-		t.Fatalf("没有一条 stopping 日志\n%s", lastLines(p.Output(), 30))
+		t.Fatalf("there is not one stopping log line\n%s", lastLines(p.Output(), 30))
 	}
 
-	// 每个停止钩子配对的启动钩子，在启动顺序里的位置必须严格递减
+	// The position of each stop hook's paired start hook in the start order has to decrease strictly
 	prev := len(starts)
 	for _, s := range stops {
 		i, ok := startIndex(starts, s)
 		if !ok {
-			t.Errorf("停止钩子 %s 所在的包没有启动过", s)
+			t.Errorf("the package of the stop hook %s never started", s)
 			continue
 		}
 		if i >= prev {
-			t.Errorf("文档说逆序关闭，实际 %s 比启动得更晚的组件先关：关闭顺序 %v", s, stops)
+			t.Errorf("the documentation says the shutdown is in reverse order, and %s closed before a component that started later: the shutdown order %v", s, stops)
 		}
 		prev = i
 	}
 	if want := expectedStops(starts); !slices.Equal(pkgsOf(stops), want) {
-		t.Errorf("关闭的应当正好是启动过的、有停止钩子的那些，按逆序：want %v，got %v"+
-			"（框架给别的包加了停止钩子的话，把它补进 stopHookPkgs）", want, pkgsOf(stops))
+		t.Errorf("what closes should be exactly the ones that started and have a stop hook, in reverse: want %v, got %v"+
+			" (when the framework gives another package a stop hook, add it to stopHookPkgs)", want, pkgsOf(stops))
 	}
 	if last := stops[len(stops)-1]; pkgOf(last) != "xlog" {
-		t.Errorf("文档说 xlog 排在最后关，实际最后一个是 %s", last)
+		t.Errorf("the documentation says xlog closes last, and the last one is %s", last)
 	}
 
-	// 日志文件里要有全部的 stopping，包括 xlog 自己那条：它关的时候文件还开着
+	// The log file has to hold every stopping line, xlog's own included: its file is still open when it closes
 	var inFile []string
 	for _, l := range p.FileLogs(t) {
 		if l.Msg() == "stopping" {
@@ -332,27 +352,31 @@ func TestShutdown_CloseOrderIsReverseStartOrder_XLogLast(t *testing.T) {
 		}
 	}
 	if !slices.Equal(inFile, stops) {
-		t.Errorf("xlog 最后关，前面每个组件的关闭日志都该落进文件：stdout 里是 %v，文件里是 %v", stops, inFile)
+		t.Errorf("xlog closes last, so every component before it should have its shutdown line in the file: stdout holds %v and the file holds %v", stops, inFile)
 	}
 }
 
 // TestShutdown_CtxIgnoringHandlerInFlight_ReportsRunningCount_ExitsInBudget
 //
-// 文档（xgin/README.md XGin 一节）：
-//  1. Shutdown 只用到截止时间前的一截（留出剩余时间的 20%，最多 1s），到那时还有请求就 Close() 断开所有连接；
-//  2. 留出来的那一截等 handler 真正返回，看到 ctx 取消就收尾的 handler 在这里做完；
-//  3. 到截止时间还有 handler 没返回时，错误里写明还剩几个（N handler(s) still running…）；
-//  4. 不看 ctx 的 handler 框架停不下来，但退出流程照样在 WithStopTimeout 之内走完。
+// The documentation (the XGin section of xgin/README.md):
+//  1. the Shutdown uses part of the time up to the deadline (leaving 20% of what is left, 1s at
+//     most), and once that is up it Close()s every connection when requests remain;
+//  2. that reserve is for waiting out the handlers that really return, where a handler that winds
+//     down on a cancelled ctx finishes;
+//  3. with a handler still unreturned at the deadline, the error says how many are left
+//     (N handler(s) still running...);
+//  4. a handler that does not watch ctx cannot be stopped by the framework, and the shutdown still
+//     runs its course within WithStopTimeout.
 //
-// WithStopTimeout=3s：服务那一段是 2s，Close 落在约 2s − 0.4s = 1.6s。
-// 两个 /stuck（不看 ctx）加一个 /slow（看 ctx），错误里应当正好是 2 个
+// WithStopTimeout=3s: the service's share is 2s and the Close lands at about 2s - 0.4s = 1.6s.
+// Two /stuck (not watching ctx) plus one /slow (watching it), so the error should say exactly 2
 func TestShutdown_CtxIgnoringHandlerInFlight_ReportsRunningCount_ExitsInBudget(t *testing.T) {
 	harness.Require(t)
 	const (
 		budget     = 3 * time.Second
 		serverPart = budget - budget/3         // 2s
-		closeAt    = serverPart - serverPart/5 // 1.6s：剩余时间的 20% 是 0.4s，不到 1s
-		tolerance  = 300 * time.Millisecond    // 实测误差在 20ms 以内（信号投递 + 10ms 的轮询间隔）
+		closeAt    = serverPart - serverPart/5 // 1.6s: 20% of what is left is 0.4s, under 1s
+		tolerance  = 300 * time.Millisecond    // measured within 20ms (delivering the signal plus the 10ms poll interval)
 	)
 	p := harness.Start(t, harness.Options{Overlay: stopTimeout(budget)})
 
@@ -376,68 +400,71 @@ func TestShutdown_CtxIgnoringHandlerInFlight_ReportsRunningCount_ExitsInBudget(t
 	p.Signal(syscall.SIGTERM)
 	exit, ok := p.Wait(budget + 5*time.Second)
 	if !ok {
-		t.Fatalf("文档说不看 ctx 的 handler 也拖不住退出流程（WithStopTimeout=%v），实际信号之后 %v 进程还活着",
+		t.Fatalf("the documentation says a handler that does not watch ctx cannot hold the shutdown up either (WithStopTimeout=%v), and the process is still alive %v after the signal",
 			budget, budget+5*time.Second)
 	}
-	t.Logf("退出：%v（预算 %v，服务那一段 %v）", exit, budget, serverPart)
+	t.Logf("exit: %v (the budget %v, the service's share %v)", exit, budget, serverPart)
 
-	// 1. 到 Close 那一刀，三个请求的连接都被断开，客户端拿不到响应
+	// 1. At the Close, all three connections are broken and the clients get no response
 	for range 3 {
 		r := <-results
 		cut := r.at.Sub(sigAt)
-		t.Logf("%s：信号后 %s 结束，err=%v status=%d", r.path, fmtMS(cut), r.err, r.resp.Status)
+		t.Logf("%s: ended %s after the signal, err=%v status=%d", r.path, fmtMS(cut), r.err, r.resp.Status)
 		if r.err == nil {
-			t.Errorf("%s 到点还没做完，文档说 Close() 断开所有连接，实际客户端拿到了响应 %v", r.path, r.resp)
+			t.Errorf("%s had not finished at the deadline and the documentation says Close() breaks every connection, and the client got the response %v", r.path, r.resp)
 		}
 		if cut < closeAt-tolerance || cut > closeAt+tolerance {
-			t.Errorf("%s：文档说 Shutdown 用到截止时间前 20%%（约信号后 %v）就断开连接，实际信号后 %v", r.path, closeAt, cut)
+			t.Errorf("%s: the documentation says the Shutdown uses up to 20%% before the deadline (about %v after the signal) and then breaks the connections, got %v after the signal", r.path, closeAt, cut)
 		}
 	}
 
-	// 2. 看 ctx 的 /slow 在留出来的那一截里收尾
+	// 2. The /slow that watches ctx winds down inside that reserve
 	if len(p.FindLogs(func(l harness.Log) bool { return l.Msg() == "slow request cancelled" })) != 1 {
-		t.Errorf("断连之后看 ctx 的 handler 应当收尾，实际没有 slow request cancelled 这条日志")
+		t.Errorf("a handler that watches ctx should wind down once the connection breaks, and there is no slow request cancelled log line")
 	}
 
-	// 3. 错误里写明还剩几个：两个 /stuck，不含已经收尾的 /slow
+	// 3. The error says how many are left: the two /stuck, not counting the /slow that wound down
 	const want = "2 handler(s) still running when the shutdown deadline passed"
 	if !strings.Contains(p.Stderr(), want) {
-		t.Errorf("文档说错误里写明还剩几个（%q），实际 stderr：\n%s", want, lastLines(p.Stderr(), 10))
+		t.Errorf("the documentation says the error says how many are left (%q), got stderr:\n%s", want, lastLines(p.Stderr(), 10))
 	}
-	// MustRun 把 Run 的错误打到 stderr 并以 1 退出
+	// MustRun writes Run's error to stderr and exits with 1
 	if exit.Code != 1 {
-		t.Errorf("Stop 返回了错误，MustRun 应以 1 退出，实际 %v", exit)
+		t.Errorf("Stop returned an error, so MustRun should exit with 1, got %v", exit)
 	}
 
-	// 4. 在预算内退出，而且确实等满了服务那一段（没有一上来就放弃）
+	// 4. It exits within the budget, and it really did wait out the service's share (it did not give up at once)
 	if exit.SinceSignal > budget {
-		t.Errorf("文档说整个退出流程不超过 WithStopTimeout=%v，实际信号之后 %v 才退出", budget, exit.SinceSignal)
+		t.Errorf("the documentation says the whole shutdown stays within WithStopTimeout=%v, and it exited only %v after the signal", budget, exit.SinceSignal)
 	}
 	if exit.SinceSignal < serverPart-tolerance {
-		t.Errorf("文档说 Stop 最多等到服务那一段（%v）的截止时间，实际信号之后 %v 就退出了", serverPart, exit.SinceSignal)
+		t.Errorf("the documentation says Stop waits up to the deadline of the service's share (%v), and it exited %v after the signal", serverPart, exit.SinceSignal)
 	}
-	// 服务没停干净也照样关组件：xlog 最后关
+	// The components close even though the service did not stop cleanly: xlog last
 	stops := hookSeq(p, "stopping")
 	if want := expectedStops(hookSeq(p, "starting")); !slices.Equal(pkgsOf(stops), want) {
-		t.Errorf("服务那一段超时之后，组件照样逆序关：want %v，got %v", want, stops)
+		t.Errorf("once the service's share times out the components still close in reverse order: want %v, got %v", want, stops)
 	}
 }
 
 // TestShutdown_SecondSignalKillsStuckShutdown
 //
-// 文档（docs/architecture.md「退出信号」第 3 条）：第一个信号之后把默认处置还回去，框架卡在
-// 不看 ctx 的调用里时，再发一次信号进程立即终止；「第 3 条同样覆盖关闭阶段：Stop 卡住时，第二次 Ctrl+C 有用」。
+// The documentation (docs/architecture.md, "Exit signals", point 3): after the first signal the
+// default disposition is restored, so while the framework sits in a call that does not watch ctx,
+// a second signal terminates the process at once; "point 3 covers the shutdown phase as well: with
+// Stop stuck, a second Ctrl+C works".
 //
-// 卡住的办法：WithStopTimeout=60s，一个 /stuck?ms=60000 在途——Stop 要等 40s 才放弃
+// How it is wedged: WithStopTimeout=60s with one /stuck?ms=60000 in flight -- Stop waits 40s before
+// it gives up
 func TestShutdown_SecondSignalKillsStuckShutdown(t *testing.T) {
 	harness.Require(t)
 	cases := []struct {
 		name          string
 		first, second syscall.Signal
 	}{
-		{"SIGTERM之后再SIGTERM", syscall.SIGTERM, syscall.SIGTERM},
-		{"SIGTERM之后再SIGINT", syscall.SIGTERM, syscall.SIGINT},
-		{"SIGINT之后再SIGINT", syscall.SIGINT, syscall.SIGINT},
+		{"SIGTERM then SIGTERM again", syscall.SIGTERM, syscall.SIGTERM},
+		{"SIGTERM then SIGINT", syscall.SIGTERM, syscall.SIGINT},
+		{"SIGINT then SIGINT again", syscall.SIGINT, syscall.SIGINT},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -452,11 +479,11 @@ func TestShutdown_SecondSignalKillsStuckShutdown(t *testing.T) {
 				return strings.HasPrefix(l.Msg(), "shutdown signal received, closing gracefully")
 			})
 			if got := l.Str("signal"); got != c.first.String() {
-				t.Errorf("日志里的 signal 应是 %q，实际 %q", c.first.String(), got)
+				t.Errorf("the signal in the log should be %q, got %q", c.first.String(), got)
 			}
-			// 确认它真的卡在 Stop 里了：不然第二个信号测的就不是「卡住时」
+			// Make sure it really is stuck in Stop: otherwise the second signal does not test "while it is stuck"
 			if e, exited := p.Wait(500 * time.Millisecond); exited {
-				t.Fatalf("在途的 /stuck 应当让 Stop 卡住（最多 40s），实际第一个信号之后就退出了：%v", e)
+				t.Fatalf("the /stuck in flight should wedge Stop (for 40s at most), and it exited after the first signal: %v", e)
 			}
 
 			secondAt := time.Now()
@@ -464,15 +491,15 @@ func TestShutdown_SecondSignalKillsStuckShutdown(t *testing.T) {
 			e, ok := p.Wait(5 * time.Second)
 			took := time.Since(secondAt)
 			if !ok {
-				t.Fatalf("文档说卡住时再发一次信号进程立即终止，实际第二个 %v 之后 5s 还活着", c.second)
+				t.Fatalf("the documentation says a second signal terminates the process at once, and 5s after the second %v it is still alive", c.second)
 			}
-			t.Logf("第二个 %v → 进程终止 %s；%v", c.second, fmtMS(took), e)
+			t.Logf("the second %v -> the process terminated after %s; %v", c.second, fmtMS(took), e)
 			if e.Signal != c.second {
-				t.Errorf("第二个信号应走系统默认处置、由 %v 直接终止进程，实际 %v", c.second, e)
+				t.Errorf("the second signal should go through the system's default disposition and be terminated by %v outright, got %v", c.second, e)
 			}
-			// 实测 1~3ms，给到 2s：它要么立刻死，要么就是没还回默认处置（那会等满 40s）
+			// Measured at 1 to 3ms, and 2s is given: either it dies at once, or the default disposition was not restored (which would sit out the 40s)
 			if took > 2*time.Second {
-				t.Errorf("文档说再发一次信号进程立即终止，实际等了 %v", took)
+				t.Errorf("the documentation says a second signal terminates the process at once, and it took %v", took)
 			}
 		})
 	}
@@ -480,44 +507,51 @@ func TestShutdown_SecondSignalKillsStuckShutdown(t *testing.T) {
 
 // TestShutdown_SIGTERMDuringStartup_NoServe_ClosesBuiltInReverse_ExitsZero
 //
-// 文档（docs/architecture.md「退出信号」第 1、2 条）：信号在读配置之前就接管；钩子收 ctx，收到信号后
-// 不再跑剩下的启动钩子，已建好的逆序关干净，服务不再启动，然后以 0 退出——按要求退出
-// 不是故障，不报成启动失败。被打断的那个钩子靠它自己把 ctx 传下去：xgorm/README.md 说
-// PostgreSQL 的建连受 ctx 管；xredis.New 的注释说「收到退出信号就该当场放弃」，
-// ping 的注释说「parent 取消时立即放弃」。
+// The documentation (docs/architecture.md, "Exit signals", points 1 and 2): the signal is taken
+// over before the configuration is read; the hooks take a ctx, and once a signal arrives the
+// remaining start hooks do not run, what was built is closed cleanly in reverse, the service does
+// not start, and it exits with 0 -- exiting as asked is no failure and is not reported as a failed
+// start. The hook that is interrupted has to pass ctx down itself: xgorm/README.md says a
+// PostgreSQL connect is governed by ctx; xredis.New's comment says "an exit signal should be given
+// up on there and then", and ping's comment says "a cancelled parent is given up on at once".
 //
-// 让建连慢下来：PG 或 Redis 经 TCP 代理，代理把对端的回话压住不放（SetDelay(time.Hour)），
-// TCP 秒连、握手永远等不到回复。等日志里出现那个钩子的 starting、代理收到了连接，再发信号。
+// How a connect is slowed down: PG or Redis goes through a TCP proxy and the proxy holds the far
+// end's answer back (SetDelay(time.Hour)), so TCP connects at once and the handshake is never
+// answered. The signal is sent once that hook's starting line is in the log and the proxy has seen
+// a connection.
 //
-// 这两例里被打断的建连看到 ctx 取消就返回错误，runStart 走的是出错那条路——第 2 条的
-// 「框架在每个钩子之前再查一次」一次都轮不到（把那次复查删掉，这两例照样全过）。
-// 所以还有第三例：一个不看 ctx 的启动钩子（warmup，Service.StartStall）睡着时收到信号，
-// 睡完照样成功返回；它算建好了，框架得自己在下一个钩子之前停下
+// In those two cases the interrupted connect sees the cancelled ctx and returns an error, so
+// runStart takes the error path -- and point 2's "the framework checks once more before every
+// hook" never gets its turn (take that recheck out and these two still pass).
+// So there is a third case: a start hook that does not watch ctx (warmup, Service.StartStall)
+// receives the signal while it sleeps and returns successfully once it has slept; it counts as
+// built, and the framework has to stop by itself before the next hook
 func TestShutdown_SIGTERMDuringStartup_NoServe_ClosesBuiltInReverse_ExitsZero(t *testing.T) {
 	harness.Require(t)
-	// immediate「当场放弃」的上限。PG 实测信号之后 2~3ms 退出（pgx 的读在 ctx 取消时立刻返回），
-	// 200ms 是它的几十倍，又远小于 Redis 默认 500ms 的 ReadTimeout
+	// immediate is the bound of "given up on there and then". PG measured 2 to 3ms after the signal
+	// (pgx's read returns at once on a cancelled ctx), and 200ms is dozens of times that while
+	// staying far under Redis's default 500ms ReadTimeout
 	const immediate = 200 * time.Millisecond
-	// stall warmup 不看 ctx 睡多久。它打断不了，退出的上限是睡满再加 immediate
+	// stall is how long warmup sleeps without watching ctx. It cannot be interrupted, so the bound on the exit is that sleep plus immediate
 	const stall = 500 * time.Millisecond
 	cases := []struct {
 		name   string
-		hook   string // 卡住的那个启动钩子
-		target string // 经代理压住回话的对端；空表示不用代理
+		hook   string // the start hook that is wedged
+		target string // the far end whose answer the proxy holds back; empty means no proxy
 		opts   func(addr string) harness.Options
-		stall  time.Duration // warmup 启动钩子不看 ctx 地睡多久（Service.StartStall），0 是不睡
-		// completes 卡住的那个钩子不看 ctx、睡完照样成功返回：它算建好了，要跟着关
+		stall  time.Duration // how long the warmup start hook sleeps without watching ctx (Service.StartStall), 0 not sleeping
+		// completes: the wedged hook does not watch ctx and returns successfully once it has slept, so it counts as built and has to be closed
 		completes bool
-		limit     time.Duration // 信号之后多久之内退出，0 表示 immediate
+		limit     time.Duration // how long after the signal it has to exit, 0 meaning immediate
 	}{
-		{name: "PG建连中", hook: "xgorm.initXGorm", target: harness.PGAddr(),
+		{name: "while PG is connecting", hook: "xgorm.initXGorm", target: harness.PGAddr(),
 			opts: func(a string) harness.Options { return harness.Options{PGAddr: a} }},
-		{name: "不看ctx的启动钩子", hook: "warmup.preload", completes: true, limit: stall + immediate, stall: stall,
+		{name: "a start hook that does not watch ctx", hook: "warmup.preload", completes: true, limit: stall + immediate, stall: stall,
 			opts: func(string) harness.Options { return harness.Options{} }},
-		{name: "Redis建连中", hook: "xredis.initXRedis", target: harness.RedisAddr(),
-			// go-redis 只认 ctx 的截止时间、取消叫不醒阻塞在读上的 Ping，xredis 的探测因此放在协程里跑、
-			// 这边看着 ctx：从前信号要等这次读撞上 ReadTimeout 才生效（默认 500ms 时约 450ms，配 3s 时约 2.95s）。
-			// ReadTimeout 配成 3s：比 immediate 大一个量级，退回老样子一眼看得出来
+		{name: "while Redis is connecting", hook: "xredis.initXRedis", target: harness.RedisAddr(),
+			// go-redis honors a ctx deadline alone and a cancellation does not wake a Ping blocked on a read, which is why xredis's probe runs on a goroutine
+			// while this side watches ctx: the signal used to take effect only once that read hit ReadTimeout (about 450ms with the default 500ms, about 2.95s with 3s configured).
+			// ReadTimeout is set to 3s: an order of magnitude over immediate, so falling back to the old behavior is plain to see
 			opts: func(a string) harness.Options {
 				return harness.Options{RedisAddr: a, Overlay: "XRedis:\n  ReadTimeout: 3s\n"}
 			}},
@@ -544,78 +578,78 @@ func TestShutdown_SIGTERMDuringStartup_NoServe_ClosesBuiltInReverse_ExitsZero(t 
 					time.Sleep(5 * time.Millisecond)
 				}
 				if proxy.Accepted() == 0 {
-					t.Fatalf("%s 开始了 5s，代理还没收到连接", c.hook)
+					t.Fatalf("%s has been going for 5s and the proxy has had no connection", c.hook)
 				}
 			}
-			time.Sleep(50 * time.Millisecond) // 让它进到握手里等回话 / 进到 warmup 的 Sleep 里
+			time.Sleep(50 * time.Millisecond) // let it reach the handshake and wait for an answer, or reach warmup's Sleep
 
 			p.Signal(syscall.SIGTERM)
 			exit, ok := p.Wait(10 * time.Second)
 			if !ok {
-				t.Fatalf("启动期间收到 SIGTERM，10s 之后进程还活着\n%s", lastLines(p.Output(), 30))
+				t.Fatalf("a SIGTERM arrived during the start and the process is still alive 10s later\n%s", lastLines(p.Output(), 30))
 			}
 			if proxy != nil {
-				t.Logf("退出：%v（信号在 %s 卡住时发出，代理收到 %d 个连接）", exit, c.hook, proxy.Accepted())
+				t.Logf("exit: %v (the signal was sent while %s was wedged, and the proxy saw %d connections)", exit, c.hook, proxy.Accepted())
 			} else {
-				t.Logf("退出：%v（信号在 %s 卡住时发出）", exit, c.hook)
+				t.Logf("exit: %v (the signal was sent while %s was wedged)", exit, c.hook)
 			}
 
 			if exit.Code != 0 || exit.Signal != nil {
-				t.Errorf("文档说启动期间按要求退出以 0 退出，实际 %v\nstderr:\n%s", exit, lastLines(p.Stderr(), 20))
+				t.Errorf("the documentation says exiting as asked during the start exits with 0, got %v\nstderr:\n%s", exit, lastLines(p.Stderr(), 20))
 			}
 
 			starts := hookSeq(p, "starting")
 			if len(starts) == 0 || starts[len(starts)-1] != c.hook {
-				t.Fatalf("信号之后不该再跑别的启动钩子：最后一个 starting 应是 %s，实际 %v", c.hook, starts)
+				t.Fatalf("no further start hook should run after the signal: the last starting should be %s, got %v", c.hook, starts)
 			}
-			started := starts[:len(starts)-1] // 最后那个被打断了，没建起来
+			started := starts[:len(starts)-1] // the last one was interrupted and never came up
 			if c.completes {
-				started = starts // 不看 ctx 的那个睡完照样成功，算建好了
+				started = starts // the one that does not watch ctx succeeded after its sleep and counts as built
 			}
 
-			// 「不启动服务」：xgin 从没监听
+			// "The service does not start": xgin never listened
 			if ls := p.FindLogs(func(l harness.Log) bool { return l.Msg() == "xgin listening" }); len(ls) > 0 {
-				t.Errorf("文档说启动期间收到信号服务不再启动，实际日志里有 %s", ls[0].Line)
+				t.Errorf("the documentation says the service does not start once a signal arrives during the start, and the log holds %s", ls[0].Line)
 			}
-			// 框架说明了为什么没启动，并且不当成失败：INFO 级别，ready 是建好了几个
+			// The framework says why it did not start and does not treat it as a failure: at INFO, with ready being how many were built
 			ls := p.FindLogs(func(l harness.Log) bool {
 				return l.Msg() == "shutdown signal received during startup, not starting the server"
 			})
 			if len(ls) != 1 {
-				t.Errorf("应当有一条 shutdown signal received during startup 的日志，实际 %d 条", len(ls))
+				t.Errorf("there should be one shutdown signal received during startup log line, got %d", len(ls))
 			} else {
-				t.Logf("框架的说明：%s", ls[0].Line)
+				t.Logf("what the framework says: %s", ls[0].Line)
 				if ls[0].Level() != "INFO" {
-					t.Errorf("按要求退出不是故障，这条日志应是 INFO，实际 %s", ls[0].Level())
+					t.Errorf("exiting as asked is no failure and this line should be INFO, got %s", ls[0].Level())
 				}
 				if got, want := ls[0].Str("ready"), fmt.Sprint(len(started)); got != want {
-					t.Errorf("ready 应是已建好的 %s 个，实际 %s", want, got)
+					t.Errorf("ready should be the %s that were built, got %s", want, got)
 				}
 			}
 
-			// 「已建好的逆序关干净」：正好是建好了的那些，逆序；被打断的、没轮到的都不关
+			// "What was built is closed cleanly in reverse": exactly the ones that were built, in reverse; the interrupted one and the ones that never had their turn are not closed
 			stops := hookSeq(p, "stopping")
-			t.Logf("已建好：%v；关闭：%v", started, stops)
+			t.Logf("built: %v; closed: %v", started, stops)
 			if want := expectedStops(started); !slices.Equal(pkgsOf(stops), want) {
-				t.Errorf("文档说已建好的逆序关干净：want %v，got %v", want, pkgsOf(stops))
+				t.Errorf("the documentation says what was built is closed cleanly in reverse: want %v, got %v", want, pkgsOf(stops))
 			}
 
-			// 「不报成启动失败」：没有 MustRun 打出来的错误，也没有 ERROR 日志
+			// "It is not reported as a failed start": no error from MustRun and no ERROR log line
 			for _, line := range strings.Split(p.Stderr(), "\n") {
 				if strings.Contains(line, "failed, err=[") {
-					t.Errorf("文档说不报成启动失败，实际 stderr 里有：%s", line)
+					t.Errorf("the documentation says it is not reported as a failed start, and stderr holds: %s", line)
 				}
 			}
 			for _, l := range p.Logs() {
 				if l.Level() == "ERROR" {
-					t.Errorf("按要求退出不该有 ERROR 日志，实际：%s", l.Line)
+					t.Errorf("exiting as asked should have no ERROR log line, got: %s", l.Line)
 				}
 			}
 
-			// 被打断的建连当场放弃；不看 ctx 的那个睡满就走，不再跑别的
+			// The interrupted connect is given up on there and then; the one that does not watch ctx leaves after its sleep and runs nothing else
 			limit := cmp.Or(c.limit, immediate)
 			if exit.SinceSignal > limit {
-				t.Errorf("文档说收到退出信号建连当场放弃、不再跑剩下的启动钩子，实际信号之后 %v 才退出（上限 %v）", exit.SinceSignal, limit)
+				t.Errorf("the documentation says a connect is given up on there and then on an exit signal and the remaining start hooks do not run, and it exited only %v after the signal (the bound being %v)", exit.SinceSignal, limit)
 			}
 		})
 	}
@@ -623,22 +657,27 @@ func TestShutdown_SIGTERMDuringStartup_NoServe_ClosesBuiltInReverse_ExitsZero(t 
 
 // TestShutdown_AfterDisconnect_PGCallWithCtxStops_RedisWaitsForPoolClose
 //
-// 文档（xgin/README.md XGin 一节）：到点还没做完的请求，Close() 断开连接、取消请求的 ctx；
-// 「handler 里的慢操作（查库、调下游）要传 c.Request.Context()，断连之后才停得下来」，
-// 留出来的那一截就是等这种 handler 收尾的。
+// The documentation (the XGin section of xgin/README.md): for a request that has not finished at
+// the deadline, Close() breaks the connection and cancels the request's ctx; "a slow operation in a
+// handler (a query, a downstream call) has to be passed c.Request.Context() to be stoppable once
+// the connection breaks", and the reserve is there to wait such a handler out.
 //
-// Redis 是那一节写明的例外（xredis/README.md「行为与实测」）：go-redis 只认 ctx 的
-// 截止时间，取消叫不醒阻塞在读上的命令，它要等到 ReadTimeout、ctx 的截止时间或 xredis 的停止钩子
-// 关掉连接池才返回。所以 Redis 那一例断言的是这个：handler 在 closeXRedis 之后才返回，
-// Stop 如实报出还有 handler 没返回。
+// Redis is the exception that section names (xredis/README.md, "Behavior (measured)"): go-redis
+// honors a ctx deadline alone, a cancellation does not wake a command blocked on a read, and it
+// returns only at ReadTimeout, at the ctx deadline, or when xredis's stop hook closes the pool. So
+// what the Redis case asserts is exactly that: the handler returns only after closeXRedis, and Stop
+// reports truthfully that a handler has not returned.
 //
-// 做法：服务经 TCP 代理连 PG / Redis，起来之后让代理把回话压住（SetDelay(time.Hour)），
-// 读用户的请求就卡在 PG / Redis 的读上——handler 传的是请求的 ctx。WithStopTimeout=3s：
-// 约 1.6s 断连，2.0s 服务那一段到点。handler 看 ctx 的话断连之后立刻收尾，Stop 报的是
-// 「超时后强制断开」，而不是「还有 N 个 handler 没返回」。
+// How it is done: the service reaches PG / Redis through a TCP proxy, and once it is up the proxy
+// holds the far end's answer back (SetDelay(time.Hour)), so a request reading a user is stuck on
+// the PG / Redis read -- with the handler passing the request's ctx. WithStopTimeout=3s: the
+// connections break at about 1.6s and the service's share is up at 2.0s. With the handler watching
+// ctx it winds down right after the connections break, and what Stop reports is "force closed after
+// the timeout" rather than "N handlers have not returned".
 //
-// Redis 那一例把 ReadTimeout 配成 10s：默认的 500ms 比断连之后留的那一截（0.4s）还短，
-// 一次读自己就超时了，测不出 ctx 管不管用
+// The Redis case sets ReadTimeout to 10s: the default 500ms is shorter than the reserve left after
+// the connections break (0.4s), so one read would time out by itself and whether ctx works could
+// not be told
 func TestShutdown_AfterDisconnect_PGCallWithCtxStops_RedisWaitsForPoolClose(t *testing.T) {
 	harness.Require(t)
 	const (
@@ -650,8 +689,8 @@ func TestShutdown_AfterDisconnect_PGCallWithCtxStops_RedisWaitsForPoolClose(t *t
 		name   string
 		target string
 		opts   func(addr string) harness.Options
-		path   string // %d 是用户 id
-		// untilPoolClosed 取消叫不醒这个依赖上阻塞的调用，handler 等到它的停止钩子关掉连接池才返回
+		path   string // %d is the user id
+		// untilPoolClosed: a cancellation does not wake a call blocked on this dependency, and the handler returns only once its stop hook has closed the pool
 		untilPoolClosed string
 	}{
 		{name: "PG", target: harness.PGAddr(), path: "/users/%d?cache=off",
@@ -660,8 +699,8 @@ func TestShutdown_AfterDisconnect_PGCallWithCtxStops_RedisWaitsForPoolClose(t *t
 			opts: func(a string) harness.Options {
 				return harness.Options{RedisAddr: a, Overlay: "XRedis:\n  ReadTimeout: 10s\n"}
 			},
-			// 实测断连在信号后 1.6s，handler 直到 2.0s 服务那一段到点、xredis 的停止钩子
-			// 把连接池关掉才返回
+			// Measured, the connections break 1.6s after the signal and the handler returns only at 2.0s, when the service's share is up
+			// and xredis's stop hook closes the pool
 			untilPoolClosed: "xredis.closeXRedis"},
 	}
 	for _, c := range cases {
@@ -684,23 +723,23 @@ func TestShutdown_AfterDisconnect_PGCallWithCtxStops_RedisWaitsForPoolClose(t *t
 				r, err := p.Request(context.Background(), http.MethodGet, path, nil)
 				done <- result{time.Now(), r, err}
 			}()
-			// 进 handler 到发出查询是微秒级，200ms 足够它卡进读里
+			// Entering the handler and sending the query takes microseconds, so 200ms is enough for it to be stuck in the read
 			time.Sleep(200 * time.Millisecond)
 
 			sigAt := time.Now()
 			p.Signal(syscall.SIGTERM)
 			exit, ok := p.Wait(budget + 5*time.Second)
 			if !ok {
-				t.Fatalf("文档说整个退出流程不超过 WithStopTimeout=%v，实际信号之后 %v 进程还活着", budget, budget+5*time.Second)
+				t.Fatalf("the documentation says the whole shutdown stays within WithStopTimeout=%v, and the process is still alive %v after the signal", budget, budget+5*time.Second)
 			}
 			r := <-done
-			t.Logf("退出：%v；客户端在信号后 %s 结束（err=%v）", exit, fmtMS(r.at.Sub(sigAt)), r.err)
+			t.Logf("exit: %v; the client ended %s after the signal (err=%v)", exit, fmtMS(r.at.Sub(sigAt)), r.err)
 			if exit.SinceSignal > budget {
-				t.Errorf("文档说整个退出流程不超过 WithStopTimeout=%v，实际信号之后 %v 才退出", budget, exit.SinceSignal)
+				t.Errorf("the documentation says the whole shutdown stays within WithStopTimeout=%v, and it exited only %v after the signal", budget, exit.SinceSignal)
 			}
 
-			// handler 什么时候返回的、返回前碰到了什么：访问日志在 handler 返回之后才写，
-			// 它的 path 不带查询串
+			// When the handler returned and what it met before returning: the access log is written after the handler returns,
+			// and its path carries no query string
 			route, _, _ := strings.Cut(path, "?")
 			var completedAt, poolClosedAt time.Time
 			for _, l := range p.FindLogs(func(l harness.Log) bool {
@@ -715,31 +754,31 @@ func TestShutdown_AfterDisconnect_PGCallWithCtxStops_RedisWaitsForPoolClose(t *t
 				case l.Msg() == "stopping" && l.Str("hook") == c.untilPoolClosed:
 					poolClosedAt = at
 				}
-				t.Logf("信号后 %s（断连约在 %v）：%s %s%s%s", fmtMS(at.Sub(sigAt)), closeAt, l.Msg(),
+				t.Logf("%s after the signal (the connections breaking at about %v): %s %s%s%s", fmtMS(at.Sub(sigAt)), closeAt, l.Msg(),
 					l.Str("hook"), l.Str("status"), l.Str("error"))
 			}
 
 			stderr := p.Stderr()
 			if c.untilPoolClosed != "" {
-				// handler 在连接池关掉之后才醒，这时离进程退出只剩几十微秒：它的访问日志
-				// 有时来不及写出来就退出了（全量 e2e 里撞上过一次）。没写出来同样说明它没被断连叫醒，
-				// 证据由下面的「1 handler(s) still running」给；写出来了就必须晚于关池
+				// The handler wakes only once the pool is closed, which is tens of microseconds before the process exits: its access log
+				// sometimes does not make it out (hit once in a full e2e run). Not making it out says just as much about it not being woken by the break,
+				// and the evidence for that is the "1 handler(s) still running" below; if it did make it out, it has to be later than the pool closing
 				if poolClosedAt.IsZero() || (!completedAt.IsZero() && completedAt.Before(poolClosedAt)) {
-					t.Errorf("文档说取消叫不醒阻塞的 Redis 命令、handler 等到 %s 关掉连接池才返回：实际 handler 返回于 %v，%s 于 %v。"+
-						"handler 先返回了的话是 go-redis 开始听取消了，xredis/README.md XRedis 那句限制该删了",
+					t.Errorf("the documentation says a cancellation does not wake a blocked Redis command and the handler returns only once %s has closed the pool: the handler returned at %v and %s at %v. "+
+						"Had the handler returned first, go-redis would have begun honoring cancellation, and that limitation in the XRedis section of xredis/README.md should be taken out",
 						c.untilPoolClosed, completedAt, c.untilPoolClosed, poolClosedAt)
 				}
 				if !strings.Contains(stderr, "1 handler(s) still running") {
-					t.Errorf("handler 过了服务那一段的截止时间才返回，Stop 应如实报出，实际 stderr：\n%s", lastLines(stderr, 5))
+					t.Errorf("the handler returned after the deadline of the service's share, which Stop should report truthfully, got stderr:\n%s", lastLines(stderr, 5))
 				}
 				return
 			}
 			if strings.Contains(stderr, "handler(s) still running") {
-				t.Errorf("文档说传了请求 ctx 的慢操作断连之后停得下来，实际 Stop 报 handler 没返回：\n%s", lastLines(stderr, 5))
+				t.Errorf("the documentation says a slow operation carrying the request's ctx is stoppable once the connection breaks, and Stop reports that a handler did not return:\n%s", lastLines(stderr, 5))
 			}
-			// handler 都在截止时间前返回了，Stop 报的才是「强制断开」；还有 handler 没返回时报的是上面那句
+			// Every handler returned before the deadline, which is what makes Stop report "force closed"; with one unreturned it reports the line above
 			if !strings.Contains(stderr, "graceful shutdown timed out, connections were force closed") {
-				t.Errorf("到点还有请求时应当强制断开并报出来，实际 stderr：\n%s", lastLines(stderr, 5))
+				t.Errorf("requests still running at the deadline should be force closed and reported, got stderr:\n%s", lastLines(stderr, 5))
 			}
 		})
 	}
