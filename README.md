@@ -1,33 +1,44 @@
 # xone
 
-开箱即用的 Go 三方库集成框架。
+A ready-to-use framework for integrating third-party Go libraries.
 
-写一个 YAML、调一次 `xone.Run`：框架读配置、按顺序建好各组件、收到退出信号逆序关掉。
-你拿到的是**原生 client**——`*gorm.DB`、`*redis.Client`、`*gin.Engine`、标准库 `slog`，不用学新 API。
+Write one YAML file, call `xone.Run` once: the framework reads the configuration, builds each
+component in order, and closes them in reverse order when a shutdown signal arrives.
+What the caller gets is the **native client** -- `*gorm.DB`, `*redis.Client`, `*gin.Engine`, the
+standard library's `slog` -- with no new API to learn.
 
-<img src="docs/images/architecture.svg" alt="xone 模块架构图" width="100%">
+<img src="docs/images/architecture.svg" alt="The xone module architecture" width="100%">
 
-## 特性
+## Features
 
-- **没有装配样板** —— import 想用的集成就行，初始化、关闭、先后顺序都是框架的事
-- **配置驱动，写错就失败** —— 默认值预填；字段拼错、`${VAR}` 没设、值不合法，启动时带着文件和行号报出来
-- **日志 / 链路 / 指标自动串起来** —— 日志带 `trace_id`，出站请求、SQL、Redis 命令进同一条链路，连接池自带指标
-- **默认值量过** —— 接的每个库的默认行为都实测过，不安全的改掉了（比如 gin 默认信任所有代理），见 [behavior.md](docs/behavior.md)
-- **用什么付什么** —— 每个带三方依赖的集成是独立的 Go module，不用的不进你的模块图
+- **No wiring boilerplate** -- import the integrations to be used, and initialization, shutdown and
+  the order of both are the framework's business
+- **Configuration driven, failing on a mistake** -- defaults are pre-filled; a misspelled field, an
+  unset `${VAR}` or an invalid value is reported at startup with the file and the line number
+- **Logging / tracing / metrics strung together** -- logs carry `trace_id`, outbound requests, SQL
+  and Redis commands join the same trace, and connection pools bring their own metrics
+- **Measured defaults** -- the default behavior of every library integrated has been measured and
+  the unsafe ones changed (gin trusting every proxy by default, for one), see
+  [behavior.md](docs/behavior.md)
+- **Pay for what is used** -- every integration with a third-party dependency is its own Go module,
+  and the ones left out never enter the module graph
 
-## 快速开始
+## Getting started
 
-**1. 安装**（核心 Go 1.23+，集成 Go 1.25+；所有模块共用一个版本号，写同一个）
+**1. Install** (the core needs Go 1.23+, the integrations Go 1.25+; all modules share one version
+number, so write the same one)
 
 ```bash
 go get github.com/jupiter-eng/xone@v1.0.3 github.com/jupiter-eng/xone/xgin@v1.0.3
 ```
 
-升级时同样把用到的每个 xone 模块列全、写同一个版本号。只升核心，Go 的 MVS 让 xgin 留在旧版本；
-只升一个集成，会把它依赖的核心（以及 xmetric、xtrace）一起拉上去——两种都会让各模块版本对不上。
-别用 `go get -u ./...`，它连所有间接依赖都升了。
+Upgrading likewise lists every xone module in use with the same version number. Upgrading the core
+alone leaves xgin on the old version through Go's MVS; upgrading one integration alone pulls the
+core it depends on (along with xmetric and xtrace) up with it -- either way the module versions no
+longer match. Do not use `go get -u ./...`, which upgrades every indirect dependency as well.
 
-**2. 写配置** `conf/application.yml`（只写要改的，其余用默认值）
+**2. Write the configuration** in `conf/application.yml` (only what is to be changed, the rest takes
+the defaults)
 
 ```yaml
 XApp:
@@ -36,7 +47,7 @@ XGin:
   Port: 8080
 ```
 
-**3. 启动**
+**3. Start it**
 
 ```go
 package main
@@ -54,7 +65,7 @@ import (
 func main() {
 	xone.MustRun(xgin.New().WithRoutes(func(e *gin.Engine) {
 		e.GET("/hello", func(c *gin.Context) {
-			slog.InfoContext(c.Request.Context(), "hello called") // 已按 XLog 配好，带 trace_id
+			slog.InfoContext(c.Request.Context(), "hello called") // configured by XLog already, with trace_id
 			c.JSON(http.StatusOK, gin.H{"msg": "hello"})
 		})
 	}))
@@ -62,61 +73,64 @@ func main() {
 ```
 
 ```bash
-go run .                      # 自动找到 conf/application.yml
-curl localhost:8080/hello     # {"msg":"hello"}；访问日志、链路、/metrics 已经挂上
-# Ctrl+C 优雅退出：等在途请求结束、逆序关掉各组件；卡住时再按一次立即终止
+go run .                      # conf/application.yml is found by itself
+curl localhost:8080/hello     # {"msg":"hello"}; the access log, the trace and /metrics are already in place
+# Ctrl+C shuts down gracefully: the requests in flight finish and the components close in reverse
+# order; pressing it again while it is stuck terminates immediately
 ```
 
-更完整的可运行示例在 [`example/`](example/)：Web 服务、消息队列消费者、自己写一个集成。
+Fuller runnable examples are in [`example/`](example/): a web service, a message queue consumer, and
+an integration of your own.
 
-## 模块
+## Modules
 
-| 模块 | 底层库 | 给你什么 |
+| Module | Underlying library | What it gives |
 |---|---|---|
-| [xgin](xgin/README.md) | [gin](https://github.com/gin-gonic/gin) | Web 服务，内置访问日志、链路、指标、panic 恢复 |
+| [xgin](xgin/README.md) | [gin](https://github.com/gin-gonic/gin) | A web service, with the access log, tracing, metrics and panic recovery built in |
 | [xginswagger](xginswagger/README.md) | [gin-swagger](https://github.com/swaggo/gin-swagger) | Swagger UI |
-| [xecho](xecho/README.md) | [Echo](https://github.com/labstack/echo) v4 | Web 服务，和 xgin 同一套访问日志、链路、指标、panic 恢复，换成 Echo |
-| [xgorm](xgorm/README.md) | [gorm](https://gorm.io/) | `*gorm.DB`，内置 MySQL / PostgreSQL，多数据源 |
-| [xgorm/clickhouse](xgorm/clickhouse/README.md) | [gorm ClickHouse 驱动](https://github.com/go-gorm/clickhouse) | 给 xgorm 加 ClickHouse |
-| [xredis](xredis/README.md) | [go-redis](https://github.com/redis/go-redis) | `*redis.Client`，多实例 |
-| [xcache](xcache/README.md) | [ristretto](https://github.com/dgraph-io/ristretto) | 本地缓存，按类型取值 |
-| [xhttp](xhttp/README.md) | [resty](https://github.com/go-resty/resty) | 出站 HTTP，重试、链路、指标 |
-| [xkafka](xkafka/README.md) | [franz-go](https://github.com/twmb/franz-go) | 生产用原生 `*kgo.Client`；`Consume` 登记消费者：分区内按序、处理完才提交、重试和死信、退出时等在途的处理完 |
-| [xcron](xcron/README.md) | [cronexpr](https://github.com/hashicorp/cronexpr)（只用来解析） | 进程内的定时任务，每次执行带链路和日志字段，退出时等在途的跑完 |
-| [xtrace](xtrace/README.md) | [OpenTelemetry](https://github.com/open-telemetry/opentelemetry-go) | 链路，设为全局 TracerProvider |
-| [xmetric](xmetric/README.md) | [Prometheus](https://github.com/prometheus/client_golang) | 指标打点，`/metrics` 由 xgin / xecho 挂上 |
-| [xlog](xlog/README.md) | [log/slog](https://pkg.go.dev/log/slog)（标准库） | 结构化日志，文件轮转，请求级字段 |
-| [xconfig](xconfig/README.md) | — | 读自己的配置块 |
-| [xflow](xflow/README.md) | — | 流程编排，失败自动回滚 |
-| [xapp](xapp/README.md) · [xtls](xtls/README.md) | — | 应用名 / 版本 · 客户端 TLS（XGorm / XRedis / XHttp / XKafka 共用） |
+| [xecho](xecho/README.md) | [Echo](https://github.com/labstack/echo) v4 | A web service with the same access log, tracing, metrics and panic recovery as xgin, on Echo |
+| [xgorm](xgorm/README.md) | [gorm](https://gorm.io/) | `*gorm.DB`, with MySQL / PostgreSQL built in, and several data sources |
+| [xgorm/clickhouse](xgorm/clickhouse/README.md) | [the gorm ClickHouse driver](https://github.com/go-gorm/clickhouse) | ClickHouse for xgorm |
+| [xredis](xredis/README.md) | [go-redis](https://github.com/redis/go-redis) | `*redis.Client`, with several instances |
+| [xcache](xcache/README.md) | [ristretto](https://github.com/dgraph-io/ristretto) | A local cache, read back by type |
+| [xhttp](xhttp/README.md) | [resty](https://github.com/go-resty/resty) | Outbound HTTP, with retries, tracing and metrics |
+| [xkafka](xkafka/README.md) | [franz-go](https://github.com/twmb/franz-go) | The native `*kgo.Client` for producing; `Consume` registers a consumer: in order within a partition, committed only once handled, with retries and a dead letter topic, and the handlers in flight finished on exit |
+| [xcron](xcron/README.md) | [cronexpr](https://github.com/hashicorp/cronexpr) (for parsing only) | In-process scheduled jobs, each run carrying a trace and log fields, with the runs in flight finished on exit |
+| [xtrace](xtrace/README.md) | [OpenTelemetry](https://github.com/open-telemetry/opentelemetry-go) | Tracing, installed as the global TracerProvider |
+| [xmetric](xmetric/README.md) | [Prometheus](https://github.com/prometheus/client_golang) | Recording metrics, with `/metrics` mounted by xgin / xecho |
+| [xlog](xlog/README.md) | [log/slog](https://pkg.go.dev/log/slog) (the standard library) | Structured logging, file rotation, per-request fields |
+| [xconfig](xconfig/README.md) | — | Reading a configuration block of your own |
+| [xflow](xflow/README.md) | — | Orchestrating a flow, rolling back automatically on a failure |
+| [xapp](xapp/README.md) · [xtls](xtls/README.md) | — | The application name / version · client TLS (shared by XGorm / XRedis / XHttp / XKafka) |
 
-`xconfig`、`xlog`、`xflow`、`xapp`、`xtls`、`xhook`、`xerror`、`xutil`、`xonetest` 都在核心模块里，核心只依赖 yaml。
-有几个不用自己 import，跟着别的模块来：
+`xconfig`, `xlog`, `xflow`, `xapp`, `xtls`, `xhook`, `xerror`, `xutil` and `xonetest` all live in the
+core module, and the core depends on yaml alone. A few need no import of their own and come along
+with something else:
 
-| 模块 | 跟着谁来 | 一个都没用时 |
+| Module | Comes along with | When none of them is used |
 |---|---|---|
-| `xapp`（`XApp` 块） | `xone` 本身 | —— |
-| `xlog` | xgin、xecho、xcron | 框架不接管日志，`slog.Default()` 还是你自己的；要用就匿名 import `github.com/jupiter-eng/xone/xlog` |
-| `xtrace`、`xmetric` | xgin、xecho、xgorm、xredis、xhttp、xkafka；xcache 只带 xmetric，xcron 只带 xtrace | 想要时匿名 import，见 [可观测「链路」](docs/observability.md#tracing) |
+| `xapp` (the `XApp` block) | `xone` itself | — |
+| `xlog` | xgin, xecho, xcron | The framework does not take logging over and `slog.Default()` stays yours; to use it, import `github.com/jupiter-eng/xone/xlog` anonymously |
+| `xtrace`, `xmetric` | xgin, xecho, xgorm, xredis, xhttp, xkafka; xcache brings xmetric alone and xcron xtrace alone | Import it anonymously when it is wanted, see [Observability, "Tracing"](docs/observability.md#tracing) |
 
-## 常用写法
+## Everyday usage
 
-完整用法见各模块的 README，这里只列最常用的。
+The full usage is in each module's README; only the most common things are listed here.
 
-**日志** —— 标准库 `slog`，用带 ctx 的方法才带得上 `trace_id`：
+**Logging** -- the standard library's `slog`, where only the methods taking a ctx carry `trace_id`:
 
 ```go
 slog.InfoContext(ctx, "order created", "order_id", id, "amount", amount)
 
-xlog.AddKV(ctx, "user_id", uid)                             // 之后这个请求的每条日志都带着
-ctx = xlog.CtxWithKV(ctx, map[string]any{"order_id": id})   // 只影响用新 ctx 写的日志
+xlog.AddKV(ctx, "user_id", uid)                             // every later log of this request carries it
+ctx = xlog.CtxWithKV(ctx, map[string]any{"order_id": id})   // affects only the logs written with the new ctx
 ```
 
-**数据库 / Redis / 本地缓存**：
+**Databases / Redis / the local cache**:
 
 ```go
 var u User
-err := xgorm.CWithCtx(ctx).First(&u, id).Error   // 多数据源：xgorm.CWithCtx(ctx, "report")
+err := xgorm.CWithCtx(ctx).First(&u, id).Error   // several data sources: xgorm.CWithCtx(ctx, "report")
 
 v, err := xredis.C().Get(ctx, "k").Result()
 
@@ -124,13 +138,13 @@ xcache.Set("user:1", u)
 cached, ok := xcache.Get[User]("user:1")
 ```
 
-**出站 HTTP**（链路头、指标自动带上）：
+**Outbound HTTP** (the trace headers and the metrics come along by themselves):
 
 ```go
 resp, err := xhttp.R(ctx).SetResult(&out).Get("https://api.example.com/users/1")
 ```
 
-**指标**：
+**Metrics**:
 
 ```go
 xmetric.CounterInc("orders_created_total", xmetric.T("channel", "app"))
@@ -138,54 +152,60 @@ xmetric.ObserveDuration("payment_call", time.Since(start))
 defer xmetric.TrackInFlight("jobs_in_flight")()
 ```
 
-**读自己的配置**：
+**Reading a configuration of your own**:
 
 ```go
 var c struct {
 	Timeout time.Duration `yaml:"Timeout"`
 }
-err := xconfig.Unmarshal("Order", &c)   // 读 application.yml 里的 Order 块，什么时候调都行
+err := xconfig.Unmarshal("Order", &c)   // reads the Order block of application.yml, at any time
 ```
 
-## 启动方式
+## Ways to start
 
 ```go
-xone.MustRun(xgin.New().WithRoutes(routes))   // Web 服务
-xone.MustRun(xone.UntilSignal())              // 常驻进程：消费者、定时任务，组件在钩子里起
-xone.MustRun(xone.Func(migrate))              // 一次性任务：函数返回就退出
-xone.MustRun(myServer)                        // 自己的服务：实现 Start(ctx) error 就行
+xone.MustRun(xgin.New().WithRoutes(routes))   // a web service
+xone.MustRun(xone.UntilSignal())              // a long-running process: a consumer or scheduled jobs, with the components started in hooks
+xone.MustRun(xone.Func(migrate))              // a one-off task: it exits when the function returns
+xone.MustRun(myServer)                        // a server of your own: implementing Start(ctx) error is enough
 ```
 
-要在启动前、停止前做事（预热、起消费者、刷缓冲），在 `init()` 里登记钩子：
+To do something before startup or before shutdown (warming up, starting a consumer, flushing a
+buffer), register a hook in `init()`:
 
 ```go
 func init() {
-	xhook.BeforeStart(func(ctx context.Context) error { return warmUp(ctx) }) // 这时数据库、Redis 都已就绪
-	xhook.BeforeStop(func(ctx context.Context) error { return flush(ctx) })   // 只在上面那个成功之后才执行
+	xhook.BeforeStart(func(ctx context.Context) error { return warmUp(ctx) }) // the database and Redis are ready by now
+	xhook.BeforeStop(func(ctx context.Context) error { return flush(ctx) })   // runs only once the one above has succeeded
 }
 ```
 
-`init()` 只登记，框架按 Log → Telemetry → Client → Business → Server 的档位执行，退出时倒过来；
-业务钩子不用写档位。详见 [钩子与档位](docs/guide.md#hooks-and-stages)。
+`init()` only registers; the framework runs them by stage, Log -> Telemetry -> Client -> Business ->
+Server, and in reverse on exit. A business hook writes no stage. The details are in
+[Hooks and stages](docs/guide.md#hooks-and-stages).
 
-## 配置文件
+## The configuration file
 
-- **放哪**：`conf/application.yml`（也认 `config/`、当前目录和 `.yaml`）；或者 `--config=<path>`、环境变量 `XONE_CONFIG`。
-- **多环境**：`XApp.Profiles: ${APP_ENV:dev}` 会把 `application-dev.yml` 压在上面；`--profile=prod` 覆盖它。
-- **拆文件**：`XApp.Import: [common/log.yml]`。
-- **看最终生效的**：`XONE_DEBUG=1 ./app`，打出读了哪些文件、合并后的完整配置（凭证已遮掉）。
+- **Where it goes**: `conf/application.yml` (`config/`, the current directory and `.yaml` are
+  recognized too); or `--config=<path>`, or the environment variable `XONE_CONFIG`.
+- **Several environments**: `XApp.Profiles: ${APP_ENV:dev}` lays `application-dev.yml` on top, and
+  `--profile=prod` overrides it.
+- **Splitting files**: `XApp.Import: [common/log.yml]`.
+- **Seeing what is in effect**: `XONE_DEBUG=1 ./app` prints which files were read and the whole
+  merged configuration (with credentials masked).
 
-完整的加载顺序、合并规则和多环境例子见 [config.md](docs/config.md)。
+The full loading order, the merge rules and an example with several environments are in
+[config.md](docs/config.md).
 
-## 文档
+## Documentation
 
-| 想要 | 读 |
+| For | Read |
 |---|---|
-| 从跑起来到上线：钩子、非 Web 服务、测试、部署、写自己的集成 | [使用指南](docs/guide.md) |
-| 配置文件放哪、Profile、Import、占位符、多环境 | [配置](docs/config.md) |
-| 与底层库不同的默认值总表 | [默认行为](docs/behavior.md) |
-| 日志、指标、链路的约定，链路的信任边界 | [可观测](docs/observability.md) |
-| 按错误原文排错 | [排错](docs/troubleshooting.md) |
-| 为什么是现在这个样子 | [架构与设计](docs/architecture.md) |
-| 每一版改了什么、怎么迁移 | [更新日志](docs/CHANGELOG.md) |
-| 参与开发 | [开发](docs/development.md) |
+| From running it to running it in production: hooks, services that are not web servers, testing, deployment, writing an integration of your own | [The guide](docs/guide.md) |
+| Where the configuration file goes, profiles, imports, placeholders, several environments | [Configuration](docs/config.md) |
+| The summary table of defaults that differ from the underlying library | [Default behavior](docs/behavior.md) |
+| The conventions for logging, metrics and tracing, and tracing's trust boundary | [Observability](docs/observability.md) |
+| Troubleshooting by the error text | [Troubleshooting](docs/troubleshooting.md) |
+| Why it looks the way it does | [Architecture and design](docs/architecture.md) |
+| What changed in each version and how to migrate | [The changelog](docs/CHANGELOG.md) |
+| Taking part in development | [Development](docs/development.md) |

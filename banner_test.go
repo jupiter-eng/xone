@@ -14,7 +14,7 @@ import (
 	"github.com/jupiter-eng/xone/internal/hook"
 )
 
-// plain 去掉颜色码，只看文字
+// plain strips the colour codes, leaving the text alone
 func plain(s string) string { return regexp.MustCompile(`\x1b\[[0-9;]*m`).ReplaceAllString(s, "") }
 
 func TestPrintBanner_PrintsArtAndVersionOnTerminal(t *testing.T) {
@@ -23,17 +23,18 @@ func TestPrintBanner_PrintsArtAndVersionOnTerminal(t *testing.T) {
 	out := plain(b.String())
 	for _, want := range append(bannerText, ":: xone ::", version()) {
 		if !strings.Contains(out, want) {
-			t.Errorf("banner 里该有 %q，got=\n%s", want, out)
+			t.Errorf("the banner must contain %q, got=\n%s", want, out)
 		}
 	}
 }
 
 func TestPrintBanner_WritesNothingWhenNotTerminal(t *testing.T) {
-	// 容器、重定向、日志采集器后面：多行字符画就是日志平台里解析失败的垃圾
+	// A container, a redirection, a log collector downstream: multi-line ASCII art is unparsable
+	// garbage in the logging platform
 	var b bytes.Buffer
 	printBanner(&b, false)
 	if b.Len() != 0 {
-		t.Errorf("不是终端时不该写 banner，got=%q", b.String())
+		t.Errorf("no banner may be written when this is not a terminal, got=%q", b.String())
 	}
 }
 
@@ -45,7 +46,7 @@ func TestIsTerminal_PipesAndFilesAreNotTerminals(t *testing.T) {
 	defer r.Close()
 	defer w.Close()
 	if isTerminal(w) {
-		t.Error("管道不该被当成终端")
+		t.Error("a pipe must not be taken for a terminal")
 	}
 	f, err := os.CreateTemp(t.TempDir(), "out")
 	if err != nil {
@@ -53,12 +54,12 @@ func TestIsTerminal_PipesAndFilesAreNotTerminals(t *testing.T) {
 	}
 	defer f.Close()
 	if isTerminal(f) {
-		t.Error("普通文件不该被当成终端")
+		t.Error("an ordinary file must not be taken for a terminal")
 	}
 }
 
 func TestRun_StderrNotTerminal_NoBanner(t *testing.T) {
-	// 调用点：Run 得真的拿 stderr 去判断，而不是不管三七二十一都打
+	// The call site: Run has to decide by looking at stderr, not print regardless
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -74,7 +75,7 @@ func TestRun_StderrNotTerminal_NoBanner(t *testing.T) {
 	w.Close()
 	out, _ := io.ReadAll(r)
 	if strings.Contains(plain(string(out)), bannerText[0]) {
-		t.Errorf("stderr 是管道时不该打 banner，got=%q", out)
+		t.Errorf("no banner may be printed while stderr is a pipe, got=%q", out)
 	}
 }
 
@@ -83,13 +84,13 @@ func TestModuleVersion_ComesFromBuildInfo(t *testing.T) {
 		bi   debug.BuildInfo
 		want string
 	}{
-		"作为依赖发布版":     {debug.BuildInfo{Deps: []*debug.Module{{Path: modulePath, Version: "v0.2.0"}}}, "v0.2.0"},
-		"replace 到本地": {debug.BuildInfo{Deps: []*debug.Module{{Path: modulePath, Version: "v0.2.0", Replace: &debug.Module{Path: "../xone"}}}}, "(devel)"},
-		"本仓库自己":       {debug.BuildInfo{Main: debug.Module{Path: modulePath, Version: "(devel)"}}, "(devel)"},
-		"没依赖它":        {debug.BuildInfo{Main: debug.Module{Path: "example.com/app"}}, "(devel)"},
+		"released as a dependency":   {debug.BuildInfo{Deps: []*debug.Module{{Path: modulePath, Version: "v0.2.0"}}}, "v0.2.0"},
+		"replaced with a local path": {debug.BuildInfo{Deps: []*debug.Module{{Path: modulePath, Version: "v0.2.0", Replace: &debug.Module{Path: "../xone"}}}}, "(devel)"},
+		"this repository itself":     {debug.BuildInfo{Main: debug.Module{Path: modulePath, Version: "(devel)"}}, "(devel)"},
+		"does not depend on it":      {debug.BuildInfo{Main: debug.Module{Path: "example.com/app"}}, "(devel)"},
 	} {
 		if got := moduleVersion(&c.bi); got != c.want {
-			t.Errorf("%s：got=%q want=%q", name, got, c.want)
+			t.Errorf("%s: got=%q want=%q", name, got, c.want)
 		}
 	}
 }
@@ -109,7 +110,7 @@ func TestRun_XONE_DEBUGListsStartHookOrder(t *testing.T) {
 	out := b.String()
 	i, j := strings.Index(out, "Log"), strings.Index(out, "Client")
 	if !strings.Contains(out, "start hooks, in order") || i < 0 || j < 0 || i > j {
-		t.Errorf("该按执行顺序（Log 在 Client 前面）列出启动钩子，got=\n%s", out)
+		t.Errorf("the start hooks must be listed in the order they run (Log before Client), got=\n%s", out)
 	}
 }
 
@@ -125,6 +126,6 @@ func TestRun_NoDebugOutputWithoutXONE_DEBUG(t *testing.T) {
 		t.Fatal(err)
 	}
 	if b.Len() != 0 {
-		t.Errorf("没开 XONE_DEBUG 不该有调试输出，got=\n%s", b.String())
+		t.Errorf("no debug output may appear without XONE_DEBUG, got=\n%s", b.String())
 	}
 }
