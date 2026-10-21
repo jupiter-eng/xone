@@ -160,6 +160,6 @@ Three things are accepted inbound and sent outbound, under different trust rules
   treated as trusted; otherwise baggage and forwarded headers are not accepted at all. xkafka
   treats Kafka message headers as trusted when consuming (whoever can write to a topic holds the
   cluster's credentials); the reasoning and the exceptions are in
-  [xkafka "链路"](../xkafka/README.md#tracing).
+  [xkafka "Tracing"](../xkafka/README.md#tracing).
 - To read a forwarded value in business code:
   `xtrace.ForwardHeaderFromContext(ctx, "X-Request-Id")`.

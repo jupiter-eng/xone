@@ -1,14 +1,16 @@
-// Package xkv 是一个「自己写的集成」的完整样例：一个落盘的键值存储。
+// Package xkv is a complete example of "an integration of your own": a key-value store that lands
+// on disk.
 //
-// 它不是框架的一部分，就是你在自己项目里会写的那种包。整个接入只有三样东西，
-// 都在本文件末尾的「接入框架」一节：
+// It is not part of the framework; it is the kind of package anybody writes in their own project.
+// The whole of the integration is three things, all in the "Joining the framework" section at the
+// end of this file:
 //
-//	BeforeStart  读配置文件里的 XKV 那一块，建好实例存起来
-//	BeforeStop   退出时关掉它
-//	C()          运行期取实例
+//	BeforeStart  reads the XKV block of the configuration file, builds the instance and keeps it
+//	BeforeStop   closes it on exit
+//	C()          takes the instance at run time
 //
-// 除此之外这个包只 import xhook 和 xconfig —— 集成不认识框架本体，
-// 所以你把它单独发成一个 module 也完全成立。
+// Beyond that this package imports xhook and xconfig alone -- an integration does not know the
+// framework itself, so releasing it as a module of its own works just as well.
 package xkv
 
 import (
@@ -26,22 +28,25 @@ import (
 	"github.com/jupiter-eng/xone/xhook"
 )
 
-// ConfigKey 本模块在配置文件里的顶层 key
+// ConfigKey is this module's top-level key in the configuration file
 const ConfigKey = "XKV"
 
-// Config 本模块的配置。字段上的 yaml tag 决定配置文件里怎么写
+// Config is this module's configuration. The yaml tag on a field decides how it is written in the
+// configuration file
 type Config struct {
-	// Path 数据文件路径
+	// Path is the path of the data file
 	Path string `yaml:"Path"`
 
-	// FlushInterval 多久把内存里的改动刷一次盘。默认 5s，必须大于 0
+	// FlushInterval is how often the changes in memory are flushed to disk. It defaults to 5s and
+	// must be > 0
 	FlushInterval time.Duration `yaml:"FlushInterval"`
 }
 
-// Validate xconfig.Unmarshal 读完之后会调它，New 也会调一次。
+// Validate is called by xconfig.Unmarshal once it has read, and once more by New.
 //
-// FlushInterval 不大于 0 时 time.NewTicker 会 panic，而且是在后台协程里——
-// 进程直接死掉，连一条说明是哪项配错了的错误都没有。
+// With a FlushInterval that is not greater than 0, time.NewTicker panics -- inside a background
+// goroutine at that, so the process simply dies without even an error saying which field was
+// misconfigured.
 func (c Config) Validate() error {
 	if c.FlushInterval <= 0 {
 		return fmt.Errorf("FlushInterval must be > 0, got=%v", c.FlushInterval)
@@ -49,15 +54,15 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// DefaultConfig 全部默认值集中在这里。
+// DefaultConfig gathers every default in one place.
 //
-// 配置文件里没写的字段保持这里的值——所以不需要指针字段来区分
-// 「没配」和「配成零值」。
+// A field the configuration file does not set keeps the value here -- which is why no pointer field
+// is needed to tell "not configured" from "configured as the zero value".
 func DefaultConfig() Config {
 	return Config{Path: "xkv.json", FlushInterval: 5 * time.Second}
 }
 
-// Store 一个落盘的键值存储
+// Store is a key-value store that lands on disk
 type Store struct {
 	path string
 
@@ -69,7 +74,7 @@ type Store struct {
 	done chan struct{}
 }
 
-// Get 读一个键
+// Get reads one key
 func (s *Store) Get(key string) (string, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -77,7 +82,8 @@ func (s *Store) Get(key string) (string, bool) {
 	return v, ok
 }
 
-// Set 写一个键。落盘由后台协程按 FlushInterval 批量做
+// Set writes one key. Landing on disk is done in batches by the background goroutine, every
+// FlushInterval
 func (s *Store) Set(key, value string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -85,23 +91,25 @@ func (s *Store) Set(key, value string) {
 	s.dirty = true
 }
 
-// Len 返回当前键的数量
+// Len returns how many keys there are right now
 func (s *Store) Len() int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return len(s.items)
 }
 
-// New 纯构造器：不碰任何全局变量，不读配置文件，也不依赖框架。
+// New is the pure constructor: it touches no global, reads no configuration file, and depends on no
+// framework.
 //
-// 这条是框架对集成的硬性要求（check.sh 会查），为的是「零装配」永远只是
-// 默认路径而不是唯一路径：测试直接调它拿一个干净实例，不需要 mock；
-// 需要两套配置时也有出路。
+// This is a hard requirement the framework places on an integration (check.sh verifies it), so that
+// "zero wiring" always stays the default path rather than the only one: a test calls it directly for
+// a clean instance and needs no mock, and two sets of configuration have a way out too.
 //
-// 它不收 ctx——开个文件不会把人卡住。会建连、会重试、会探测的构造器才收 ctx，
-// 签名如实说明这件事。
+// It takes no ctx -- opening a file holds nobody up. Only a constructor that connects, retries or
+// probes takes a ctx, and the signature says so faithfully.
 func New(c Config) (*Store, io.Closer, error) {
-	// 不经过配置文件、直接调 New 的也要拦住：Unmarshal 那次校验管不到这里
+	// A New called directly, without going through the configuration file, has to be caught too:
+	// Unmarshal's validation does not reach here
 	if err := c.Validate(); err != nil {
 		return nil, nil, err
 	}
@@ -125,10 +133,11 @@ func New(c Config) (*Store, io.Closer, error) {
 	return s, s, nil
 }
 
-// Close 停掉后台协程并把最后一次改动刷下去。
+// Close stops the background goroutine and flushes the last changes.
 //
-// 退出时由本包的停止钩子 closeXKV 调它；停止钩子按启动的逆序执行，
-// 所以这里不需要考虑「数据库是不是已经关了」之类的问题，本模块只管自己。
+// On exit it is called by this package's stop hook, closeXKV; stop hooks run in the reverse order of
+// startup, so there is no need to wonder here whether the database has been closed already -- this
+// module minds only itself.
 func (s *Store) Close() error {
 	close(s.stop)
 	<-s.done
@@ -164,8 +173,9 @@ func (s *Store) flush() error {
 		err = s.write(b)
 	}
 	if err != nil {
-		// 没写成就把脏标记还回去：否则这批改动再也没人刷，
-		// 连 Close 时最后那一次也会当成「没有改动」跳过，数据就此丢掉
+		// The dirty flag is handed back when the write failed: otherwise nobody would ever flush this
+		// batch of changes again, and even the last flush in Close would skip it as "no changes",
+		// losing the data for good
 		s.mu.Lock()
 		s.dirty = true
 		s.mu.Unlock()
@@ -173,7 +183,8 @@ func (s *Store) flush() error {
 	return err
 }
 
-// write 先写临时文件再改名：直接覆写的话，进程在写一半时被杀掉就剩一个坏文件
+// write writes a temporary file and renames it: overwriting directly would leave a broken file
+// behind if the process were killed halfway through the write
 func (s *Store) write(b []byte) error {
 	tmp := s.path + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
@@ -182,23 +193,25 @@ func (s *Store) write(b []byte) error {
 	return os.Rename(tmp, filepath.Clean(s.path))
 }
 
-// ---- 接入框架：全部代码就是下面这些 ----
+// ---- Joining the framework: the code below is all of it ----
 
-// conf 生效中的配置。它和 store 都是普通的包级变量，怎么存、怎么取由本包自己决定
+// conf is the configuration in effect. It and store are ordinary package-level variables, and how
+// they are kept and taken is this package's own decision
 var (
 	conf  = DefaultConfig()
 	store *Store
 )
 
-// init 只登记，不初始化。真正的初始化由框架在 StageClient 执行——
-// 这一档是「被业务依赖的东西」。不写档位的话落在默认的 StageBusiness，
-// 和用它的业务钩子同档，谁先谁后就看包的初始化顺序了。
+// init only registers and initializes nothing. The real initialization is run by the framework at
+// StageClient -- the stage for "what the business depends on". Without a stage it would land in the
+// default StageBusiness, in the same stage as the business hooks using it, and which came first
+// would be up to the packages' initialization order.
 func init() {
 	xhook.BeforeStart(initXKV, xhook.At(xhook.StageClient))
-	xhook.BeforeStop(closeXKV) // 档位跟着上面那个启动钩子
+	xhook.BeforeStop(closeXKV) // the stage is inherited from the start hook above
 }
 
-// initXKV 读配置、建实例、存起来。里面是普通的 Go 代码。
+// initXKV reads the configuration, builds the instance and keeps it. Inside is ordinary Go code.
 func initXKV(context.Context) error {
 	conf = DefaultConfig()
 	if err := xconfig.Unmarshal(ConfigKey, &conf); err != nil {
@@ -213,14 +226,15 @@ func initXKV(context.Context) error {
 	return nil
 }
 
-// closeXKV 收工：停后台协程、把最后一次改动刷下去。
+// closeXKV finishes up: stops the background goroutine and flushes the last changes.
 //
-// 启动钩子失败时它不会被调到——停止钩子只在和它配对的启动钩子成功之后才执行，
-// 所以这里不必处理「store 还是 nil」。
+// It is never called when the start hook failed -- a stop hook runs only once the start hook it is
+// paired with has succeeded, so there is no need to handle "store is still nil" here.
 func closeXKV(context.Context) error { return store.Close() }
 
-// C 取实例
+// C takes the instance
 func C() *Store { return store }
 
-// Conf 返回生效中的配置。运行期要读配置才需要这个，不需要就别导出
+// Conf returns the configuration in effect. This is only needed when the configuration is read at
+// run time; export nothing like it otherwise
 func Conf() Config { return conf }

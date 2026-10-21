@@ -16,10 +16,11 @@ import (
 	"github.com/jupiter-eng/xone/xtrace"
 )
 
-// 透传 Header 的信任边界横跨两个模块：xgin 按 TrustedProxies 判断直连的对端，
-// xtrace 只收被判为可信的那些。两边靠 carrier 上的 TrustedPeer() 接头，
-// 各自的单元测试只看得见自己那一半——方法名哪天在一边改了，
-// 两边的测试照样全绿，透传却从此一个都不收。这条把两半接起来测。
+// The trust boundary for forwarded headers spans two modules: xgin decides about the directly
+// connected peer by TrustedProxies, and xtrace accepts only what was judged trusted. The two meet
+// through TrustedPeer() on the carrier, and each one's unit tests see only its own half -- the day
+// the method name changes on one side, both sides' tests stay green while forwarding accepts nothing
+// at all. This case joins the two halves together.
 func TestXGinAndXTrace_ForwardHeadersOnlyFromTrustedPeers(t *testing.T) {
 	oldTP, oldProp := otel.GetTracerProvider(), otel.GetTextMapPropagator()
 	t.Cleanup(func() { otel.SetTracerProvider(oldTP); otel.SetTextMapPropagator(oldProp) })
@@ -37,17 +38,17 @@ func TestXGinAndXTrace_ForwardHeadersOnlyFromTrustedPeers(t *testing.T) {
 		trustedProxies []string
 		want           string
 	}{
-		"对端在 TrustedProxies 里": {[]string{"127.0.0.1"}, "t1"},
-		"默认谁都不信":               {nil, ""},
+		"the peer is in TrustedProxies": {[]string{"127.0.0.1"}, "t1"},
+		"nobody is trusted by default":  {nil, ""},
 	} {
 		if got := forwardedTenant(t, c.trustedProxies); got != c.want {
-			t.Errorf("%s：handler 看到的透传值=%q，want %q", name, got, c.want)
+			t.Errorf("%s: the forwarded value the handler saw=%q, want %q", name, got, c.want)
 		}
 	}
 }
 
-// forwardedTenant 起一个真的 xgin 服务，从本机带着 X-Tenant-Id 打一次，
-// 返回 handler 从 ctx 里取到的透传值
+// forwardedTenant starts a real xgin server, makes one call to it from this host carrying an
+// X-Tenant-Id, and returns the forwarded value the handler took out of its ctx
 func forwardedTenant(t *testing.T, trustedProxies []string) string {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -82,6 +83,6 @@ func forwardedTenant(t *testing.T, trustedProxies []string) string {
 		resp.Body.Close()
 		return string(body)
 	}
-	t.Fatal("服务没起来")
+	t.Fatal("the server never came up")
 	return ""
 }

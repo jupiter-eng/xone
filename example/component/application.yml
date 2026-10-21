@@ -1,9 +1,9 @@
-# 业务自己的配置块，由 conf 包认领
+# The business's own configuration block, claimed by the conf package
 MyApp:
   Greeting: "hello from config"
   Rounds: 3
 
-# 自己写的集成，由 xkv 包认领
+# An integration of our own, claimed by the xkv package
 XKV:
   Path: "/tmp/xkv-example.json"
   FlushInterval: 1s

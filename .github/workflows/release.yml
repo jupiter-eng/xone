@@ -1,38 +1,46 @@
 name: release
 
-# 发布按钮：Actions → release → Run workflow，填版本号（如 v0.1.0）。
+# The release button: Actions -> release -> Run workflow, filling in the version (v0.1.0, say).
 #
-# 发布分两步，这个按钮是第二步：
-#   1. scripts/release.sh vX.Y.Z --bump 改好 go.mod、CHANGELOG 和 README 的安装版本号，走普通的 PR 合进 main；
-#   2. 点这个按钮：在 main 的最新提交上给每个模块打 tag（v0.1.0、xgin/v0.1.0……）并推送。
-# tag 就打在 main 上，main 的分支保护照常生效：这里只推 tag，不推任何分支。
+# A release has two steps and this button is the second:
+#   1. scripts/release.sh vX.Y.Z --bump fixes up go.mod, the CHANGELOG and the install version in the
+#      README, and goes into main through an ordinary PR;
+#   2. press this button: tag every module on main's latest commit (v0.1.0, xgin/v0.1.0 and so on)
+#      and push.
+# The tags go on main and main's branch protection applies as usual: only tags are pushed here, no
+# branch.
 #
-# 按钮做的事：
-#   - release.sh --tag：确认 go.mod 已经钉到这个版本、CHANGELOG 有这一节、tag 还没用过，
-#     跑检查和单测，在本地打 tag；
-#   - e2e（真实的 PG / MySQL / Redis / ClickHouse，同 e2e.yml）；
-#   - release.sh --smoke：和 --verify 同一个外部工程、同一套检查，依赖指向本地代码；
-#   - 只推这一组 tag（--atomic：要么全上去，要么一个都不上去）；
-#   - release.sh --verify（单独的 verify job）：在一个全新的外部工程里 go get，验证装得上、跑得起来。
-# 前面任何一步红了都不推送。tag 推出去就被 Go 的 module proxy 永久缓存，删不掉。
+# What the button does:
+#   - release.sh --tag: confirms that go.mod is pinned to this version, that the CHANGELOG has this
+#     section and that the tags are unused, runs the checks and the unit tests, and tags locally;
+#   - e2e (real PG / MySQL / Redis / ClickHouse, as in e2e.yml);
+#   - release.sh --smoke: the same external project and the same checks as --verify, with the
+#     dependencies pointing at the local code;
+#   - pushes this one set of tags (--atomic: either all of them go up or none of them does);
+#   - release.sh --verify (a job of its own): go get in a brand new external project, verifying that
+#     it installs and runs.
+# Nothing is pushed if any earlier step goes red. Once a tag is pushed it is cached forever by Go's
+# module proxy and cannot be removed.
 #
-# verify 单独成一个 job，是为了红了能重跑：推送之后的失败（最常见的是 proxy 还没拉到新 tag）
-# 点「Re-run failed jobs」只重跑 verify。和打 tag 放在同一个 job 里的话，重跑会从头来一遍，
-# 重新拉下来的 tag 让 release.sh --tag 在第一步就停下，而那时版本早已发出去了。
+# verify is a job of its own so that it can be re-run when it goes red: a failure after the push
+# (most often the proxy not having fetched the new tag yet) is re-run alone with "Re-run failed
+# jobs". In the same job as the tagging, a re-run would start from the top, and the tags fetched back
+# down would stop release.sh --tag at its first step -- by which time the version has long been
+# released.
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: '版本号，vX.Y.Z（只收 v0 / v1）'
+        description: 'The version, vX.Y.Z (v0 / v1 only)'
         required: true
         type: string
 
-# 同一时间只跑一个发布
+# One release at a time
 concurrency:
   group: release
   cancel-in-progress: false
 
-# 默认只读；只有 release job 要写（推 tag）
+# Read-only by default; only the release job writes (pushing the tags)
 permissions:
   contents: read
 
@@ -40,10 +48,11 @@ jobs:
   release:
     if: github.ref == 'refs/heads/main'
     permissions:
-      contents: write # 推 tag
+      contents: write # pushing the tags
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    # 和 e2e.yml 同一套服务容器，账号密码与 e2e/compose.yml、e2e/harness 的默认值一致
+    # The same service containers as e2e.yml, with the accounts and passwords matching the defaults
+    # of e2e/compose.yml and e2e/harness
     services:
       postgres:
         image: mirror.gcr.io/library/postgres:16
@@ -102,7 +111,8 @@ jobs:
           --health-cmd "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server 127.0.0.1:9092"
           --health-interval 3s --health-retries 40
     env:
-      # 版本号经环境变量进脚本，不直接拼进 run：输入框里的内容不该有机会变成命令
+      # The version reaches the script through an environment variable rather than being pasted into
+      # run: what somebody types into the input box must never get a chance to become a command
       VERSION: ${{ inputs.version }}
       XONE_E2E_EXTERNAL: '1'
       XONE_E2E_PG_ADDR: 127.0.0.1:5432
@@ -114,9 +124,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0 # release.sh 要看这个版本的 tag 是不是已经有了
-          # 不把能写仓库的 token 留在 .git/config 里：后面的检查、单测、e2e 跑的是仓库和依赖的代码，
-          # 用不着它。token 只交给推送和 summary 两步，经环境变量，不落盘
+          fetch-depth: 0 # release.sh looks at whether this version's tags already exist
+          # No token that can write to the repository is left in .git/config: the checks, the unit
+          # tests and e2e that follow run the repository's and the dependencies' code and have no use
+          # for it. The token is handed only to the push and the summary, through an environment
+          # variable, never to disk
           persist-credentials: false
       - uses: actions/setup-go@v6
         with:
@@ -124,33 +136,40 @@ jobs:
           cache: true
           cache-dependency-path: '**/go.sum'
 
-      - name: release.sh --tag（确认可以发、检查、单测、在本地打 tag）
+      - name: release.sh --tag (confirm it can be released, check, unit-test, tag locally)
         run: scripts/release.sh "$VERSION" --tag --e2e-passed
 
-      # 跳过的三条同 e2e.yml：PG / MySQL / Redis 的 TLS 用例要 root 起本机实例，runner 不是 root。
-      # 上一步用了 --e2e-passed，由这一步兑现：这里红了，tag 只在这台机器上，不会推出去
+      # The three skipped are the same as in e2e.yml: the PG / MySQL / Redis TLS cases need root to
+      # start a local instance, and the runner is not root.
+      # The step above was given --e2e-passed, which this step makes good on: if this goes red the
+      # tags stay on this machine and are never pushed
       - name: e2e
         run: scripts/e2e.sh -skip 'TestTLS_(PostgreSQL|MySQL|Redis)$'
 
-      # 和推送之后的 --verify 同一个外部工程、同一套检查，依赖指向本地这个打了 tag 的提交。
-      # --verify 曾经在 tag 推出去之后才红；这一步红了，tag 还只在这台机器上
-      - name: release.sh --smoke（推送之前：外部工程用本地代码起得来、关得对）
+      # The same external project and the same checks as the --verify after the push, with the
+      # dependencies pointing at this tagged commit locally.
+      # --verify once went red only after the tags had been pushed; when this step goes red the tags
+      # are still on this machine alone
+      - name: release.sh --smoke (before the push, an external project on the local code starts and stops correctly)
         run: scripts/release.sh "$VERSION" --smoke
 
-      # 用 PAT 而不是 github.token：org 禁掉了 GITHUB_TOKEN 的写权限
-      # （仓库级改不了，API 返回 409 Write permissions for workflows are disabled by the organization），
-      # 只读的 token 推不了 ref。RELEASE_TOKEN 是一个只对本仓库有 contents:write 的 fine-grained PAT
-      - name: 推送 tag
+      # A PAT rather than github.token: the org has disabled GITHUB_TOKEN's write permission (it
+      # cannot be changed at the repository level, and the API answers 409 Write permissions for
+      # workflows are disabled by the organization), and a read-only token cannot push a ref.
+      # RELEASE_TOKEN is a fine-grained PAT with contents:write on this repository alone
+      - name: push the tags
         env:
           TOKEN: ${{ secrets.RELEASE_TOKEN }}
         run: |
-          [ -n "$TOKEN" ] || { echo "✗ 仓库 secret RELEASE_TOKEN 没配：推 tag 需要一个对本仓库有 contents:write 的 fine-grained PAT"; exit 1; }
+          [ -n "$TOKEN" ] || { echo "✗ the repository secret RELEASE_TOKEN is not set: pushing tags needs a fine-grained PAT with contents:write on this repository"; exit 1; }
           refs=$(git tag --points-at "$VERSION" | sed 's|^|refs/tags/|')
           echo "$refs"
           git push --atomic "https://x-access-token:$TOKEN@${GITHUB_SERVER_URL#https://}/$GITHUB_REPOSITORY.git" $refs
 
-      # 推没推出去以远端为准，不看本地：本地有 tag 只说明打了，前面哪一步红了的话它从没离开过这台 runner。
-      # 推送那一步自己的退出码也不够：连接在服务端收下之后断掉，推送红了，tag 却已经上去了
+      # Whether anything was pushed is decided by the remote, not locally: a local tag only says it
+      # was created, and if an earlier step went red it never left this runner.
+      # The push step's own exit code is not enough either: a connection dropping after the server
+      # took it leaves the push red while the tags are already up
       - name: summary
         if: always()
         env:
@@ -161,20 +180,22 @@ jobs:
             echo "### release $VERSION"
             echo
             if ! remote=$(git ls-remote --tags --refs "https://x-access-token:$TOKEN@${GITHUB_SERVER_URL#https://}/$GITHUB_REPOSITORY.git" "$VERSION"); then
-              echo "⚠ 查不到远端的 tag（git ls-remote 失败），推没推出去看「推送 tag」那一步。本地打了的：${local_tags:-无}"
+              echo "⚠ the remote tags could not be listed (git ls-remote failed); whether anything was pushed is in the \"push the tags\" step. Tagged locally: ${local_tags:-none}"
             elif [ -n "$remote" ]; then
-              echo "远端已有（已推送）：$(echo "$remote" | sed 's|.*refs/tags/||' | tr '\n' ' ')"
+              echo "already on the remote (pushed): $(echo "$remote" | sed 's|.*refs/tags/||' | tr '\n' ' ')"
             elif [ -n "$local_tags" ]; then
-              echo "只在本地打了 tag，没有推送（tagged locally, not pushed）：$local_tags"
+              echo "tagged locally, not pushed: $local_tags"
               echo
-              echo "这些 tag 随这台 runner 一起丢掉，修好之后重新点发布按钮即可。"
+              echo "These tags are discarded along with this runner; fix the problem and press the release button again."
             else
-              echo "没有打 tag，也没有推送。"
+              echo "Nothing was tagged and nothing was pushed."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # 推送之后的验证单独一个 job：红了点「Re-run failed jobs」只重跑这里（见文件开头）。
-  # 它只读 main 上的脚本、从 module proxy 拉已经发布的版本，不需要写权限，也不需要 tag
+  # The verification after the push is a job of its own: when it goes red, "Re-run failed jobs"
+  # re-runs this alone (see the top of this file).
+  # It only reads the scripts on main and fetches the released version from the module proxy, needing
+  # neither write permission nor the tags
   verify:
     needs: release
     runs-on: ubuntu-latest
@@ -191,7 +212,7 @@ jobs:
           cache: true
           cache-dependency-path: '**/go.sum'
 
-      - name: release.sh --verify（外部工程装得上、跑得起来）
+      - name: release.sh --verify (an external project installs it and runs)
         run: scripts/release.sh "$VERSION" --verify
 
       - name: summary
@@ -203,9 +224,9 @@ jobs:
             echo "### verify $VERSION"
             echo
             if [ "$STATUS" = success ]; then
-              echo "✓ 外部工程 go get 得到、跑得起来。"
+              echo "✓ an external project go-gets it and runs."
             else
-              echo "✗ --verify 没过。tag 已经推出去了：proxy 还没拉到新版本的话，过几分钟点「Re-run failed jobs」只重跑这个 job；"
-              echo "真有回归的话，这一版撤不回，修好之后发下一版。"
+              echo "✗ --verify did not pass. The tags are already pushed: if the proxy has not fetched the new version yet, press \"Re-run failed jobs\" in a few minutes to re-run this job alone;"
+              echo "if there really is a regression, this version cannot be withdrawn -- fix it and release the next one."
             fi
           } >> "$GITHUB_STEP_SUMMARY"

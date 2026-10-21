@@ -12,8 +12,8 @@ XMetric:
 XCache:
   MaxCost: 10000
 
-# 业务自己的配置块。读它的是 main 里那次 conf.Load()——
-# 没人读的顶层 key 会让进程直接起不来，而不是被静默忽略
+# The business's own configuration block. What reads it is the conf.Load() in main -- a top-level
+# key nobody reads keeps the process from starting at all, rather than being ignored quietly
 MyApp:
   Topic: orders
   Workers: 4

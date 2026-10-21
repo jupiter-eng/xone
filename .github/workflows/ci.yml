@@ -5,40 +5,44 @@ on:
     branches: [main]
   pull_request:
 
-# PR 又推了新提交，还在跑的那轮就没意义了；main 上的每个提交都跑完
+# A PR with a new commit pushed makes the run still going pointless; every commit on main runs to
+# completion
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-# 只读代码：这里没有一步要写仓库，token 给多了，被测代码或依赖里有什么就能拿它写
+# Read-only: not one step here writes to the repository, and a token with more than that lets
+# whatever is in the code under test or in a dependency write with it
 permissions:
   contents: read
 
 jobs:
   check:
     runs-on: ubuntu-latest
-    # 和发布流程（release.yml）一样不许自动换工具链：否则 go.work / go.mod 被抬到更高的 go 版本时，
-    # 这里悄悄下载新工具链照样通过，到点发布按钮时才红（v1.24.0 第一次发布就是这样失败的）
+    # As in the release flow (release.yml), switching toolchains automatically is not allowed:
+    # otherwise, once go.work / go.mod is raised to a higher go version, this quietly downloads the
+    # new toolchain and passes all the same, only to go red at the release button (which is exactly
+    # how the first release of v1.24.0 failed)
     env:
       GOTOOLCHAIN: local
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
         with:
-          # 取各模块里最高的那个下限。核心自己只要 1.23，
-          # 但集成模块因为上游需要 1.25，CI 得跑得动全部
+          # The highest of the modules' floors. The core itself needs only 1.23, while the
+          # integrations need 1.25 because of their upstreams, and CI has to run all of them
           go-version: '1.25'
-          # 每个 module 有自己的 go.sum，缓存键要把它们全算进去
+          # Each module has a go.sum of its own, and the cache key has to take them all in
           cache: true
           cache-dependency-path: '**/go.sum'
 
-      # 设计约束的检查，内容见 scripts/check.sh
+      # The design constraint checks; what they are is in scripts/check.sh
       - run: scripts/check.sh
 
       - run: scripts/test.sh -count=1
 
-  # 核心的下限单独验一遍：check.sh 跑在装了新版工具链的机器上，
-  # 不会告诉你核心是不是真的还能用 1.23 编译
+  # The core's floor is verified separately: check.sh runs on a machine with a newer toolchain
+  # installed and does not say whether the core still really compiles with 1.23
   core-go-floor:
     runs-on: ubuntu-latest
     steps:

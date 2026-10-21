@@ -6,16 +6,10 @@
 # instead of quietly staying forever. Nothing is ever added except during this migration.
 #
 # Generated once from the state of the repository at the time the rule landed.
-.claude/skills/release/SKILL.md
-.claude/skills/ship/SKILL.md
-.github/workflows/ci.yml
-.github/workflows/e2e.yml
-.github/workflows/release.yml
 config_schema.json
 # The two diagrams hold their text as SVG nodes at fixed coordinates. English is wider than
 # Chinese at the same font size, so translating them without rendering the result risks text
 # overflowing its boxes; they need a pass where the rendering can be checked.
-docs/observability.md
 e2e/.gitignore
 e2e/baseline/main.go
 e2e/clickhouse_auth_test.go
@@ -109,24 +103,6 @@ e2e/swagger_ui_test.go
 e2e/tls_http_test.go
 e2e/tls_test.go
 e2e/trace_options_test.go
-example/application.yml
-example/component/application.yml
-example/component/conf/conf.go
-example/component/main.go
-example/component/xkv/xkv.go
-example/component/xkv/xkv_test.go
-example/consumer/application.yml
-example/consumer/conf/conf.go
-example/consumer/conf/conf_test.go
-example/consumer/consumer.go
-example/consumer/consumer_test.go
-example/consumer/main.go
-example/consumer/queue.go
-example/forward_test.go
-example/go.mod
-example/main.go
-example/main_test.go
-example/readme_test.go
 internal/config/clients.go
 internal/config/config.go
 internal/config/config_test.go

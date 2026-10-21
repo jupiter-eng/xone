@@ -26,8 +26,8 @@ func testSettings(workers int, timeout time.Duration) Settings {
 }
 
 func TestConsumer_StartReturnsAfterInFlightMessagesFinish(t *testing.T) {
-	// 框架是在 Start 返回之后才关数据库和缓存的。提前返回的话，
-	// 还在处理的消息会摸到已经关掉的连接池
+	// The framework closes the database and the cache only after Start has returned. Returning early,
+	// a message still being handled would reach a connection pool that is already closed
 	q := newMemQueue(4)
 	q.publish("m1", nil)
 
@@ -50,21 +50,22 @@ func TestConsumer_StartReturnsAfterInFlightMessagesFinish(t *testing.T) {
 	go func() { done <- c.Start(ctx) }()
 
 	<-entered
-	cancel() // 退出信号
+	cancel() // the shutdown signal
 
 	select {
 	case <-done:
 		if !finished.Load() {
-			t.Error("Start 在消息还没处理完的时候就返回了")
+			t.Error("Start returned while a message was still being handled")
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("Start 没返回")
+		t.Fatal("Start never returned")
 	}
 }
 
 func TestConsumer_InFlightMessageCtxNotCanceled(t *testing.T) {
-	// 沿用已取消的 ctx 的话，这条消息里每一次写库、每一次调下游、
-	// 连最后那次 Ack 都会一进去就被拒绝——消息没做完，队列也没收到确认
+	// Reusing an already cancelled ctx, every write to the database, every call downstream and even
+	// the final Ack in this message would be refused the moment it begins -- the message unfinished
+	// and the queue never acknowledged
 	q := newMemQueue(4)
 	q.publish("m1", nil)
 
@@ -76,8 +77,8 @@ func TestConsumer_InFlightMessageCtxNotCanceled(t *testing.T) {
 		settings: testSettings(1, time.Second),
 		handle: func(ctx context.Context, _ Message) error {
 			close(entered)
-			time.Sleep(150 * time.Millisecond) // 这中间退出信号到了
-			errAfterCancel = ctx.Err()         // 处理逻辑此刻看到的 ctx 状态
+			time.Sleep(150 * time.Millisecond) // the shutdown signal arrives in the meantime
+			errAfterCancel = ctx.Err()         // the ctx state the handler sees at this moment
 			return nil
 		},
 	}
@@ -91,12 +92,12 @@ func TestConsumer_InFlightMessageCtxNotCanceled(t *testing.T) {
 	<-done
 
 	if errAfterCancel != nil {
-		t.Errorf("在途消息的 ctx 被取消了（%v），这条消息的写库和 Ack 都会当场失败", errAfterCancel)
+		t.Errorf("the ctx of a message in flight was cancelled (%v), so this message's writes and its Ack would both fail on the spot", errAfterCancel)
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if len(q.acked) != 1 {
-		t.Errorf("在途消息该被 Ack，acked=%v nacked=%v", q.acked, q.nacked)
+		t.Errorf("a message in flight must be Acked, acked=%v nacked=%v", q.acked, q.nacked)
 	}
 }
 
@@ -124,15 +125,15 @@ func TestConsumer_PoisonMessageDoesNotKillWorker(t *testing.T) {
 	_ = c.Start(ctx)
 
 	if handled.Load() != 2 {
-		t.Errorf("毒消息之后 worker 该继续消费，实际只处理了 %d 条", handled.Load())
+		t.Errorf("the worker must keep consuming after a poison message, it handled only %d", handled.Load())
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if len(q.nacked) != 1 || q.nacked[0] != "bad" {
-		t.Errorf("panic 的那条该被 Nack，nacked=%v", q.nacked)
+		t.Errorf("the one that panicked must be Nacked, nacked=%v", q.nacked)
 	}
 	if len(q.acked) != 1 || q.acked[0] != "good" {
-		t.Errorf("正常的那条该被 Ack，acked=%v", q.acked)
+		t.Errorf("the ordinary one must be Acked, acked=%v", q.acked)
 	}
 }
 
@@ -151,12 +152,13 @@ func TestConsumer_FailedMessageIsNacked(t *testing.T) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if len(q.nacked) != 1 {
-		t.Errorf("处理失败的消息该被 Nack，nacked=%v acked=%v", q.nacked, q.acked)
+		t.Errorf("a message that failed to be handled must be Nacked, nacked=%v acked=%v", q.nacked, q.acked)
 	}
 }
 
-// TestRun_ComponentsCloseAfterConsumerStops 是这个目录里唯一走完整框架的测试：
-// 上面几条证明 Consumer 自己的行为，这一条证明它和 xone.Run 接得上
+// TestRun_ComponentsCloseAfterConsumerStops is the only test in this directory that goes through the
+// whole framework: the ones above prove the Consumer's own behavior, and this one proves it joins up
+// with xone.Run
 func TestRun_ComponentsCloseAfterConsumerStops(t *testing.T) {
 	q := newMemQueue(4)
 	q.publish("m1", nil)
@@ -164,7 +166,8 @@ func TestRun_ComponentsCloseAfterConsumerStops(t *testing.T) {
 	var mu sync.Mutex
 	var closedAt, drainedAt time.Time
 
-	// 业务自己的组件就是这样接进框架的：两个钩子，里面写普通的 Go 代码
+	// This is how a component of the business's own joins the framework: two hooks with ordinary Go
+	// code inside
 	xhook.BeforeStart(func(context.Context) error { return nil })
 	xhook.BeforeStop(func(context.Context) error {
 		mu.Lock()
@@ -194,28 +197,29 @@ func TestRun_ComponentsCloseAfterConsumerStops(t *testing.T) {
 		_ = p.Signal(os.Interrupt)
 	}()
 
-	// 和 main 一样先读业务配置：这个目录下的 application.yml 里写着 MyApp，
-	// 没人读的话启动会因为「没人认领」而失败
+	// The business configuration is read first, as in main: the application.yml in this directory has
+	// a MyApp, and with nobody reading it startup would fail as "unclaimed"
 	if err := conf.Load(); err != nil {
 		t.Fatal(err)
 	}
 	if err := xone.Run(c, xone.WithLogger(quiet())); err != nil {
-		t.Fatalf("Run 失败：%v", err)
+		t.Fatalf("Run failed: %v", err)
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
 	if drainedAt.IsZero() || closedAt.IsZero() {
-		t.Fatal("两边都该跑到")
+		t.Fatal("both sides must have been reached")
 	}
 	if closedAt.Before(drainedAt) {
-		t.Errorf("组件在消息还没处理完的时候就被关了：关闭=%v 消息处理完=%v", closedAt, drainedAt)
+		t.Errorf("the component was closed while a message was still being handled: closed=%v drained=%v", closedAt, drainedAt)
 	}
 }
 
 func TestQueue_CtxCanceledStopsFetching(t *testing.T) {
-	// select 在几路同时就绪时随机挑：只靠 select 的话，ctx 取消了、
-	// 队列里又有消息，一半的概率照样取走一条
+	// select picks at random among the cases that are ready at the same time: on select alone, with
+	// the ctx cancelled and messages still in the queue, there is a one in two chance of taking one
+	// anyway
 	q := newMemQueue(64)
 	for i := range 64 {
 		q.publish(strconv.Itoa(i), nil)
@@ -225,7 +229,7 @@ func TestQueue_CtxCanceledStopsFetching(t *testing.T) {
 
 	for range 64 {
 		if m, ok := q.Next(ctx); ok {
-			t.Fatalf("ctx 已经取消，不该再取到消息，got=%s", m.ID)
+			t.Fatalf("the ctx is cancelled and no message may be taken any more, got=%s", m.ID)
 		}
 	}
 }
@@ -235,14 +239,15 @@ type closerFunc func() error
 func (f closerFunc) Close() error { return f() }
 
 func TestQueue_NoPanicWhenProducerStillSendingOnExit(t *testing.T) {
-	// 回归用例。原来 Close 是 close(ch)，而这个例子里 feed 一直在往里发；
-	// 关的那一刻正好有人在投递就会 panic: send on closed channel。
-	// 只在那个窗口里复现，所以跑十次八次都可能是好的——实际是一跑真就炸
+	// A regression case. Close used to be close(ch) while feed in this example publishes all along;
+	// somebody publishing at exactly the moment it closes panics with send on closed channel.
+	// It only reproduces inside that window, so ten runs may all look fine -- and in production it
+	// blows up on the first run
 	q := newMemQueue(4)
 
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
-	for i := range 4 { // 四个生产者一起投，把窗口撑开
+	for i := range 4 { // four producers publishing together, to widen the window
 		wg.Add(1)
 		go func(n int) {
 			defer wg.Done()
@@ -264,15 +269,16 @@ func TestQueue_NoPanicWhenProducerStillSendingOnExit(t *testing.T) {
 	defer cancel()
 	slog.SetDefault(quiet())
 
-	if err := c.Start(ctx); err != nil { // Start 收工时会 Close 队列
+	if err := c.Start(ctx); err != nil { // Start Closes the queue when it finishes
 		t.Fatal(err)
 	}
-	// 关掉之后再让生产者投一会儿，确认投到已关闭的队列上也不炸
+	// The producers keep publishing for a while after the close, to confirm that publishing to a
+	// closed queue does not blow up either
 	time.Sleep(30 * time.Millisecond)
 	close(stop)
 	wg.Wait()
 
 	if !q.closed.Load() {
-		t.Error("Start 收工时该把队列关掉")
+		t.Error("Start must close the queue when it finishes")
 	}
 }
