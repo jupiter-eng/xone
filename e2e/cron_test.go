@@ -10,13 +10,15 @@ import (
 
 // TestCron_JobLogsCarryJobAndTraceID_OverlapSkipped_SIGTERMWaitsForInFlightRun
 //
-// 文档（xcron/README.md）：
-//  1. 每次执行一个根 Span（cron <name>），ctx 里的日志带着 job 和 trace_id；
-//  2. 上一次没跑完时这一次跳过，记 WARN cron job skipped；
-//  3. 退出时取消在途执行的 ctx，等它返回之后才轮到关客户端（xcron 在 StageServer，最先停）。
+// The documentation (xcron/README.md):
+//  1. every run gets a root span (cron <name>), and the logs on its ctx carry job and trace_id;
+//  2. a run is skipped while the previous one has not finished, recording a WARN cron job skipped;
+//  3. on exit the ctx of a run in flight is cancelled and the clients are closed only once it has
+//     returned (xcron is in StageServer and stops first).
 //
-// e2e-tick 每秒一次，每次看着 ctx 等一小时：第一次之后的每一次都撞上「上一次还在跑」。
-// 收到 SIGTERM 时它被取消，不看 ctx 地收尾 300ms 再返回
+// e2e-tick runs once a second and each run waits an hour while watching ctx: every run after the
+// first meets "the previous one is still running".
+// On SIGTERM it is cancelled, winds down for 300ms without watching ctx and then returns
 func TestCron_JobLogsCarryJobAndTraceID_OverlapSkipped_SIGTERMWaitsForInFlightRun(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -24,42 +26,42 @@ func TestCron_JobLogsCarryJobAndTraceID_OverlapSkipped_SIGTERMWaitsForInFlightRu
 
 	tick := p.WaitLog(t, 10*time.Second, func(l harness.Log) bool { return l.Msg() == "e2e cron tick" })
 	if tick.Str("job") != "e2e-tick" || len(tick.Str("trace_id")) != 32 {
-		t.Errorf("任务里的日志该带 job 和 trace_id：%s", tick.Line)
+		t.Errorf("a log line inside the job should carry job and trace_id: %s", tick.Line)
 	}
 	skip := p.WaitLog(t, 10*time.Second, func(l harness.Log) bool { return l.Msg() == "cron job skipped, previous run still running" })
 	if skip.Level() != "WARN" || skip.Str("job") != "e2e-tick" {
-		t.Errorf("跳过记 WARN，带 job：%s", skip.Line)
+		t.Errorf("a skip records a WARN carrying job: %s", skip.Line)
 	}
 	if n := len(p.FindLogs(func(l harness.Log) bool { return l.Msg() == "e2e cron tick" })); n != 1 {
-		t.Errorf("上一次没跑完，不该开始下一次：tick 了 %d 次", n)
+		t.Errorf("the next run should not start while the previous has not finished: it ticked %d times", n)
 	}
 
 	exit := p.Terminate(t, 20*time.Second)
 	if exit.Code != 0 || exit.Signal != nil {
-		t.Fatalf("SIGTERM 之后应以 0 退出，实际 %v\n%s", exit, lastLines(p.Output(), 30))
+		t.Fatalf("it should exit with 0 after the SIGTERM, got %v\n%s", exit, lastLines(p.Output(), 30))
 	}
 
-	// 收尾那一行在任何客户端关闭之前：停止钩子等它返回了才往下走
+	// The wind-down line comes before any client is closed: the stop hook waited for it to return
 	drained, firstClientStop := -1, -1
 	for i, l := range p.Logs() {
 		switch {
 		case l.Msg() == "e2e cron drained" && drained < 0:
 			drained = i
-		// 和 xcron 同在 StageServer 的停止钩子（xkafka 的消费者）不是客户端
+		// A stop hook that is in StageServer alongside xcron (xkafka's consumer) is not a client
 		case l.Msg() == "stopping" && firstClientStop < 0 && pkgOf(l.Str("hook")) != "xcron" && l.Str("hook") != "xkafka.stopConsumers":
 			firstClientStop = i
 		}
 	}
 	if drained < 0 || firstClientStop < 0 || drained > firstClientStop {
-		t.Errorf("在途的执行该在客户端关闭之前收完尾：drained=%d first client stop=%d\n%s", drained, firstClientStop, lastLines(p.Output(), 30))
+		t.Errorf("a run in flight should finish winding down before the clients are closed: drained=%d first client stop=%d\n%s", drained, firstClientStop, lastLines(p.Output(), 30))
 	}
 	failed := p.FindLogs(func(l harness.Log) bool { return l.Msg() == "cron job failed" && l.Str("job") == "e2e-tick" })
 	if len(failed) != 1 || !strings.Contains(failed[0].Str("error"), "context canceled") || failed[0].Str("trace_id") != tick.Str("trace_id") {
-		t.Errorf("被取消的那次执行记一行 cron job failed，带着同一个 trace_id：%v", failed)
+		t.Errorf("the cancelled run records one cron job failed carrying the same trace_id: %v", failed)
 	}
 
 	s := p.WaitSpan(t, 5*time.Second, func(s harness.Span) bool { return s.Name == "cron e2e-tick" })
 	if s.TraceID != tick.Str("trace_id") || s.ParentSpanID != "" {
-		t.Errorf("该是日志里那个 trace 的根 Span：%+v", s)
+		t.Errorf("it should be the root span of the trace in the log: %+v", s)
 	}
 }

@@ -10,23 +10,12 @@
 # Chinese at the same font size, so translating them without rendering the result risks text
 # overflowing its boxes; they need a pass where the rendering can be checked.
 e2e/client_options_test.go
-e2e/config_loading_test.go
-e2e/cron_test.go
 e2e/fault_downstream_test.go
 e2e/fault_startup_test.go
 e2e/fault_test.go
 e2e/fault_timeout_test.go
 e2e/flow_options_test.go
-e2e/functional_api_test.go
-e2e/functional_cache_test.go
-e2e/functional_config_test.go
-e2e/functional_flow_test.go
-e2e/functional_log_test.go
-e2e/functional_metrics_test.go
-e2e/functional_test.go
-e2e/functional_trace_test.go
 e2e/gin_options_test.go
-e2e/kafka_test.go
 e2e/load_helpers_test.go
 e2e/load_test.go
 e2e/log_options_test.go
@@ -34,8 +23,6 @@ e2e/metric_options_test.go
 e2e/options_helpers_test.go
 e2e/shutdown_helpers_test.go
 e2e/shutdown_test.go
-e2e/smoke_test.go
-e2e/swagger_ui_test.go
 e2e/tls_http_test.go
 e2e/tls_test.go
 e2e/trace_options_test.go

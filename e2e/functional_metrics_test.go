@@ -9,12 +9,13 @@ import (
 	"github.com/jupiter-eng/xone/e2e/harness"
 )
 
-// /metrics：
-//   - xgin 的请求计数和耗时直方图按路由模板打标签（/users/:id 而不是 /users/42），
-//     没匹配上的收敛成 unmatched，不认识的方法收敛成 OTHER
-//   - 桶是 xmetric/README.md XMetric 写的默认值
-//   - 业务的自定义指标（namespace e2e）、log_errors_total、xhttp 出站直方图、
-//     xgorm / xredis 连接池指标、Go 运行时与进程指标都在
+// /metrics:
+//   - xgin's request count and duration histogram are labeled by route template (/users/:id and
+//     not /users/42), an unmatched path collapses into unmatched and an unknown method into OTHER
+//   - the buckets are the defaults xmetric/README.md, XMetric writes down
+//   - the business's own metrics (the e2e namespace), log_errors_total, xhttp's outbound
+//     histogram, the xgorm / xredis pool metrics and the Go runtime and process metrics are all
+//     there
 func TestFunctional_MetricsLabeledByRouteTemplate_WithCustomAndPoolMetrics(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -22,17 +23,17 @@ func TestFunctional_MetricsLabeledByRouteTemplate_WithCustomAndPoolMetrics(t *te
 	stub := harness.NewStub(t)
 	p := harness.Start(t, harness.Options{Downstream: stub.URL})
 
-	// 造流量。每一类的次数都是后面断言里的数字
+	// Make some traffic. The count of each kind is the number the assertions below go by
 	a := createUser(t, p, "m1", "m1@example.com")
 	b := createUser(t, p, "m2", "m2@example.com")
-	for _, id := range []int64{a.ID, b.ID, a.ID, b.ID} { // 两次 db、两次 local
+	for _, id := range []int64{a.ID, b.ID, a.ID, b.ID} { // twice db, twice local
 		getUser(t, p, id)
 	}
-	p.Get(t, "/users/999999999") // 404，同一个路由模板
+	p.Get(t, "/users/999999999") // a 404 on the same route template
 	for _, path := range []string{"/nope/1", "/nope/2", "/nope/abc/def"} {
 		p.Get(t, path)
 	}
-	for _, m := range []string{"FOO", "BREW"} { // 自由 token 的方法
+	for _, m := range []string{"FOO", "BREW"} { // free-token methods
 		p.Do(t, m, "/ping", nil)
 	}
 	p.PostJSON(t, "/login", map[string]string{"username": "x"})
@@ -45,66 +46,66 @@ func TestFunctional_MetricsLabeledByRouteTemplate_WithCustomAndPoolMetrics(t *te
 	p.Get(t, "/slow?ms=5")
 	p.Get(t, "/boom")
 
-	m := waitMetrics(t, p, "请求计数里出现 /boom", func(m harness.Metrics) bool {
+	m := waitMetrics(t, p, "/boom turning up in the request count", func(m harness.Metrics) bool {
 		return m.Sum("e2e_http_requests_total", "route", "/boom") == 1
 	})
 
-	t.Run("请求计数按路由模板打标签", func(t *testing.T) {
+	t.Run("the request count is labeled by route template", func(t *testing.T) {
 		if got := m.Sum("e2e_http_requests_total", "method", "GET", "route", "/users/:id", "status", "200"); got != 4 {
-			t.Errorf("e2e_http_requests_total{GET,/users/:id,200} 应是 4，实际 %v", got)
+			t.Errorf("e2e_http_requests_total{GET,/users/:id,200} should be 4, got %v", got)
 		}
 		if got := m.Sum("e2e_http_requests_total", "method", "GET", "route", "/users/:id", "status", "404"); got != 1 {
-			t.Errorf("e2e_http_requests_total{GET,/users/:id,404} 应是 1，实际 %v", got)
+			t.Errorf("e2e_http_requests_total{GET,/users/:id,404} should be 1, got %v", got)
 		}
-		// 标签里只能是注册过的路由模板，或者 unmatched：真实路径进标签的话时间序列随 id 无限增长
+		// A label may hold a registered route template or unmatched alone: with the real path in the label the time series would grow without bound with the ids
 		allowed := []string{"/ping", "/users", "/users/:id", "/login", "/proxy", "/orders", "/slow", "/stuck", "/boom", "/upload", "/metrics", "unmatched"}
 		for _, name := range []string{"e2e_http_requests_total", "e2e_http_request_duration_seconds_count"} {
 			for _, s := range m.Find(name) {
 				if !slices.Contains(allowed, s.Labels["route"]) {
-					t.Errorf("%s 的 route 标签只该是路由模板或 unmatched，实际出现了 %q", name, s.Labels["route"])
+					t.Errorf("%s's route label should be a route template or unmatched alone, and %q turned up", name, s.Labels["route"])
 				}
 			}
 		}
 	})
 
-	t.Run("未匹配的路由收敛成 unmatched", func(t *testing.T) {
+	t.Run("an unmatched route collapses into unmatched", func(t *testing.T) {
 		if got := m.Sum("e2e_http_requests_total", "method", "GET", "route", "unmatched", "status", "404"); got != 3 {
-			t.Errorf("三个不存在的路径应合并计入 route=unmatched（404），实际 %v", got)
+			t.Errorf("the three paths that do not exist should count together under route=unmatched (404), got %v", got)
 		}
 	})
 
-	t.Run("不认识的方法收敛成 OTHER", func(t *testing.T) {
-		// .claude/CLAUDE.md：「指标的 method 标签收敛」；xgin/middleware/metric.go normalizeMethod
+	t.Run("an unknown method collapses into OTHER", func(t *testing.T) {
+		// .claude/CLAUDE.md: "the method label of a metric collapses"; normalizeMethod in xgin/middleware/metric.go
 		known := []string{"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "CONNECT", "OPTIONS", "TRACE", "OTHER"}
 		for _, s := range m.Find("e2e_http_requests_total") {
 			if !slices.Contains(known, s.Labels["method"]) {
-				t.Errorf("method 标签只该是标准方法或 OTHER，实际出现了 %q", s.Labels["method"])
+				t.Errorf("the method label should be a standard method or OTHER alone, and %q turned up", s.Labels["method"])
 			}
 		}
 		if got := m.Sum("e2e_http_requests_total", "method", "OTHER"); got != 2 {
-			t.Errorf("FOO、BREW 两个请求应计入 method=OTHER，实际 %v", got)
+			t.Errorf("the FOO and BREW requests should count under method=OTHER, got %v", got)
 		}
 	})
 
-	t.Run("耗时直方图：同样的标签，桶是文档写的默认值", func(t *testing.T) {
+	t.Run("the duration histogram: the same labels, with the documented default buckets", func(t *testing.T) {
 		lbl := []string{"method", "GET", "route", "/users/:id", "status", "200"}
 		if got := m.Sum("e2e_http_request_duration_seconds_count", lbl...); got != 4 {
-			t.Errorf("耗时直方图 _count{GET,/users/:id,200} 应是 4，实际 %v", got)
+			t.Errorf("the duration histogram's _count{GET,/users/:id,200} should be 4, got %v", got)
 		}
 		if got := m.Sum("e2e_http_request_duration_seconds_sum", lbl...); got <= 0 {
-			t.Errorf("耗时直方图 _sum 应大于 0，实际 %v", got)
+			t.Errorf("the duration histogram's _sum should be above 0, got %v", got)
 		}
-		// xmetric/README.md XMetric.HTTPDurationBuckets 的默认值
+		// The default of XMetric.HTTPDurationBuckets in xmetric/README.md
 		want := "0.001,0.005,0.01,0.025,0.05,0.1,0.25,0.5,1,2.5,5,10,+Inf"
 		if got := bucketBounds(m, "e2e_http_request_duration_seconds_bucket", lbl...); got != want {
-			t.Errorf("HTTP 耗时的桶应是文档写的默认值 %s，实际 %s", want, got)
+			t.Errorf("the HTTP duration buckets should be the documented defaults %s, got %s", want, got)
 		}
 		if got := m.Sum("e2e_http_request_duration_seconds_bucket", append(lbl, "le", "+Inf")...); got != 4 {
-			t.Errorf("+Inf 那一档应等于 _count（4），实际 %v", got)
+			t.Errorf("the +Inf bucket should equal _count (4), got %v", got)
 		}
 	})
 
-	t.Run("业务自定义指标", func(t *testing.T) {
+	t.Run("the business's own metrics", func(t *testing.T) {
 		for _, c := range []struct {
 			name   string
 			labels []string
@@ -121,36 +122,36 @@ func TestFunctional_MetricsLabeledByRouteTemplate_WithCustomAndPoolMetrics(t *te
 			{"e2e_slow_inflight", nil, 0},
 		} {
 			if !m.Has(c.name) {
-				t.Errorf("/metrics 里应有 %s", c.name)
+				t.Errorf("/metrics should hold %s", c.name)
 				continue
 			}
 			if got := m.Sum(c.name, c.labels...); got != c.want {
-				t.Errorf("%s%v 应是 %v，实际 %v", c.name, c.labels, c.want, got)
+				t.Errorf("%s%v should be %v, got %v", c.name, c.labels, c.want, got)
 			}
 		}
-		// xmetric/README.md XMetric.HistogramBuckets：快捷方法建的业务直方图，默认即 prometheus.DefBuckets
+		// XMetric.HistogramBuckets in xmetric/README.md: a business histogram made with the shortcut defaults to prometheus.DefBuckets
 		want := "0.005,0.01,0.025,0.05,0.1,0.25,0.5,1,2.5,5,10,+Inf"
 		if got := bucketBounds(m, "e2e_order_flow_seconds_bucket"); got != want {
-			t.Errorf("业务直方图的桶应是文档写的默认值 %s，实际 %s", want, got)
+			t.Errorf("a business histogram's buckets should be the documented defaults %s, got %s", want, got)
 		}
 	})
 
-	t.Run("log_errors_total 与 Error 级别的日志条数一致", func(t *testing.T) {
-		// xmetric/README.md XMetric.LogErrorMetric：「Error 级别日志计入 log_errors_total」
-		// Error 及以上（slog 写成 ERROR、ERROR+4……）；xmetric/log_counter.go 按级别打 level 标签
+	t.Run("log_errors_total matches the number of Error log lines", func(t *testing.T) {
+		// XMetric.LogErrorMetric in xmetric/README.md: "a log line at Error counts into log_errors_total"
+		// Error and above (which slog writes as ERROR, ERROR+4 and so on); xmetric/log_counter.go labels them with level
 		errLogs := p.FindLogs(func(l harness.Log) bool { return strings.HasPrefix(l.Level(), "ERROR") })
 		if len(errLogs) == 0 {
-			t.Fatal("/boom 之后应至少有一条 Error 日志")
+			t.Fatal("there should be at least one Error log line after /boom")
 		}
-		// 反过来也要成立：Warn 不算错误。fail_at=2 的订单打了一条 WARN（xflow step process failed），
-		// 它要是被数进去，会多出一个 level="WARN" 的序列——只看 level="ERROR" 那一条的话看不出来，
-		// 所以比的是全部 level 加起来的总数
+		// And the other way around: a Warn is not an error. The order with fail_at=2 logged one WARN (xflow step process failed),
+		// and were it counted there would be one more series with level="WARN" -- which looking at level="ERROR" alone would not show,
+		// so what is compared is the total over every level
 		if len(p.FindLogs(func(l harness.Log) bool { return l.Level() == "WARN" })) == 0 {
-			t.Fatal("这轮流量里应至少有一条 WARN 日志，否则分不出 Warn 有没有被数成错误")
+			t.Fatal("this round of traffic should hold at least one WARN log line, or whether a Warn is counted as an error cannot be told")
 		}
 		for _, s := range m.Find("e2e_log_errors_total") {
 			if !strings.HasPrefix(s.Labels["level"], "ERROR") {
-				t.Errorf("文档说只有 Error 级别的日志计入 log_errors_total，实际出现了 level=%q：%v", s.Labels["level"], s.Value)
+				t.Errorf("the documentation says log lines at Error alone count into log_errors_total, and level=%q turned up: %v", s.Labels["level"], s.Value)
 			}
 		}
 		if got := m.Sum("e2e_log_errors_total"); got != float64(len(errLogs)) {
@@ -158,18 +159,18 @@ func TestFunctional_MetricsLabeledByRouteTemplate_WithCustomAndPoolMetrics(t *te
 			for _, l := range errLogs {
 				msgs = append(msgs, l.Msg())
 			}
-			t.Errorf("e2e_log_errors_total（全部 level 加起来）应等于 Error 日志条数 %d（%s），实际 %v", len(errLogs), strings.Join(msgs, "; "), got)
+			t.Errorf("e2e_log_errors_total (summed over every level) should equal the %d Error log lines (%s), got %v", len(errLogs), strings.Join(msgs, "; "), got)
 		}
 	})
 
-	t.Run("xhttp 出站耗时直方图", func(t *testing.T) {
+	t.Run("xhttp's outbound duration histogram", func(t *testing.T) {
 		got := m.Sum("e2e_http_client_request_duration_seconds_count", "method", "GET", "host", stub.Addr(), "status", "200")
 		if got != 3 {
-			t.Errorf("e2e_http_client_request_duration_seconds_count{GET,%s,200} 应是 3，实际 %v", stub.Addr(), got)
+			t.Errorf("e2e_http_client_request_duration_seconds_count{GET,%s,200} should be 3, got %v", stub.Addr(), got)
 		}
 	})
 
-	t.Run("xgorm 与 xredis 的连接池指标", func(t *testing.T) {
+	t.Run("the xgorm and xredis pool metrics", func(t *testing.T) {
 		for _, name := range []string{
 			"e2e_db_pool_open", "e2e_db_pool_in_use", "e2e_db_pool_idle", "e2e_db_pool_max_open",
 			"e2e_db_pool_wait_total", "e2e_db_pool_wait_duration_seconds_total",
@@ -178,38 +179,39 @@ func TestFunctional_MetricsLabeledByRouteTemplate_WithCustomAndPoolMetrics(t *te
 			"e2e_redis_pool_hits_total", "e2e_redis_pool_misses_total", "e2e_redis_pool_timeouts_total",
 		} {
 			if len(m.Find(name, "name", "default")) != 1 {
-				t.Errorf("/metrics 里应有 %s{name=\"default\"}（xgorm/README.md、xredis/README.md：Metric: true 连接池指标按实例生效）", name)
+				t.Errorf("/metrics should hold %s{name=\"default\"} (xgorm/README.md and xredis/README.md: Metric: true, the pool metrics taking per instance)", name)
 			}
 		}
-		// xgorm/README.md XGorm.MaxOpenConns 默认 50
+		// XGorm.MaxOpenConns in xgorm/README.md is 50 by default
 		if got := m.Sum("e2e_db_pool_max_open", "name", "default"); got != 50 {
-			t.Errorf("e2e_db_pool_max_open 应是默认的 50，实际 %v", got)
+			t.Errorf("e2e_db_pool_max_open should be the default 50, got %v", got)
 		}
 		if got := m.Sum("e2e_db_pool_open", "name", "default"); got < 1 {
-			t.Errorf("跑过 SQL 之后 e2e_db_pool_open 应至少是 1，实际 %v", got)
+			t.Errorf("after SQL has run e2e_db_pool_open should be at least 1, got %v", got)
 		}
 		if got := m.Sum("e2e_redis_pool_connections", "name", "default"); got < 1 {
-			t.Errorf("跑过 Redis 命令之后 e2e_redis_pool_connections 应至少是 1，实际 %v", got)
+			t.Errorf("after a Redis command has run e2e_redis_pool_connections should be at least 1, got %v", got)
 		}
-		t.Logf("数字：db open=%v idle=%v；redis conns=%v idle=%v hits=%v misses=%v",
+		t.Logf("numbers: db open=%v idle=%v; redis conns=%v idle=%v hits=%v misses=%v",
 			m.Sum("e2e_db_pool_open"), m.Sum("e2e_db_pool_idle"),
 			m.Sum("e2e_redis_pool_connections"), m.Sum("e2e_redis_pool_connections_idle"),
 			m.Sum("e2e_redis_pool_hits_total"), m.Sum("e2e_redis_pool_misses_total"))
 	})
 
-	t.Run("Go 运行时与进程指标默认开着", func(t *testing.T) {
-		// xmetric/README.md XMetric：GoMetrics / ProcessMetrics 默认开
+	t.Run("the Go runtime and process metrics are on by default", func(t *testing.T) {
+		// XMetric in xmetric/README.md: GoMetrics / ProcessMetrics are on by default
 		for _, name := range []string{"go_goroutines", "go_memstats_heap_alloc_bytes", "process_resident_memory_bytes", "process_cpu_seconds_total"} {
 			if !m.Has(name) {
-				t.Errorf("/metrics 里应有 %s", name)
+				t.Errorf("/metrics should hold %s", name)
 			}
 		}
-		t.Logf("数字：goroutines=%v RSS=%.1fMB，/metrics 共 %d 条样本",
+		t.Logf("numbers: goroutines=%v RSS=%.1fMB, %d samples in /metrics",
 			m.Sum("go_goroutines"), m.Sum("process_resident_memory_bytes")/1e6, len(m.Samples))
 	})
 }
 
-// bucketBounds 直方图的桶上界，按 /metrics 文本的写法，从小到大逗号分隔
+// bucketBounds are a histogram's bucket upper bounds as the /metrics text writes them, comma
+// separated from smallest to largest
 func bucketBounds(m harness.Metrics, name string, labels ...string) string {
 	type b struct {
 		le  string

@@ -11,13 +11,14 @@ import (
 	"github.com/jupiter-eng/xone/e2e/harness"
 )
 
-// handler panic：xgin 的 Recover 兜住，记一条 Error 日志（带栈和 trace_id），回 500，
-// 进程照常服务。xgin/middleware/middleware.go：「兜住 panic，把它变成一条错误日志和一个 500」
+// A panicking handler: xgin's Recover catches it, records one Error log line (with the stack and
+// trace_id), answers 500, and the process serves on. xgin/middleware/middleware.go: "it catches a
+// panic and turns it into one error log line and one 500"
 func TestFunctional_PanicReturns500AndProcessSurvives(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
 
-	p := harness.Start(t, harness.Options{Spans: true}) // 不配下游：顺带看 /proxy 的 503
+	p := harness.Start(t, harness.Options{Spans: true}) // no downstream configured: /proxy's 503 is seen along the way
 
 	const n = 5
 	var tids []string
@@ -27,15 +28,15 @@ func TestFunctional_PanicReturns500AndProcessSurvives(t *testing.T) {
 		r := p.Get(t, "/boom")
 		worst = max(worst, time.Since(start))
 		if r.Status != http.StatusInternalServerError {
-			t.Fatalf("/boom 应返回 500，实际 %v", r)
+			t.Fatalf("/boom should answer 500, got %v", r)
 		}
 		tids = append(tids, traceIDOf(t, r))
 	}
 	if p.Exited() {
-		t.Fatalf("panic 之后进程不该退出：%v\n%s", p.Exited(), p.Output())
+		t.Fatalf("the process should not exit after a panic: %v\n%s", p.Exited(), p.Output())
 	}
 	if r := p.Get(t, "/ping"); r.Status != http.StatusOK {
-		t.Fatalf("panic 之后服务应照常响应，/ping 实际 %v", r)
+		t.Fatalf("the service should answer as usual after a panic, and /ping gave %v", r)
 	}
 
 	for _, tid := range tids {
@@ -43,45 +44,47 @@ func TestFunctional_PanicReturns500AndProcessSurvives(t *testing.T) {
 			return l.Msg() == "panic while handling request" && l.Str("trace_id") == tid
 		})
 		if l.Level() != "ERROR" || l.Str("error") != "deliberate panic from /boom" || l.Str("path") != "/boom" || l.Str("method") != "GET" {
-			t.Errorf("panic 的错误日志应是 ERROR，带 error、path、method，实际 %s", l.Line)
+			t.Errorf("the panic's error log should be ERROR carrying error, path and method, got %s", l.Line)
 		}
 		if !strings.Contains(l.Str("stack"), "main.boom") {
-			t.Errorf("panic 的错误日志应带栈（里面有 main.boom），实际 stack=%.200q", l.Str("stack"))
+			t.Errorf("the panic's error log should carry the stack (holding main.boom), got stack=%.200q", l.Str("stack"))
 		}
 		if al := accessLog(t, p, tid); al.Str("status") != "500" {
-			t.Errorf("/boom 的访问日志应记 500，实际 %s", al.Line)
+			t.Errorf("/boom's access log should record 500, got %s", al.Line)
 		}
 		if s := serverSpan(t, p, tid); s.StatusCode != "Error" {
-			t.Errorf("/boom 的服务端 Span 应标成 Error，实际 %s", s.StatusCode)
+			t.Errorf("/boom's server span should be marked Error, got %s", s.StatusCode)
 		}
 	}
-	m := waitMetrics(t, p, "5 次 /boom 都计进了 500", func(m harness.Metrics) bool {
+	m := waitMetrics(t, p, "all 5 /boom requests counted as 500", func(m harness.Metrics) bool {
 		return m.Sum("e2e_http_requests_total", "route", "/boom", "status", "500") == n
 	})
 	if got := m.Sum("e2e_log_errors_total", "level", "ERROR"); got != n {
-		t.Errorf("5 次 panic 各一条 Error 日志，e2e_log_errors_total 应是 5，实际 %v", got)
+		t.Errorf("5 panics make one Error log line each, so e2e_log_errors_total should be 5, got %v", got)
 	}
 
 	if r := p.Get(t, "/proxy"); r.Status != http.StatusServiceUnavailable || r.Map(t)["error"] != "downstream is not configured" {
-		t.Errorf("没配下游时 /proxy 约定 503 downstream is not configured，实际 %v", r)
+		t.Errorf("with no downstream configured /proxy promises 503 downstream is not configured, got %v", r)
 	}
 
 	exit := p.Terminate(t, 20*time.Second)
 	if exit.Code != 0 || exit.Signal != nil {
-		t.Errorf("panic 过的进程收到 SIGTERM 之后应以 0 退出，实际 %v", exit)
+		t.Errorf("a process that has panicked should exit with 0 on SIGTERM, got %v", exit)
 	}
-	t.Logf("数字：%d 次 /boom 最慢一次 %v 返回 500；退出 %v", n, worst, exit)
+	t.Logf("numbers: the slowest of the %d /boom requests answered 500 after %v; the exit %v", n, worst, exit)
 }
 
-// xflow：强依赖失败时，已经做完的步骤按逆序回滚，失败的那一步自己不回滚。
-// 每一步的副作用和回滚都落在查得到的地方（service/orders.go）：
+// xflow: when a strong dependency fails, the steps already done are rolled back in reverse and the
+// failing step is not rolled back itself.
+// Every step's side effect and rollback land where they can be found (service/orders.go):
 //
-//	1 create   PG 插一行（created）      回滚：DELETE
-//	2 charge   Redis SET charged 键      回滚：DEL
-//	3 confirm  PG 改成 confirmed          回滚：改回 created
+//	1 create   inserts a row into PG (created)   rollback: DELETE
+//	2 charge   Redis SET of the charged key      rollback: DEL
+//	3 confirm  sets it to confirmed in PG        rollback: back to created
 //
-// 「第 1 步真的做过、又真的被回滚了」光看最终 PG 里没有这一行证明不了（也可能根本没插），
-// 所以另看这条链路上的 SQL Span：先有 INSERT，后有 DELETE
+// "step 1 really ran and really was rolled back" cannot be proven by PG holding no such row in the
+// end (it may never have been inserted), so the SQL spans of that trace are checked as well: first
+// an INSERT and then a DELETE
 func TestFunctional_XflowStrongDepFailureRollsBackDoneStepsInReverse(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -114,7 +117,7 @@ func TestFunctional_XflowStrongDepFailureRollsBackDoneStepsInReverse(t *testing.
 			want = http.StatusInternalServerError
 		}
 		if r.Status != want || res.ID != body["id"] {
-			t.Fatalf("POST /orders 约定成功 201、失败 500，body 带同一个 id，实际 %v", r)
+			t.Fatalf("POST /orders promises 201 on success and 500 on failure, with the same id in the body, got %v", r)
 		}
 		tid := traceIDOf(t, r)
 		serverSpan(t, p, tid)
@@ -123,7 +126,7 @@ func TestFunctional_XflowStrongDepFailureRollsBackDoneStepsInReverse(t *testing.
 	charged := func(id string) bool {
 		return rdb.Exists(context.Background(), p.KeyPrefix+"order:"+id+":charged").Val() == 1
 	}
-	// sqlOps 这条链路上 SQL 的动词，按执行顺序：INSERT、UPDATE、DELETE
+	// sqlOps are the verbs of the SQL on this trace, in execution order: INSERT, UPDATE, DELETE
 	sqlOps := func(spans []harness.Span) string {
 		var ops []string
 		for _, s := range spans {
@@ -135,111 +138,111 @@ func TestFunctional_XflowStrongDepFailureRollsBackDoneStepsInReverse(t *testing.
 	}
 	var timings []string
 
-	t.Run("三步都成功：不回滚", func(t *testing.T) {
+	t.Run("all three steps succeed: no rollback", func(t *testing.T) {
 		res, spans, el := order(t, nil)
-		timings = append(timings, fmt.Sprintf("成功 %v", el))
+		timings = append(timings, fmt.Sprintf("success %v", el))
 		if !res.Success || res.Rolled {
-			t.Errorf("应 success=true rolled=false，实际 %+v", res)
+			t.Errorf("it should be success=true rolled=false, got %+v", res)
 		}
 		if st := orderStatus(t, db, p, res.ID); st != "confirmed" || !charged(res.ID) {
-			t.Errorf("三步都做完：订单应是 confirmed、Redis 里有 charged 键，实际 status=%q charged=%v", st, charged(res.ID))
+			t.Errorf("with all three steps done the order should be confirmed and Redis should hold the charged key, got status=%q charged=%v", st, charged(res.ID))
 		}
 		if got := sqlOps(spans); got != "INSERT,UPDATE" {
-			t.Errorf("SQL 应依次是 INSERT、UPDATE，实际 %s", got)
+			t.Errorf("the SQL should be INSERT then UPDATE, got %s", got)
 		}
 	})
 
-	t.Run("第 2 步失败：第 1 步被回滚", func(t *testing.T) {
+	t.Run("step 2 fails: step 1 is rolled back", func(t *testing.T) {
 		res, spans, el := order(t, map[string]any{"fail_at": 2})
-		timings = append(timings, fmt.Sprintf("第2步失败 %v", el))
+		timings = append(timings, fmt.Sprintf("step 2 failing %v", el))
 		if res.Success || !res.Rolled || !strings.Contains(res.Error, `step "charge"`) || !strings.Contains(res.Error, "injected failure at step 2") {
-			t.Errorf("应 success=false rolled=true，error 点名 charge 这一步，实际 %+v", res)
+			t.Errorf("it should be success=false rolled=true with error naming the charge step, got %+v", res)
 		}
 		if len(res.RollbackErrors) != 0 {
-			t.Errorf("回滚都该成功，实际 rollback_errors=%v", res.RollbackErrors)
+			t.Errorf("every rollback should succeed, got rollback_errors=%v", res.RollbackErrors)
 		}
 		if st := orderStatus(t, db, p, res.ID); st != "" {
-			t.Errorf("第 1 步插的订单应已被回滚删掉，PG 里实际还有 status=%q", st)
+			t.Errorf("the order step 1 inserted should have been rolled back and deleted, and PG still holds status=%q", st)
 		}
 		if charged(res.ID) {
-			t.Error("第 2 步失败在副作用之前，Redis 里不该有 charged 键")
+			t.Error("step 2 fails before its side effect, so Redis should hold no charged key")
 		}
-		// 第 1 步真的插过、又真的删了；第 2 步自己没有回滚（Redis 上没有 del）
+		// Step 1 really was inserted and really was deleted; step 2 did not roll itself back (no del on Redis)
 		if got := sqlOps(spans); got != "INSERT,DELETE" {
-			t.Errorf("SQL 应依次是 INSERT（第 1 步）、DELETE（回滚第 1 步），实际 %s", got)
+			t.Errorf("the SQL should be INSERT (step 1) then DELETE (rolling step 1 back), got %s", got)
 		}
 		if n := len(spansNamed(spans, "del")); n != 0 {
-			t.Errorf("失败的那一步不回滚：链路上不该有 Redis del，实际 %d 个", n)
+			t.Errorf("the failing step is not rolled back: the trace should hold no Redis del, got %d", n)
 		}
 		l := p.WaitLog(t, waitFor, func(l harness.Log) bool {
 			return l.Msg() == "xflow step process failed" && l.Str("step") == "charge" && l.Str("trace_id") == spans[0].TraceID
 		})
 		if l.Str("flow") != "create_order" || l.Level() != "WARN" {
-			t.Errorf("失败的那一步应记一条 WARN（flow=create_order），实际 %s", l.Line)
+			t.Errorf("the failing step should record one WARN (flow=create_order), got %s", l.Line)
 		}
 	})
 
-	t.Run("第 3 步失败：第 2、1 步按逆序回滚", func(t *testing.T) {
+	t.Run("step 3 fails: steps 2 and 1 are rolled back in reverse", func(t *testing.T) {
 		res, spans, el := order(t, map[string]any{"fail_at": 3})
-		timings = append(timings, fmt.Sprintf("第3步失败 %v", el))
+		timings = append(timings, fmt.Sprintf("step 3 failing %v", el))
 		if res.Success || !res.Rolled || len(res.RollbackErrors) != 0 {
-			t.Errorf("应 success=false rolled=true 且回滚无错，实际 %+v", res)
+			t.Errorf("it should be success=false rolled=true with no rollback error, got %+v", res)
 		}
 		if st := orderStatus(t, db, p, res.ID); st != "" || charged(res.ID) {
-			t.Errorf("第 1、2 步都应被回滚：订单删掉、charged 键删掉，实际 status=%q charged=%v", st, charged(res.ID))
+			t.Errorf("steps 1 and 2 should both be rolled back: the order deleted and the charged key deleted, got status=%q charged=%v", st, charged(res.ID))
 		}
-		// 逆序：先 DEL（回滚第 2 步），再 DELETE（回滚第 1 步）
+		// In reverse: DEL first (rolling step 2 back) and then DELETE (rolling step 1 back)
 		if got := clientSpanNames(spans); got != "gorm.raw,set,del,gorm.raw" {
-			t.Errorf("应依次是 INSERT、SET、回滚时 DEL、DELETE，实际 %s", spanNames(spans))
+			t.Errorf("it should be INSERT, SET, then DEL and DELETE on the rollback, got %s", spanNames(spans))
 		}
 		if got := sqlOps(spans); got != "INSERT,DELETE" {
-			t.Errorf("SQL 应依次是 INSERT、DELETE，实际 %s", got)
+			t.Errorf("the SQL should be INSERT then DELETE, got %s", got)
 		}
 	})
 
-	t.Run("第 2 步 panic：和返回错误一样回滚", func(t *testing.T) {
+	t.Run("step 2 panics: it rolls back as it does for a returned error", func(t *testing.T) {
 		res, _, _ := order(t, map[string]any{"panic_at": 2})
 		if res.Success || !res.Rolled || !strings.Contains(res.Error, "panicked: injected panic at step 2") {
-			t.Errorf("panic 应被当成这一步失败并回滚，实际 %+v", res)
+			t.Errorf("a panic should count as that step failing and roll back, got %+v", res)
 		}
 		if st := orderStatus(t, db, p, res.ID); st != "" {
-			t.Errorf("第 1 步应被回滚，PG 里实际还有 status=%q", st)
+			t.Errorf("step 1 should be rolled back, and PG still holds status=%q", st)
 		}
 		if p.Exited() {
-			t.Fatal("步骤 panic 不该让进程退出")
+			t.Fatal("a panicking step should not make the process exit")
 		}
 	})
 
-	t.Run("第 1 步就失败：没有可回滚的", func(t *testing.T) {
+	t.Run("step 1 fails: there is nothing to roll back", func(t *testing.T) {
 		res, spans, _ := order(t, map[string]any{"fail_at": 1})
 		if res.Success || res.Rolled {
-			t.Errorf("第 1 步失败时没有做完的步骤，应 rolled=false，实际 %+v", res)
+			t.Errorf("with step 1 failing no step was done, so it should be rolled=false, got %+v", res)
 		}
 		if got := sqlOps(spans); got != "" {
-			t.Errorf("一条 SQL 都不该有，实际 %s", got)
+			t.Errorf("there should be no SQL at all, got %s", got)
 		}
 	})
 
-	t.Run("回滚本身失败：记进 rollback_errors，资源留着，打 Error", func(t *testing.T) {
+	t.Run("the rollback itself fails: it goes into rollback_errors, the resource stays and an Error is logged", func(t *testing.T) {
 		res, _, _ := order(t, map[string]any{"fail_at": 3, "rollback_fail_at": 1})
 		if res.Success || !res.Rolled || len(res.RollbackErrors) != 1 || !strings.Contains(res.RollbackErrors[0], `step "create"`) {
-			t.Errorf("第 1 步的回滚失败应记进 rollback_errors（点名 create），实际 %+v", res)
+			t.Errorf("step 1's failing rollback should go into rollback_errors (naming create), got %+v", res)
 		}
-		// 第 2 步照样回滚了；第 1 步没回滚成，那一行还在
+		// Step 2 was rolled back all the same; step 1's rollback did not succeed, so that row is still there
 		if st := orderStatus(t, db, p, res.ID); st != "created" || charged(res.ID) {
-			t.Errorf("应是订单留在 created（第 1 步没补偿成）、charged 键已删（第 2 步补偿了），实际 status=%q charged=%v", st, charged(res.ID))
+			t.Errorf("the order should stay at created (step 1 was not compensated) with the charged key deleted (step 2 was), got status=%q charged=%v", st, charged(res.ID))
 		}
 		l := p.WaitLog(t, waitFor, func(l harness.Log) bool {
 			return l.Msg() == "xflow rollback did not complete, resources may be left dangling"
 		})
 		if l.Level() != "ERROR" || l.Str("uncompensated_steps") != "1" {
-			t.Errorf("回滚没做完应打一条 ERROR（uncompensated_steps=1），实际 %s", l.Line)
+			t.Errorf("an incomplete rollback should log one ERROR (uncompensated_steps=1), got %s", l.Line)
 		}
 	})
 
-	m := waitMetrics(t, p, "订单计数到 6", func(m harness.Metrics) bool { return m.Sum("e2e_orders_total") == 6 })
+	m := waitMetrics(t, p, "the order count reaching 6", func(m harness.Metrics) bool { return m.Sum("e2e_orders_total") == 6 })
 	if s, f := m.Sum("e2e_orders_total", "result", "success"), m.Sum("e2e_orders_total", "result", "failed"); s != 1 || f != 5 {
-		t.Errorf("e2e_orders_total 应是 success=1 failed=5，实际 %v / %v", s, f)
+		t.Errorf("e2e_orders_total should be success=1 failed=5, got %v / %v", s, f)
 	}
-	t.Logf("数字：POST /orders 耗时 %s", strings.Join(timings, "，"))
+	t.Logf("numbers: POST /orders took %s", strings.Join(timings, ", "))
 }
