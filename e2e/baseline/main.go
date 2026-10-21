@@ -1,18 +1,23 @@
-// baseline：一个裸 gin 服务，给压测做对照。
+// baseline: a bare gin service to compare against under load.
 //
-// 和 e2e 服务有同样的 GET /ping 与 GET /users/:id（直接读 PG），但不经过 xone：
-// 没有访问日志、链路、指标、恢复中间件，也没有缓存。两边压同一个接口，
-// 差出来的就是框架的开销。连接池按 xgorm 的默认值配（50 / 50 / 5m / 5m），
-// 免得差距里混进池子大小的影响。
+// It serves the same GET /ping and GET /users/:id (reading PG directly) as the e2e service, but
+// without going through xone: no access log, no tracing, no metrics, no recovery middleware and no
+// cache. Running the same endpoint on both sides, the difference is the framework's overhead. The
+// connection pool is set to xgorm's defaults (50 / 50 / 5m / 5m) so that the pool size does not mix
+// into that difference.
 //
-// 设了 E2E_MYSQL_DSN 时另有 GET /mysql/users/:id，直接读 MySQL 上的同名表，
-// 连接池同样按 xgorm 的默认值配，对照 e2e 服务里第二个 xgorm 实例的同名接口。
+// With E2E_MYSQL_DSN set there is a GET /mysql/users/:id as well, reading the table of the same
+// name on MySQL directly, its pool set to xgorm's defaults too, to compare against the endpoint of
+// the same name on the e2e service's second xgorm instance.
 //
-// 设了 E2E_CH_DSN 时另有 GET /ch/events/:id，直接读 ClickHouse 上的同名事件表（gorm.io/driver/clickhouse），
-// 对照 e2e 服务里第三个 xgorm 实例的同名接口：连接池同样 50 / 50 / 5m / 5m，DSN 里没写 dial_timeout 时
-// 补上 xgorm 默认注入的那个 500ms，读法同样是 Where("id = ?").Take。
+// With E2E_CH_DSN set there is a GET /ch/events/:id as well, reading the event table of the same
+// name on ClickHouse (gorm.io/driver/clickhouse) to compare against the endpoint of the same name
+// on the e2e service's third xgorm instance: the same 50 / 50 / 5m / 5m pool, the 500ms xgorm
+// injects by default added to the DSN when it carries no dial_timeout, and the same
+// Where("id = ?").Take to read with.
 //
-// 配置只读环境变量，名字和 e2e 服务的一致：E2E_PORT、E2E_PG_DSN、E2E_MYSQL_DSN、E2E_CH_DSN、E2E_TABLE。
+// It is configured from the environment alone, under the same names as the e2e service:
+// E2E_PORT, E2E_PG_DSN, E2E_MYSQL_DSN, E2E_CH_DSN, E2E_TABLE.
 package main
 
 import (
@@ -112,13 +117,13 @@ func main() {
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
-	<-shutdown // ListenAndServe 在 Shutdown 一开始就返回，等在途请求做完再关池子
+	<-shutdown // ListenAndServe returns as soon as Shutdown starts; wait for the requests in flight before closing the pools
 	for _, p := range pools {
 		_ = p.Close()
 	}
 }
 
-// open 按 xgorm 的默认值配好连接池：50 / 50 / 5m / 5m
+// open sets the connection pool to xgorm's defaults: 50 / 50 / 5m / 5m
 func open(d gorm.Dialector) (*gorm.DB, *sql.DB) {
 	db, err := gorm.Open(d, &gorm.Config{Logger: logger.Discard})
 	if err != nil {
@@ -135,7 +140,8 @@ func open(d gorm.Dialector) (*gorm.DB, *sql.DB) {
 	return db, pool
 }
 
-// withDialTimeout DSN 里没写 dial_timeout 时补上 500ms：xgorm 按 DialTimeout 的默认值注入的就是它
+// withDialTimeout adds a 500ms dial_timeout when the DSN carries none: that is what xgorm injects
+// as DialTimeout's default
 func withDialTimeout(dsn string) string {
 	u, err := url.Parse(dsn)
 	if err != nil {
@@ -155,7 +161,7 @@ type event struct {
 	Value int64  `json:"value" gorm:"column:value"`
 }
 
-// readEvent 按 id 读 ClickHouse 上的一行，和 e2e 服务里的读法一样
+// readEvent reads one ClickHouse row by id, the same way the e2e service reads it
 func readEvent(db *gorm.DB, table string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := strconv.ParseUint(c.Param("id"), 10, 64)
@@ -176,7 +182,7 @@ func readEvent(db *gorm.DB, table string) gin.HandlerFunc {
 	}
 }
 
-// readUser 按 id 读一行，和 e2e 服务里的读法一样
+// readUser reads one row by id, the same way the e2e service reads it
 func readUser(db *gorm.DB, table string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		id, err := strconv.ParseInt(c.Param("id"), 10, 64)

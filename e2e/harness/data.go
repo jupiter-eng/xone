@@ -6,34 +6,38 @@ import (
 	"testing"
 	"time"
 
-	_ "github.com/ClickHouse/clickhouse-go/v2" // database/sql 的 ClickHouse 驱动，名字是 "clickhouse"
-	_ "github.com/go-sql-driver/mysql"         // database/sql 的 MySQL 驱动，名字是 "mysql"
-	_ "github.com/jackc/pgx/v5/stdlib"         // database/sql 的 pgx 驱动，名字是 "pgx"
+	_ "github.com/ClickHouse/clickhouse-go/v2" // the ClickHouse driver for database/sql, named "clickhouse"
+	_ "github.com/go-sql-driver/mysql"         // the MySQL driver for database/sql, named "mysql"
+	_ "github.com/jackc/pgx/v5/stdlib"         // the pgx driver for database/sql, named "pgx"
 	"github.com/redis/go-redis/v9"
 )
 
-// DB 直连 PG（不经代理），测试里核对数据用。测试结束时关掉
+// DB connects to PG directly (not through the proxy), for a test to check the data with. It is
+// closed when the test ends
 func DB(t testing.TB) *sql.DB {
 	t.Helper()
 	Require(t)
 	return openDB(t, "pgx", "postgres", PGDSN(PGAddr()))
 }
 
-// MySQL 直连 MySQL（不经代理），测试里核对数据用。测试结束时关掉
+// MySQL connects to MySQL directly (not through the proxy), for a test to check the data with. It
+// is closed when the test ends
 func MySQL(t testing.TB) *sql.DB {
 	t.Helper()
 	Require(t)
 	return openDB(t, "mysql", "mysql", MySQLDSN(MySQLAddr()))
 }
 
-// CH 直连 ClickHouse（native 协议，不经代理），测试里核对数据用。测试结束时关掉
+// CH connects to ClickHouse directly (the native protocol, not through the proxy), for a test to
+// check the data with. It is closed when the test ends
 func CH(t testing.TB) *sql.DB {
 	t.Helper()
 	RequireCH(t)
 	return openDB(t, "clickhouse", "clickhouse", CHDSN(CHAddr()))
 }
 
-// openDB 用 database/sql 的 driver 打开 dsn，测试结束时关掉；name 只用在失败消息里
+// openDB opens dsn with a database/sql driver and closes it when the test ends; name is used in
+// the failure messages alone
 func openDB(t testing.TB, driver, name, dsn string) *sql.DB {
 	t.Helper()
 	db, err := sql.Open(driver, dsn)
@@ -44,7 +48,8 @@ func openDB(t testing.TB, driver, name, dsn string) *sql.DB {
 	return db
 }
 
-// Redis 直连 Redis（不经代理），测试里核对数据用。测试结束时关掉
+// Redis connects to Redis directly (not through the proxy), for a test to check the data with. It
+// is closed when the test ends
 func Redis(t testing.TB) *redis.Client {
 	t.Helper()
 	Require(t)
@@ -53,15 +58,16 @@ func Redis(t testing.TB) *redis.Client {
 	return c
 }
 
-// dropData 删掉一个进程在 PG 上的两张表、MySQL 上的那张表（ch 时还有 ClickHouse 上的那张）
-// 和它前缀下的全部 key。清理失败只记一笔：数据是随机名字，不会影响别的用例
+// dropData drops one process's two tables on PG, its table on MySQL (and, with ch, the one on
+// ClickHouse) and every key under its prefix. A failed cleanup is only recorded: the names are
+// random, so no other case is affected
 func dropData(t testing.TB, table, prefix string, ch bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	db, err := sql.Open("pgx", PGDSN(PGAddr()))
 	if err == nil {
-		// 表名是 NewID 拼的或测试给的，只含小写字母、数字、下划线
+		// The table name comes from NewID or from the test, and holds lower-case letters, digits and underscores alone
 		_, err = db.ExecContext(ctx, `DROP TABLE IF EXISTS `+table+`, `+table+`_orders`)
 		db.Close()
 	}

@@ -1,16 +1,18 @@
 package harness
 
-// TLS 的 e2e：测试时现造一套证书，再起几个只收 TLS 的服务端实例——
-// 第二个 PostgreSQL 集群、第二个 mysqld、两个 redis-server。都在临时目录里，
-// 端口是 FreePort 给的，测试结束时停掉、删干净：本机常驻的那几个实例一个配置都不动，
-// 别的 e2e 照常跑。
+// The TLS e2e cases: a set of certificates is made during the test and a few server instances that
+// take TLS alone are started with them -- a second PostgreSQL cluster, a second mysqld and two
+// redis-servers. All of them live in temporary directories on ports FreePort handed out, and are
+// stopped and cleaned up when the test ends: the instances running permanently on this host keep
+// every setting they have, and the other e2e cases carry on.
 //
-// 证书：
+// The certificates:
 //
-//	CA            正确的 CA，签了服务端证书（127.0.0.1 / localhost / db.e2e.internal）和客户端证书（CN=xone_mtls）
-//	OtherCA       一个不相干的 CA，签了一张 CN=xone_mtls 的「陌生人」客户端证书
+//	CA            the right CA, which signed the server certificate (127.0.0.1 / localhost / db.e2e.internal) and the client certificate (CN=xone_mtls)
+//	OtherCA       an unrelated CA, which signed a "stranger" client certificate that is also CN=xone_mtls
 //
-// 本机没装对应的服务端（或 redis-server 没带 TLS）时 t.Skip，并说清缺的是什么。
+// Without the matching server installed on this host (or with a redis-server built without TLS) it
+// t.Skips and says what is missing.
 
 import (
 	"bytes"
@@ -39,33 +41,36 @@ import (
 	"github.com/go-sql-driver/mysql"
 )
 
-// TLSPassword 几个 TLS 实例上测试账号的密码。断言「错误和日志里没有密码」时拿它比对
+// TLSPassword is the test account's password on the TLS instances. Asserting "no password in the
+// error or in the log" compares against it
 const TLSPassword = "tls-e2e-secret-pw"
 
-// TLSServerName 服务端证书上除 127.0.0.1 / localhost 之外的那个名字
+// TLSServerName is the name on the server certificate besides 127.0.0.1 / localhost
 const TLSServerName = "db.e2e.internal"
 
-// TLSMTLSUser 客户端证书的 CN，也是要求客户端证书的那个数据库账号
+// TLSMTLSUser is the CN of the client certificate, and the database account that asks for a client
+// certificate
 const TLSMTLSUser = "xone_mtls"
 
-// TLSCerts 一套现造的证书，文件都在 Dir 里
+// TLSCerts is one set of certificates just made, all of them files in Dir
 type TLSCerts struct {
 	Dir string
 
-	CAFile      string // 正确的 CA
-	OtherCAFile string // 不相干的 CA，拿它校验服务端证书必须失败
+	CAFile      string // the right CA
+	OtherCAFile string // the unrelated CA, against which the server certificate has to fail to verify
 
-	ServerCert, ServerKey string // 服务端证书与私钥
+	ServerCert, ServerKey string // the server certificate and its private key
 
-	ClientCert, ClientKey     string // 正确的 CA 签的客户端证书（CN=xone_mtls）
-	StrangerCert, StrangerKey string // 不相干的 CA 签的客户端证书（同样 CN=xone_mtls）
+	ClientCert, ClientKey     string // the client certificate signed by the right CA (CN=xone_mtls)
+	StrangerCert, StrangerKey string // the client certificate signed by the unrelated CA (CN=xone_mtls as well)
 
-	// Pool 只含正确的 CA，桩服务端校验客户端证书用
+	// Pool holds the right CA alone, for a stub server to verify a client certificate with
 	Pool *x509.CertPool
 }
 
-// NewTLSCerts 现造一套证书。目录和文件对所有人可读：postgres、mysql 两个账号要读它们
-// （私钥各自再复制一份、按服务端的要求改属主和权限）
+// NewTLSCerts makes a set of certificates. The directory and the files are readable by everyone:
+// the postgres and mysql accounts have to read them (each private key is copied once more, with
+// the owner and the permissions the server wants)
 func NewTLSCerts(t testing.TB) *TLSCerts {
 	t.Helper()
 	dir := tempDir(t, "xone-tls-certs-")
@@ -87,7 +92,8 @@ func NewTLSCerts(t testing.TB) *TLSCerts {
 	return c
 }
 
-// ServerTLS 用服务端证书的 *tls.Config，给进程内的桩服务端用；clientCA 为 true 时要求客户端证书
+// ServerTLS is a *tls.Config using the server certificate, for an in-process stub server; with
+// clientCA true it asks for a client certificate
 func (c *TLSCerts) ServerTLS(t testing.TB, clientCA bool) *tls.Config {
 	t.Helper()
 	cert, err := tls.LoadX509KeyPair(c.ServerCert, c.ServerKey)
@@ -137,7 +143,7 @@ func issueCert(t testing.TB, ca *x509.Certificate, caKey *ecdsa.PrivateKey, seri
 
 func writePair(t testing.TB, dir, name string, cert *x509.Certificate, key *ecdsa.PrivateKey) (string, string) {
 	t.Helper()
-	// PKCS#8：PG、MySQL（OpenSSL）、Redis、Go 都认
+	// PKCS#8: PG, MySQL (OpenSSL), Redis and Go all take it
 	der, err := x509.MarshalPKCS8PrivateKey(key)
 	if err != nil {
 		t.Fatalf("marshal key: %v", err)
@@ -154,7 +160,8 @@ func writePEM(t testing.TB, dir, name, typ string, der []byte) string {
 	return p
 }
 
-// tempDir 一个所有人都进得去的临时目录（t.TempDir 是 0700，postgres / mysql 账号进不去），测试结束删掉
+// tempDir is a temporary directory everyone can enter (t.TempDir is 0700, which the postgres /
+// mysql accounts cannot enter), deleted when the test ends
 func tempDir(t testing.TB, prefix string) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("", prefix)
@@ -168,7 +175,7 @@ func tempDir(t testing.TB, prefix string) string {
 	return dir
 }
 
-// chownTo 把 path 交给系统账号 name
+// chownTo hands path over to the system account name
 func chownTo(t testing.TB, name string, paths ...string) {
 	t.Helper()
 	u, err := user.Lookup(name)
@@ -184,7 +191,7 @@ func chownTo(t testing.TB, name string, paths ...string) {
 	}
 }
 
-// copyFile 复制一份，权限设成 mode
+// copyFile makes a copy with the permissions set to mode
 func copyFile(t testing.TB, from, to string, mode os.FileMode) {
 	t.Helper()
 	b, err := os.ReadFile(from)
@@ -196,8 +203,9 @@ func copyFile(t testing.TB, from, to string, mode os.FileMode) {
 	}
 }
 
-// run 跑一条命令，失败时把输出带进 t.Fatal（输出里只有路径和端口，没有密码：
-// 密码都经文件或 socket 上的 SQL 交过去）
+// run runs one command and takes its output into t.Fatal on failure (the output holds paths and
+// ports alone and no password: every password is handed over through a file or through SQL on a
+// socket)
 func run(t testing.TB, name string, args ...string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -208,7 +216,7 @@ func run(t testing.TB, name string, args ...string) {
 	}
 }
 
-// waitTCP 等 addr 能连上，最多 timeout
+// waitTCP waits until addr connects, for timeout at most
 func waitTCP(t testing.TB, addr string, timeout time.Duration, logFile string) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -228,22 +236,25 @@ func waitTCP(t testing.TB, addr string, timeout time.Duration, logFile string) {
 
 // ---- PostgreSQL ----
 
-// TLSPostgres 一个只收 TLS 的 PostgreSQL 集群
+// TLSPostgres is a PostgreSQL cluster that takes TLS alone
 //
-// pg_hba 里只有 hostssl：明文连过来是 no pg_hba.conf entry … no encryption。
-// 账号 postgres 用密码登录；账号 xone_mtls 另外要求出示 CN 与账号同名的客户端证书
-// （clientcert=verify-full）。密码都是 TLSPassword，库是 postgres
+// pg_hba holds hostssl alone: a plaintext connection is told no pg_hba.conf entry ... no
+// encryption. The account postgres logs in with a password; the account xone_mtls has to present a
+// client certificate whose CN is the account name as well (clientcert=verify-full). Both passwords
+// are TLSPassword and the database is postgres
 type TLSPostgres struct {
 	Addr string
 }
 
-// DSN 用账号 user 连这个集群的 key=value DSN，不带任何 ssl 参数（TLS 交给配置里的 TLS 块）
+// DSN is the key=value DSN connecting to this cluster as the account user, carrying no ssl
+// parameter at all (TLS is left to the TLS block in the configuration)
 func (p *TLSPostgres) DSN(user string) string {
 	host, port, _ := net.SplitHostPort(p.Addr)
 	return fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=postgres", host, port, user, TLSPassword)
 }
 
-// StartTLSPostgres initdb 一个新集群、开 ssl=on 起在随机端口上，测试结束时停掉删掉
+// StartTLSPostgres initdbs a new cluster and starts it with ssl=on on a random port, then stops
+// and deletes it when the test ends
 func StartTLSPostgres(t testing.TB, certs *TLSCerts) *TLSPostgres {
 	t.Helper()
 	Require(t)
@@ -252,7 +263,7 @@ func StartTLSPostgres(t testing.TB, certs *TLSCerts) *TLSPostgres {
 	data := filepath.Join(dir, "data")
 	pwfile := filepath.Join(dir, "pw")
 	copyFile(t, certs.ServerCert, filepath.Join(dir, "server.crt"), 0o644)
-	copyFile(t, certs.ServerKey, filepath.Join(dir, "server.key"), 0o600) // PG 要求私钥只有属主能读
+	copyFile(t, certs.ServerKey, filepath.Join(dir, "server.key"), 0o600) // PG wants the private key readable by its owner alone
 	copyFile(t, certs.CAFile, filepath.Join(dir, "ca.crt"), 0o644)
 	if err := os.WriteFile(pwfile, []byte(TLSPassword+"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -293,7 +304,7 @@ fsync = off
 	})
 
 	p := &TLSPostgres{Addr: net.JoinHostPort("127.0.0.1", strconv.Itoa(port))}
-	// 建 xone_mtls：经 Unix socket 以 postgres 登录，密码走 PGPASSWORD，不上命令行
+	// Create xone_mtls: over the Unix socket as postgres, with the password in PGPASSWORD rather than on the command line
 	cmd := exec.Command("runuser", "-u", "postgres", "--", filepath.Join(bin, "psql"), "-h", dir, "-p", strconv.Itoa(port),
 		"-U", "postgres", "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-q", "-c",
 		"CREATE ROLE "+TLSMTLSUser+" LOGIN PASSWORD '"+TLSPassword+"'")
@@ -304,7 +315,8 @@ fsync = off
 	return p
 }
 
-// pgBinDir 本机 PostgreSQL 的 bin 目录：XONE_E2E_PG_BINDIR，或者 /usr/lib/postgresql/*/bin 里版本最高的那个
+// pgBinDir is this host's PostgreSQL bin directory: XONE_E2E_PG_BINDIR, or the highest version
+// under /usr/lib/postgresql/*/bin
 func pgBinDir(t testing.TB) string {
 	t.Helper()
 	if d := os.Getenv("XONE_E2E_PG_BINDIR"); d != "" {
@@ -343,20 +355,24 @@ func appendFile(t testing.TB, path, text string) {
 
 // ---- MySQL ----
 
-// TLSMySQL 一个只收 TLS 的 mysqld（require_secure_transport=ON，明文连过来报 3159）
+// TLSMySQL is a mysqld that takes TLS alone (require_secure_transport=ON, and a plaintext
+// connection is told 3159)
 //
-// 账号 xone（mysql_native_password，靠 require_secure_transport 拒明文）和 xone_mtls（REQUIRE X509，要出示正确的 CA 签的客户端证书），
-// 密码都是 TLSPassword，库是 xone_tls
+// The accounts are xone (mysql_native_password, refusing plaintext through
+// require_secure_transport) and xone_mtls (REQUIRE X509, which has to present a client certificate
+// signed by the right CA), both with the password TLSPassword, and the database is xone_tls
 type TLSMySQL struct {
 	Addr string
 }
 
-// DSN 用账号 user 连这个实例，不带 tls 参数（TLS 交给配置里的 TLS 块）
+// DSN connects to this instance as the account user, carrying no tls parameter (TLS is left to the
+// TLS block in the configuration)
 func (m *TLSMySQL) DSN(user string) string {
 	return fmt.Sprintf("%s:%s@tcp(%s)/xone_tls", user, TLSPassword, m.Addr)
 }
 
-// StartTLSMySQL 在临时目录里 --initialize-insecure 一个新实例、带着我们的证书起在随机端口上
+// StartTLSMySQL --initialize-insecures a new instance in a temporary directory and starts it on a
+// random port with our certificates
 func StartTLSMySQL(t testing.TB, certs *TLSCerts) *TLSMySQL {
 	t.Helper()
 	Require(t)
@@ -404,8 +420,8 @@ func StartTLSMySQL(t testing.TB, certs *TLSCerts) *TLSMySQL {
 	})
 	waitTCP(t, net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), 60*time.Second, logFile)
 
-	// 经 Unix socket 以 root（--initialize-insecure：没有密码）建账号和库。
-	// require_secure_transport 不挡 socket：它本来就被当成安全的传输
+	// Create the accounts and the database over the Unix socket as root (--initialize-insecure: no
+	// password). require_secure_transport does not stop a socket: it counts as a secure transport
 	root, err := sql.Open("mysql", (&mysql.Config{User: "root", Net: "unix", Addr: sock, AllowNativePasswords: true}).FormatDSN())
 	if err != nil {
 		t.Fatal(err)
@@ -413,10 +429,11 @@ func StartTLSMySQL(t testing.TB, certs *TLSCerts) *TLSMySQL {
 	defer root.Close()
 	for _, stmt := range []string{
 		"CREATE DATABASE xone_tls",
-		// 明文连过来时要让 require_secure_transport 说话（3159），账号上就不能再有别的拦法：
-		// 实测 8.0.46 上 REQUIRE SSL 的账号走明文、默认的 caching_sha2_password 走明文，
-		// 都是先回 1045 Access denied，看不出是传输不安全被拒。所以这个账号不加 REQUIRE、
-		// 用 mysql_native_password
+		// For require_secure_transport to be the one speaking on a plaintext connection (3159), the
+		// account must carry no other obstacle: measured on 8.0.46, an account with REQUIRE SSL over
+		// plaintext and the default caching_sha2_password over plaintext both answer 1045 Access
+		// denied first, which does not tell that an insecure transport was what got refused. So this
+		// account carries no REQUIRE and uses mysql_native_password
 		"CREATE USER 'xone'@'127.0.0.1' IDENTIFIED WITH mysql_native_password BY '" + TLSPassword + "'",
 		"CREATE USER '" + TLSMTLSUser + "'@'127.0.0.1' IDENTIFIED BY '" + TLSPassword + "' REQUIRE X509",
 		"GRANT ALL ON xone_tls.* TO 'xone'@'127.0.0.1'",
@@ -434,13 +451,14 @@ func StartTLSMySQL(t testing.TB, certs *TLSCerts) *TLSMySQL {
 
 // ---- Redis ----
 
-// TLSRedis 两个只开 TLS 端口的 redis-server（port 0）：Addr 不要客户端证书，
-// MTLSAddr 要（tls-auth-clients yes）。密码都是 TLSPassword
+// TLSRedis is two redis-servers with their TLS port alone open (port 0): Addr asks for no client
+// certificate and MTLSAddr does (tls-auth-clients yes). Both passwords are TLSPassword
 type TLSRedis struct {
 	Addr, MTLSAddr string
 }
 
-// StartTLSRedis 起两个 redis-server，测试结束时停掉。redis-server 没带 TLS 时 t.Skip
+// StartTLSRedis starts two redis-servers and stops them when the test ends. With a redis-server
+// built without TLS it t.Skips
 func StartTLSRedis(t testing.TB, certs *TLSCerts) *TLSRedis {
 	t.Helper()
 	Require(t)
@@ -457,7 +475,7 @@ func StartTLSRedis(t testing.TB, certs *TLSCerts) *TLSRedis {
 			"--tls-auth-clients", authClients, "--save", "", "--appendonly", "no", "--dir", dir, "--logfile", logFile)
 		var out bytes.Buffer
 		cmd.Stdout, cmd.Stderr = &out, &out
-		// 密码经 stdin 上的配置交过去，不上命令行（ps 看得见命令行）
+		// The password is handed over through the configuration on stdin rather than on the command line (which ps shows)
 		cmd.Args = append(cmd.Args[:1], append([]string{"-"}, cmd.Args[1:]...)...)
 		cmd.Stdin = strings.NewReader("requirepass " + TLSPassword + "\n")
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -496,8 +514,8 @@ func StartTLSRedis(t testing.TB, certs *TLSCerts) *TLSRedis {
 	return &TLSRedis{Addr: start("no"), MTLSAddr: start("yes")}
 }
 
-// SelfSignedCert 在 dir 里生成一张给 127.0.0.1 / localhost 的自签名证书，
-// 返回证书、私钥文件的路径，和只信这张证书的 CertPool
+// SelfSignedCert generates a self-signed certificate for 127.0.0.1 / localhost in dir, and returns
+// the paths of the certificate and the private key, and a CertPool trusting that certificate alone
 func SelfSignedCert(t testing.TB, dir string) (certFile, keyFile string, pool *x509.CertPool) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

@@ -9,8 +9,6 @@
 # The two diagrams hold their text as SVG nodes at fixed coordinates. English is wider than
 # Chinese at the same font size, so translating them without rendering the result risks text
 # overflowing its boxes; they need a pass where the rendering can be checked.
-e2e/.gitignore
-e2e/baseline/main.go
 e2e/clickhouse_auth_test.go
 e2e/clickhouse_fault_test.go
 e2e/clickhouse_functional_test.go
@@ -19,11 +17,8 @@ e2e/clickhouse_shutdown_test.go
 e2e/clickhouse_test.go
 e2e/clickhouse_tls_test.go
 e2e/client_options_test.go
-e2e/compose.yml
 e2e/config_loading_test.go
-e2e/covapp/main.go
 e2e/cron_test.go
-e2e/doc.go
 e2e/fault_downstream_test.go
 e2e/fault_startup_test.go
 e2e/fault_test.go
@@ -38,34 +33,10 @@ e2e/functional_metrics_test.go
 e2e/functional_test.go
 e2e/functional_trace_test.go
 e2e/gin_options_test.go
-e2e/go.mod
-e2e/harness/build.go
-e2e/harness/data.go
-e2e/harness/harness.go
-e2e/harness/harness_test.go
-e2e/harness/hole_linux.go
-e2e/harness/hole_other.go
-e2e/harness/http.go
-e2e/harness/kafka.go
-e2e/harness/load.go
-e2e/harness/metrics.go
-e2e/harness/output.go
-e2e/harness/output_test.go
-e2e/harness/proc.go
-e2e/harness/procattr_linux.go
-e2e/harness/procattr_other.go
-e2e/harness/process.go
-e2e/harness/proxy.go
-e2e/harness/spans.go
-e2e/harness/stub.go
-e2e/harness/tls.go
-e2e/harness/tls_clickhouse.go
-e2e/internal/spanlog/spanlog.go
 e2e/kafka_test.go
 e2e/load_helpers_test.go
 e2e/load_test.go
 e2e/log_options_test.go
-e2e/main_test.go
 e2e/metric_options_test.go
 e2e/mysql_fault_test.go
 e2e/mysql_functional_test.go

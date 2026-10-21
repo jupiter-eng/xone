@@ -12,20 +12,21 @@ import (
 	"github.com/prometheus/common/model"
 )
 
-// Sample 一条样本，名字和 /metrics 文本里的一致：直方图拆成
-// xxx_bucket{le=...}、xxx_sum、xxx_count，Summary 拆成 xxx{quantile=...}、xxx_sum、xxx_count
+// Sample is one sample, named as it is in the /metrics text: a histogram comes apart into
+// xxx_bucket{le=...}, xxx_sum and xxx_count, and a summary into xxx{quantile=...}, xxx_sum and
+// xxx_count
 type Sample struct {
 	Name   string
 	Labels map[string]string
 	Value  float64
 }
 
-// Metrics 抓一次 /metrics 的结果
+// Metrics is the result of one /metrics scrape
 type Metrics struct {
 	Samples []Sample
 }
 
-// ParseMetrics 解析 Prometheus 文本格式
+// ParseMetrics parses the Prometheus text format
 func ParseMetrics(r io.Reader) (Metrics, error) {
 	p := expfmt.NewTextParser(model.UTF8Validation)
 	fams, err := p.TextToMetricFamilies(r)
@@ -68,7 +69,7 @@ func flatten(name string, typ dto.MetricType, mt *dto.Metric, labels map[string]
 		for _, b := range h.GetBucket() {
 			out = append(out, Sample{name + "_bucket", with("le", formatBound(b.GetUpperBound())), float64(b.GetCumulativeCount())})
 		}
-		return out // +Inf 那一档解析器照常放在 Bucket 里，le 渲染成 +Inf
+		return out // the parser puts the +Inf bucket in Bucket like any other, with le rendered as +Inf
 	case dto.MetricType_SUMMARY:
 		s := mt.GetSummary()
 		out := []Sample{
@@ -84,7 +85,8 @@ func flatten(name string, typ dto.MetricType, mt *dto.Metric, labels map[string]
 	}
 }
 
-// formatBound 按 /metrics 文本里的写法渲染桶的上界和分位数：0.005、1、+Inf
+// formatBound renders a bucket's upper bound and a quantile the way the /metrics text writes them:
+// 0.005, 1, +Inf
 func formatBound(v float64) string {
 	if math.IsInf(v, 1) {
 		return "+Inf"
@@ -92,8 +94,9 @@ func formatBound(v float64) string {
 	return strconv.FormatFloat(v, 'g', -1, 64)
 }
 
-// Find 名字精确匹配、并且带着给定标签的样本。labels 是成对的 key、value，
-// 只要求样本有这些标签（子集匹配），样本多出来的标签不管
+// Find returns the samples whose name matches exactly and that carry the given labels. labels are
+// key and value in pairs, and a sample only has to hold them (a subset match); further labels on
+// the sample are ignored
 func (m Metrics) Find(name string, labels ...string) []Sample {
 	var out []Sample
 	for _, s := range m.Samples {
@@ -104,7 +107,7 @@ func (m Metrics) Find(name string, labels ...string) []Sample {
 	return out
 }
 
-// Sum Find 出来的样本值之和，一条都没有时是 0
+// Sum adds up the values Find returns, and is 0 when there is none
 func (m Metrics) Sum(name string, labels ...string) float64 {
 	var sum float64
 	for _, s := range m.Find(name, labels...) {
@@ -113,7 +116,7 @@ func (m Metrics) Sum(name string, labels ...string) float64 {
 	return sum
 }
 
-// Has 有没有这个名字的样本
+// Has says whether there is a sample under this name
 func (m Metrics) Has(name string) bool { return len(m.Find(name)) > 0 }
 
 func hasLabels(have map[string]string, want []string) bool {
@@ -125,7 +128,7 @@ func hasLabels(have map[string]string, want []string) bool {
 	return true
 }
 
-// ScrapeMetrics 抓 url 上的 Prometheus 指标
+// ScrapeMetrics scrapes the Prometheus metrics at url
 func ScrapeMetrics(t testing.TB, url string) Metrics {
 	t.Helper()
 	resp, err := http.Get(url)
@@ -143,7 +146,7 @@ func ScrapeMetrics(t testing.TB, url string) Metrics {
 	return m
 }
 
-// Metrics 抓这个进程的 /metrics
+// Metrics scrapes this process's /metrics
 func (p *Process) Metrics(t testing.TB) Metrics {
 	t.Helper()
 	return ScrapeMetrics(t, p.URL("/metrics"))

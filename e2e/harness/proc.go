@@ -10,31 +10,33 @@ import (
 	"time"
 )
 
-// ProcStat 从 /proc 读到的一个进程的资源占用（只在 Linux 上有）
+// ProcStat is one process's resource use as read from /proc (Linux only)
 type ProcStat struct {
-	// CPU 用户态加内核态累计用掉的 CPU 时间。两次读数相减就是这段时间里用了多少
+	// CPU is the user and kernel CPU time used so far. Two readings subtracted give what was used
+	// in between
 	CPU time.Duration
-	// RSS 当前常驻内存，字节（VmRSS）
+	// RSS is the current resident memory in bytes (VmRSS)
 	RSS int64
-	// PeakRSS 进程启动以来常驻内存的峰值，字节（VmHWM）
+	// PeakRSS is the highest resident memory since the process started, in bytes (VmHWM)
 	PeakRSS int64
-	// Threads 线程数
+	// Threads is the number of threads
 	Threads int
 }
 
-// userHZ /proc/<pid>/stat 里 CPU 时间的单位。内核对用户态暴露的
-// USER_HZ 在所有主流架构上固定是 100，与内核自己的 CONFIG_HZ 无关
+// userHZ is the unit of the CPU times in /proc/<pid>/stat. The USER_HZ the kernel exposes to user
+// space is 100 on every mainstream architecture, whatever the kernel's own CONFIG_HZ
 const userHZ = 100
 
-// ReadProc 读 /proc/<pid>/stat 和 /proc/<pid>/status
+// ReadProc reads /proc/<pid>/stat and /proc/<pid>/status
 func ReadProc(pid int) (ProcStat, error) {
 	var s ProcStat
 	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {
 		return s, err
 	}
-	// 第 2 个字段是括号括起来的命令名，里面可能有空格，所以从最后一个 ')' 之后数：
-	// 那之后的第 1 个字段是第 3 个字段（state），utime / stime 是第 14、15 个
+	// The 2nd field is the command name in brackets and may hold spaces, so the count starts after
+	// the last ')': the 1st field after it is the 3rd field (state), and utime / stime are the
+	// 14th and 15th
 	i := bytes.LastIndexByte(stat, ')')
 	if i < 0 {
 		return s, fmt.Errorf("unexpected /proc/%d/stat: %q", pid, stat)
@@ -70,7 +72,7 @@ func ReadProc(pid int) (ProcStat, error) {
 		}
 		switch k {
 		case "VmRSS":
-			s.RSS = n * 1024 // 单位是 kB
+			s.RSS = n * 1024 // the unit is kB
 		case "VmHWM":
 			s.PeakRSS = n * 1024
 		case "Threads":
@@ -80,9 +82,9 @@ func ReadProc(pid int) (ProcStat, error) {
 	return s, sc.Err()
 }
 
-// ResetPeakRSS 把 /proc/<pid>/status 里的 VmHWM 重置成当前的 RSS（写 5 到 clear_refs，
-// Linux 4.0 起支持）。压测分档时每档开始前调一次，档末读到的 PeakRSS 就是这一档自己的峰值，
-// 而不是进程启动以来的峰值
+// ResetPeakRSS resets VmHWM in /proc/<pid>/status to the current RSS (by writing 5 to clear_refs,
+// supported since Linux 4.0). A load test calls it before each step, so that the PeakRSS read at
+// the end of a step is that step's own peak rather than the peak since the process started
 func ResetPeakRSS(pid int) error {
 	return os.WriteFile(fmt.Sprintf("/proc/%d/clear_refs", pid), []byte("5"), 0)
 }

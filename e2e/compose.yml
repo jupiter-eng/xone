@@ -1,16 +1,18 @@
-# e2e 要的五个服务，账号、密码、库名和 scripts/e2e.sh / e2e/harness 的默认值一致。
+# The five services e2e wants, with the accounts, passwords and database names matching the
+# defaults in scripts/e2e.sh / e2e/harness.
 #
-#   docker compose -f e2e/compose.yml up -d --wait   # 起来并等到健康
+#   docker compose -f e2e/compose.yml up -d --wait   # bring them up and wait until they are healthy
 #   scripts/e2e.sh
-#   docker compose -f e2e/compose.yml down           # 数据不落盘，down 了就没了
+#   docker compose -f e2e/compose.yml down           # nothing is on disk, down and it is gone
 #
-# 本机默认端口被占了（比如装了系统自带的 PostgreSQL）就换一个，再用同一组变量告诉 e2e.sh：
+# When a default port is taken on this host (by the system's own PostgreSQL, say), pick another one
+# and tell e2e.sh through the same set of variables:
 #
 #   XONE_E2E_PG_PORT=15432 docker compose -f e2e/compose.yml up -d --wait
 #   XONE_E2E_PG_ADDR=127.0.0.1:15432 scripts/e2e.sh
 #
-# 镜像走 mirror.gcr.io（Docker Hub 的公开镜像缓存，内容相同），免得撞上 Docker Hub 的拉取限额；
-# CI 的 e2e 工作流用的是同一组镜像。
+# The images come from mirror.gcr.io (Docker Hub's public image cache, with identical content) so
+# that Docker Hub's pull limit is never hit; CI's e2e workflow uses the same set of images.
 name: xone-e2e
 
 services:
@@ -37,7 +39,8 @@ services:
     ports: ["127.0.0.1:${XONE_E2E_MYSQL_PORT:-3306}:3306"]
     tmpfs: [/var/lib/mysql]
     healthcheck:
-      # 初始化期间的临时实例不开 TCP：连得上 127.0.0.1 才是正式起来了
+      # The temporary instance that runs during initialization opens no TCP: a connection to
+      # 127.0.0.1 is what tells it has really come up
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uxone", "-pe2e-secret-pw"]
       interval: 2s
       retries: 60
@@ -66,8 +69,10 @@ services:
       interval: 2s
       retries: 60
 
-  # KRaft 单节点。apache/kafka 的镜像只要给了任何一个 KAFKA_ 环境变量就不再用自带的默认配置，所以整组都要写全。
-  # GROUP_INITIAL_REBALANCE_DELAY_MS 默认 3000：每个新消费组的首次分配多等 3s，e2e 里每个用例都要入组，关掉
+  # One KRaft node. The apache/kafka image drops its own default configuration as soon as any
+  # KAFKA_ environment variable is given, so the whole set has to be written out.
+  # GROUP_INITIAL_REBALANCE_DELAY_MS defaults to 3000, which makes every new consumer group wait 3s
+  # for its first assignment; every e2e case joins a group, so it is turned off
   kafka:
     image: mirror.gcr.io/apache/kafka:3.9.1
     environment:

@@ -11,20 +11,23 @@ import (
 	"github.com/twmb/franz-go/pkg/kmsg"
 )
 
-// Kafka 的用例：服务的 XKafka 只在 Options.Kafka 时有（service/application-kafka.yml 那份 profile），
-// 每个用例自己建 topic（KafkaTopic），用完删掉，所以可以 t.Parallel。
+// The Kafka cases: the service has an XKafka only with Options.Kafka (the
+// service/application-kafka.yml profile), and every case creates a topic of its own (KafkaTopic)
+// and deletes it afterwards, so they can t.Parallel.
 //
-//	XONE_E2E_KAFKA_ADDR  默认 127.0.0.1:9092
-//	XONE_E2E_KAFKA       scripts/e2e.sh 起不来 Kafka 时设成 0，Kafka 的用例跳过（RequireKafka）
+//	XONE_E2E_KAFKA_ADDR  127.0.0.1:9092 by default
+//	XONE_E2E_KAFKA       set to 0 when scripts/e2e.sh cannot bring Kafka up, and the Kafka cases skip (RequireKafka)
 
-// KafkaAddr Kafka broker 的 host:port，不经代理
+// KafkaAddr is the Kafka broker's host:port, not through the proxy
 func KafkaAddr() string { return env("XONE_E2E_KAFKA_ADDR", "127.0.0.1:9092") }
 
-// RequireKafka Kafka 用例的第一行：e2e 没开、或者 Kafka 不可用时跳过。
+// RequireKafka is the first line of a Kafka case: it skips when e2e is off or Kafka is
+// unavailable.
 //
-// Kafka 跑在 Docker 里，不是每台机器都有：scripts/e2e.sh 起不来它时设 XONE_E2E_KAFKA=0，
-// 这里跳过并说清为什么；没经过脚本直接跑的，向 broker 要一次元数据，要不到同样跳过。
-// 只拨端口不够：docker 的端口转发在 broker 起来之前就在听了
+// Kafka runs in Docker, which not every machine has: scripts/e2e.sh sets XONE_E2E_KAFKA=0 when it
+// cannot bring it up, and this skips and says why; run without the script, it asks the broker for
+// metadata once and skips the same way when none comes back. Dialing the port is not enough:
+// docker's port forwarding listens before the broker is up
 func RequireKafka(t testing.TB) {
 	t.Helper()
 	Require(t)
@@ -43,8 +46,9 @@ func RequireKafka(t testing.TB) {
 	}
 }
 
-// KafkaClient 直连 Kafka 的原生客户端，测试里写消息、核对用，不带 xkafka 的任何钩子。
-// 写消息时按 Record.Partition 指定分区。测试结束时关掉
+// KafkaClient is a native client connected to Kafka directly, for a test to write messages and
+// check with, free of every xkafka hook. A write goes to the partition in Record.Partition. It is
+// closed when the test ends
 func KafkaClient(t testing.TB, opts ...kgo.Opt) *kgo.Client {
 	t.Helper()
 	RequireKafka(t)
@@ -56,7 +60,8 @@ func KafkaClient(t testing.TB, opts ...kgo.Opt) *kgo.Client {
 	return cl
 }
 
-// KafkaTopic 建一个 partitions 个分区的新 topic，名字是 e2e_<随机>，测试结束时删掉
+// KafkaTopic creates a new topic with partitions partitions, named e2e_<random>, and deletes it
+// when the test ends
 func KafkaTopic(t testing.TB, partitions int32) string {
 	t.Helper()
 	name := "e2e_" + NewID()
@@ -64,7 +69,8 @@ func KafkaTopic(t testing.TB, partitions int32) string {
 	return name
 }
 
-// CreateKafkaTopic 建一个指定名字的 topic，测试结束时删掉。已经有了算失败
+// CreateKafkaTopic creates a topic under the given name and deletes it when the test ends. One
+// that exists already is a failure
 func CreateKafkaTopic(t testing.TB, name string, partitions int32) {
 	t.Helper()
 	cl := KafkaClient(t)
@@ -97,7 +103,7 @@ func CreateKafkaTopic(t testing.TB, name string, partitions int32) {
 	})
 }
 
-// KafkaProduce 往 topic 的 partition 里写一条，key 可以是 nil
+// KafkaProduce writes one record into topic's partition; key may be nil
 func KafkaProduce(t testing.TB, cl *kgo.Client, topic string, partition int32, key, value string) {
 	t.Helper()
 	r := &kgo.Record{Topic: topic, Partition: partition, Value: []byte(value)}
@@ -111,7 +117,8 @@ func KafkaProduce(t testing.TB, cl *kgo.Client, topic string, partition int32, k
 	}
 }
 
-// KafkaRead 从头读 topic，直到读到 n 条或者 timeout 到点；返回读到的（可能不足 n 条）
+// KafkaRead reads topic from the start until n records have arrived or timeout is up, and returns
+// what it read (which may be fewer than n)
 func KafkaRead(t testing.TB, topic string, n int, timeout time.Duration) []*kgo.Record {
 	t.Helper()
 	cl := KafkaClient(t, kgo.ConsumeTopics(topic), kgo.ConsumeResetOffset(kgo.NewOffset().AtStart()))
@@ -124,7 +131,8 @@ func KafkaRead(t testing.TB, topic string, n int, timeout time.Duration) []*kgo.
 	return out
 }
 
-// KafkaCommitted 消费组在 topic/partition 上提交的 offset，没提交过是 -1
+// KafkaCommitted is the offset the consumer group committed on topic/partition, or -1 when it has
+// committed none
 func KafkaCommitted(t testing.TB, group, topic string, partition int32) int64 {
 	t.Helper()
 	cl := KafkaClient(t)
@@ -158,7 +166,7 @@ func KafkaCommitted(t testing.TB, group, topic string, partition int32) int64 {
 	return -1
 }
 
-// KafkaHeader 消息头里 key 的值
+// KafkaHeader is the value of key in the message headers
 func KafkaHeader(r *kgo.Record, key string) string {
 	for _, h := range r.Headers {
 		if h.Key == key {

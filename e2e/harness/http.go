@@ -10,14 +10,14 @@ import (
 	"testing"
 )
 
-// Response 读完了 body 的响应
+// Response is a response whose body has been read
 type Response struct {
 	Status int
 	Header http.Header
 	Body   []byte
 }
 
-// JSON 把 body 按 JSON 解进 v，失败时 t.Fatal
+// JSON decodes the body into v as JSON, and t.Fatals when it cannot
 func (r Response) JSON(t testing.TB, v any) {
 	t.Helper()
 	if err := json.Unmarshal(r.Body, v); err != nil {
@@ -25,7 +25,7 @@ func (r Response) JSON(t testing.TB, v any) {
 	}
 }
 
-// Map 把 body 解成 map，失败时 t.Fatal
+// Map decodes the body into a map, and t.Fatals when it cannot
 func (r Response) Map(t testing.TB) map[string]any {
 	t.Helper()
 	var m map[string]any

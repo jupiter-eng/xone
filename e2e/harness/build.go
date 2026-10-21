@@ -8,11 +8,11 @@ import (
 	"testing"
 )
 
-// build e2e 用到的三个二进制一次 go build 编完，整个测试进程只编一次：
+// build compiles the three binaries e2e uses in one go build, once per test process:
 //
-//	service   被测服务
-//	baseline  裸 gin 的对照服务（压测用）
-//	covapp    一次性任务形状的最小程序（测配置加载时机，见 covapp/main.go）
+//	service   the service under test
+//	baseline  the bare gin service to compare against (for the load tests)
+//	covapp    a minimal program shaped like a one-off job (for when the configuration is read, see covapp/main.go)
 var build struct {
 	once sync.Once
 	dir  string
@@ -20,17 +20,18 @@ var build struct {
 	err  error
 }
 
-// ServiceBinary e2e/service 编出来的可执行文件
+// ServiceBinary is the executable built from e2e/service
 func ServiceBinary(t testing.TB) string { return binary(t, "service") }
 
-// BaselineBinary e2e/baseline 编出来的可执行文件
+// BaselineBinary is the executable built from e2e/baseline
 func BaselineBinary(t testing.TB) string { return binary(t, "baseline") }
 
-// CovAppBinary e2e/covapp 编出来的可执行文件，见那里的说明
+// CovAppBinary is the executable built from e2e/covapp, which explains itself there
 func CovAppBinary(t testing.TB) string { return binary(t, "covapp") }
 
-// RaceBuild 这一轮的二进制是不是带 -race 编的：压测（XONE_E2E_LOAD=1）之外都带。
-// 带 -race 的进程慢几倍、内存大几倍，按绝对数字断言性能的用例据此放宽或跳过
+// RaceBuild says whether this round's binaries were built with -race, which they are everywhere
+// but under load (XONE_E2E_LOAD=1). A process built with -race is several times slower and holds
+// several times the memory, so a case asserting an absolute number loosens it or skips
 func RaceBuild() bool { return os.Getenv("XONE_E2E_LOAD") != "1" }
 
 func binary(t testing.TB, name string) string {
@@ -41,9 +42,11 @@ func binary(t testing.TB, name string) string {
 		if build.err != nil {
 			return
 		}
-		// 和 scripts/test.sh 一样 GOWORK=off：测的是 e2e/go.mod 自己解出来的依赖。
-		// 压测要的是生产形态的数字，不带 -race；其余一律带：真进程、真并发、真信号下的
-		// 数据竞争单元测试碰不到，进程退出时 checkOutput 查 stderr 里有没有竞争报告
+		// GOWORK=off, as in scripts/test.sh: what is tested are the dependencies e2e/go.mod resolves
+		// on its own.
+		// A load test wants production numbers and goes without -race; everything else carries it:
+		// a data race under real processes, real concurrency and real signals is one the unit tests
+		// never meet, and checkOutput looks for a race report in stderr when the process exits
 		args := []string{"build"}
 		if RaceBuild() {
 			args = append(args, "-race")

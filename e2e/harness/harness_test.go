@@ -16,10 +16,11 @@ import (
 	"time"
 )
 
-// harness 自己的测试：故障测试和压测的结论全靠这几样东西说真话，
-// 它们本身先得是对的。不连 PG / Redis，但同样只在 XONE_E2E=1 时跑
+// The harness's own tests: what the fault tests and the load tests conclude rests on these few
+// pieces telling the truth, so they have to be right first. They touch no PG / Redis, but run only
+// with XONE_E2E=1 all the same
 
-// echoServer 一个把收到的每一行原样写回的 TCP 服务
+// echoServer is a TCP server writing every line it receives straight back
 func echoServer(t *testing.T) string {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -42,17 +43,17 @@ func echoServer(t *testing.T) string {
 	return ln.Addr().String()
 }
 
-// roundTrip 发一行、读回一行，返回耗时
+// roundTrip sends one line, reads one back and returns how long it took
 func roundTrip(t *testing.T, c net.Conn, r *bufio.Reader) time.Duration {
 	t.Helper()
 	start := time.Now()
 	c.SetDeadline(time.Now().Add(5 * time.Second))
 	if _, err := c.Write([]byte("hello\n")); err != nil {
-		t.Fatalf("写失败：%v", err)
+		t.Fatalf("write failed: %v", err)
 	}
 	line, err := r.ReadString('\n')
 	if err != nil || line != "hello\n" {
-		t.Fatalf("读回 %q, err=%v", line, err)
+		t.Fatalf("read back %q, err=%v", line, err)
 	}
 	return time.Since(start)
 }
@@ -69,25 +70,25 @@ func TestProxy_DisconnectDropsConnsRefusesNew_ResumeForwards(t *testing.T) {
 	r := bufio.NewReader(c)
 	roundTrip(t, c, r)
 	if p.Active() != 1 || p.Accepted() != 1 {
-		t.Errorf("Active=%d Accepted=%d，want 1 1", p.Active(), p.Accepted())
+		t.Errorf("Active=%d Accepted=%d, want 1 1", p.Active(), p.Accepted())
 	}
 
 	p.Cut()
 	c.SetReadDeadline(time.Now().Add(2 * time.Second))
 	if _, err := r.ReadByte(); err == nil {
-		t.Error("Cut 之后现有连接还读得到东西")
+		t.Error("a connection that was already open still reads something after Cut")
 	} else if ne, ok := err.(net.Error); ok && ne.Timeout() {
-		t.Error("Cut 之后现有连接没被断开，只是没数据")
+		t.Error("a connection that was already open was not broken by Cut, it merely has no data")
 	}
 	if c2, err := net.DialTimeout("tcp", p.Addr(), time.Second); err == nil {
 		c2.Close()
-		t.Error("Cut 之后新连接还连得上")
+		t.Error("a new connection still connects after Cut")
 	}
 
 	p.Restore()
 	c3, err := net.Dial("tcp", p.Addr())
 	if err != nil {
-		t.Fatalf("Restore 之后连不上：%v", err)
+		t.Fatalf("no connection after Restore: %v", err)
 	}
 	defer c3.Close()
 	roundTrip(t, c3, bufio.NewReader(c3))
@@ -105,48 +106,48 @@ func TestProxy_BlackholeStallsConnsNewDialTimesOut_ResumeDropsOldForwardsNew(t *
 	roundTrip(t, c, r)
 
 	p.Blackhole()
-	// 现有连接：写得进去，但等不到回复，也没有被断开（读到的是超时，不是 EOF）
+	// A connection already open: writes go through, no answer comes back, and it is not broken (a read times out rather than reaching EOF)
 	c.SetDeadline(time.Now().Add(300 * time.Millisecond))
 	if _, err := c.Write([]byte("hello\n")); err != nil {
-		t.Fatalf("黑洞里写现有连接失败：%v", err)
+		t.Fatalf("writing to an open connection in the blackhole failed: %v", err)
 	}
 	if _, err := r.ReadByte(); err == nil {
-		t.Error("黑洞里现有连接还读得到回复")
+		t.Error("an open connection still reads an answer in the blackhole")
 	} else if ne, ok := err.(net.Error); !ok || !ne.Timeout() {
-		t.Errorf("黑洞里现有连接应该是等不到回复（超时），实际 %v", err)
+		t.Errorf("an open connection in the blackhole should get no answer (a timeout), got %v", err)
 	}
-	// 新连接：拨号等满自己的超时，不是被拒
+	// A new connection: the dial sits out its own timeout rather than being refused
 	start := time.Now()
 	c2, err := net.DialTimeout("tcp", p.Addr(), 300*time.Millisecond)
 	if c2 != nil {
 		c2.Close()
 	}
 	if ne, ok := err.(net.Error); !ok || !ne.Timeout() {
-		t.Errorf("黑洞里新连接应该拨号超时，实际 err=%v", err)
+		t.Errorf("a new connection in the blackhole should time out dialing, got err=%v", err)
 	}
 	if d := time.Since(start); d < 250*time.Millisecond {
-		t.Errorf("黑洞里拨号 %v 就返回了，没有等满超时", d)
+		t.Errorf("dialing in the blackhole returned after %v, without sitting out the timeout", d)
 	}
 
 	p.Restore()
 	c.SetDeadline(time.Now().Add(2 * time.Second))
 	if _, err := r.ReadByte(); err == nil {
-		t.Error("Restore 之后黑洞期间的旧连接应被断开，实际还读得到东西")
+		t.Error("an old connection from the blackhole should be broken by Restore, but it still reads something")
 	} else if ne, ok := err.(net.Error); ok && ne.Timeout() {
-		t.Error("Restore 之后黑洞期间的旧连接没被断开")
+		t.Error("an old connection from the blackhole was not broken by Restore")
 	}
 	c3, err := net.DialTimeout("tcp", p.Addr(), time.Second)
 	if err != nil {
-		t.Fatalf("Restore 之后连不上：%v", err)
+		t.Fatalf("no connection after Restore: %v", err)
 	}
 	defer c3.Close()
 	roundTrip(t, c3, bufio.NewReader(c3))
 
-	// 黑洞里 Cut：从「宕机」变成「拒绝连接」
+	// Cut inside the blackhole: "down" turns into "connection refused"
 	p.Blackhole()
 	p.Cut()
 	if _, err := net.DialTimeout("tcp", p.Addr(), time.Second); err == nil || !strings.Contains(err.Error(), "refused") {
-		t.Errorf("黑洞里 Cut 之后新连接应被拒，实际 err=%v", err)
+		t.Errorf("a new connection should be refused after a Cut in the blackhole, got err=%v", err)
 	}
 }
 
@@ -162,24 +163,24 @@ func TestProxy_DelayFromArrivalTimeNotCumulative(t *testing.T) {
 
 	p.SetDelay(150 * time.Millisecond)
 	if d := roundTrip(t, c, r); d < 150*time.Millisecond || d > time.Second {
-		t.Errorf("一次往返 %v，want 约 150ms", d)
+		t.Errorf("one round trip took %v, want about 150ms", d)
 	}
 
-	// 一口气发 5 行：每行的延迟各自从到达时算，总共约 150ms 而不是 750ms
+	// Five lines in one go: each line's delay counts from its own arrival, so about 150ms in all rather than 750ms
 	start := time.Now()
 	c.Write([]byte(strings.Repeat("hello\n", 5)))
 	for range 5 {
 		if line, err := r.ReadString('\n'); err != nil || line != "hello\n" {
-			t.Fatalf("读回 %q, err=%v", line, err)
+			t.Fatalf("read back %q, err=%v", line, err)
 		}
 	}
 	if d := time.Since(start); d > 500*time.Millisecond {
-		t.Errorf("5 行一共等了 %v，延迟被累加了", d)
+		t.Errorf("5 lines waited %v in all, the delays added up", d)
 	}
 
 	p.SetDelay(0)
 	if d := roundTrip(t, c, r); d > 100*time.Millisecond {
-		t.Errorf("取消延迟之后一次往返还要 %v", d)
+		t.Errorf("one round trip still takes %v after the delay was taken off", d)
 	}
 }
 
@@ -198,12 +199,12 @@ func TestStub_RecordsRequestsAndRespondsAsSet(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusTeapot || string(body) != "short and stout" {
-		t.Errorf("响应 %d %q", resp.StatusCode, body)
+		t.Errorf("response %d %q", resp.StatusCode, body)
 	}
 
 	got := s.Last(t)
 	if got.Path != "/echo" || got.Query.Get("token") != "abc" || got.Header.Get("X-Request-Id") != "rid-1" {
-		t.Errorf("记下的请求不对：%+v", got)
+		t.Errorf("the recorded request is wrong: %+v", got)
 	}
 }
 
@@ -219,7 +220,7 @@ func TestLoad_BucketsByStatusAndComputesPercentiles(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// 每 4 个请求里 1 个 500
+	// One request in every 4 answers 500
 	res := Load(t, LoadSpec{
 		Concurrency: 4,
 		Requests:    200,
@@ -229,23 +230,23 @@ func TestLoad_BucketsByStatusAndComputesPercentiles(t *testing.T) {
 	})
 	t.Log(res)
 	if res.Requests != 200 || res.Errors != 0 || res.Status[200] != 150 || res.Status[500] != 50 || res.OK() != 150 {
-		t.Errorf("分桶不对：%v", res)
+		t.Errorf("the buckets are wrong: %v", res)
 	}
 	if res.P50 <= 0 || res.P50 > res.P90 || res.P90 > res.P99 || res.P99 > res.Max || res.QPS <= 0 {
-		t.Errorf("分位数不对：%v", res)
+		t.Errorf("the percentiles are wrong: %v", res)
 	}
 
-	// 按时长跑：到点就停，发出去的都算上
+	// Running for a duration: it stops when the time is up and counts everything it sent
 	res = Load(t, LoadSpec{Concurrency: 2, Duration: 200 * time.Millisecond, URL: srv.URL})
 	if res.Requests == 0 || res.Status[200] != res.Requests || res.Elapsed < 200*time.Millisecond {
-		t.Errorf("按时长跑不对：%v", res)
+		t.Errorf("running for a duration is wrong: %v", res)
 	}
 
-	// 连不上的算传输层错误，不进状态码
+	// One that cannot connect is a transport error and lands in no status bucket
 	srv.Close()
 	res = Load(t, LoadSpec{Requests: 3, URL: srv.URL})
 	if res.Errors != 3 || len(res.Status) != 0 || len(res.ErrorSamples) == 0 {
-		t.Errorf("传输层错误没算对：%v", res)
+		t.Errorf("the transport errors were not counted right: %v", res)
 	}
 }
 
@@ -272,16 +273,16 @@ e2e_order_flow_seconds_count 2
 		t.Fatal(err)
 	}
 	if got := m.Sum("e2e_http_requests_total"); got != 4 {
-		t.Errorf("总数 %v，want 4", got)
+		t.Errorf("the total is %v, want 4", got)
 	}
 	if got := m.Sum("e2e_http_requests_total", "route", "/ping"); got != 3 {
-		t.Errorf("/ping %v，want 3", got)
+		t.Errorf("/ping %v, want 3", got)
 	}
 	if got := m.Sum("e2e_order_flow_seconds_bucket", "le", "+Inf"); got != 2 {
-		t.Errorf("+Inf 桶 %v，want 2", got)
+		t.Errorf("the +Inf bucket is %v, want 2", got)
 	}
 	if got := m.Sum("e2e_order_flow_seconds_count"); got != 2 {
-		t.Errorf("count %v，want 2", got)
+		t.Errorf("count %v, want 2", got)
 	}
 }
 
@@ -292,13 +293,13 @@ func TestReadProc_ReadsOwnCPUAndMemory(t *testing.T) {
 		t.Fatal(err)
 	}
 	if s.RSS <= 0 || s.PeakRSS < s.RSS || s.Threads <= 0 {
-		t.Errorf("读数不对：%+v", s)
+		t.Errorf("the readings are wrong: %+v", s)
 	}
 }
 
 func TestResetPeakRSS_PeakRestartsFromCurrentRSS(t *testing.T) {
 	Require(t)
-	// 先把峰值顶高 256MB，再把这块内存还给操作系统：重置前峰值还记着它，重置后不该再记着
+	// Push the peak up by 256MB first and then give that memory back to the operating system: before the reset the peak still holds it, and after the reset it should not
 	buf := make([]byte, 256<<20)
 	for i := 0; i < len(buf); i += 4096 {
 		buf[i] = 1
@@ -319,6 +320,6 @@ func TestResetPeakRSS_PeakRestartsFromCurrentRSS(t *testing.T) {
 		t.Fatal(err)
 	}
 	if s.PeakRSS > high.PeakRSS-128<<20 {
-		t.Errorf("重置之后峰值应从当前 RSS 算起：重置前峰值 %dMB，重置后峰值 %dMB（当前 RSS %dMB）", high.PeakRSS>>20, s.PeakRSS>>20, s.RSS>>20)
+		t.Errorf("after the reset the peak should start from the current RSS: peak before %dMB, peak after %dMB (current RSS %dMB)", high.PeakRSS>>20, s.PeakRSS>>20, s.RSS>>20)
 	}
 }

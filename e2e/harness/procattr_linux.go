@@ -2,7 +2,8 @@ package harness
 
 import "syscall"
 
-// sysProcAttr 测试进程死了（超时、panic、被 Ctrl+C）子进程跟着死，不留下占着端口的孤儿
+// sysProcAttr has a child process die with the test process (on a timeout, a panic or a Ctrl+C),
+// so that no orphan is left holding a port
 func sysProcAttr() *syscall.SysProcAttr {
 	return &syscall.SysProcAttr{Pdeathsig: syscall.SIGKILL}
 }

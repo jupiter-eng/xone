@@ -9,14 +9,15 @@ import (
 	"time"
 )
 
-// Proxy 一个可控的 TCP 代理：服务经它连 PG / Redis / 下游，故障测试拨弄它，
-// 而不是去停真实的 PG / Redis（那会连累别的用例）。
+// Proxy is a TCP proxy under the test's control: the service reaches PG / Redis / a downstream
+// through it, and a fault test plays with the proxy rather than stopping the real PG / Redis
+// (which would drag the other cases down with it).
 //
 //	pg := harness.NewProxy(t, harness.PGAddr())
 //	p := harness.Start(t, harness.Options{PGAddr: pg.Addr()})
-//	pg.Cut()        // 断开全部连接，新连接被拒（connection refused）：进程挂了
-//	pg.Blackhole()  // 连接留着但不再回话，新连接的 SYN 石沉大海：主机宕机
-//	pg.Restore()    // 恢复，同一个地址
+//	pg.Cut()        // break every connection, refuse the new ones (connection refused): the process died
+//	pg.Blackhole()  // keep the connections but answer nothing, and let a new connection's SYN vanish: the host went down
+//	pg.Restore()    // back up, at the same address
 //	pg.SetDelay(200 * time.Millisecond)
 type Proxy struct {
 	t      testing.TB
@@ -25,17 +26,17 @@ type Proxy struct {
 	delay  atomic.Int64 // time.Duration
 
 	mu     sync.Mutex
-	ln     net.Listener // Cut / Blackhole 之后是 nil
-	hole   io.Closer    // Blackhole 期间占着原端口、永不 accept 的监听；不在黑洞里时是 nil
+	ln     net.Listener // nil after Cut / Blackhole
+	hole   io.Closer    // the listener holding the original port during Blackhole and never accepting; nil outside the blackhole
 	conns  map[*pipe]struct{}
 	closed bool
 
-	holed atomic.Bool // Blackhole 期间为 true：已有连接两个方向都不再转发
+	holed atomic.Bool // true during Blackhole: the connections already open forward in neither direction
 
 	accepted atomic.Int64
 }
 
-// pipe 一对连接：客户端 ↔ 目标
+// pipe is one pair of connections: client <-> target
 type pipe struct {
 	client, upstream net.Conn
 	done             chan struct{}
@@ -50,7 +51,8 @@ func (p *pipe) close() {
 	})
 }
 
-// NewProxy 在 127.0.0.1 的随机端口上起一个转发到 target 的代理，测试结束时关掉
+// NewProxy starts a proxy on a random port of 127.0.0.1 forwarding to target, and closes it when
+// the test ends
 func NewProxy(t testing.TB, target string) *Proxy {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -63,29 +65,31 @@ func NewProxy(t testing.TB, target string) *Proxy {
 	return p
 }
 
-// Addr 代理的 host:port，交给服务当成 PG / Redis / 下游的地址
+// Addr is the proxy's host:port, to hand to the service as the address of PG / Redis / a downstream
 func (p *Proxy) Addr() string { return p.addr }
 
-// Target 转发到哪
+// Target is what it forwards to
 func (p *Proxy) Target() string { return p.target }
 
-// Accepted 一共接受过多少个连接（含已经断开的）
+// Accepted is how many connections it has accepted in all (those already closed included)
 func (p *Proxy) Accepted() int64 { return p.accepted.Load() }
 
-// Active 当前有多少个连接在转发
+// Active is how many connections it is forwarding right now
 func (p *Proxy) Active() int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return len(p.conns)
 }
 
-// SetDelay 之后从目标回来的每一段数据都晚 d 才交给客户端，已经建好的连接也算。
-// 按到达时刻算、不累加：一次请求-响应多出来的大约就是 d。0 取消延迟。
-// 设得足够大（比如 time.Hour）就是「连得上、但对端不回话」
+// SetDelay has every chunk coming back from the target reach the client d later, the connections
+// already open included. It goes by the moment of arrival and does not add up: one
+// request-response pair takes about d longer. 0 takes the delay off.
+// Set high enough (time.Hour, say) it means "it connects, but the far end says nothing"
 func (p *Proxy) SetDelay(d time.Duration) { p.delay.Store(int64(d)) }
 
-// Cut 断开现有的全部连接，并且关掉监听：新连接被拒绝（connection refused），
-// 像目标进程挂了一样。已经断开时什么都不做；黑洞里调它就从「宕机」变成「拒绝连接」
+// Cut breaks every connection there is and closes the listener: new connections are refused
+// (connection refused), as if the target process had died. On an already broken one it does
+// nothing; called inside a blackhole it turns "down" into "connection refused"
 func (p *Proxy) Cut() {
 	p.mu.Lock()
 	ln, hole := p.ln, p.hole
@@ -106,17 +110,21 @@ func (p *Proxy) Cut() {
 	}
 }
 
-// Blackhole 模拟目标主机宕机（断电、网络分区）。和 Cut 的「进程挂了、端口拒绝连接」不同，
-// 宕机的主机什么都不回：
+// Blackhole imitates the target host going down (loss of power, a network partition). Unlike Cut's
+// "the process died and the port refuses connections", a host that is down answers nothing at all:
 //
-//   - 已经建好的连接留着，但两个方向都不再转发：发出去的请求等不到回复，也收不到 RST，
-//     只能等客户端自己的读超时；
-//   - 新连接的 SYN 没有回音，拨号方等满自己的建连超时（i/o timeout），而不是 connection refused。
+//   - the connections already open stay, but forward in neither direction: a request that went out
+//     gets no answer and no RST either, and can only sit out the client's own read timeout;
+//   - a new connection's SYN is never answered, so the dialing side waits out its own connect
+//     timeout (i/o timeout) rather than hearing connection refused.
 //
-// Restore 恢复，黑洞期间留着的连接一并断开：主机重启之后，旧连接在对端已经不存在了。
-// SetDelay 管不到「新连接」这一半——代理照样 accept，TCP 秒连。
+// Restore brings it back and breaks the connections kept through the blackhole along the way:
+// after a host has rebooted, the old connections no longer exist on the far end.
+// SetDelay does not reach the "new connection" half of this -- the proxy accepts as usual and TCP
+// connects at once.
 //
-// 只能在测试主协程里调：系统不支持时（非 Linux，或内核不丢 SYN）t.Skip
+// It can only be called on the test's main goroutine: where the system does not support it (not
+// Linux, or a kernel that does not drop the SYN) it t.Skips
 func (p *Proxy) Blackhole() {
 	p.t.Helper()
 	p.mu.Lock()
@@ -129,7 +137,7 @@ func (p *Proxy) Blackhole() {
 		p.ln.Close()
 		p.ln = nil
 	}
-	// 刚关掉的端口偶尔要等一下才能再绑上，同 Restore
+	// A port just closed sometimes takes a moment before it can be bound again, as in Restore
 	var err error
 	for range 50 {
 		if p.hole, err = listenHole(p.addr); err == nil {
@@ -140,9 +148,10 @@ func (p *Proxy) Blackhole() {
 	p.t.Skipf("proxy blackhole on %s: %v", p.addr, err)
 }
 
-// Restore 在原来的地址上重新监听。没断开时什么都不做。
-// 从 Blackhole 恢复时先断开黑洞期间留着的连接。
-// 绑不回原地址时记一个测试错误（Errorf，哪个协程里调都安全）
+// Restore listens again at the original address. On one that is not broken it does nothing.
+// Coming back from Blackhole it first breaks the connections kept through it.
+// Failing to bind the original address records a test error (Errorf, which is safe from any
+// goroutine)
 func (p *Proxy) Restore() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -161,7 +170,7 @@ func (p *Proxy) Restore() {
 	if p.ln != nil {
 		return
 	}
-	// 刚关掉的端口偶尔要等一下才能再绑上
+	// A port just closed sometimes takes a moment before it can be bound again
 	var err error
 	for range 50 {
 		var ln net.Listener
@@ -193,7 +202,7 @@ func (p *Proxy) serveLocked(ln net.Listener) {
 		for {
 			c, err := ln.Accept()
 			if err != nil {
-				return // Cut 关掉了监听
+				return // Cut closed the listener
 			}
 			p.accepted.Add(1)
 			go p.handle(c)
@@ -211,7 +220,7 @@ func (p *Proxy) handle(client net.Conn) {
 
 	p.mu.Lock()
 	if p.ln == nil {
-		// 拨号期间被 Cut 了
+		// Cut happened while dialing
 		p.mu.Unlock()
 		c.close()
 		return
@@ -230,7 +239,8 @@ func (p *Proxy) handle(client net.Conn) {
 	p.mu.Unlock()
 }
 
-// copyPlain 客户端 → 目标，不加延迟；黑洞期间收到的直接丢掉。任何一边断了就把整对关掉
+// copyPlain goes client -> target with no delay, and drops what arrives during a blackhole. Either
+// side closing closes the whole pair
 func (p *Proxy) copyPlain(c *pipe) {
 	defer c.close()
 	buf := make([]byte, 32*1024)
@@ -247,14 +257,15 @@ func (p *Proxy) copyPlain(c *pipe) {
 	}
 }
 
-// chunk 从目标读到的一段数据和它到达的时刻
+// chunk is one piece of data read from the target and the moment it arrived
 type chunk struct {
 	data []byte
 	at   time.Time
 }
 
-// copyDelayed 目标 → 客户端，每段数据到达之后等满当时的延迟才转出去。
-// 读和写分成两个协程，延迟按到达时刻算，不会一段接一段地累加
+// copyDelayed goes target -> client, holding each chunk for the delay in force when it arrived.
+// Reading and writing are separate goroutines, so the delay goes by the moment of arrival and does
+// not add up chunk after chunk
 func (p *Proxy) copyDelayed(c *pipe) {
 	defer c.close()
 	ch := make(chan chunk, 64)
@@ -286,7 +297,7 @@ func (p *Proxy) copyDelayed(c *pipe) {
 			}
 		}
 		if p.holed.Load() {
-			<-c.done // 黑洞：扣下不发，直到这条连接被 Restore / Cut 断开
+			<-c.done // the blackhole: hold it back until Restore / Cut breaks this connection
 			return
 		}
 		if _, err := c.client.Write(ck.data); err != nil {

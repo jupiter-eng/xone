@@ -2,8 +2,8 @@ module github.com/jupiter-eng/xone/e2e
 
 go 1.25.0
 
-// e2e 不发布（scripts/release.sh 把它排除在外），所以 replace 一直留着：
-// 它测的永远是仓库当前的代码，而不是某个已发布版本
+// e2e is not released (scripts/release.sh leaves it out), so the replace lines stay in for good:
+// it always tests the repository's current code and never some released version
 replace (
 	github.com/jupiter-eng/xone => ../
 	github.com/jupiter-eng/xone/xcache => ../xcache

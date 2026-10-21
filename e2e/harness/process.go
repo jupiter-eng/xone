@@ -17,91 +17,105 @@ import (
 	"time"
 )
 
-// Options 起一个进程的参数。零值就能用：直连 PG / MySQL / Redis、随机端口、按测试生成表名
+// Options are the settings for starting a process. The zero value works: PG / MySQL / Redis
+// directly, a random port and a table name generated per test
 type Options struct {
-	// Env 额外的环境变量，覆盖 harness 设的同名变量（名字见 service/application.yml 开头）。
-	// 只用来换注入的值，比如一条故意写错的 DSN；切开关用 Overlay
+	// Env holds further environment variables, overriding the ones the harness sets under the same
+	// name (the names are at the top of service/application.yml).
+	// It is for changing an injected value alone, a deliberately wrong DSN for instance; use Overlay
+	// to turn something on or off
 	Env map[string]string
 
-	// Overlay 叠加在配置文件上的 YAML，写成一份 profile（--profile=e2e）叠上去：
-	// map 递归合并、列表整体替换，和生产上的 profile 一个规矩。配置项的开关都用它
+	// Overlay is YAML laid over the configuration file as a profile (--profile=e2e): maps merge
+	// recursively and a list is replaced whole, the same rule as a profile in production. Every
+	// configuration switch goes through it
 	Overlay string
 
-	// Config 换一份配置文件，默认 e2e/service/application.yml。只对 Start 有效
+	// Config replaces the configuration file, e2e/service/application.yml by default. Start only
 	Config string
 
-	// Args 追加的命令行参数
+	// Args are further command line arguments
 	Args []string
 
-	// PGAddr / MySQLAddr / RedisAddr 服务连的地址，默认直连。故障测试传 Proxy.Addr()
+	// PGAddr / MySQLAddr / RedisAddr are the addresses the service connects to, direct by default. A
+	// fault test passes Proxy.Addr()
 	PGAddr    string
 	MySQLAddr string
 	RedisAddr string
 
-	// ClickHouse 给服务加上第三个 xgorm 实例 ch：激活 service/application-ch.yml 那份 profile
-	// （有 Overlay 时是 --profile=ch,e2e，Overlay 压过它）。只对 Start 有效。
-	// CHAddr 是它连的 native 地址，默认直连；给了 CHAddr 就等于 ClickHouse: true。
-	// 要换协议、换密码，直接在 Env 里给 E2E_CH_DSN
+	// ClickHouse gives the service a third xgorm instance, ch: it activates the
+	// service/application-ch.yml profile (with an Overlay it is --profile=ch,e2e, where the Overlay
+	// wins). Start only.
+	// CHAddr is the native address it connects to, direct by default; giving CHAddr means
+	// ClickHouse: true.
+	// To change the protocol or the password, give E2E_CH_DSN in Env
 	ClickHouse bool
 	CHAddr     string
 
-	// Kafka 给服务配上 XKafka：激活 service/application-kafka.yml 那份 profile（在 ch 之后、e2e 之前）。
-	// 只对 Start 有效。KafkaAddr 是 broker 地址，默认直连；给了 KafkaAddr 就等于 Kafka: true。
-	// KafkaTopic 非空时服务消费它（Service.KafkaTopic），消费组是 KafkaGroup（空的话是 e2e_<随机>，见 Process.KafkaGroup）
+	// Kafka gives the service an XKafka: it activates the service/application-kafka.yml profile
+	// (after ch and before e2e). Start only. KafkaAddr is the broker address, direct by default;
+	// giving KafkaAddr means Kafka: true.
+	// With KafkaTopic non-empty the service consumes it (Service.KafkaTopic) in the consumer group
+	// KafkaGroup (e2e_<random> when empty, see Process.KafkaGroup)
 	Kafka      bool
 	KafkaAddr  string
 	KafkaTopic string
 	KafkaGroup string
 
-	// Downstream /proxy 调的下游 base URL，比如 Stub.URL 或 "http://" + proxy.Addr()
+	// Downstream is the base URL /proxy calls, Stub.URL or "http://" + proxy.Addr() for instance
 	Downstream string
 
-	// Spans 把 Span 写进 Process.SpanFile，用 Process.Spans / WaitSpan 读
+	// Spans writes the spans into Process.SpanFile, to be read with Process.Spans / WaitSpan
 	Spans bool
 
-	// LogFile 让 xlog 同时写文件（目录是 Process.Dir），用 Process.FileLogs 读
+	// LogFile has xlog write to a file as well (in Process.Dir), to be read with Process.FileLogs
 	LogFile bool
 
-	// DiscardStdout 标准输出直接接 /dev/null，不经 harness 收集：
-	// 压测时访问日志一秒几万行，收进内存既占地方又可能拖慢被测进程。stderr 照收
+	// DiscardStdout points standard output at /dev/null instead of having the harness collect it:
+	// under load the access log runs to tens of thousands of lines a second, and holding that in
+	// memory both takes room and may slow the process under test down. stderr is still collected
 	DiscardStdout bool
 
-	// Table / KeyPrefix 默认按 NewID 生成，测试结束时删掉（PG 和 MySQL 上的同名表都删）。
-	// 两个进程要共用数据时显式给同一个
+	// Table / KeyPrefix are generated with NewID by default and deleted when the test ends (the
+	// tables of that name on PG and on MySQL alike).
+	// Two processes that have to share data are given the same one explicitly
 	Table     string
 	KeyPrefix string
 
-	// Port 默认 FreePort
+	// Port is FreePort by default
 	Port int
 
-	// NoWait 不等 /ping 就绪就返回：测启动失败、启动期间收信号用
+	// NoWait returns without waiting for /ping to be ready: for testing a failing start, or a signal
+	// during the start
 	NoWait bool
 
-	// ReadyTimeout 等 /ping 的上限，默认 30s
+	// ReadyTimeout is how long to wait for /ping, 30s by default
 	ReadyTimeout time.Duration
 
-	// NonJSON 非空时，进程退出后不检查它的每一行输出都是 JSON（见 checkOutput），写上为什么：
-	// 比如 "XLog.Format: text"。数据竞争照查
+	// NonJSON, when non-empty, stops the check that every output line of the process is JSON after it
+	// exits (see checkOutput), and says why: "XLog.Format: text", for instance. A data race is still
+	// looked for
 	NonJSON string
 }
 
-// Process 一个跑着的服务进程
+// Process is one service process that is running
 type Process struct {
 	name string
 
-	// Port 监听的端口，Base 是 http://127.0.0.1:Port
+	// Port is the port it listens on, and Base is http://127.0.0.1:Port
 	Port int
 	Base string
-	// Table / KeyPrefix 这个进程用的表名（订单表加 _orders；MySQL 上的用户表、ClickHouse 上的事件表同名）和 key 前缀
+	// Table / KeyPrefix are the table name this process uses (the order table adds _orders; the user
+	// table on MySQL and the event table on ClickHouse carry the same name) and its key prefix
 	Table     string
 	KeyPrefix string
-	// CH 这个进程有没有 ClickHouse 实例（Options.ClickHouse）
+	// CH says whether this process has a ClickHouse instance (Options.ClickHouse)
 	CH bool
-	// KafkaGroup 这个进程消费用的消费组（Options.Kafka 时）
+	// KafkaGroup is the consumer group this process consumes in (with Options.Kafka)
 	KafkaGroup string
-	// Dir 这个进程的临时目录，测试结束时删掉
+	// Dir is this process's temporary directory, deleted when the test ends
 	Dir string
-	// SpanFile Options.Spans 开着时 Span 写在这里
+	// SpanFile is where the spans go with Options.Spans on
 	SpanFile string
 
 	logDir  string
@@ -112,19 +126,19 @@ type Process struct {
 	client  *http.Client
 	started time.Time
 
-	firstSignal atomic.Int64 // UnixNano，0 表示还没发过
+	firstSignal atomic.Int64 // UnixNano, 0 meaning none was sent yet
 	done        chan struct{}
 	exit        Exit
 }
 
-// Exit 进程怎么退出的
+// Exit is how the process exited
 type Exit struct {
-	// Code 退出码。被信号杀掉时是 -1，Signal 说明是哪个
+	// Code is the exit code. Killed by a signal it is -1, and Signal says which one
 	Code   int
 	Signal os.Signal
-	// Uptime 从启动到退出
+	// Uptime is from the start to the exit
 	Uptime time.Duration
-	// SinceSignal 从第一次发信号到退出，没发过信号时是 0
+	// SinceSignal is from the first signal to the exit, and 0 when no signal was sent
 	SinceSignal time.Duration
 }
 
@@ -135,9 +149,11 @@ func (e Exit) String() string {
 	return fmt.Sprintf("exit code %d after %v (%v since the first signal)", e.Code, e.Uptime, e.SinceSignal)
 }
 
-// Start 起 e2e 服务，等到 GET /ping 返回 200（Options.NoWait 时不等）。
+// Start starts the e2e service and waits until GET /ping answers 200 (with Options.NoWait it does
+// not wait).
 //
-// 测试结束时进程还活着就 SIGKILL；测试失败时把最后 80 行输出打进测试日志
+// A process still alive when the test ends is SIGKILLed; when the test fails the last 80 lines of
+// output go into the test log
 func Start(t testing.TB, o Options) *Process {
 	t.Helper()
 	bin := ServiceBinary(t)
@@ -147,7 +163,7 @@ func Start(t testing.TB, o Options) *Process {
 	if cfg == "" {
 		cfg = filepath.Join(ModuleDir(), "service", "application.yml")
 	}
-	// 子进程的工作目录是 dir，相对路径到了那边就指错了地方
+	// The child process's working directory is dir, so a relative path would point elsewhere over there
 	cfg, err := filepath.Abs(cfg)
 	if err != nil {
 		t.Fatalf("resolve config path: %v", err)
@@ -167,7 +183,7 @@ func Start(t testing.TB, o Options) *Process {
 	}
 	var profiles []string
 	if o.ClickHouse || o.Kafka || o.Overlay != "" {
-		// profile 文件名由 base 推出来，所以 base 也挪进临时目录
+		// The profile file names follow from base, so base moves into the temporary directory as well
 		base, err := os.ReadFile(cfg)
 		if err != nil {
 			t.Fatalf("read config: %v", err)
@@ -201,7 +217,8 @@ func Start(t testing.TB, o Options) *Process {
 	return launch(t, "service", bin, append(args, o.Args...), dir, o)
 }
 
-// StartBaseline 起裸 gin 的对照服务。它不读配置文件，Overlay / Config / Spans / LogFile 对它无效
+// StartBaseline starts the bare gin service to compare against. It reads no configuration file, so
+// Overlay / Config / Spans / LogFile mean nothing to it
 func StartBaseline(t testing.TB, o Options) *Process {
 	t.Helper()
 	if o.CHAddr != "" {
@@ -210,22 +227,27 @@ func StartBaseline(t testing.TB, o Options) *Process {
 	return launch(t, "baseline", BaselineBinary(t), o.Args, t.TempDir(), o)
 }
 
-// StartCovApp 起 covapp，参数原样交给它，不等就绪（它不监听）。Options 里只有 Env 对它有意义
+// StartCovApp starts covapp, hands it the arguments as they are and waits for no readiness (it
+// listens on nothing). Of Options only Env means anything to it
 func StartCovApp(t testing.TB, o Options, args ...string) *Process {
 	t.Helper()
 	o.NoWait = true
 	return launch(t, "covapp", CovAppBinary(t), args, t.TempDir(), o)
 }
 
-// StartArgs 起 e2e 服务，命令行参数原样是 args：不像 Start 那样自己加 --config。
-// 测 XONE_CONFIG、约定路径这些「没给 --config」时的找法用它。工作目录是 Process.Dir
+// StartArgs starts the e2e service with args as the command line as it is: unlike Start it adds no
+// --config of its own.
+// It is for testing XONE_CONFIG, the conventional paths and the other ways of finding the
+// configuration when no --config was given. The working directory is Process.Dir
 func StartArgs(t testing.TB, o Options, args ...string) *Process {
 	t.Helper()
 	return launch(t, "service", ServiceBinary(t), args, t.TempDir(), o)
 }
 
-// WaitReadyWith 用 c 反复 GET url 直到 200，timeout 内没等到、或者进程先退出了就 t.Fatal。
-// 给 HTTPS、h2c 这类 Start 自己的 http:// 就绪探测够不着的服务用（启动时传 Options.NoWait）
+// WaitReadyWith GETs url with c until it answers 200, and t.Fatals when none has within timeout or
+// the process exits first.
+// It is for a service Start's own http:// readiness probe cannot reach, HTTPS or h2c for instance
+// (started with Options.NoWait)
 func (p *Process) WaitReadyWith(t testing.TB, c *http.Client, url string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -265,7 +287,7 @@ func launch(t testing.TB, name, bin string, args []string, dir string, o Options
 	if !tableName.MatchString(p.Table) {
 		t.Fatalf("Options.Table %q must match %s: it goes into SQL as is", p.Table, tableName)
 	}
-	// 先登记删数据、后登记杀进程：Cleanup 倒着跑，进程先死，再删它的表
+	// The data cleanup is registered before the kill: Cleanup runs backwards, so the process dies first and its tables go after
 	t.Cleanup(func() { dropData(t, p.Table, p.KeyPrefix, p.CH) })
 
 	vars := map[string]string{
@@ -297,8 +319,9 @@ func launch(t testing.TB, name, bin string, args []string, dir string, o Options
 		vars["E2E_LOG_FILE"], vars["E2E_LOG_DIR"] = "true", dir
 	}
 	if RaceBuild() {
-		// 竞争检测器默认在进程退出前睡 1s（等别的协程把报告写完），
-		// 每个测退出时长的用例都会凭空多出这一秒
+		// The race detector sleeps 1s before the process exits by default (waiting for the other
+		// goroutines to finish writing their reports), which would add that second to every case
+		// measuring how long an exit takes
 		vars["GORACE"] = "atexit_sleep_ms=0"
 	}
 	for k, v := range o.Env {
@@ -315,7 +338,7 @@ func launch(t testing.TB, name, bin string, args []string, dir string, o Options
 		if err != nil {
 			t.Fatalf("open %s: %v", os.DevNull, err)
 		}
-		defer devnull.Close() // 子进程拿到的是自己的那份 fd，这里关掉不影响它
+		defer devnull.Close() // the child process holds an fd of its own, so closing this one does not touch it
 		p.cmd.Stdout = devnull
 	} else {
 		w := p.out.writer("stdout")
@@ -339,7 +362,7 @@ func launch(t testing.TB, name, bin string, args []string, dir string, o Options
 			p.Kill()
 			p.Wait(10 * time.Second)
 		}
-		// 裸 gin 的对照服务不是框架，它的输出不归这两条检查管
+		// The bare gin service to compare against is not the framework, and these two checks are not about its output
 		if p.Exited() && name != "baseline" {
 			p.checkOutput(t)
 		}
@@ -355,7 +378,7 @@ func launch(t testing.TB, name, bin string, args []string, dir string, o Options
 	return p
 }
 
-// reap 等进程退出，记下怎么退出的
+// reap waits for the process to exit and records how it did
 func (p *Process) reap() {
 	err := p.cmd.Wait()
 	now := time.Now()
@@ -370,7 +393,7 @@ func (p *Process) reap() {
 		e.SinceSignal = now.Sub(time.Unix(0, s))
 	}
 	if err != nil && e.Code == 0 && e.Signal == nil {
-		e.Code = -1 // Wait 本身出错（比如 I/O 拷贝失败），别让它看起来像正常退出
+		e.Code = -1 // Wait itself failed (an I/O copy, say); do not let that look like a clean exit
 	}
 	p.exit = e
 	close(p.done)
@@ -400,13 +423,14 @@ func (p *Process) waitReady(t testing.TB, timeout time.Duration) {
 	}
 }
 
-// Pid 进程号
+// Pid is the process id
 func (p *Process) Pid() int { return p.cmd.Process.Pid }
 
-// URL 拼出完整地址：p.URL("/users/1")
+// URL builds the full address: p.URL("/users/1")
 func (p *Process) URL(path string) string { return p.Base + path }
 
-// Signal 发一个信号，第一次发的时刻记进 Exit.SinceSignal。进程已经退出时什么都不做
+// Signal sends one signal and records the moment of the first one in Exit.SinceSignal. On a process
+// that has exited it does nothing
 func (p *Process) Signal(sig os.Signal) {
 	p.firstSignal.CompareAndSwap(0, time.Now().UnixNano())
 	_ = p.cmd.Process.Signal(sig)
@@ -415,7 +439,7 @@ func (p *Process) Signal(sig os.Signal) {
 // Kill SIGKILL
 func (p *Process) Kill() { _ = p.cmd.Process.Kill() }
 
-// Exited 进程是否已经退出
+// Exited says whether the process has exited
 func (p *Process) Exited() bool {
 	select {
 	case <-p.done:
@@ -425,10 +449,11 @@ func (p *Process) Exited() bool {
 	}
 }
 
-// Done 进程退出时关闭
+// Done is closed when the process exits
 func (p *Process) Done() <-chan struct{} { return p.done }
 
-// Wait 最多等 timeout，返回退出情况；到点还没退出时第二个返回值是 false，进程不动它
+// Wait waits timeout at most and returns how it exited; the second value is false when it has not
+// exited by then, and the process is left alone
 func (p *Process) Wait(timeout time.Duration) (Exit, bool) {
 	select {
 	case <-p.done:
@@ -438,7 +463,7 @@ func (p *Process) Wait(timeout time.Duration) (Exit, bool) {
 	}
 }
 
-// Terminate 发 SIGTERM 并等它退出，timeout 内没退出就 t.Fatal
+// Terminate sends SIGTERM and waits for the exit, and t.Fatals when none comes within timeout
 func (p *Process) Terminate(t testing.TB, timeout time.Duration) Exit {
 	t.Helper()
 	p.Signal(syscall.SIGTERM)
@@ -449,22 +474,24 @@ func (p *Process) Terminate(t testing.TB, timeout time.Duration) Exit {
 	return e
 }
 
-// Stdout 到目前为止标准输出的原文（Options.DiscardStdout 时是空的）
+// Stdout is standard output as written so far (empty with Options.DiscardStdout)
 func (p *Process) Stdout() string { return p.out.text("stdout") }
 
-// Stderr 到目前为止标准错误的原文。xlog 装好之前的框架日志、MustRun 返回的错误都在这里
+// Stderr is standard error as written so far. The framework logs from before xlog was installed and
+// the error MustRun returned are both here
 func (p *Process) Stderr() string { return p.out.text("stderr") }
 
-// Output stdout 和 stderr 混在一起，按到达顺序
+// Output is stdout and stderr together, in arrival order
 func (p *Process) Output() string { return p.out.text("") }
 
-// Logs 到目前为止 stdout、stderr 里的全部 JSON 日志，按到达顺序。
+// Logs are all the JSON log lines in stdout and stderr so far, in arrival order.
 //
-// xlog 装好之前框架用 slog 的默认格式往 stderr 写文本（... INFO starting hook=...），
-// 那些不是 JSON，不在这里，看 Stderr；xlog 关掉之后的日志是写 stderr 的 JSON，在这里
+// Before xlog is installed the framework writes text to stderr in slog's default format
+// (... INFO starting hook=...), which is not JSON and not here -- see Stderr; after xlog is closed
+// the logs are JSON on stderr and are here
 func (p *Process) Logs() []Log { return p.out.logs() }
 
-// FindLogs Logs 里满足 match 的那些
+// FindLogs are the lines of Logs matching match
 func (p *Process) FindLogs(match func(Log) bool) []Log {
 	var out []Log
 	for _, l := range p.Logs() {
@@ -475,7 +502,7 @@ func (p *Process) FindLogs(match func(Log) bool) []Log {
 	return out
 }
 
-// WaitLog 等到出现一条满足 match 的日志，timeout 内没等到就 t.Fatal
+// WaitLog waits for a log line matching match to appear, and t.Fatals when none has within timeout
 func (p *Process) WaitLog(t testing.TB, timeout time.Duration, match func(Log) bool) Log {
 	t.Helper()
 	l, ok := p.LookForLog(timeout, match)
@@ -485,11 +512,12 @@ func (p *Process) WaitLog(t testing.TB, timeout time.Duration, match func(Log) b
 	return l
 }
 
-// LookForLog 同 WaitLog，等不到时返回 false 而不是 t.Fatal：调用方自己说清没等到的是哪一条承诺
+// LookForLog is WaitLog that returns false instead of t.Fataling when nothing turns up: the caller
+// then says for itself which promise went unkept
 func (p *Process) LookForLog(timeout time.Duration, match func(Log) bool) (Log, bool) {
 	deadline := time.After(timeout)
 	for {
-		changed := p.out.changed() // 先取 channel 再查，查完之后到的新行也叫得醒
+		changed := p.out.changed() // take the channel before looking, so that lines arriving mid-look still wake it
 		for _, l := range p.Logs() {
 			if match(l) {
 				return l, true
@@ -503,13 +531,13 @@ func (p *Process) LookForLog(timeout time.Duration, match func(Log) bool) (Log, 
 	}
 }
 
-// FileLogs Options.LogFile 开着时 xlog 写进文件的日志
+// FileLogs are the log lines xlog wrote to the file with Options.LogFile on
 func (p *Process) FileLogs(t testing.TB) []Log {
 	t.Helper()
 	if p.logDir == "" {
 		t.Fatal("FileLogs needs Options.LogFile")
 	}
-	// app.log 是指向当前文件的符号链接
+	// app.log is a symbolic link to the current file
 	logs, err := ReadLogFile(filepath.Join(p.logDir, "app.log"))
 	if err != nil {
 		t.Fatalf("read log file: %v", err)
@@ -517,7 +545,7 @@ func (p *Process) FileLogs(t testing.TB) []Log {
 	return logs
 }
 
-// Proc 读这个进程的 /proc：CPU 时间和内存
+// Proc reads this process's /proc: the CPU time and the memory
 func (p *Process) Proc(t testing.TB) ProcStat {
 	t.Helper()
 	s, err := ReadProc(p.Pid())
@@ -527,16 +555,17 @@ func (p *Process) Proc(t testing.TB) ProcStat {
 	return s
 }
 
-// Request 发一个请求，不带 t，哪个协程里都能调。
+// Request sends one request, takes no t and can be called from any goroutine.
 //
-// body 是 nil、[]byte、string 时原样发；其它类型按 JSON 编码，并设上
-// Content-Type: application/json。header 是成对的 key、value。
-// 客户端的超时是 30s，要更短用 ctx；要更长（/slow?ms=60000）自己建 http.Client 打 p.URL(...)
+// A body that is nil, []byte or string is sent as it is; anything else is encoded as JSON and gets
+// a Content-Type: application/json. header is key and value in pairs.
+// The client's timeout is 30s; for a shorter one use ctx, and for a longer one (/slow?ms=60000)
+// build an http.Client of your own against p.URL(...)
 func (p *Process) Request(ctx context.Context, method, path string, body any, header ...string) (Response, error) {
 	return do(ctx, p.client, method, p.URL(path), body, header...)
 }
 
-// Do 同 Request，失败时 t.Fatal
+// Do is Request that t.Fatals on failure
 func (p *Process) Do(t testing.TB, method, path string, body any, header ...string) Response {
 	t.Helper()
 	r, err := p.Request(context.Background(), method, path, body, header...)
@@ -552,18 +581,19 @@ func (p *Process) Get(t testing.TB, path string, header ...string) Response {
 	return p.Do(t, http.MethodGet, path, nil, header...)
 }
 
-// PostJSON 以 JSON POST v
+// PostJSON POSTs v as JSON
 func (p *Process) PostJSON(t testing.TB, path string, v any, header ...string) Response {
 	t.Helper()
 	return p.Do(t, http.MethodPost, path, v, header...)
 }
 
-// tableName 和 service/conf 的校验一致；订单表还要再加 7 个字符，PG 标识符上限 63
+// tableName matches the validation in service/conf; the order table adds 7 more characters, and a
+// PG identifier stops at 63
 var tableName = regexp.MustCompile(`^[a-z_][a-z0-9_]{0,55}$`)
 
-// childEnv 继承测试进程的环境，但去掉会改变服务行为的那几类：
-// XONE_CONFIG / XONE_PROFILE 会换掉配置文件，E2E_* 是上一层留下的开关，
-// OTEL_* 会改 service.name 和采样
+// childEnv inherits the test process's environment but drops the kinds that would change how the
+// service behaves: XONE_CONFIG / XONE_PROFILE would replace the configuration file, E2E_* are
+// switches an outer layer left behind, and OTEL_* would change service.name and the sampling
 func childEnv(vars map[string]string) []string {
 	var env []string
 	for _, kv := range os.Environ() {
@@ -599,7 +629,8 @@ func writeFile(t testing.TB, path string, data []byte) {
 	}
 }
 
-// ResetPeakRSS 见包级的 ResetPeakRSS：之后 Proc 读到的 PeakRSS 从此刻的 RSS 重新算起
+// ResetPeakRSS: see the package-level ResetPeakRSS. The PeakRSS Proc reads afterwards starts over
+// from the RSS at this moment
 func (p *Process) ResetPeakRSS(t testing.TB) {
 	t.Helper()
 	if err := ResetPeakRSS(p.Pid()); err != nil {
