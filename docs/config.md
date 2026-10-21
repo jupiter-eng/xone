@@ -403,7 +403,7 @@ and its troubleshooting.
 | `XApp` | Application identity, profiles, Import | [xapp/README.md](../xapp/README.md#configuration) |
 | `XLog` | Logging | [xlog/README.md](../xlog/README.md#配置) |
 | `XTrace` | Tracing | [xtrace/README.md](../xtrace/README.md#配置) |
-| `XMetric` | Metrics | [xmetric/README.md](../xmetric/README.md#配置) |
+| `XMetric` | Metrics | [xmetric/README.md](../xmetric/README.md#configuration) |
 | `XGorm` | Databases | [xgorm/README.md](../xgorm/README.md#configuration) |
 | `XGorm` (`Driver: clickhouse`) | The ClickHouse driver | [xgorm/clickhouse/README.md](../xgorm/clickhouse/README.md#configuration) |
 | `XRedis` | Redis | [xredis/README.md](../xredis/README.md#配置) |

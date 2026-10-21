@@ -13,22 +13,22 @@ import (
 	"github.com/jupiter-eng/xone/internal/logext"
 )
 
-// observerOnce 观察者只注入一次。
+// observerOnce injects the observer only once.
 //
-// xlog 的观察者是只增不减的，重复注入会让同一条错误日志被数好几次。
-// 观察者本身不持有 counter，每次从当前生效的设施上取，所以注入一次就够。
+// xlog's observers are append-only, and injecting twice would count the same error log several times.
+// The observer does not hold the counter itself and takes it from whichever setup is in effect, so once is enough.
 var observerOnce sync.Once
 
-// newLogCounter 在 m 的 registry 上建出 log_errors_total，并接上日志观察者。
+// newLogCounter builds log_errors_total on m's registry and attaches the log observer.
 //
-// 「错误率」是最常用的告警，不该等业务先埋点。
+// The "error rate" is the most common alert and should not have to wait for the business to instrument it.
 //
-// 走 xlog 的观察者而不是在 slog.Default() 外面包一层：后者会和标准库绕成环。
-// slog.SetDefault 顺带把 log 包的输出接到新 handler 上，若这条链最终落回
-// slog 自带的 handler，记录就会经 log.Output 再流回来，卡死在 log 包那把
-// 不可重入的锁上——不用 xlog 的应用第一条日志就会挂住。
+// It goes through xlog's observer rather than wrapping slog.Default() from outside: the latter would form a cycle
+// with the standard library. slog.SetDefault also routes the log package's output into the new handler, and if that
+// chain ends up back at slog's own handler the record flows back through log.Output and deadlocks on the log
+// package's non-reentrant lock -- an application not using xlog would hang on its first log line.
 //
-// 代价是这个特性依赖 xlog：日志不走 xlog 就统计不到。这写在配置项的注释里。
+// The cost is that this feature depends on xlog: logs not going through xlog are not counted. That is written in the config field's comment.
 func newLogCounter(m *Metrics) *prometheus.CounterVec {
 	counter := prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace:   m.cfg.Namespace,
@@ -53,7 +53,7 @@ func newLogCounter(m *Metrics) *prometheus.CounterVec {
 	return cv
 }
 
-// observeLog 数 Error 及以上级别的日志
+// observeLog counts the logs at Error level and above.
 func observeLog(ctx context.Context, r slog.Record) {
 	if r.Level < slog.LevelError {
 		return
@@ -65,10 +65,10 @@ func observeLog(ctx context.Context, r slog.Record) {
 	addWithExemplar(counter.WithLabelValues(r.Level.String(), callerOf(r)), exemplarOf(ctx))
 }
 
-// callerOf 把记录的调用位置取成 file:line
+// callerOf takes the record's call site as file:line.
 //
-// slog 总会记下调用点的 PC，与 AddSource 是否开启无关——
-// AddSource 管的是要不要把它写进日志，不管要不要采集。
+// slog always records the call site's PC, whether or not AddSource is on -- AddSource decides whether to write it
+// into the log, not whether to collect it.
 func callerOf(r slog.Record) string {
 	if r.PC == 0 {
 		return "unknown"
@@ -80,8 +80,8 @@ func callerOf(r slog.Record) string {
 	return trimPath(f.File) + ":" + strconv.Itoa(f.Line)
 }
 
-// trimPath 只留最后两段路径：完整路径带着构建机的目录，
-// 既没用又会让同一份代码在不同机器上产生不同的标签值
+// trimPath keeps only the last two path elements: a full path carries the build machine's directories,
+// which is useless and would give the same code different label values on different machines.
 func trimPath(p string) string {
 	last := strings.LastIndexByte(p, '/')
 	if last < 0 {
@@ -93,10 +93,10 @@ func trimPath(p string) string {
 	return p
 }
 
-// exemplarOf 取链路标识做 exemplar，让面板能从指标点回到链路。
+// exemplarOf takes the trace identifiers as an exemplar, so a dashboard can go from a metric point back to the trace.
 //
-// 走 logext.TraceIDs（xtrace 注入的提取器）而不是直接读 OpenTelemetry：本模块因此不依赖 OTel，
-// 用不用链路都能编译、都能跑。
+// It goes through logext.TraceIDs (the extractor xtrace injects) rather than reading OpenTelemetry directly: this
+// module therefore does not depend on OTel and compiles and runs with or without tracing.
 func exemplarOf(ctx context.Context) prometheus.Labels {
 	traceID, spanID := logext.TraceIDs(ctx)
 	if traceID == "" && spanID == "" {
@@ -112,7 +112,7 @@ func exemplarOf(ctx context.Context) prometheus.Labels {
 	return out
 }
 
-// addWithExemplar 带 exemplar 计数，不支持时退化成普通 +1
+// addWithExemplar counts with an exemplar, falling back to a plain +1 when exemplars are not supported.
 func addWithExemplar(c prometheus.Counter, labels prometheus.Labels) {
 	if len(labels) > 0 {
 		if ea, ok := c.(prometheus.ExemplarAdder); ok {

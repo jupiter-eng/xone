@@ -60,7 +60,7 @@ MySQL 8.0.46, Redis 7.0.15, ClickHouse 24.8.14).
 | [`XHttp` retry conditions](../xhttp/README.md#行为与实测) | Adding a condition voids resty's own judgment | Only transport errors are retried | Otherwise a 200 with broken JSON is retried as well |
 | [`XTrace` forwarding and baggage](../xtrace/README.md#行为与实测) | Inbound values accepted from anyone | Accepted only when the direct peer is in `XGin.TrustedProxies` (`XEcho.TrustedProxies`) | Otherwise a public client can forge `X-Tenant-Id` and carry it into the internal network |
 | [`XTrace` sampling](../xtrace/README.md#行为与实测) | `AlwaysSample`, ignoring upstream | `ParentBased`, honoring upstream when there is one | Otherwise an upstream `sampled=00` is rewritten to `-01` on the way down |
-| [`XMetric.Namespace`](../xmetric/README.md#行为与实测) | A non-conforming name is escaped on export | Fails while the config is read | Otherwise the dashboard cannot find the name you wrote |
+| [`XMetric.Namespace`](../xmetric/README.md#behavior-measured) | A non-conforming name is escaped on export | Fails while the config is read | Otherwise the dashboard cannot find the name you wrote |
 
 ## The startup connection probe
 
@@ -99,6 +99,6 @@ XGorm, XRedis and XKafka each probe once at startup through one shared implement
 | [xcron](../xcron/README.md#behavior-measured) | cronexpr: field counts, timezone prefixes, DST, specs that never fire; the drift of `@every` |
 | [xgin](../xgin/README.md#behavior-measured) | gin / net/http: proxies, uploads, timeouts, h2c, TLS, graceful shutdown |
 | [xecho](../xecho/README.md#behavior-measured) | echo: client_ip, error rendering, route templates, group fallback routes, `e.Pre`, timeout middleware, panics, gommon logs, compression, the multipart threshold, strict route matching |
-| [xmetric](../xmetric/README.md#行为与实测) | client_golang: buckets, names, constant labels |
+| [xmetric](../xmetric/README.md#behavior-measured) | client_golang: buckets, names, constant labels |
 | [xtrace](../xtrace/README.md#行为与实测) | The OTel SDK: sampling, service.name, forwarding |
 | [xlog](../xlog/README.md#行为与实测) | `Perm`, rotated file names, timezones |

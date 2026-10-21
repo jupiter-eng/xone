@@ -234,17 +234,6 @@ xlog/rotate.go
 xlog/rotate_test.go
 xlog/xlog.go
 xlog/xlog_test.go
-xmetric/README.md
-xmetric/bench_test.go
-xmetric/config.go
-xmetric/config_test.go
-xmetric/duration.go
-xmetric/duration_test.go
-xmetric/go.mod
-xmetric/log_counter.go
-xmetric/shortcut.go
-xmetric/xmetric.go
-xmetric/xmetric_test.go
 xone.go
 xone_test.go
 xredis/README.md

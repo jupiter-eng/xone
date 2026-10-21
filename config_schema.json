@@ -1413,11 +1413,11 @@
         "object",
         "null"
       ],
-      "description": "指标配置",
+      "description": "is the metrics configuration.",
       "properties": {
         "ConstLabels": {
           "type": "object",
-          "description": "附加到所有指标上的常量标签，包括 Go 运行时与进程指标。默认无。 典型用途是区分环境和集群：env: \"${ENV:dev}\"、cluster: \"${CLUSTER:local}\"。 标签名的规则同 Namespace，另外不能以 __ 开头（Prometheus 保留）， 也不能是 le、quantile、version（go_info 自带）或框架自带指标的变量标签名 （level、caller、method、status、route、host、name），否则启动失败： 常量标签附加在所有指标上，撞了名的那个指标就建不起来。",
+          "description": "are constant labels attached to every metric, including the Go runtime and process metrics. There are none by default. The typical use is telling environments and clusters apart: env: \"${ENV:dev}\", cluster: \"${CLUSTER:local}\". Label names follow the same rules as Namespace and additionally must not start with __ (reserved by Prometheus), nor be le, quantile, version (carried by go_info) or a variable label name of the framework's own metrics (level, caller, method, status, route, host, name), or startup fails: a constant label is attached to every metric, and the metric whose own label name it collides with cannot be built at all.",
           "additionalProperties": {
             "type": "string"
           }
@@ -1427,12 +1427,12 @@
             "boolean",
             "string"
           ],
-          "description": "是否采集 Go 运行时指标（goroutine 数、GC 等）。默认开启。",
+          "description": "says whether to collect the Go runtime metrics (goroutine count, GC and so on). It defaults to on.",
           "pattern": "\\$\\{"
         },
         "HTTPDurationBuckets": {
           "type": "array",
-          "description": "HTTP 出入站耗时 Histogram 的桶边界（秒）。 默认 [0.001 0.005 0.01 0.025 0.05 0.1 0.25 0.5 1 2.5 5 10]。 必须严格递增、都是有限数。写了空列表 [] 启动失败：列表字段是整体替换的， [] 不是「用默认」，而是被 Prometheus 悄悄换成它自己的 DefBuckets （少了 1ms 那一档）。要默认值就别写这个字段。",
+          "description": "are the bucket boundaries of the inbound and outbound HTTP duration Histograms (in seconds). They default to [0.001 0.005 0.01 0.025 0.05 0.1 0.25 0.5 1 2.5 5 10]. They must be strictly increasing and all finite. Writing an empty list [] fails startup: a list field is replaced whole, and [] does not mean \"use the defaults\" but is quietly replaced by Prometheus with its own DefBuckets (which lacks the 1ms bucket). For the defaults, leave the field out.",
           "items": {
             "type": [
               "number",
@@ -1443,7 +1443,7 @@
         },
         "HistogramBuckets": {
           "type": "array",
-          "description": "快捷方法建出来的业务 Histogram 的桶边界（秒）。 默认 prometheus.DefBuckets。规则同 HTTPDurationBuckets。 不在这里拦的话，[1, 0.5, 2] 能通过启动，然后在第一次 HistogramObserve 时 panic（histogram buckets must be in increasing order）——那是在业务 请求里，不是在启动时。",
+          "description": "are the bucket boundaries of the business Histograms the shortcuts build (in seconds). They default to prometheus.DefBuckets. The rules are the same as HTTPDurationBuckets'. Without catching it here, [1, 0.5, 2] would pass startup and then panic on the first HistogramObserve (histogram buckets must be in increasing order) -- inside a business request, not at startup.",
           "items": {
             "type": [
               "number",
@@ -1457,19 +1457,19 @@
             "boolean",
             "string"
           ],
-          "description": "是否把 Error 及以上级别的日志计入 log_errors_total。默认开启。 它让「错误率」这条最常用的告警不必等业务先埋点。 统计的是走 xlog 的日志：不用 xlog 的应用这项不会报错，只是数不到。",
+          "description": "says whether logs at Error level and above are counted into log_errors_total. It defaults to on. It makes the \"error rate\", the most common alert, available without waiting for the business to instrument it. What is counted is the logs going through xlog: an application not using xlog gets no error from this, only no count.",
           "pattern": "\\$\\{"
         },
         "Namespace": {
           "type": "string",
-          "description": "指标名前缀。默认无。 只能是字母、数字、下划线，且不以数字开头，否则启动失败。client_golang v1.24 按 UTF-8 规则校验名字，不合规的前缀不会报错，而是在导出时被悄悄 转义：实测 my-app 导出成 my_app_，1app 成了 _app_，中文成了一串下划线， 看板和告警按配置里写的名字查，什么都查不到。"
+          "description": "is the metric name prefix. There is none by default. It may contain only letters, digits and underscores and must not start with a digit, or startup fails. client_golang v1.24 validates names by UTF-8 rules, so a non-conforming prefix is not reported as an error but quietly escaped on export: measured, my-app was exported as my_app_, 1app became _app_, and non-ASCII text became a string of underscores -- so dashboards and alerts searching for the name written in the configuration find nothing."
         },
         "ProcessMetrics": {
           "type": [
             "boolean",
             "string"
           ],
-          "description": "是否采集进程指标（CPU、内存、文件描述符等）。默认开启。",
+          "description": "says whether to collect the process metrics (CPU, memory, file descriptors and so on). It defaults to on.",
           "pattern": "\\$\\{"
         }
       },

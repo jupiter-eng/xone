@@ -85,7 +85,7 @@ Every metric the framework ships carries `XMetric.ConstLabels`; apart from clien
 | [xredis](../xredis/README.md#指标) | `redis_pool_*` |
 | [xkafka](../xkafka/README.md#指标) | `kafka_consume_duration_seconds` |
 | [xcache](../xcache/README.md#metrics) | `cache_*` |
-| [xmetric](../xmetric/README.md#指标) | `log_errors_total`, `go_*` / `process_*`, and the business's own instrumentation |
+| [xmetric](../xmetric/README.md#metrics) | `log_errors_total`, `go_*` / `process_*`, and the business's own instrumentation |
 
 A few things worth knowing:
 
