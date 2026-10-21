@@ -6,15 +6,6 @@
 # instead of quietly staying forever. Nothing is ever added except during this migration.
 #
 # Generated once from the state of the repository at the time the rule landed.
-# xecho/README.md is translated; what is left are anchors into files that are still
-# Chinese (../xgin/README.md#..., ../docs/...#...). Changing them would break the links,
-# so this line goes when those files are translated.
-# xecho/README.md and xgin/README.md are translated; what is left are anchors into files that
-# are still Chinese (../docs/...#..., ../xtls/README.md#...). Changing them would break the
-# links, so these lines go when those files are translated.
-# xecho/README.md and xgin/README.md are translated; what is left are anchors into files that
-# are still Chinese (../docs/...#..., ../xtls/README.md#...). Changing them would break the
-# links, so these lines go when those files are translated.
 .claude/skills/release/SKILL.md
 .claude/skills/ship/SKILL.md
 .github/workflows/ci.yml
@@ -240,14 +231,10 @@ xflow/monitor_test.go
 xflow/optional_test.go
 xflow/xflow.go
 xflow/xflow_test.go
-# xgin/README.md is translated; what is left is one anchor into xtls/README.md, which is still
-# Chinese. This line goes when xtls is translated.
-xgin/README.md
 xginswagger/README.md
 xginswagger/go.mod
 xginswagger/swagger.go
 xginswagger/swagger_test.go
-xgorm/README.md
 xhook/internal/viahelper/viahelper.go
 xhook/registrant_test.go
 xhook/xhook.go
@@ -318,9 +305,6 @@ xredis/trace_test.go
 xredis/tracing_test.go
 xredis/xredis.go
 xredis/xredis_test.go
-xtls/README.md
-xtls/xtls.go
-xtls/xtls_test.go
 xtrace/README.md
 xtrace/config.go
 xtrace/go.mod

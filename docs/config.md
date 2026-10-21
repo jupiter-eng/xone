@@ -372,7 +372,7 @@ at a local directory it reads `(devel)`.
 | Connection retries | XGorm and XRedis probe once at startup, at most 3 attempts; an authentication failure or a rejected certificate is not retried. See [behavior.md "The startup connection probe"](behavior.md#the-startup-connection-probe) |
 
 The outbound TLS of XGorm (PostgreSQL / MySQL / ClickHouse), XRedis and XHttp is written as one and
-the same block (`TLS:`), see [xtls](../xtls/README.md#配置).
+the same block (`TLS:`), see [xtls](../xtls/README.md#configuration).
 
 ## Editor completion
 
@@ -414,4 +414,4 @@ and its troubleshooting.
 | `XGinSwagger` | API documentation | [xginswagger/README.md](../xginswagger/README.md#配置) |
 | `XEcho` | A web server (Echo) | [xecho/README.md](../xecho/README.md#configuration) |
 | `XFlow` | Flow orchestration | [xflow/README.md](../xflow/README.md#配置) |
-| `TLS` (inside the XGorm / XRedis / XHttp / XKafka blocks) | Client-side TLS | [xtls/README.md](../xtls/README.md#配置) |
+| `TLS` (inside the XGorm / XRedis / XHttp / XKafka blocks) | Client-side TLS | [xtls/README.md](../xtls/README.md#configuration) |

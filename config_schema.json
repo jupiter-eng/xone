@@ -686,27 +686,27 @@
               "properties": {
                 "CAFile": {
                   "type": "string",
-                  "description": "校验服务端证书用的 CA 证书（PEM，可以放好几张）。默认空，用系统的根证书。 填了就**只**认这个文件里的 CA，系统根证书不再参与校验。自签的证书填这里。"
+                  "description": "is the CA certificate used to verify the server certificate (PEM, several are allowed). It defaults to empty, which uses the system roots. When it is set, **only** the CAs in that file are accepted and the system roots no longer take part. A self-signed certificate goes here."
                 },
                 "CertFile": {
                   "type": "string",
-                  "description": "客户端证书（PEM），服务端要求双向认证时和 KeyFile 成对填。默认空。"
+                  "description": "is the client certificate (PEM), set together with KeyFile when the server wants mutual authentication. It defaults to empty."
                 },
                 "Enable": {
                   "type": [
                     "boolean",
                     "string"
                   ],
-                  "description": "是否走 TLS。默认 false。下面几项只在开着时生效，没开却写了它们，启动失败—— 那多半是忘了开，照明文连过去比报错更糟。",
+                  "description": "turns TLS on. It defaults to false. The fields below only take effect while it is on, and setting them without it fails startup -- that is most likely a forgotten Enable, and connecting in plaintext would be worse than an error.",
                   "pattern": "\\$\\{"
                 },
                 "KeyFile": {
                   "type": "string",
-                  "description": "客户端私钥（PEM），和 CertFile 成对填。默认空。"
+                  "description": "is the client private key (PEM), set together with CertFile. It defaults to empty."
                 },
                 "ServerName": {
                   "type": "string",
-                  "description": "校验服务端证书时比对的名字。默认空，取连接地址的主机部分； 按 IP 连、而证书上写的是域名时填它。"
+                  "description": "is the name the server certificate is verified against. It defaults to empty, which takes the host part of the connection address; set it when connecting by IP to a certificate that names a domain."
                 }
               },
               "additionalProperties": false
@@ -874,27 +874,27 @@
                     "properties": {
                       "CAFile": {
                         "type": "string",
-                        "description": "校验服务端证书用的 CA 证书（PEM，可以放好几张）。默认空，用系统的根证书。 填了就**只**认这个文件里的 CA，系统根证书不再参与校验。自签的证书填这里。"
+                        "description": "is the CA certificate used to verify the server certificate (PEM, several are allowed). It defaults to empty, which uses the system roots. When it is set, **only** the CAs in that file are accepted and the system roots no longer take part. A self-signed certificate goes here."
                       },
                       "CertFile": {
                         "type": "string",
-                        "description": "客户端证书（PEM），服务端要求双向认证时和 KeyFile 成对填。默认空。"
+                        "description": "is the client certificate (PEM), set together with KeyFile when the server wants mutual authentication. It defaults to empty."
                       },
                       "Enable": {
                         "type": [
                           "boolean",
                           "string"
                         ],
-                        "description": "是否走 TLS。默认 false。下面几项只在开着时生效，没开却写了它们，启动失败—— 那多半是忘了开，照明文连过去比报错更糟。",
+                        "description": "turns TLS on. It defaults to false. The fields below only take effect while it is on, and setting them without it fails startup -- that is most likely a forgotten Enable, and connecting in plaintext would be worse than an error.",
                         "pattern": "\\$\\{"
                       },
                       "KeyFile": {
                         "type": "string",
-                        "description": "客户端私钥（PEM），和 CertFile 成对填。默认空。"
+                        "description": "is the client private key (PEM), set together with CertFile. It defaults to empty."
                       },
                       "ServerName": {
                         "type": "string",
-                        "description": "校验服务端证书时比对的名字。默认空，取连接地址的主机部分； 按 IP 连、而证书上写的是域名时填它。"
+                        "description": "is the name the server certificate is verified against. It defaults to empty, which takes the host part of the connection address; set it when connecting by IP to a certificate that names a domain."
                       }
                     },
                     "additionalProperties": false
@@ -1016,27 +1016,27 @@
           "properties": {
             "CAFile": {
               "type": "string",
-              "description": "校验服务端证书用的 CA 证书（PEM，可以放好几张）。默认空，用系统的根证书。 填了就**只**认这个文件里的 CA，系统根证书不再参与校验。自签的证书填这里。"
+              "description": "is the CA certificate used to verify the server certificate (PEM, several are allowed). It defaults to empty, which uses the system roots. When it is set, **only** the CAs in that file are accepted and the system roots no longer take part. A self-signed certificate goes here."
             },
             "CertFile": {
               "type": "string",
-              "description": "客户端证书（PEM），服务端要求双向认证时和 KeyFile 成对填。默认空。"
+              "description": "is the client certificate (PEM), set together with KeyFile when the server wants mutual authentication. It defaults to empty."
             },
             "Enable": {
               "type": [
                 "boolean",
                 "string"
               ],
-              "description": "是否走 TLS。默认 false。下面几项只在开着时生效，没开却写了它们，启动失败—— 那多半是忘了开，照明文连过去比报错更糟。",
+              "description": "turns TLS on. It defaults to false. The fields below only take effect while it is on, and setting them without it fails startup -- that is most likely a forgotten Enable, and connecting in plaintext would be worse than an error.",
               "pattern": "\\$\\{"
             },
             "KeyFile": {
               "type": "string",
-              "description": "客户端私钥（PEM），和 CertFile 成对填。默认空。"
+              "description": "is the client private key (PEM), set together with CertFile. It defaults to empty."
             },
             "ServerName": {
               "type": "string",
-              "description": "校验服务端证书时比对的名字。默认空，取连接地址的主机部分； 按 IP 连、而证书上写的是域名时填它。"
+              "description": "is the name the server certificate is verified against. It defaults to empty, which takes the host part of the connection address; set it when connecting by IP to a certificate that names a domain."
             }
           },
           "additionalProperties": false
@@ -1148,27 +1148,27 @@
               "properties": {
                 "CAFile": {
                   "type": "string",
-                  "description": "校验服务端证书用的 CA 证书（PEM，可以放好几张）。默认空，用系统的根证书。 填了就**只**认这个文件里的 CA，系统根证书不再参与校验。自签的证书填这里。"
+                  "description": "is the CA certificate used to verify the server certificate (PEM, several are allowed). It defaults to empty, which uses the system roots. When it is set, **only** the CAs in that file are accepted and the system roots no longer take part. A self-signed certificate goes here."
                 },
                 "CertFile": {
                   "type": "string",
-                  "description": "客户端证书（PEM），服务端要求双向认证时和 KeyFile 成对填。默认空。"
+                  "description": "is the client certificate (PEM), set together with KeyFile when the server wants mutual authentication. It defaults to empty."
                 },
                 "Enable": {
                   "type": [
                     "boolean",
                     "string"
                   ],
-                  "description": "是否走 TLS。默认 false。下面几项只在开着时生效，没开却写了它们，启动失败—— 那多半是忘了开，照明文连过去比报错更糟。",
+                  "description": "turns TLS on. It defaults to false. The fields below only take effect while it is on, and setting them without it fails startup -- that is most likely a forgotten Enable, and connecting in plaintext would be worse than an error.",
                   "pattern": "\\$\\{"
                 },
                 "KeyFile": {
                   "type": "string",
-                  "description": "客户端私钥（PEM），和 CertFile 成对填。默认空。"
+                  "description": "is the client private key (PEM), set together with CertFile. It defaults to empty."
                 },
                 "ServerName": {
                   "type": "string",
-                  "description": "校验服务端证书时比对的名字。默认空，取连接地址的主机部分； 按 IP 连、而证书上写的是域名时填它。"
+                  "description": "is the name the server certificate is verified against. It defaults to empty, which takes the host part of the connection address; set it when connecting by IP to a certificate that names a domain."
                 }
               },
               "additionalProperties": false
@@ -1279,27 +1279,27 @@
                     "properties": {
                       "CAFile": {
                         "type": "string",
-                        "description": "校验服务端证书用的 CA 证书（PEM，可以放好几张）。默认空，用系统的根证书。 填了就**只**认这个文件里的 CA，系统根证书不再参与校验。自签的证书填这里。"
+                        "description": "is the CA certificate used to verify the server certificate (PEM, several are allowed). It defaults to empty, which uses the system roots. When it is set, **only** the CAs in that file are accepted and the system roots no longer take part. A self-signed certificate goes here."
                       },
                       "CertFile": {
                         "type": "string",
-                        "description": "客户端证书（PEM），服务端要求双向认证时和 KeyFile 成对填。默认空。"
+                        "description": "is the client certificate (PEM), set together with KeyFile when the server wants mutual authentication. It defaults to empty."
                       },
                       "Enable": {
                         "type": [
                           "boolean",
                           "string"
                         ],
-                        "description": "是否走 TLS。默认 false。下面几项只在开着时生效，没开却写了它们，启动失败—— 那多半是忘了开，照明文连过去比报错更糟。",
+                        "description": "turns TLS on. It defaults to false. The fields below only take effect while it is on, and setting them without it fails startup -- that is most likely a forgotten Enable, and connecting in plaintext would be worse than an error.",
                         "pattern": "\\$\\{"
                       },
                       "KeyFile": {
                         "type": "string",
-                        "description": "客户端私钥（PEM），和 CertFile 成对填。默认空。"
+                        "description": "is the client private key (PEM), set together with CertFile. It defaults to empty."
                       },
                       "ServerName": {
                         "type": "string",
-                        "description": "校验服务端证书时比对的名字。默认空，取连接地址的主机部分； 按 IP 连、而证书上写的是域名时填它。"
+                        "description": "is the name the server certificate is verified against. It defaults to empty, which takes the host part of the connection address; set it when connecting by IP to a certificate that names a domain."
                       }
                     },
                     "additionalProperties": false
@@ -1591,27 +1591,27 @@
               "properties": {
                 "CAFile": {
                   "type": "string",
-                  "description": "校验服务端证书用的 CA 证书（PEM，可以放好几张）。默认空，用系统的根证书。 填了就**只**认这个文件里的 CA，系统根证书不再参与校验。自签的证书填这里。"
+                  "description": "is the CA certificate used to verify the server certificate (PEM, several are allowed). It defaults to empty, which uses the system roots. When it is set, **only** the CAs in that file are accepted and the system roots no longer take part. A self-signed certificate goes here."
                 },
                 "CertFile": {
                   "type": "string",
-                  "description": "客户端证书（PEM），服务端要求双向认证时和 KeyFile 成对填。默认空。"
+                  "description": "is the client certificate (PEM), set together with KeyFile when the server wants mutual authentication. It defaults to empty."
                 },
                 "Enable": {
                   "type": [
                     "boolean",
                     "string"
                   ],
-                  "description": "是否走 TLS。默认 false。下面几项只在开着时生效，没开却写了它们，启动失败—— 那多半是忘了开，照明文连过去比报错更糟。",
+                  "description": "turns TLS on. It defaults to false. The fields below only take effect while it is on, and setting them without it fails startup -- that is most likely a forgotten Enable, and connecting in plaintext would be worse than an error.",
                   "pattern": "\\$\\{"
                 },
                 "KeyFile": {
                   "type": "string",
-                  "description": "客户端私钥（PEM），和 CertFile 成对填。默认空。"
+                  "description": "is the client private key (PEM), set together with CertFile. It defaults to empty."
                 },
                 "ServerName": {
                   "type": "string",
-                  "description": "校验服务端证书时比对的名字。默认空，取连接地址的主机部分； 按 IP 连、而证书上写的是域名时填它。"
+                  "description": "is the name the server certificate is verified against. It defaults to empty, which takes the host part of the connection address; set it when connecting by IP to a certificate that names a domain."
                 }
               },
               "additionalProperties": false
@@ -1754,27 +1754,27 @@
                     "properties": {
                       "CAFile": {
                         "type": "string",
-                        "description": "校验服务端证书用的 CA 证书（PEM，可以放好几张）。默认空，用系统的根证书。 填了就**只**认这个文件里的 CA，系统根证书不再参与校验。自签的证书填这里。"
+                        "description": "is the CA certificate used to verify the server certificate (PEM, several are allowed). It defaults to empty, which uses the system roots. When it is set, **only** the CAs in that file are accepted and the system roots no longer take part. A self-signed certificate goes here."
                       },
                       "CertFile": {
                         "type": "string",
-                        "description": "客户端证书（PEM），服务端要求双向认证时和 KeyFile 成对填。默认空。"
+                        "description": "is the client certificate (PEM), set together with KeyFile when the server wants mutual authentication. It defaults to empty."
                       },
                       "Enable": {
                         "type": [
                           "boolean",
                           "string"
                         ],
-                        "description": "是否走 TLS。默认 false。下面几项只在开着时生效，没开却写了它们，启动失败—— 那多半是忘了开，照明文连过去比报错更糟。",
+                        "description": "turns TLS on. It defaults to false. The fields below only take effect while it is on, and setting them without it fails startup -- that is most likely a forgotten Enable, and connecting in plaintext would be worse than an error.",
                         "pattern": "\\$\\{"
                       },
                       "KeyFile": {
                         "type": "string",
-                        "description": "客户端私钥（PEM），和 CertFile 成对填。默认空。"
+                        "description": "is the client private key (PEM), set together with CertFile. It defaults to empty."
                       },
                       "ServerName": {
                         "type": "string",
-                        "description": "校验服务端证书时比对的名字。默认空，取连接地址的主机部分； 按 IP 连、而证书上写的是域名时填它。"
+                        "description": "is the name the server certificate is verified against. It defaults to empty, which takes the host part of the connection address; set it when connecting by IP to a certificate that names a domain."
                       }
                     },
                     "additionalProperties": false

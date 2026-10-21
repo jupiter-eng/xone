@@ -401,4 +401,4 @@ written explicitly: defaults change with Go versions.
 
 The `N handler(s) still running when the shutdown deadline passed` on shutdown is covered in
 [`docs/troubleshooting.md` "Runnable and shutdown"](../docs/troubleshooting.md#runnable-and-shutdown); client-side
-TLS errors are in [xtls "Troubleshooting"](../xtls/README.md#排错).
+TLS errors are in [xtls "Troubleshooting"](../xtls/README.md#troubleshooting).

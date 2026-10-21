@@ -6,7 +6,7 @@ and what follows is the keyword from inside the brackets, which is what to searc
 
 These are the cross-module errors; anything belonging to one module is under "Troubleshooting" in
 its README: [xgorm](../xgorm/README.md#troubleshooting) (`unknown Driver=…`) ·
-[xtls](../xtls/README.md#排错) (client-side TLS) ·
+[xtls](../xtls/README.md#troubleshooting) (client-side TLS) ·
 [xgin](../xgin/README.md#troubleshooting) (server certificates) ·
 [xecho](../xecho/README.md#troubleshooting) (server certificates, an XGin block copied over).
 
@@ -198,6 +198,6 @@ The startup connection probe tries at most 3 times
 ## TLS
 
 Errors from the client-side TLS block (XGorm / XRedis / XHttp) are in
-[xtls "排错"](../xtls/README.md#排错), XGin's server certificate errors are in
+[xtls "Troubleshooting"](../xtls/README.md#troubleshooting), XGin's server certificate errors are in
 [xgin "Troubleshooting"](../xgin/README.md#troubleshooting), and XEcho's are in
 [xecho "Troubleshooting"](../xecho/README.md#troubleshooting).

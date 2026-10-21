@@ -1,110 +1,122 @@
 # xtls
 
-客户端 TLS 块：XGorm / XRedis / XHttp / XKafka 连出去时的 TLS 写成同一个 `TLS:` 块（核心模块，`xtls.Config`），字段、默认值、校验规则只有这一份。
+The client TLS block: TLS for the outbound connections of XGorm / XRedis / XHttp / XKafka is written as the same `TLS:` block (a core module, `xtls.Config`), and the fields, the defaults and the validation rules exist only once.
 
-- 证书一律校验，没有跳过校验的开关；最低 TLS 1.2
-- 开着 TLS 块就不会退回明文
-- 配错的组合在读配置时就失败，证书文件在建实例时读
+- Certificates are always verified, there is no switch to skip verification, and the minimum is TLS 1.2
+- While the TLS block is on there is no fallback to plaintext
+- A misconfigured combination fails while the config is read; the certificate files are read when the instance is built
 
-## 快速上手
+## Quick start
 
-用内部 CA 签的证书连 PostgreSQL，服务端要求双向认证：
+Connecting to PostgreSQL with a certificate signed by an internal CA, where the server requires mutual authentication:
 
 ```yaml
 # conf/application.yml
 XGorm:
-  DSN: "${DB_DSN}"                    # DSN 里不再写 sslmode
+  DSN: "${DB_DSN}"                    # the DSN no longer sets sslmode
   TLS:
     Enable: true
-    CAFile: /etc/ssl/internal-ca.pem  # 只认这个 CA，系统根证书不再参与
-    CertFile: /etc/ssl/client.pem     # 服务端要客户端证书时和 KeyFile 成对填
+    CAFile: /etc/ssl/internal-ca.pem  # only this CA is accepted; the system roots no longer take part
+    CertFile: /etc/ssl/client.pem     # set together with KeyFile when the server wants a client certificate
     KeyFile: /etc/ssl/client-key.pem
-    ServerName: db.internal           # 按 IP 连、证书上是域名时填
+    ServerName: db.internal           # set it when connecting by IP to a certificate that names a domain
 ```
 
-XRedis、XHttp、XKafka 块里写法完全一样。
+It is written exactly the same way inside the XRedis, XHttp and XKafka blocks.
 
-## 配置
+## Configuration
 
-以 XRedis 为例，XGorm（PostgreSQL / MySQL / ClickHouse）、XHttp 块里的 `TLS:` 字段一模一样：
+XRedis is used as the example; the `TLS:` fields inside the XGorm (PostgreSQL / MySQL / ClickHouse) and XHttp blocks are identical:
 
 ```yaml
 XRedis:
   TLS:
-    Enable: true                      # 默认 false；下面几项只在开着时生效
-    CAFile: /etc/ssl/internal-ca.pem  # 校验服务端证书的 CA（PEM，可以多张）。空 = 系统根证书
-    CertFile: /etc/ssl/client.pem     # 客户端证书，服务端要求双向认证时和 KeyFile 成对填
+    Enable: true                      # defaults to false; the fields below only take effect while it is on
+    CAFile: /etc/ssl/internal-ca.pem  # the CA verifying the server certificate (PEM, several are allowed). Empty = the system roots
+    CertFile: /etc/ssl/client.pem     # the client certificate, set together with KeyFile when the server wants mutual authentication
     KeyFile: /etc/ssl/client-key.pem
-    ServerName: redis.internal        # 比对证书的名字。空 = 连接地址的主机部分
+    ServerName: redis.internal        # the name the certificate is verified against. Empty = the host part of the connection address
 ```
 
-- 填了 `CAFile` 就**只认**这个文件里的 CA，系统根证书不再参与。自签证书把 CA 填进这里。
-- 要更细的控制（加密套件、自定义校验）就绕开配置、自己造原生 client。
-- 服务端（XGin、XEcho）的 `TLS:` 块是另一组字段：`CertFile`、`KeyFile`、`ClientCAFile`、`MinVersion`，没有 `Enable`（证书配了就开），见 [XGin](../xgin/README.md#configuration)。
+- When `CAFile` is set, **only** the CAs in that file are accepted and the system roots no longer take part. A self-signed certificate goes here.
+- For finer control (cipher suites, custom verification), go around the configuration and build a native client.
+- The server-side `TLS:` block (XGin, XEcho) is a different set of fields: `CertFile`, `KeyFile`, `ClientCAFile` and `MinVersion`, with no `Enable` (configuring a certificate turns it on). See [XGin](../xgin/README.md#configuration).
 
 ## API
 
-使用者只在配置文件里写它；直接调某个模块的 `New` 时才会在代码里写到 `xtls.Config`。
+Callers only write it in the config file; `xtls.Config` appears in code only when calling a module's `New` directly.
 
-| 函数 | 说明 |
+| Function | Description |
 |---|---|
-| `(Config) Validate() error` | 检查几项之间说不通的组合（各模块的 `Validate` 会调它） |
-| `(Config) Build() (*tls.Config, error)` | 先校验，再读证书文件装出 `*tls.Config`；没开 TLS 时返回 nil |
+| `(Config) Validate() error` | Checks the combinations that do not make sense (each module's `Validate` calls it) |
+| `(Config) Build() (*tls.Config, error)` | Validates first, then reads the certificate files and assembles a `*tls.Config`; with TLS off it returns nil |
 
-## 注意事项
+## Notes
 
-- **开着 TLS 块时 DSN 里不能再写 TLS 参数**（PG 的 `ssl*`、MySQL 的 `tls=` / `allowFallbackToPlaintext=`、ClickHouse 的 `secure` /
-  `skip_verify` / `tls_server_name`），两处都写是配置错误；也必须走 TCP（Unix socket 上不做 TLS）。
-- **不开 TLS 块时 pgx 默认连上了也不校验证书**（`sslmode=prefer`），go-sql-driver 不写 `tls` 就是明文。见[「行为与实测」](#行为与实测)。
-- 没开 `Enable` 却写了别的几项（多半是忘了开）、`CertFile` / `KeyFile` 只配一个，读配置时就失败。
-- 证书文件在建实例时读，读不出来报 op 为 `config` 的错，一次都不连。
-- 证书被拒不重试：再试还是同一张证书、同一个结论。各驱动报什么错、要多久，见[「行为与实测」](#行为与实测)。
+- **While the TLS block is on, the DSN must not set TLS parameters** (PG's `ssl*`, MySQL's `tls=` and
+  `allowFallbackToPlaintext=`, ClickHouse's `secure` / `skip_verify` / `tls_server_name`); setting both is a
+  configuration error. TCP is also required (there is no TLS over a Unix socket).
+- **Without a TLS block, pgx connects without verifying the certificate** (`sslmode=prefer`), and go-sql-driver is
+  plaintext unless `tls` is set. See ["Behavior (measured)"](#behavior-measured).
+- Setting the other fields without `Enable` (most likely a forgotten Enable), or setting only one of
+  `CertFile` / `KeyFile`, fails while the config is read.
+- The certificate files are read when the instance is built; an unreadable one is reported as an error with op
+  `config`, and nothing is connected to at all.
+- A rejected certificate is not retried: another attempt means the same certificate and the same verdict. What each
+  driver reports and how long it takes is in ["Behavior (measured)"](#behavior-measured).
 
-## 行为与实测
+## Behavior (measured)
 
-实测环境和跨模块的总表见 [`docs/behavior.md`](../docs/behavior.md)。
+The measurement environment and the cross-module summary table are in [`docs/behavior.md`](../docs/behavior.md).
 
-实测（e2e：测试时现造的 CA，PG 16、MySQL 8.0.46、Redis 7.0.15 各起一个只收 TLS 的实例）：
+Measured (e2e: a CA built during the test, with PG 16, MySQL 8.0.46 and Redis 7.0.15 each running one instance that
+accepts TLS only):
 
-| | CA 对：服务端看到的 | CA 不对 / 不填（系统根证书） | `ServerName` 对不上 | 服务端要客户端证书而没带 | 明文连过去 |
+| | Correct CA: what the server saw | Wrong CA / none (system roots) | `ServerName` does not match | The server wants a client certificate and none is sent | Connecting in plaintext |
 |---|---|---|---|---|---|
-| XGorm · PostgreSQL | `pg_stat_ssl`：`ssl=t`、`TLSv1.3`，双向认证时 `client_dn=/CN=…` | `x509: certificate signed by unknown authority`，3ms，不重试 | `x509: certificate is valid for localhost, db.e2e.internal, not wrong.e2e.internal` | `FATAL: connection requires a valid client certificate (SQLSTATE 28000)`，按认证失败报 | `no pg_hba.conf entry … no encryption` |
-| XGorm · MySQL | `Ssl_version=TLSv1.3`，连接池里每条新连接都是 | 同上，2ms | 同上 | `REQUIRE X509` 的账号回 1045，按认证失败报 | `require_secure_transport=ON` 回 3159，照常重试，1.9s |
-| XRedis | 服务端只开 `tls-port` | 同上，1–4ms | 同上 | 多数是 `remote error: tls: certificate required`，约 0.45s；也实测到每次尝试都撞上 `write: connection reset by peer`，2.4s | `EOF`，照常重试，2.0–3.5s |
-| XHttp | 桩服务端看到 `HTTP/2.0`、`TLS 1.3` 和客户端证书的 CN | 同上 | 同上 | 报什么说不准，见下 | —— |
+| XGorm · PostgreSQL | `pg_stat_ssl`: `ssl=t`, `TLSv1.3`, and with mutual authentication `client_dn=/CN=…` | `x509: certificate signed by unknown authority`, 3ms, not retried | `x509: certificate is valid for localhost, db.e2e.internal, not wrong.e2e.internal` | `FATAL: connection requires a valid client certificate (SQLSTATE 28000)`, reported as an auth failure | `no pg_hba.conf entry … no encryption` |
+| XGorm · MySQL | `Ssl_version=TLSv1.3`, for every new connection in the pool | The same, 2ms | The same | An account with `REQUIRE X509` replies 1045, reported as an auth failure | `require_secure_transport=ON` replies 3159, retried as usual, 1.9s |
+| XRedis | The server only opens `tls-port` | The same, 1-4ms | The same | Usually `remote error: tls: certificate required`, about 0.45s; also measured was `write: connection reset by peer` on every attempt, 2.4s | `EOF`, retried as usual, 2.0-3.5s |
+| XHttp | The stub server saw `HTTP/2.0`, `TLS 1.3` and the client certificate's CN | The same | The same | What is reported varies, see below | — |
 
-两件量出来才知道的事：
+Two things that only measuring made clear:
 
-- **TLS 1.3 下服务端拒客户端证书，客户端要到下一次读才知道。** 客户端发完 Finished 就当握手成功、开始写，
-  服务端的告警晚一步到：go-redis 第一次尝试常常先撞上 `broken pipe` / `EOF`，退避一次之后才读到告警，
-  所以是 0.45s 而不是几毫秒；两次尝试都撞上的话报的是 `connection reset by peer`，看不出是证书的事；net/http 有时报 `remote error: tls: certificate required`，
-  有时报 `write: broken pipe`，HTTP/2 的连接只报 `http2: client conn could not be established`。
-- **拿着别的 CA 签的客户端证书，Go 的客户端可能根本不出示它。** 服务端在握手里列出它认的 CA 时，
-  crypto/tls 只出示这些 CA 签的证书——PG、net/http 的服务端看到的都是「没带」。
-  mysqld 和 redis-server 不列，证书照样发过去，服务端回 `unknown_ca`：go-redis 报
-  `remote error: tls: unknown certificate authority`；go-sql-driver v1.10.1 报 `invalid connection`（照常重试），
-  告警只出现在一条 `xgorm go-sql-driver log` 里（`detail` 是 `packets.go:58 remote error: tls: unknown certificate authority`）。
+- **Under TLS 1.3 a client learns that the server rejected its certificate only on the next read.** The client treats
+  the handshake as done once it has sent Finished and starts writing, while the server's alert arrives a step later:
+  go-redis often hits `broken pipe` / `EOF` on the first attempt and only reads the alert after one backoff, which is
+  why it takes 0.45s instead of a few milliseconds. When both attempts hit it, what is reported is
+  `connection reset by peer`, which gives no hint that a certificate is involved; net/http sometimes reports
+  `remote error: tls: certificate required` and sometimes `write: broken pipe`, and an HTTP/2 connection only reports
+  `http2: client conn could not be established`.
+- **With a client certificate signed by a different CA, a Go client may not present it at all.** When the server lists
+  the CAs it accepts during the handshake, crypto/tls only presents certificates signed by those CAs -- so the PG and
+  net/http servers both saw "none sent". mysqld and redis-server do not list them, the certificate is sent anyway and
+  the server replies `unknown_ca`: go-redis reports `remote error: tls: unknown certificate authority`, while
+  go-sql-driver v1.10.1 reports `invalid connection` (retried as usual) and the alert appears only in a single
+  `xgorm go-sql-driver log` record (whose `detail` is
+  `packets.go:58 remote error: tls: unknown certificate authority`).
 
-**不开 TLS 块时，两个数据库驱动的默认差得很远**：pgx（DSN 不写 `sslmode` 即 `prefer`）连一个开着 ssl 的 PG
-照样走 TLS（`pg_stat_ssl` 是 `ssl=t`），但**服务端证书根本不校验**——拿一个不相干的 CA 签的证书也连得上；
-服务端不肯 TLS 就悄悄改走明文。go-sql-driver 不写 `tls` 就是明文。
-开着 TLS 块时 PostgreSQL 按主机去重、每个主机只走这一块的 TLS，**不会退回明文**（服务端不肯 TLS 时报
-`server refused TLS connection`）。
+**Without a TLS block the defaults of the two database drivers are far apart**: pgx (a DSN without `sslmode`, that is
+`prefer`) connecting to a PG with ssl enabled still goes through TLS (`pg_stat_ssl` shows `ssl=t`), but **the server
+certificate is not verified at all** -- a certificate signed by an unrelated CA connects just as well, and a server
+unwilling to do TLS makes it switch quietly to plaintext. go-sql-driver is plaintext unless `tls` is set. With a TLS
+block, PostgreSQL deduplicates by host and each host goes through this block's TLS only, with **no fallback to
+plaintext** (a server unwilling to do TLS is reported as `server refused TLS connection`).
 
-## 排错
+## Troubleshooting
 
-| 错误原文 | 原因 | 怎么改 |
+| Error text | Cause | What to change |
 |---|---|---|
-| `TLS fields are set but TLS.Enable is false` | 写了 `CAFile` 等却没开 `Enable` | 加 `Enable: true`，或者删掉那几项 |
-| `TLS.CertFile and TLS.KeyFile must be set together` | 客户端证书只配了一半 | 两个都填 |
-| `the DSN sets sslmode while the TLS block is enabled; configure TLS in one place only` | PG 的 DSN / `Postgres.Params` 里有 `ssl*` 参数，同时开了 TLS 块 | 二选一 |
-| `the DSN sets tls while the TLS block is enabled` | MySQL 的 DSN 里写了 `tls=`（哪怕 `tls=false`） | 二选一 |
-| `the DSN sets allowFallbackToPlaintext while the TLS block is enabled` | MySQL 的 DSN 里写了 `allowFallbackToPlaintext=`（哪怕 `=false`） | 从 DSN 里删掉：TLS 块从不退回明文 |
-| `the TLS block is enabled but … Unix socket` / `… connects over unix` | PG 的主机或 MySQL 的 DSN 走 Unix socket | 改成 TCP 地址，或者不开 TLS 块 |
-| `the DSN sets secure while the TLS block is enabled` | ClickHouse 的 DSN 里有 `secure` / `skip_verify` / `tls_server_name` | 二选一 |
-| `the DSN uses http:// while the TLS block is enabled, and http:// never runs TLS` | ClickHouse 的 DSN 是 `http://` | 改成 `https://` |
-| `Driver="…" does not support the TLS block, configure TLS in its DSN instead` | 这个驱动没提供 `OpenTLS` | 在它的 DSN 里配 TLS |
-| `read TLS.CAFile: …` / `TLS.CAFile … contains no PEM certificate` / `load TLS.CertFile / TLS.KeyFile: …` | 证书文件读不出来、不是 PEM，或证书和私钥不配对 | 检查路径和文件内容 |
-| `x509: certificate signed by unknown authority` | 服务端证书不是 `CAFile` 里的 CA 签的（没填 `CAFile` 时是系统根证书） | 把签发它的 CA 填进 `CAFile` |
-| `x509: certificate is valid for …, not …` | 证书上的名字和连接地址对不上 | 按 IP 连时填 `ServerName` |
-| `remote error: tls: certificate required` / `unknown certificate authority` | 服务端要客户端证书，没带或不是它认的 CA 签的 | 填 `CertFile` / `KeyFile`，用服务端认的 CA 签 |
+| `TLS fields are set but TLS.Enable is false` | `CAFile` or another field is set without `Enable` | Add `Enable: true`, or remove those fields |
+| `TLS.CertFile and TLS.KeyFile must be set together` | Only half of the client certificate is configured | Set both |
+| `the DSN sets sslmode while the TLS block is enabled; configure TLS in one place only` | A PG DSN or `Postgres.Params` holds an `ssl*` parameter while the TLS block is on | Pick one of the two |
+| `the DSN sets tls while the TLS block is enabled` | A MySQL DSN sets `tls=` (even `tls=false`) | Pick one of the two |
+| `the DSN sets allowFallbackToPlaintext while the TLS block is enabled` | A MySQL DSN sets `allowFallbackToPlaintext=` (even `=false`) | Remove it from the DSN: a TLS block never falls back to plaintext |
+| `the TLS block is enabled but … Unix socket` / `… connects over unix` | A PG host or a MySQL DSN uses a Unix socket | Use a TCP address, or leave the TLS block off |
+| `the DSN sets secure while the TLS block is enabled` | A ClickHouse DSN holds `secure` / `skip_verify` / `tls_server_name` | Pick one of the two |
+| `the DSN uses http:// while the TLS block is enabled, and http:// never runs TLS` | The ClickHouse DSN is `http://` | Change it to `https://` |
+| `Driver="…" does not support the TLS block, configure TLS in its DSN instead` | That driver provides no `OpenTLS` | Configure TLS in its DSN |
+| `read TLS.CAFile: …` / `TLS.CAFile … contains no PEM certificate` / `load TLS.CertFile / TLS.KeyFile: …` | A certificate file cannot be read, is not PEM, or the certificate and the key do not match | Check the path and the file contents |
+| `x509: certificate signed by unknown authority` | The server certificate is not signed by a CA in `CAFile` (the system roots when `CAFile` is empty) | Put the signing CA into `CAFile` |
+| `x509: certificate is valid for …, not …` | The name on the certificate does not match the connection address | Set `ServerName` when connecting by IP |
+| `remote error: tls: certificate required` / `unknown certificate authority` | The server wants a client certificate, and none was sent or it was not signed by a CA it accepts | Set `CertFile` / `KeyFile`, signed by a CA the server accepts |

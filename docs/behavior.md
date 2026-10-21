@@ -89,7 +89,7 @@ XGorm, XRedis and XKafka each probe once at startup through one shared implement
 
 | Module | Measurements |
 |---|---|
-| [xtls](../xtls/README.md#行为与实测) | Client-side TLS: each driver's errors and timings, and the driver defaults without a TLS block |
+| [xtls](../xtls/README.md#behavior-measured) | Client-side TLS: each driver's errors and timings, and the driver defaults without a TLS block |
 | [xgorm](../xgorm/README.md#behavior-measured) | GORM in general, MySQL, PostgreSQL |
 | [xgorm/clickhouse](../xgorm/clickhouse/README.md#behavior-measured) | ClickHouse: timeouts and cancellation, resends, authentication, TLS |
 | [xredis](../xredis/README.md#行为与实测) | go-redis: timeouts, connection retries, the handshake on a new connection, memory |

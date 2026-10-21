@@ -391,5 +391,5 @@ The `TLS:` block is on and the MySQL DSN also sets `allowFallbackToPlaintext=`. 
 remove that parameter from the DSN. If "plaintext when the server does not support TLS" is really what is wanted, leave the
 TLS block off, set `tls=preferred` in the DSN, and be clear that it does not stop a man in the middle.
 
-TLS errors are in [xtls "排错"](../xtls/README.md#排错); connection failures are in
+TLS errors are in [xtls "Troubleshooting"](../xtls/README.md#troubleshooting); connection failures are in
 [`docs/troubleshooting.md` "Connecting"](../docs/troubleshooting.md#connecting).
