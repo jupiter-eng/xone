@@ -19,23 +19,27 @@ import (
 	"github.com/jupiter-eng/xone/e2e/harness"
 )
 
-// 这个文件是 shutdown_test.go 用的辅助：从输出里取钩子的起停顺序、带时间线的持续流量、
-// 信号之后不断开新连接的探测器。
+// This file is what shutdown_test.go leans on: taking the hooks' start and stop order out of the
+// output, traffic held with a timeline, and a probe of new connections after the signal.
 
-// stopHookPkgs 登记了停止钩子的包（量自 e2e 服务一次正常退出的 stopping 日志）。
-// 启动期间被打断的用例据此推算「该关哪几个」；框架给别的包加了停止钩子时，
-// 关闭顺序那个用例会先报出来，到时候把它补进这里
+// stopHookPkgs are the packages that registered a stop hook (measured from the stopping log lines
+// of one clean exit of the e2e service).
+// The cases interrupted during the start work out "which ones should be closed" from it; when the
+// framework gives another package a stop hook, the shutdown order case reports it first and it is
+// added here then
 var stopHookPkgs = []string{"xlog", "xtrace", "xcache", "xgorm", "xredis", "xhttp", "xkafka", "xcron"}
 
-// stopPairs 一个包登记了不止一对钩子时，停止钩子配的是哪个启动钩子（docs/guide.md「停止钩子：配对与继承」：
-// 同一个包里、在它之前最近登记的那个）。xkafka 一对管生产客户端（StageClient），一对管消费者（StageServer）。
-// 只有一对的包按包名配
+// stopPairs says which start hook a stop hook pairs with where a package registered more than one
+// pair (docs/guide.md, "A stop hook: pairing and inheriting": the one registered most recently
+// before it in the same package). One xkafka pair is the producing client (StageClient) and the
+// other the consumers (StageServer).
+// A package with one pair alone pairs by package name
 var stopPairs = map[string]string{
 	"xkafka.closeXKafka":   "xkafka.initXKafka",
 	"xkafka.stopConsumers": "xkafka.startConsumers",
 }
 
-// startIndex 停止钩子 stop 配对的启动钩子在 starts 里的位置，没启动过时 ok 为 false
+// startIndex is where the start hook paired with the stop hook stop sits in starts, and ok is false when it never started
 func startIndex(starts []string, stop string) (int, bool) {
 	for i := len(starts) - 1; i >= 0; i-- {
 		if want, ok := stopPairs[stop]; ok && starts[i] == want || !ok && pkgOf(starts[i]) == pkgOf(stop) {
@@ -45,16 +49,19 @@ func startIndex(starts []string, stop string) (int, bool) {
 	return 0, false
 }
 
-// textHook xlog 装好之前，框架日志是 slog 默认格式写 stderr 的文本：
+// textHook: before xlog is installed, the framework logs are text in slog's default format on stderr:
 //
 //	2026/09/24 01:59:17 INFO starting hook=xapp.loadConfig
 var textHook = regexp.MustCompile(`\bINFO (starting|stopping) hook=(\S+)`)
 
-// hookSeq 按发生顺序取出 msg（starting / stopping）日志里的钩子名。
+// hookSeq takes the hook names out of the msg (starting / stopping) log lines in the order they
+// happened.
 //
-// 不按两个管道的到达顺序排：stdout 和 stderr 各由一个协程读，谁先到不保证。
-// 按逻辑顺序拼：stderr 里的文本行一定最早（xlog 就是在它们之后装上的），
-// 然后是 stdout 里的 JSON（xlog 生效期间），最后是 stderr 里的 JSON（xlog 关掉之后）
+// Not ordered by the arrival order of the two pipes: stdout and stderr are each read by a
+// goroutine of their own and which arrives first is not guaranteed.
+// They are put together in logical order: the text lines in stderr are certainly the earliest
+// (xlog is installed right after them), then the JSON in stdout (while xlog is in force) and
+// finally the JSON in stderr (after xlog is closed)
 func hookSeq(p *harness.Process, msg string) []string {
 	var out []string
 	for _, line := range strings.Split(p.Stderr(), "\n") {
@@ -73,13 +80,14 @@ func hookSeq(p *harness.Process, msg string) []string {
 	return out
 }
 
-// pkgOf 钩子名的包：xgorm.initXGorm → xgorm
+// pkgOf is a hook name's package: xgorm.initXGorm -> xgorm
 func pkgOf(hook string) string {
 	pkg, _, _ := strings.Cut(hook, ".")
 	return pkg
 }
 
-// expectedStops 按文档推出来的停止顺序：启动成功了的钩子里有停止钩子的那些，倒过来
+// expectedStops is the stop order the documentation implies: of the hooks that started
+// successfully, the ones that have a stop hook, reversed
 func expectedStops(started []string) []string {
 	var out []string
 	for i := len(started) - 1; i >= 0; i-- {
@@ -98,7 +106,7 @@ func pkgsOf(hooks []string) []string {
 	return out
 }
 
-// waitGauge 轮询 /metrics，直到 name 的值达到 want。用来确认请求已经进了 handler 再发信号
+// waitGauge polls /metrics until name reaches want. It makes sure a request has reached the handler before a signal is sent
 func waitGauge(t *testing.T, p *harness.Process, name string, want float64, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -110,14 +118,14 @@ func waitGauge(t *testing.T, p *harness.Process, name string, want float64, time
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("%s 在 %v 内没到 %v（最后一次是 %v）：请求没进 handler，后面的断言没有意义", name, timeout, want, got)
+	t.Fatalf("%s did not reach %v within %v (the last reading was %v): the request never reached the handler, and the assertions after this mean nothing", name, want, timeout, got)
 }
 
-// reqShot 一个请求的时间线
+// reqShot is one request's timeline
 type reqShot struct {
 	stream     string
 	start, end time.Time
-	status     int // 拿到响应时的状态码
+	status     int // the status code when a response arrived
 	err        error
 }
 
@@ -130,22 +138,22 @@ func (s reqShot) String() string {
 	return fmt.Sprintf("%s status=%d (%v)", s.stream, s.status, s.latency().Round(time.Microsecond))
 }
 
-// lane 一路固定并发的流量：conc 个 worker，每个一条长连接，一个接一个地发
+// lane is one stream of traffic at a fixed concurrency: conc workers, each with one long-lived connection, sending one request after another
 type lane struct {
 	name string
 	conc int
 	req  func(i int) (*http.Request, error)
 }
 
-// getReq 每个请求都一样的 GET
+// getReq is a GET that is the same for every request
 func getReq(url string) func(int) (*http.Request, error) {
 	return func(int) (*http.Request, error) { return http.NewRequest(http.MethodGet, url, nil) }
 }
 
-// timedTraffic 持续发请求直到 stop，记下每个请求的起止时刻。
+// timedTraffic keeps sending requests until stop and records when each one started and ended.
 //
-// 和 harness.Load 的区别在于要时间线：优雅退出的断言是按「信号之前 / 之后发出」
-// 分组的，只有总数和分位数判断不了
+// What sets it apart from harness.Load is the timeline: the graceful exit assertions group the
+// requests by "sent before or after the signal", which a total and some percentiles cannot tell
 type timedTraffic struct {
 	stopped atomic.Bool
 	wg      sync.WaitGroup
@@ -159,7 +167,7 @@ func startTraffic(lanes ...lane) *timedTraffic {
 	for _, s := range lanes {
 		transport := &http.Transport{MaxIdleConns: s.conc, MaxIdleConnsPerHost: s.conc, DisableCompression: true}
 		tr.trs = append(tr.trs, transport)
-		// 10s 的客户端超时只是兜底：挂住的请求会以超时收场，延迟就是它挂了多久
+		// The client's 10s timeout is only a backstop: a request that hangs ends in a timeout, and the latency is how long it hung
 		client := &http.Client{Transport: transport, Timeout: 10 * time.Second}
 		var next atomic.Int64
 		for range s.conc {
@@ -181,7 +189,7 @@ func startTraffic(lanes ...lane) *timedTraffic {
 					sh.end, sh.err = time.Now(), err
 					mine = append(mine, sh)
 					if err != nil {
-						time.Sleep(2 * time.Millisecond) // 端口关了之后别空转
+						time.Sleep(2 * time.Millisecond) // do not spin once the port is closed
 					}
 				}
 				tr.mu.Lock()
@@ -193,7 +201,7 @@ func startTraffic(lanes ...lane) *timedTraffic {
 	return tr
 }
 
-// stop 停止发新请求，等在途的做完，返回按发出时刻排好序的全部请求
+// stop stops sending new requests, waits for the ones in flight and returns every request sorted by when it was sent
 func (tr *timedTraffic) stop() []reqShot {
 	tr.stopped.Store(true)
 	tr.wg.Wait()
@@ -204,7 +212,7 @@ func (tr *timedTraffic) stop() []reqShot {
 	return tr.shots
 }
 
-// connProbe 一次新连接探测
+// connProbe is one probe of a new connection
 type connProbe struct {
 	at      time.Time
 	latency time.Duration
@@ -214,8 +222,8 @@ type connProbe struct {
 
 func (p connProbe) refused() bool { return errors.Is(p.err, syscall.ECONNREFUSED) }
 
-// probeNewConns 每隔 every 用一条新连接（不复用）GET url，直到 ctx 结束。
-// 看的是「信号之后新来的客户端」遇到什么：被拒、出错，还是挂住
+// probeNewConns GETs url with a new connection (never reused) every every, until ctx ends.
+// What it looks at is what "a client arriving after the signal" meets: refused, an error, or hanging
 func probeNewConns(ctx context.Context, url string, every time.Duration) <-chan []connProbe {
 	out := make(chan []connProbe, 1)
 	go func() {
@@ -246,20 +254,21 @@ func probeNewConns(ctx context.Context, url string, every time.Duration) <-chan 
 	return out
 }
 
-// afterCloseErrors 输出里「资源关掉之后还有人在用」的痕迹：
-// database/sql、go-redis 的「已关闭」错误，xclient 的「调晚了」panic 文案
+// afterCloseErrors are the traces of "something still used a resource after it was closed" in the
+// output: the "closed" errors of database/sql and go-redis, and the wording of xclient's "called
+// too late" panic
 var afterCloseErrors = []string{
 	"sql: database is closed",
 	"redis: client is closed",
 	"was requested after",
 }
 
-// fmtMS 把时长渲染成毫秒，写进日志和汇报用
+// fmtMS renders a duration in milliseconds, for the logs and the reports
 func fmtMS(d time.Duration) string {
 	return fmt.Sprintf("%.1fms", float64(d)/float64(time.Millisecond))
 }
 
-// later 两个时刻里晚的那个
+// later is the later of two moments
 func later(a, b time.Time) time.Time {
 	if b.After(a) {
 		return b
@@ -267,10 +276,10 @@ func later(a, b time.Time) time.Time {
 	return a
 }
 
-// firstN 前 n 个，打印用
+// firstN is the first n, for printing
 func firstN[T any](s []T, n int) []T { return s[:min(n, len(s))] }
 
-// grepLines 含 pat 的前 n 行
+// grepLines is the first n lines holding pat
 func grepLines(text, pat string, n int) string {
 	var out []string
 	for _, line := range strings.Split(text, "\n") {
@@ -284,14 +293,15 @@ func grepLines(text, pat string, n int) string {
 	return strings.Join(out, "\n")
 }
 
-// lastLines 最后 n 行
+// lastLines is the last n lines
 func lastLines(text string, n int) string {
 	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
 	return strings.Join(lines[max(0, len(lines)-n):], "\n")
 }
 
-// errKind 传输层错误去掉请求 URL 之后的那一截（端口每次都不一样），归类打印用：
-// Get "http://127.0.0.1:41234/slow?ms=300": dial tcp ...: connection refused → dial tcp ...: connection refused
+// errKind is what is left of a transport error once the request URL is taken out (the port differs
+// every time), for grouping in the printout:
+// Get "http://127.0.0.1:41234/slow?ms=300": dial tcp ...: connection refused -> dial tcp ...: connection refused
 func errKind(err error) string {
 	s := err.Error()
 	if i := strings.Index(s, "\": "); i >= 0 {

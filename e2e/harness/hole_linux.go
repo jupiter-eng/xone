@@ -10,15 +10,18 @@ import (
 	"time"
 )
 
-// listenHole 在 addr 上开一个永不 accept 的监听，并把它的 accept 队列占满：
-// 之后到达的 SYN 被内核直接丢掉（tcp_abort_on_overflow=0 时的默认行为），
-// 拨号方收不到任何回复，只能等满自己的建连超时——和对端主机宕机时看到的一样。
+// listenHole opens a listener on addr that never accepts and fills its accept queue: the kernel
+// then drops the SYNs that arrive (what it does by default, with tcp_abort_on_overflow=0), the
+// dialing side hears nothing back and can only sit out its own connect timeout -- the same thing
+// a host that has gone down looks like.
 //
-// backlog 取 0，队列里放一个占位连接就满了。开完用一次拨号自检：
-// 内核不丢 SYN（比如开了 tcp_abort_on_overflow，回的是 RST）时返回错误，
-// 免得测试以为在测「连不上的主机」，实际测的是「拒绝连接」。
+// backlog is 0, so one placeholder connection fills the queue. Once open it checks itself with one
+// dial: it returns an error when the kernel does not drop the SYN (with tcp_abort_on_overflow on,
+// say, where an RST comes back), so that a test does not take "a host that cannot be reached" for
+// what is really "connection refused".
 //
-// SOCK_CLOEXEC 不能少：测试进程会起子进程，fd 漏过去的话端口在关掉之后还被子进程占着
+// SOCK_CLOEXEC matters: the test process starts child processes, and an fd leaking into one would
+// keep the port taken after it has been closed
 func listenHole(addr string) (io.Closer, error) {
 	ap, err := netip.ParseAddrPort(addr)
 	if err != nil || !ap.Addr().Is4() {
@@ -47,7 +50,7 @@ func listenHole(addr string) (io.Closer, error) {
 	if h.filler, err = net.DialTimeout("tcp", addr, time.Second); err != nil {
 		return nil, fmt.Errorf("blackhole fill the accept queue: %w", err)
 	}
-	// 自检：队列满了之后的拨号应该超时，而不是连上或被拒
+	// The self-check: with the queue full, a dial has to time out rather than connect or be refused
 	probe, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
 	if probe != nil {
 		probe.Close()

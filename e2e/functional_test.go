@@ -1,24 +1,27 @@
 package e2e
 
-// 功能端到端测试：TestFunctional_* 系列。
+// The functional end-to-end tests: the TestFunctional_* family.
 //
 //	scripts/e2e.sh -run Functional
 //
-// 每一条断言都对照 README.md / docs/architecture.md / docs/config.md / 各模块 README 里写下的行为（没写进文档、只在代码里的，
-// 以代码为准并在注释里注明出处）。失败信息一律写成「文档说 X，实际 Y」。
+// Every assertion follows the behavior written down in README.md / docs/architecture.md /
+// docs/config.md / each module's README (what is not in the documentation and lives in the code
+// alone is asserted from the code, with the source named in a comment). A failure message always
+// reads "the documentation says X, got Y".
 //
-// 文件划分：
+// How the files divide up:
 //
-//	functional_test.go          本文件：共用的小工具
-//	functional_api_test.go      每个接口的返回
-//	functional_cache_test.go    本地缓存 → Redis → PG 三级读
-//	functional_log_test.go      访问日志字段、trace_id 贯通、脱敏、PG 密码不外泄、SQL 日志
+//	functional_test.go          this file: the shared helpers
+//	functional_api_test.go      what every endpoint answers
+//	functional_cache_test.go    the three-level read, local cache -> Redis -> PG
+//	functional_log_test.go      the access log fields, trace_id throughout, the redaction, no PG password leaking, the SQL log
 //	functional_metrics_test.go  /metrics
-//	functional_trace_test.go    Span 属性与父子关系、traceparent、透传头
-//	functional_flow_test.go     /boom 与 xflow 回滚
-//	functional_config_test.go   配置写错时启动失败
+//	functional_trace_test.go    the span attributes and the parent / child relations, traceparent, the forwarded headers
+//	functional_flow_test.go     /boom and the xflow rollback
+//	functional_config_test.go   a malformed configuration fails the start
 //
-// 数字（耗时、次数）都用 t.Logf 打出来，行首带「数字：」，方便从 -v 的输出里 grep。
+// The numbers (timings, counts) are printed with t.Logf behind a "numbers:" prefix at the start of
+// the line, to grep out of a -v run.
 
 import (
 	"fmt"
@@ -31,11 +34,13 @@ import (
 	"github.com/jupiter-eng/xone/e2e/harness"
 )
 
-// waitFor 等日志、Span、指标出现的上限。
+// waitFor is the limit for waiting on a log line, a span or a metric.
 //
-// 本机实测（4 核，全部 e2e 用例并行、-count=3，约 70 次等待）：响应回到客户端之后，
-// 访问日志 p50 0.05ms、最慢 4.1ms 就位；服务端 Span p50 0.7ms、最慢 3.9ms 落盘。
-// 给到 5s，是比最慢一次多三个数量级的余量，慢机器、CI 上也不抖
+// Measured on this machine (4 cores, every e2e case in parallel, -count=3, about 70 waits): after
+// the response reaches the client, the access log is there after 0.05ms at p50 and 4.1ms at worst,
+// and the server span lands on disk after 0.7ms at p50 and 3.9ms at worst.
+// 5s is three orders of magnitude more than the worst of those, so a slow machine or CI does not
+// make it flaky
 const waitFor = 5 * time.Second
 
 var (
@@ -43,31 +48,32 @@ var (
 	hexSpanID  = regexp.MustCompile(`^[0-9a-f]{16}$`)
 )
 
-// randomTraceID / randomSpanID 当作上游传来的链路标识
+// randomTraceID / randomSpanID stand in for the trace identifiers an upstream hands over
 func randomTraceID() string { return harness.NewID() + harness.NewID() + harness.NewID()[:8] }
 func randomSpanID() string  { return harness.NewID() + harness.NewID()[:4] }
 
-// traceIDOf 响应头里的 X-Trace-Id。
-// xgin/README.md XGin.Trace：「每个请求一个服务端 Span，响应头回带 X-Trace-Id」
+// traceIDOf is X-Trace-Id from the response headers.
+// xgin/README.md, XGin.Trace: "one server span per request, with X-Trace-Id in the response headers"
 func traceIDOf(t *testing.T, r harness.Response) string {
 	t.Helper()
 	id := r.Header.Get("X-Trace-Id")
 	if !hexTraceID.MatchString(id) {
-		t.Fatalf("文档说 XGin.Trace 开着时响应头回带 X-Trace-Id，实际是 %q（%v）", id, r)
+		t.Fatalf("the documentation says X-Trace-Id comes back in the response headers while XGin.Trace is on, got %q (%v)", id, r)
 	}
 	return id
 }
 
-// serverSpan 等到这条链路的服务端 Span。
+// serverSpan waits for this trace's server span.
 //
-// 子 Span（SQL、Redis、出站 HTTP）都在 handler 返回之前结束，服务端 Span 在写完响应之后
-// 才结束，导出又是同步的，所以等到它的时候整条链路已经齐了
+// The child spans (SQL, Redis, outbound HTTP) all end before the handler returns and the server
+// span ends after the response has been written, and the export is synchronous, so by the time it
+// is there the whole trace is
 func serverSpan(t *testing.T, p *harness.Process, traceID string) harness.Span {
 	t.Helper()
 	return p.WaitSpan(t, waitFor, func(s harness.Span) bool { return s.TraceID == traceID && s.Kind == "server" })
 }
 
-// traceSpans 这条链路上已经导出的全部 Span，按开始时间排好
+// traceSpans are all the spans of this trace exported so far, sorted by start time
 func traceSpans(t *testing.T, p *harness.Process, traceID string) []harness.Span {
 	t.Helper()
 	var out []harness.Span
@@ -76,7 +82,7 @@ func traceSpans(t *testing.T, p *harness.Process, traceID string) []harness.Span
 			out = append(out, s)
 		}
 	}
-	for i := 1; i < len(out); i++ { // 插入排序：一条链路只有几个 Span
+	for i := 1; i < len(out); i++ { // an insertion sort: one trace holds only a few spans
 		for j := i; j > 0 && out[j].Start.Before(out[j-1].Start); j-- {
 			out[j], out[j-1] = out[j-1], out[j]
 		}
@@ -84,7 +90,7 @@ func traceSpans(t *testing.T, p *harness.Process, traceID string) []harness.Span
 	return out
 }
 
-// spansNamed 按名字挑
+// spansNamed picks by name
 func spansNamed(spans []harness.Span, name string) []harness.Span {
 	var out []harness.Span
 	for _, s := range spans {
@@ -95,7 +101,7 @@ func spansNamed(spans []harness.Span, name string) []harness.Span {
 	return out
 }
 
-// clientSpanNames 客户端 Span（SQL、Redis、出站 HTTP）的名字，按开始时间，逗号分隔
+// clientSpanNames are the names of the client spans (SQL, Redis, outbound HTTP), by start time and comma separated
 func clientSpanNames(spans []harness.Span) string {
 	var names []string
 	for _, s := range spans {
@@ -106,7 +112,7 @@ func clientSpanNames(spans []harness.Span) string {
 	return strings.Join(names, ",")
 }
 
-// spanNames 调试输出用
+// spanNames is for the debug output
 func spanNames(spans []harness.Span) string {
 	names := make([]string, len(spans))
 	for i, s := range spans {
@@ -115,10 +121,11 @@ func spanNames(spans []harness.Span) string {
 	return strings.Join(names, ", ")
 }
 
-// accessLog 等到这条链路的访问日志。
+// accessLog waits for this trace's access log line.
 //
-// 等不到时分清是哪一种：访问日志根本没打，还是打了、但 trace_id 不是这次请求的——
-// 后者就是 README 说的「日志自动带上 trace_id」没兑现，只报一句「没等到日志」的话看不出来
+// When none turns up it tells the two cases apart: no access log was written at all, or one was
+// and its trace_id is not this request's -- the latter being the README's "the logs carry trace_id
+// automatically" gone unkept, which a bare "no log turned up" would not show
 func accessLog(t *testing.T, p *harness.Process, traceID string) harness.Log {
 	t.Helper()
 	isAccess := func(l harness.Log) bool { return l.Msg() == "request completed" }
@@ -129,14 +136,15 @@ func accessLog(t *testing.T, p *harness.Process, traceID string) harness.Log {
 	for _, l := range p.FindLogs(isAccess) {
 		ids = append(ids, fmt.Sprintf("%q", l.Str("trace_id")))
 	}
-	t.Fatalf("等了 %v 没有 trace_id=%s 的访问日志。README：日志自动带上 trace_id，和响应头 X-Trace-Id 是同一个；"+
-		"进程里已有的 %d 条访问日志的 trace_id 是 [%s]", waitFor, traceID, len(ids), strings.Join(ids, ", "))
+	t.Fatalf("waited %v and no access log line with trace_id=%s turned up. The README: the logs carry trace_id automatically, the same one as the X-Trace-Id response header; "+
+		"the trace_ids of the %d access log lines the process already holds are [%s]", waitFor, traceID, len(ids), strings.Join(ids, ", "))
 	return harness.Log{}
 }
 
-// waitMetrics 反复抓 /metrics 直到 cond 成立，返回最后一次的结果。
+// waitMetrics scrapes /metrics until cond holds and returns the last result.
 //
-// 请求指标在中间件的 defer 里记，理论上可能晚于响应到达客户端，所以不能发完请求就断言
+// The request metrics are recorded in the middleware's defer, which in principle may come after
+// the response reaches the client, so an assertion cannot follow the request straight away
 func waitMetrics(t *testing.T, p *harness.Process, what string, cond func(harness.Metrics) bool) harness.Metrics {
 	t.Helper()
 	deadline := time.Now().Add(waitFor)
@@ -146,14 +154,14 @@ func waitMetrics(t *testing.T, p *harness.Process, what string, cond func(harnes
 			return m
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("等了 %v，/metrics 仍不满足：%s", waitFor, what)
+			t.Fatalf("waited %v and /metrics still does not satisfy: %s", waitFor, what)
 			return m
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 }
 
-// mustNotContain text 里不许出现任何一个 secret
+// mustNotContain: none of the secrets may appear in text
 func mustNotContain(t *testing.T, where, text string, secrets ...string) {
 	t.Helper()
 	for _, s := range secrets {
@@ -162,31 +170,33 @@ func mustNotContain(t *testing.T, where, text string, secrets ...string) {
 		}
 		if i := strings.Index(text, s); i >= 0 {
 			lo, hi := max(0, i-120), min(len(text), i+len(s)+120)
-			t.Errorf("%s 里出现了不该出现的 %q：…%s…", where, s, text[lo:hi])
+			t.Errorf("%s holds %q, which it must not: ...%s...", where, s, text[lo:hi])
 		}
 	}
 }
 
-// 开关的 Overlay 片段。顶层块各不相同的片段可以直接拼起来；同一个顶层块里的几项要写在一个片段里
-// （YAML 里同一个 key 出现两次是错误）。service/application.yml 没写这些项，不叠就是框架的默认值
+// The Overlay fragments for the switches. Fragments whose top-level blocks differ can simply be
+// concatenated; several settings inside one top-level block have to go into one fragment (the same
+// key twice is an error in YAML). service/application.yml writes none of these, so without an
+// overlay they are the framework's defaults
 const (
-	// payloadLogs 访问日志里能记的全打开：查询串、请求头、请求体、响应头、响应体
+	// payloadLogs turns on everything the access log can record: the query string, the request headers, the request body, the response headers and the response body
 	payloadLogs = "XGin:\n  LogQuery: true\n  LogRequestHeaders: true\n  LogRequestBody: true\n" +
 		"  LogResponseHeaders: true\n  LogResponseBody: true\n"
-	// debugLogs 日志级别 debug
+	// debugLogs sets the log level to debug
 	debugLogs = "XLog:\n  Level: debug\n"
 )
 
-// logLevel 日志级别
+// logLevel is the log level
 func logLevel(level string) string { return "XLog:\n  Level: " + level + "\n" }
 
-// sampleRatio 链路采样率
+// sampleRatio is the trace sampling ratio
 func sampleRatio(r string) string { return "XTrace:\n  SampleRatio: " + r + "\n" }
 
-// stopTimeout 整个退出流程的预算（Service.StopTimeout → xone.WithStopTimeout）
+// stopTimeout is the budget for the whole shutdown (Service.StopTimeout -> xone.WithStopTimeout)
 func stopTimeout(d time.Duration) string { return fmt.Sprintf("Service:\n  StopTimeout: %v\n", d) }
 
-// sqlLog 打开这几个 xgorm 实例（default 是 PG、mysql、ch）的 SQL 日志
+// sqlLog turns the SQL log on for these xgorm instances (default being PG, plus mysql and ch)
 func sqlLog(clients ...string) string {
 	s := "XGorm:\n  Clients:\n"
 	for _, c := range clients {
@@ -195,7 +205,7 @@ func sqlLog(clients ...string) string {
 	return s
 }
 
-// pgPassword harness 连 PG 用的密码，从它拼出来的 DSN 里取，不在这里再抄一遍默认值
+// pgPassword is the password the harness connects to PG with, taken out of the DSN it builds rather than written out here once more
 func pgPassword(t *testing.T) string {
 	t.Helper()
 	u, err := url.Parse(harness.PGDSN(harness.PGAddr()))
@@ -209,7 +219,7 @@ func pgPassword(t *testing.T) string {
 	return pw
 }
 
-// user 接口里的用户
+// user is a user as the endpoints see it
 type user struct {
 	ID     int64  `json:"id"`
 	Name   string `json:"name"`
@@ -217,36 +227,36 @@ type user struct {
 	Source string `json:"source"`
 }
 
-// createUser POST /users，要求 201
+// createUser POSTs /users and wants a 201
 func createUser(t *testing.T, p *harness.Process, name, email string) user {
 	t.Helper()
 	r := p.PostJSON(t, "/users", map[string]string{"name": name, "email": email})
 	if r.Status != 201 {
-		t.Fatalf("POST /users 应返回 201，实际 %v", r)
+		t.Fatalf("POST /users should answer 201, got %v", r)
 	}
 	var u user
 	r.JSON(t, &u)
 	if u.ID <= 0 {
-		t.Fatalf("POST /users 没回 id：%v", r)
+		t.Fatalf("POST /users answered no id: %v", r)
 	}
 	return u
 }
 
-// getUser GET /users/:id，要求 200，返回用户和耗时
+// getUser GETs /users/:id, wants a 200 and returns the user and how long it took
 func getUser(t *testing.T, p *harness.Process, id int64) (user, harness.Response, time.Duration) {
 	t.Helper()
 	start := time.Now()
 	r := p.Get(t, fmt.Sprintf("/users/%d", id))
 	elapsed := time.Since(start)
 	if r.Status != 200 {
-		t.Fatalf("GET /users/%d 应返回 200，实际 %v", id, r)
+		t.Fatalf("GET /users/%d should answer 200, got %v", id, r)
 	}
 	var u user
 	r.JSON(t, &u)
 	return u, r, elapsed
 }
 
-// num 日志里的数字字段（JSON 解出来是 float64）
+// num is a numeric field of a log line (which JSON decodes as a float64)
 func num(l harness.Log, path string) (float64, bool) {
 	v, ok := l.Get(path)
 	if !ok {

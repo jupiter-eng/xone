@@ -23,16 +23,16 @@ type userReq struct {
 	Email string `json:"email"`
 }
 
-// userResp 响应里带上这次是从哪一级读到的：local / redis / db
+// userResp carries which level this read came from: local / redis / db
 type userResp struct {
 	store.User
 	Source string `json:"source"`
 }
 
-// userKey 本地缓存和 Redis 共用一个 key
+// userKey is shared by the local cache and Redis
 func userKey(id int64) string { return conf.C().KeyPrefix + "user:" + strconv.FormatInt(id, 10) }
 
-// createUser 写 PG，再删两级缓存。201 返回新用户
+// createUser writes PG and then drops both cache levels. It answers 201 with the new user
 func createUser(c *gin.Context) {
 	ctx := c.Request.Context()
 	var req userReq
@@ -52,7 +52,8 @@ func createUser(c *gin.Context) {
 	c.JSON(http.StatusCreated, u)
 }
 
-// updateUser 改 PG，再删两级缓存。200 返回改后的用户，没有这个用户时 404
+// updateUser updates PG and then drops both cache levels. It answers 200 with the updated user, or
+// 404 when there is no such user
 func updateUser(c *gin.Context) {
 	ctx := c.Request.Context()
 	id, ok := userID(c)
@@ -79,10 +80,12 @@ func updateUser(c *gin.Context) {
 	c.JSON(http.StatusOK, u)
 }
 
-// getUser 本地缓存 → Redis → PG 三级读，响应里的 source 说明读到的是哪一级。
+// getUser reads through three levels, local cache -> Redis -> PG, and source in the response says
+// which level answered.
 //
-// ?cache=off 跳过两级缓存直接读 PG，压测时和 baseline 的 /users/:id 对照用。
-// Redis 出错不挡读：记一条告警，降级到 PG
+// ?cache=off skips both cache levels and reads PG directly, to compare against baseline's
+// /users/:id under load.
+// A Redis error does not stop the read: it records a warning and falls back to PG
 func getUser(c *gin.Context) {
 	ctx := c.Request.Context()
 	id, ok := userID(c)
@@ -147,17 +150,19 @@ func readThrough(ctx context.Context, id int64) (store.User, string, error) {
 	return u, "db", nil
 }
 
-// cacheLocal 写本地缓存并等它生效。
+// cacheLocal writes the local cache and waits for it to take.
 //
-// ristretto 的写入是异步的，不等的话紧接着的第二次读多半还读不到，
-// source 就在 local 和 redis 之间随机跳。只在未命中的路径上等，命中的路径不受影响
+// ristretto writes asynchronously, and without the wait a second read right after mostly still
+// misses, which has source jump between local and redis at random. The wait happens on the miss
+// path alone and the hit path is untouched
 func cacheLocal(key string, u store.User) {
 	xcache.Set(key, u)
 	xcache.C().Wait()
 }
 
-// invalidate 删两级缓存。写库已经成功了，删缓存失败不回滚写入：
-// 记一条 Error（log_errors_total 跟着加一），读的一端最多读到 UserTTL 那么旧的值
+// invalidate drops both cache levels. The write has already succeeded, so a failed cache drop does
+// not roll it back: it records an Error (and log_errors_total goes up with it), and the reading end
+// sees a value at most UserTTL old
 func invalidate(ctx context.Context, id int64) {
 	key := userKey(id)
 	xcache.Del(key)

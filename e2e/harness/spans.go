@@ -7,13 +7,13 @@ import (
 	"github.com/jupiter-eng/xone/e2e/internal/spanlog"
 )
 
-// Span 服务导出的一个 Span，格式见 e2e/internal/spanlog
+// Span is one span the service exported, in the format of e2e/internal/spanlog
 type Span = spanlog.Record
 
-// ReadSpans 读一个 Span 文件，文件还不存在时返回空
+// ReadSpans reads a span file, and returns nothing when the file does not exist yet
 func ReadSpans(path string) ([]Span, error) { return spanlog.ReadFile(path) }
 
-// Spans 到目前为止导出的全部 Span，要 Options.Spans
+// Spans are every span exported so far, and wants Options.Spans
 func (p *Process) Spans(t testing.TB) []Span {
 	t.Helper()
 	if p.SpanFile == "" {
@@ -26,10 +26,11 @@ func (p *Process) Spans(t testing.TB) []Span {
 	return spans
 }
 
-// WaitSpan 等到出现一个满足 match 的 Span，timeout 内没等到就 t.Fatal。
+// WaitSpan waits for a span matching match to appear, and t.Fatals when none has within timeout.
 //
-// 响应回到客户端时服务端 Span 不一定已经结束（中间件在写完响应之后才 End），
-// 所以读 Span 要等，不能发完请求立刻读
+// The server span has not necessarily ended by the time the response reaches the client (the
+// middleware Ends it after the response has been written), so reading spans has to wait and cannot
+// happen right after the request
 func (p *Process) WaitSpan(t testing.TB, timeout time.Duration, match func(Span) bool) Span {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

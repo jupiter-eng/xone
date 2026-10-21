@@ -10,31 +10,36 @@ import (
 	"github.com/jupiter-eng/xone/e2e/harness"
 )
 
-// 两种「对端不回话」：
+// Two kinds of "the far end says nothing":
 //
-//	silent  进程还在、TCP 连得上，但一个字节都不回（SetDelay(time.Hour)）：卡死的进程、打满的服务端
-//	down    主机宕机：现有连接不回话，新连接的 SYN 没有回音（Blackhole）
+//	silent  the process is alive and TCP connects, but not a byte comes back (SetDelay(time.Hour)): a process that is wedged, a server that is full
+//	down    the host is down: the connections already open say nothing and a new connection's SYN is never answered (Blackhole)
 //
-// 进程挂了（connection refused）的那一种见 fault_test.go，那里什么超时都不用等
+// The "the process died" kind (connection refused) is in fault_test.go, where no timeout has to be
+// waited out at all
 var faultSilentModes = []struct {
 	name   string
 	inject func(*harness.Proxy)
 }{
-	{"对端不回话", func(p *harness.Proxy) { p.SetDelay(time.Hour) }},
-	{"主机宕机", func(p *harness.Proxy) { p.Blackhole() }},
+	{"the far end says nothing", func(p *harness.Proxy) { p.SetDelay(time.Hour) }},
+	{"the host is down", func(p *harness.Proxy) { p.Blackhole() }},
 }
 
-// docs/behavior.md「总表」：
+// The summary table in docs/behavior.md:
 //
-//	XRedis 命令超时 | 库自己：只认 ReadTimeout | 这里：听调用方的 ctx
-//	不然 200ms 预算的请求会在慢 Redis 上等满 ReadTimeout（实测 5s）
+//	XRedis command timeout | the library itself: ReadTimeout alone | here: the caller's ctx
+//	otherwise a request on a 200ms budget would wait out ReadTimeout (measured 5s) on a slow Redis
 //
-// 所以把 ReadTimeout 配成 5s 重现那个场景：调用方给 200ms，就该在 200ms 返回。
-// 连接池里现成的连接（卡在读上）和新建的连接（卡在握手或 SYN 上）都要听它，
-// 所以每种故障连发 12 次。MinIdleConns 配 0，池里只有启动时 Ping 用过的那一条：
-// 第一次用它（卡在读上），之后每次都新建（卡在握手或 SYN 上）。
-// 两段的错误都是 context deadline exceeded，分不出来；靠代理分：命令开始时代理上
-// 一条连接都没有（主机宕机），或者命令期间代理接受了新连接（对端不回话），就是新建的那一段
+// So ReadTimeout is set to 5s to reproduce that: with the caller giving 200ms, it should return at
+// 200ms.
+// A connection the pool already has (stuck on a read) and a new one (stuck in the handshake or on
+// the SYN) both have to honor it, so each fault sends 12 in a row. MinIdleConns is 0, so the pool
+// holds the one connection the Ping at the start used alone: the first use takes it (stuck on a
+// read) and every one after it opens a new connection (stuck in the handshake or on the SYN).
+// Both stretches report context deadline exceeded, which does not tell them apart; the proxy does:
+// the proxy holding no connection when the command starts (the host is down), or the proxy
+// accepting a new connection during the command (the far end says nothing), is the new-connection
+// stretch
 
 func TestFault_RedisSlowOrDown_CommandReturnsAtCallerDeadline_NoReadTimeoutWait(t *testing.T) {
 	harness.Require(t)
@@ -52,34 +57,37 @@ func TestFault_RedisSlowOrDown_CommandReturnsAtCallerDeadline_NoReadTimeoutWait(
 			for i := range 12 {
 				empty, accepted := rp.Active() == 0, rp.Accepted()
 				r := faultDep(p, "redis", deadline.String(), 10*time.Second)
-				phase := "池里的连接"
+				phase := "a pooled connection"
 				if empty || rp.Accepted() > accepted {
-					phase = "新建连接"
+					phase = "a new connection"
 				}
 				if r.ReqErr != nil || r.Status != http.StatusServiceUnavailable {
-					t.Fatalf("第 %d 次：调用方给了 %v，应在那一刻以 503 返回，实际 %v", i+1, deadline, r)
+					t.Fatalf("attempt %d: the caller gave %v and it should answer 503 at that moment, got %v", i+1, deadline, r)
 				}
 				if r.Server > deadline+faultSlack {
-					t.Errorf("第 %d 次：docs/architecture.md 说 Redis 命令听调用方的 ctx，给了 %v 就该在 %v 返回，实际 %v（ReadTimeout 是 5s）：%s",
+					t.Errorf("attempt %d: docs/architecture.md says a Redis command honors the caller's ctx, so with %v given it should return at %v, got %v (ReadTimeout being 5s): %s",
 						i+1, deadline, deadline, r.Server, r.Error)
 				}
 				phases[phase]++
 				took = append(took, r.Server)
 			}
-			t.Logf("数字：%s、ReadTimeout=5s、调用方给 %v：12 次依次用了 %v；%s；%v", m.name, deadline, took, faultSummary(took), phases)
-			if phases["新建连接"] == 0 || phases["池里的连接"] == 0 {
-				t.Errorf("池里的连接和新建连接两段都该测到，实际 %v", phases)
+			t.Logf("numbers: %s with ReadTimeout=5s and the caller giving %v: the 12 attempts took %v in turn; %s; %v", m.name, deadline, took, faultSummary(took), phases)
+			if phases["a new connection"] == 0 || phases["a pooled connection"] == 0 {
+				t.Errorf("both the pooled and the new connection stretches should be measured, got %v", phases)
 			}
 		})
 	}
 }
 
-// xredis/README.md XRedis.ReadTimeout：调用方没给截止时间时，管住一条命令的是它。
-// 配一个和默认值（500ms）明显不同的 300ms，看到的应该是 300ms——听的是配置，不是别的什么数。
+// xredis/README.md, XRedis.ReadTimeout: with no deadline from the caller, this is what holds one
+// command.
+// It is set to 300ms, clearly apart from the default (500ms), and 300ms is what should be seen --
+// what it goes by is the configuration and no other number.
 //
-// 实测：故障之后的第一条命令约 2×ReadTimeout（本机 0.63–0.66s；默认 500ms 时 1.03–1.05s），
-// 之后每条约 1×ReadTimeout（0.31–0.34s）。上限按文档的模型给：一次尝试不超过
-// DialTimeout + ReadTimeout（xredis 的 pingTimeout 同样这么算），中位数应在 ReadTimeout 附近
+// Measured: the first command after the fault takes about 2 x ReadTimeout (0.63 to 0.66s here; 1.03
+// to 1.05s with the default 500ms), and every one after it about 1 x ReadTimeout (0.31 to 0.34s).
+// The upper bound follows the documented model: one attempt stays under DialTimeout + ReadTimeout
+// (xredis's pingTimeout is worked out the same way), and the median should be around ReadTimeout
 func TestFault_RedisSilentNoCallerDeadline_CommandFailsAtReadTimeout(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -92,32 +100,36 @@ func TestFault_RedisSilentNoCallerDeadline_CommandFailsAtReadTimeout(t *testing.
 	for i := range 6 {
 		r := faultDep(p, "redis", "", 2*faultRedisCmdBudget)
 		if r.ReqErr != nil || r.Status != http.StatusServiceUnavailable || !strings.Contains(r.Error, "i/o timeout") {
-			t.Fatalf("第 %d 次：Redis 不回话时应读超时（503，i/o timeout），实际 %v", i+1, r)
+			t.Fatalf("attempt %d: with Redis silent it should time out reading (503, i/o timeout), got %v", i+1, r)
 		}
 		if lim := faultRedisDialTimeout + readTimeout; r.Server > lim+faultSlack {
-			t.Errorf("第 %d 次：一次尝试最多 DialTimeout+ReadTimeout=%v，实际 %v", i+1, lim, r.Server)
+			t.Errorf("attempt %d: one attempt takes DialTimeout+ReadTimeout=%v at most, got %v", i+1, lim, r.Server)
 		}
 		took = append(took, r.Server)
 	}
 	med := faultMedian(took)
 	if med < readTimeout-20*time.Millisecond || med > readTimeout+faultSlack/3 {
-		t.Errorf("文档说 ReadTimeout 管住读：配了 %v，一条命令的中位数应在它附近，实际 %v（%v）", readTimeout, med, took)
+		t.Errorf("the documentation says ReadTimeout holds the read: with %v configured, the median of one command should be around it, got %v (%v)", readTimeout, med, took)
 	}
-	t.Logf("数字：Redis 不回话、ReadTimeout=%v、不给截止时间：6 条命令依次用了 %v；%s", readTimeout, took, faultSummary(took))
+	t.Logf("numbers: Redis silent with ReadTimeout=%v and no deadline: the 6 commands took %v in turn; %s", readTimeout, took, faultSummary(took))
 }
 
-// Redis 主机宕机、调用方没给截止时间时，一条命令要多久。
+// How long one command takes with the Redis host down and no deadline from the caller.
 //
-// xredis/README.md XRedis：一条命令最多 (MaxRetries+1)×(DialTimeout+ReadTimeout)+MaxRetries×MaxRetryBackoff，
-// 默认 7s（faultRedisCmdBudget）；MaxRetries: -1 时只剩一次尝试，不超过 DialTimeout+ReadTimeout（1s）。
+// xredis/README.md, XRedis: one command takes
+// (MaxRetries+1)x(DialTimeout+ReadTimeout)+MaxRetriesxMaxRetryBackoff at most, which is 7s by
+// default (faultRedisCmdBudget); with MaxRetries: -1 one attempt is left, under
+// DialTimeout+ReadTimeout (1s).
 //
-// 这条式子成立靠的是 xredis 把 DialerRetries 配成 1：go-redis v9.22.0 默认每次建连内部还要
-// 重拨 5 次、每两次之间等 DialerRetryTimeout=100ms，一次「建连」就是 5×500ms+4×100ms = 2.9s，
-// 默认的 4 次尝试实测 11.7s。
-// 连接池累计 PoolSize（10×GOMAXPROCS）次建连失败后才改成直接报上一次的错。
+// That formula holds because xredis sets DialerRetries to 1: go-redis v9.22.0 redials 5 times
+// inside every connect by default, waiting DialerRetryTimeout=100ms between two of them, so one
+// "connect" is 5x500ms+4x100ms = 2.9s and the default 4 attempts measured 11.7s.
+// Only after PoolSize (10xGOMAXPROCS) failed connects in all does the pool start reporting the
+// previous error outright.
 //
-// 进入「建连」这一段之前，池里现成的连接（MinIdleConns 预热的）会先各自读超时一次，
-// 那些命令要 0.5–1s；所以循环到错误里出现 dial tcp 为止，量的是第一条走到建连的命令
+// Before that "connect" stretch is reached, the connections the pool already has (warmed up by
+// MinIdleConns) each time out reading once, and those commands take 0.5 to 1s; so it loops until
+// dial tcp turns up in the error, and what is measured is the first command that reached a connect
 func TestFault_RedisHostDownNoCallerDeadline_CommandWithinDocumentedBudget(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -127,10 +139,10 @@ func TestFault_RedisHostDownNoCallerDeadline_CommandWithinDocumentedBudget(t *te
 		budget  time.Duration
 		why     string
 	}{
-		{"关闭重试", "XRedis:\n  MaxRetries: -1\n  MinIdleConns: 0\n", faultRedisAttemptBudget,
-			"MaxRetries: -1 只剩一次尝试，建连不超过 DialTimeout（500ms）、再加一个往返"},
-		{"默认配置", "", faultRedisCmdBudget,
-			"(MaxRetries+1)×(DialTimeout+ReadTimeout)+MaxRetries×MaxRetryBackoff"},
+		{"the retries turned off", "XRedis:\n  MaxRetries: -1\n  MinIdleConns: 0\n", faultRedisAttemptBudget,
+			"MaxRetries: -1 leaves one attempt, whose connect stays under DialTimeout (500ms), plus one round trip"},
+		{"the defaults", "", faultRedisCmdBudget,
+			"(MaxRetries+1)x(DialTimeout+ReadTimeout)+MaxRetriesxMaxRetryBackoff"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -143,11 +155,11 @@ func TestFault_RedisHostDownNoCallerDeadline_CommandWithinDocumentedBudget(t *te
 			var first faultDepResult
 			for i := 0; ; i++ {
 				if i == 12 {
-					t.Fatalf("12 条命令都没走到建连，池里的连接比预想的多：%v", pooled)
+					t.Fatalf("12 commands never reached a connect, so the pool holds more connections than expected: %v", pooled)
 				}
 				r := faultDep(p, "redis", "", 5*faultRedisCmdBudget)
 				if r.ReqErr != nil {
-					t.Fatalf("第 %d 条命令 %v 都没返回", i+1, r.Took)
+					t.Fatalf("command %d had not returned after %v", i+1, r.Took)
 				}
 				if strings.Contains(r.Error, "dial tcp") {
 					first = r
@@ -155,20 +167,22 @@ func TestFault_RedisHostDownNoCallerDeadline_CommandWithinDocumentedBudget(t *te
 				}
 				pooled = append(pooled, r.Server)
 			}
-			t.Logf("数字：Redis 主机宕机（%s）：池里的连接各读超时一次 %v；第一条走到建连的命令用了 %v（%s）",
+			t.Logf("numbers: the Redis host is down (%s): the pooled connections each timed out reading once at %v; the first command that reached a connect took %v (%s)",
 				c.name, pooled, first.Server.Round(time.Millisecond), first.Error)
 
 			if first.Server > c.budget+faultSlack {
-				t.Errorf("Redis 主机宕机时一条命令按文档最多 %v（%s），实测 %v",
+				t.Errorf("with the Redis host down, one command takes %v at most by the documentation (%s), and it measured %v",
 					c.budget, c.why, first.Server.Round(time.Millisecond))
 			}
 		})
 	}
 }
 
-// 调用方给了截止时间，gorm 的查询就在那一刻返回：xgorm/README.md 没有单写这一条，
-// 依据是 xgorm.CWithCtx 的注释「取实例并绑定 ctx，链路和超时才能传到下游」。
-// 池里的连接（卡在读上）和新建的连接（卡在 startup 或 SYN 上）都要听，所以连发 6 次
+// With a deadline from the caller, a gorm query returns at that moment: xgorm/README.md does not
+// write this one down on its own, and what it rests on is xgorm.CWithCtx's comment, "take an
+// instance and bind ctx to it, which is what carries the trace and the timeout downstream".
+// A pooled connection (stuck on a read) and a new one (stuck in startup or on the SYN) both have to
+// honor it, so it sends 6 in a row
 func TestFault_PGSlowOrDown_QueryReturnsAtCallerDeadline(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -185,10 +199,10 @@ func TestFault_PGSlowOrDown_QueryReturnsAtCallerDeadline(t *testing.T) {
 			for i := range 6 {
 				r := faultDep(p, "db", deadline.String(), 10*time.Second)
 				if r.ReqErr != nil || r.Status != http.StatusServiceUnavailable {
-					t.Fatalf("第 %d 次：调用方给了 %v，应在那一刻以 503 返回，实际 %v", i+1, deadline, r)
+					t.Fatalf("attempt %d: the caller gave %v and it should answer 503 at that moment, got %v", i+1, deadline, r)
 				}
 				if r.Server > deadline+faultSlack || r.Server < deadline-10*time.Millisecond {
-					t.Errorf("第 %d 次：调用方给了 %v，查询应在那一刻返回，实际 %v：%s", i+1, deadline, r.Server, r.Error)
+					t.Errorf("attempt %d: the caller gave %v and the query should return at that moment, got %v: %s", i+1, deadline, r.Server, r.Error)
 				}
 				if strings.Contains(r.Error, "failed to connect") {
 					newConn++
@@ -196,19 +210,21 @@ func TestFault_PGSlowOrDown_QueryReturnsAtCallerDeadline(t *testing.T) {
 				took = append(took, r.Server)
 			}
 			if newConn == 0 {
-				t.Errorf("6 次都用的是池里的连接，没测到新建连接的那半")
+				t.Errorf("all 6 used a pooled connection, and the new-connection half was never measured")
 			}
-			t.Logf("数字：PG %s、调用方给 %v：6 次依次用了 %v；%s；其中新建连接 %d 次", m.name, deadline, took, faultSummary(took), newConn)
+			t.Logf("numbers: PG %s with the caller giving %v: the 6 attempts took %v in turn; %s; %d of them a new connection", m.name, deadline, took, faultSummary(took), newConn)
 		})
 	}
 }
 
-// xgorm/README.md XGorm.DialTimeout：「PostgreSQL 注入 connect_timeout（向上取整为秒）」，
-// 以及「pgx 拿 connect_timeout 管的是每个主机的整个建连……实测 TCP 秒连、startup 不回话的服务端，
-// connect_timeout=1 等满 1.0s」。
+// xgorm/README.md, XGorm.DialTimeout: "for PostgreSQL it is injected as connect_timeout (rounded
+// up to seconds)", and "what pgx governs with connect_timeout is the whole connect to one host ...
+// measured against a server where TCP connects at once and startup says nothing, connect_timeout=1
+// waited out 1.0s".
 //
-// 调用方给一个比它宽得多的截止时间（5s），新建连接就该在 connect_timeout 那一刻失败：
-// 默认 500ms → 1s；配 1500ms → 向上取整成 2s。两种故障（startup 不回话、SYN 没回音）都一样
+// With the caller giving a deadline far wider than that (5s), a new connection should fail at
+// connect_timeout: the default 500ms -> 1s; 1500ms configured -> rounded up to 2s. Both faults
+// (startup saying nothing, the SYN never answered) behave the same
 func TestFault_PGSlowOrDown_NewConnFailsAtInjectedConnectTimeout(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -217,7 +233,7 @@ func TestFault_PGSlowOrDown_NewConnFailsAtInjectedConnectTimeout(t *testing.T) {
 		want time.Duration
 	}{{"", time.Second}, {"1500ms", 2 * time.Second}} {
 		for _, m := range faultSilentModes {
-			name := fmt.Sprintf("DialTimeout=%s_%s", faultOr(dial.cfg, "默认500ms"), m.name)
+			name := fmt.Sprintf("DialTimeout=%s_%s", faultOr(dial.cfg, "500ms by default"), m.name)
 			t.Run(name, func(t *testing.T) {
 				t.Parallel()
 				pg := harness.NewProxy(t, harness.PGAddr())
@@ -227,10 +243,10 @@ func TestFault_PGSlowOrDown_NewConnFailsAtInjectedConnectTimeout(t *testing.T) {
 				}
 				p := harness.Start(t, o)
 				m.inject(pg)
-				// 先用一个短截止时间把池里现成的连接耗掉（它们卡在读上，connect_timeout 管不到）
+				// Use up the connections the pool already has with a short deadline first (they are stuck on a read, which connect_timeout does not govern)
 				for i := 0; ; i++ {
 					if i == 10 {
-						t.Fatal("10 次短截止时间的查询都没走到新建连接")
+						t.Fatal("10 queries with a short deadline never reached a new connection")
 					}
 					if r := faultDep(p, "db", "100ms", 10*time.Second); strings.Contains(r.Error, "failed to connect") {
 						break
@@ -240,31 +256,35 @@ func TestFault_PGSlowOrDown_NewConnFailsAtInjectedConnectTimeout(t *testing.T) {
 				for i := range 2 {
 					r := faultDep(p, "db", "5s", 10*time.Second)
 					if r.ReqErr != nil || r.Status != http.StatusServiceUnavailable || !strings.Contains(r.Error, "failed to connect") {
-						t.Fatalf("第 %d 次：新建连接应失败（503，failed to connect），实际 %v", i+1, r)
+						t.Fatalf("attempt %d: a new connection should fail (503, failed to connect), got %v", i+1, r)
 					}
 					if !strings.Contains(r.Error, pg.Addr()) {
-						t.Errorf("第 %d 次：错误里应有连不上的地址 %s，实际 %q", i+1, pg.Addr(), r.Error)
+						t.Errorf("attempt %d: the error should hold the address it cannot reach, %s, got %q", i+1, pg.Addr(), r.Error)
 					}
 					if r.Server < dial.want-20*time.Millisecond || r.Server > dial.want+faultSlack {
-						t.Errorf("第 %d 次：文档说 DialTimeout 注入为 connect_timeout（向上取整为秒）=%v，新建连接应在那时失败，实际 %v",
+						t.Errorf("attempt %d: the documentation says DialTimeout is injected as connect_timeout (rounded up to seconds)=%v and a new connection should fail then, got %v",
 							i+1, dial.want, r.Server)
 					}
 					took = append(took, r.Server)
 				}
-				t.Logf("数字：PG %s、DialTimeout=%s、调用方给 5s：新建连接依次在 %v 失败（connect_timeout=%v）",
+				t.Logf("numbers: PG %s with DialTimeout=%s and the caller giving 5s: the new connections failed at %v in turn (connect_timeout=%v)",
 					m.name, faultOr(dial.cfg, "500ms"), took, dial.want)
 			})
 		}
 	}
 }
 
-// 调用方没给截止时间、池里的连接遇上不回话的 PG：xgorm/README.md「PostgreSQL」——
-// Postgres.StatementTimeout「默认不限制」，PG 也没有 MySQL 那样的 ReadTimeout 可配，
-// 而且 statement_timeout 是服务端的 GUC，网络那头没了它根本管不到。
-// 所以按文档，这个查询会一直等下去。这里钉住这个行为：3s 后仍没返回。
-// 哪天框架给 PG 加了默认的读超时，这条会红，那时连文档一起改。
+// No deadline from the caller and a pooled connection meeting a silent PG: xgorm/README.md,
+// "PostgreSQL" -- Postgres.StatementTimeout is "unlimited by default", PG has no ReadTimeout to
+// configure the way MySQL does, and statement_timeout is a server-side GUC, which cannot reach
+// anything once the network is gone.
+// So by the documentation this query waits forever. This pins that behavior: after 3s it has still
+// not returned.
+// The day the framework gives PG a default read timeout, this goes red, and the documentation
+// changes with it.
 //
-// 另一半：调用方放弃（断开连接）时请求的 ctx 被取消，查询跟着返回——handler 不会一直挂在那里
+// The other half: when the caller gives up (breaking the connection) the request's ctx is cancelled
+// and the query returns with it -- the handler does not hang there forever
 func TestFault_PGSilentNoCallerDeadline_QueryWaitsUntilCallerGivesUp(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -275,19 +295,19 @@ func TestFault_PGSilentNoCallerDeadline_QueryWaitsUntilCallerGivesUp(t *testing.
 
 	r := faultDep(p, "db", "", giveUp)
 	if r.ReqErr == nil {
-		t.Fatalf("文档说 StatementTimeout 默认不限制、PG 没有读超时：不给截止时间的查询应一直等，实际 %v 就返回了：%v", r.Took, r)
+		t.Fatalf("the documentation says StatementTimeout is unlimited by default and PG has no read timeout: a query with no deadline should wait, and it returned after %v: %v", r.Took, r)
 	}
 	gaveUpAt := time.Now()
-	t.Logf("数字：PG 不回话、不给截止时间：%v 后查询仍没返回，客户端放弃", r.Took.Round(time.Millisecond))
+	t.Logf("numbers: PG silent with no deadline: the query had still not returned after %v, and the client gave up", r.Took.Round(time.Millisecond))
 
 	l, ok := p.LookForLog(5*time.Second, func(l harness.Log) bool { return l.Msg() == "request completed" && l.Str("path") == "/dep" })
 	if !ok {
-		t.Fatalf("调用方断开之后请求的 ctx 被取消，查询应跟着返回（xgorm.CWithCtx：「链路和超时才能传到下游」）：5s 内 handler 仍没返回，没有 /dep 的访问日志")
+		t.Fatalf("the request's ctx is cancelled once the caller disconnects and the query should return with it (xgorm.CWithCtx: \"which is what carries the trace and the timeout downstream\"): the handler had still not returned after 5s and there is no /dep access log line")
 	}
-	t.Logf("数字：客户端放弃之后 %s，handler 返回并记了访问日志（status=%s）", faultMS(time.Since(gaveUpAt)), l.Str("status"))
+	t.Logf("numbers: %s after the client gave up, the handler returned and recorded an access log line (status=%s)", faultMS(time.Since(gaveUpAt)), l.Str("status"))
 }
 
-// faultMedian 中位数
+// faultMedian is the median
 func faultMedian(ds []time.Duration) time.Duration {
 	s := append([]time.Duration(nil), ds...)
 	for i := 1; i < len(s); i++ {
@@ -298,7 +318,7 @@ func faultMedian(ds []time.Duration) time.Duration {
 	return s[len(s)/2]
 }
 
-// faultOr v 为空时用 def
+// faultOr is def when v is empty
 func faultOr(v, def string) string {
 	if v == "" {
 		return def

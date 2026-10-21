@@ -13,33 +13,36 @@ import (
 	"github.com/jupiter-eng/xone/xgorm"
 )
 
-// CH ClickHouse 实例的名字，对应 service/application-ch.yml 里 XGorm.Clients 下的 ch。
+// CH is the name of the ClickHouse instance, matching ch under XGorm.Clients in
+// service/application-ch.yml.
 //
-// 这个实例是可选的：harness 只在 Options.ClickHouse 时激活那份 profile，
-// 其余用例的进程里没有它，CH 那一组接口回 503。
-// 表名和 PG / MySQL 上的用户表同名（Service.Table）：三个库各是各的，撞不上
+// This instance is optional: the harness activates that profile with Options.ClickHouse alone, the
+// processes of the other cases do not have it, and the CH endpoints answer 503 there.
+// The table carries the same name as the user tables on PG / MySQL (Service.Table): the three
+// databases are each their own and cannot collide
 const CH = "ch"
 
-// Event ClickHouse 事件表的一行
+// Event is one row of the ClickHouse event table
 type Event struct {
 	ID    uint64 `json:"id" gorm:"column:id"`
 	Name  string `json:"name" gorm:"column:name"`
 	Value int64  `json:"value" gorm:"column:value"`
 }
 
-// Stats 按 name 聚合出来的结果
+// Stats is the result of grouping by name
 type Stats struct {
 	Count uint64 `json:"count" gorm:"column:n"`
 	Sum   int64  `json:"sum" gorm:"column:s"`
 }
 
-// ch 绑了 ctx 的 ClickHouse 实例
+// ch is the ClickHouse instance bound to ctx
 func ch(ctx context.Context) *gorm.DB { return xgorm.CWithCtx(ctx, CH) }
 
-// HasCH 这个进程配没配 ClickHouse 实例
+// HasCH says whether this process has a ClickHouse instance configured
 func HasCH() bool { return xgorm.Has(CH) }
 
-// migrateCH 在 ClickHouse 上建事件表：MergeTree，按 id 排序，点查走主键索引
+// migrateCH creates the event table on ClickHouse: MergeTree ordered by id, so that a point lookup
+// uses the primary index
 func migrateCH(ctx context.Context) error {
 	if err := ch(ctx).Exec(`CREATE TABLE IF NOT EXISTS ` + users() + ` (
 		id         UInt64,
@@ -52,12 +55,14 @@ func migrateCH(ctx context.Context) error {
 	return nil
 }
 
-// nextID ClickHouse 没有自增列，id 由服务发：纳秒时间戳起步、逐个加一，同一进程里不重复
+// nextID: ClickHouse has no auto-increment column, so the service hands out the ids -- starting
+// from a nanosecond timestamp and going up by one, which never repeats within one process
 var nextID atomic.Uint64
 
 func init() { nextID.Store(uint64(time.Now().UnixNano())) }
 
-// InsertEvents 以一条 INSERT 写进一批事件（同一个 name，各自的 value），返回发出去的 id
+// InsertEvents writes a batch of events in one INSERT (the same name, a value each) and returns
+// the ids it handed out
 func InsertEvents(ctx context.Context, name string, values []int64) ([]uint64, error) {
 	rows := make([]Event, len(values))
 	ids := make([]uint64, len(values))
@@ -71,7 +76,7 @@ func InsertEvents(ctx context.Context, name string, values []int64) ([]uint64, e
 	return ids, nil
 }
 
-// GetEvent 按 id 取一行，没有时返回 ErrNotFound
+// GetEvent takes one row by id, and returns ErrNotFound when there is none
 func GetEvent(ctx context.Context, id uint64) (Event, error) {
 	var e Event
 	err := ch(ctx).Table(users()).Where("id = ?", id).Take(&e).Error
@@ -81,52 +86,56 @@ func GetEvent(ctx context.Context, id uint64) (Event, error) {
 	return e, err
 }
 
-// EventStats 按 name 聚合：条数与 value 之和。走 GORM 的 Scan
+// EventStats groups by name: the number of rows and the sum of value. It goes through GORM's Scan
 func EventStats(ctx context.Context, name string) (Stats, error) {
 	var s Stats
 	err := ch(ctx).Table(users()).Select("count() AS n, sum(value) AS s").Where("name = ?", name).Scan(&s).Error
 	return s, err
 }
 
-// PingCH 在 ClickHouse 上跑一次 SELECT 1
+// PingCH runs one SELECT 1 on ClickHouse
 func PingCH(ctx context.Context) error {
 	return ch(ctx).Exec(`SELECT 1`).Error
 }
 
-// SleepCH 让 ClickHouse 服务端睡 seconds 秒：SELECT sleep(?)，服务端上限 3 秒
+// SleepCH has the ClickHouse server sleep seconds seconds: SELECT sleep(?), which the server stops at 3 seconds
 func SleepCH(ctx context.Context, seconds float64) error {
 	var r uint8
 	return ch(ctx).Raw(`SELECT sleep(?)`, seconds).Scan(&r).Error
 }
 
-// EchoCH 服务端先睡 seconds 秒再把 tag 原样回来。
+// EchoCH has the server sleep seconds seconds and then answer tag as it is.
 //
-// 睡在标量子查询里：它在服务端分析查询时就执行，发出第一个数据块（表头）之前。
-// 于是客户端在这段时间里一个字节都收不到，和「对端不回话」在读超时看来是一回事，
-// 区别是结果最后还是会到——用来看读超时之后这条连接还会不会被拿去跑下一条查询
+// The sleep sits in a scalar subquery: the server runs it while analyzing the query, before it
+// sends the first data block (the header). The client therefore receives not a byte during that
+// time, which to a read timeout is the same thing as "the far end says nothing", the difference
+// being that the result does arrive in the end -- which is how it tells whether this connection is
+// taken for the next query after a read timeout
 func EchoCH(ctx context.Context, tag string, seconds float64) (string, error) {
 	var got string
 	err := ch(ctx).Raw(`SELECT concat(?, '/', toString((SELECT sleep(?))))`, tag, seconds).Scan(&got).Error
 	return got, err
 }
 
-// StreamCH 一行一个数据块、每行之间服务端睡 seconds 秒，返回读到了几行。
+// StreamCH emits one data block per row with the server sleeping seconds seconds between them, and
+// returns how many rows were read.
 //
-// 表头（第一个数据块）立刻就到，之后的行一行一行地来：用来看表头之后对端不回话时，
-// 读超时和调用方的截止时间还管不管
+// The header (the first data block) arrives at once and the rows come one by one afterwards: it is
+// how it tells whether the read timeout and the caller's deadline still hold once the far end goes
+// silent after the header
 func StreamCH(ctx context.Context, rows int, seconds float64) (int, error) {
 	var ns []uint64
 	err := ch(ctx).Raw(`SELECT number FROM numbers(?) WHERE sleepEachRow(?) = 0 SETTINGS max_block_size = 1`, rows, seconds).Scan(&ns).Error
 	return len(ns), err
 }
 
-// BadCastCH 把 value 转成 Int64：服务端报 6（CANNOT_PARSE_TEXT），
-// 原文是 Cannot parse string '<value>' as Int64: ...
+// BadCastCH casts value to Int64: the server reports 6 (CANNOT_PARSE_TEXT), whose text is Cannot
+// parse string '<value>' as Int64: ...
 func BadCastCH(ctx context.Context, value string) error {
 	return ch(ctx).Exec(`SELECT toInt64(?)`, value).Error
 }
 
-// CHVersion Dialector 上记下的版本号和两个按版本设的开关（xgorm/clickhouse 的 probeVersion）
+// CHVersion is the version recorded on the Dialector and the two switches set from it (xgorm/clickhouse's probeVersion)
 type CHVersion struct {
 	Dialector                  string `json:"dialector_version"`
 	Server                     string `json:"server_version"`
@@ -134,7 +143,8 @@ type CHVersion struct {
 	DontSupportColumnPrecision bool   `json:"dont_support_column_precision"`
 }
 
-// VersionCH 读 Dialector 上的版本信息，再问一次服务端 SELECT version() 对照
+// VersionCH reads the version information off the Dialector and asks the server for SELECT
+// version() once more to compare
 func VersionCH(ctx context.Context) (CHVersion, error) {
 	db := ch(ctx)
 	d, ok := db.Dialector.(*chdialect.Dialector)

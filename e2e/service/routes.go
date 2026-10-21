@@ -38,7 +38,7 @@ func routes(e *gin.Engine) {
 	kafkaRoutes(e)
 }
 
-// ping 就绪探测：harness 等它返回 200 才算服务起来了
+// ping is the readiness probe: the harness waits for a 200 from it before the service counts as up
 func ping(c *gin.Context) { c.String(http.StatusOK, "pong") }
 
 type loginReq struct {
@@ -47,8 +47,8 @@ type loginReq struct {
 	Token    string `json:"token"`
 }
 
-// login 请求体里带 password、token，响应体里带 session_token：
-// 打开 LogRequestBody / LogResponseBody 时这三个值都不该出现在日志里
+// login carries password and token in the request body and session_token in the response body:
+// with LogRequestBody / LogResponseBody on, none of the three should appear in the log
 func login(c *gin.Context) {
 	ctx := c.Request.Context()
 	var req loginReq
@@ -56,18 +56,21 @@ func login(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	// 业务日志只记用户名：凭证不进日志是业务自己的事，脱敏只兜访问日志
+	// The business log records the username alone: keeping credentials out of the log is the business's own job, and the redaction only backs up the access log
 	slog.InfoContext(ctx, "login attempt", "username", req.Username)
 	xmetric.CounterInc("logins_total")
 	c.JSON(http.StatusOK, gin.H{"ok": true, "username": req.Username, "session_token": "sess-" + randomHex(16)})
 }
 
-// proxy 经 xhttp 调下游 GET {Downstream}/echo?token=xxx。
+// proxy calls the downstream GET {Downstream}/echo?token=xxx through xhttp.
 //
-// token 取自入站请求的 ?token=，没给就用一个固定值。它在出站 URL 的查询串里，
-// 所以出站 Span 的 url.full、xhttp 的日志里都不该看到它。
-// ?method=POST 换成别的方法调下游（测非幂等方法不重试），默认 GET。
-// 拿到下游响应就原样转回（状态码、Content-Type、body），传输层出错返回 502。
+// token comes from the inbound request's ?token= and falls back to a fixed value. It sits in the
+// outbound URL's query string, so neither the outbound span's url.full nor xhttp's log should hold
+// it.
+// ?method=POST calls the downstream with another method (to test that a non-idempotent method is
+// not retried), GET by default.
+// The downstream's response is passed back as it is (status code, Content-Type, body), and a
+// transport error answers 502.
 func proxy(c *gin.Context) {
 	ctx := c.Request.Context()
 	base := conf.C().Downstream
@@ -87,10 +90,11 @@ func proxy(c *gin.Context) {
 	c.Data(resp.StatusCode(), resp.Header().Get("Content-Type"), resp.Body())
 }
 
-// slow 等 ms 毫秒（默认 1000），期间看 ctx：连接被断开时提前收尾。
+// slow waits ms milliseconds (1000 by default) while watching ctx: it winds down early when the
+// connection breaks.
 //
-// 优雅退出时它应该被等到做完；超过服务那一段停止预算时连接被断开，
-// 它看到 ctx 取消后记一条 "slow request cancelled" 返回
+// A graceful exit should wait for it to finish; past the service's share of the stop budget the
+// connection is broken, it sees the cancelled ctx, records a "slow request cancelled" and returns
 func slow(c *gin.Context) {
 	defer xmetric.TrackInFlight("slow_inflight")()
 	ctx := c.Request.Context()
@@ -108,12 +112,16 @@ func slow(c *gin.Context) {
 	}
 }
 
-// stuck 用 time.Sleep 睡 ms 毫秒（默认 1000），故意不看 ctx。
+// stuck sleeps ms milliseconds (1000 by default) with time.Sleep and deliberately does not watch
+// ctx.
 //
-// 这是文档里「框架停不下来的 handler」：断开连接、取消 ctx 都叫不醒它。
-// db=1 / mysql=1 / ch=1 / redis=1 时睡完再查一次 PG、MySQL、ClickHouse，Ping 一次 Redis，用的 ctx 同样剥掉了取消——
-// 看它是不是在框架关掉数据库、Redis 之后还在跑。
-// e2e_stuck_inflight 是此刻还睡在里面的个数：测试据此确认请求已经进了 handler 再发信号
+// This is the documentation's "handler the framework cannot stop": neither breaking the connection
+// nor cancelling ctx wakes it.
+// With db=1 / mysql=1 / ch=1 / redis=1 it queries PG, MySQL and ClickHouse once more and Pings
+// Redis after the sleep, with a ctx whose cancellation is stripped as well -- to see whether it is
+// still running after the framework has closed the databases and Redis.
+// e2e_stuck_inflight is how many are sleeping inside it right now: a test uses it to make sure the
+// request has reached the handler before it sends a signal
 func stuck(c *gin.Context) {
 	defer xmetric.TrackInFlight("stuck_inflight")()
 	ctx := c.Request.Context()
@@ -153,15 +161,17 @@ func stuck(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"slept_ms": ms})
 }
 
-// boom 直接 panic，交给 xgin 的恢复中间件
+// boom panics outright, which is left to xgin's recovery middleware
 func boom(*gin.Context) {
 	panic("deliberate panic from /boom")
 }
 
-// upload 收一个 multipart 上传（字段名 file），回文件名、大小和 sha256。
+// upload takes one multipart upload (the field file) and answers the file name, the size and the
+// sha256.
 //
-// 访问日志不读 multipart 的请求体、只记一句 omitted；handler 这边读到的
-// 仍该是完整的文件——测试拿 sha256 核对「记日志没有动请求体」
+// The access log does not read a multipart request body and records one omitted instead; what
+// reaches the handler should still be the whole file -- a test checks the sha256 to see that
+// logging did not touch the request body
 func upload(c *gin.Context) {
 	fh, err := c.FormFile("file")
 	if err != nil {
@@ -183,7 +193,7 @@ func upload(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"filename": fh.Filename, "size": n, "sha256": hex.EncodeToString(h.Sum(nil))})
 }
 
-// queryInt 取一个整数查询参数，没给或写错时用默认值
+// queryInt takes an integer query parameter, and falls back to the default when it is missing or malformed
 func queryInt(c *gin.Context, key string, def int) int {
 	if v, err := strconv.Atoi(c.Query(key)); err == nil && v >= 0 {
 		return v

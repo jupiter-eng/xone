@@ -13,14 +13,15 @@ import (
 	"github.com/jupiter-eng/xone/xmetric"
 )
 
-// MySQL 上的用户接口：和 PG 那一组同样的表结构，走第二个 xgorm 实例 xgorm.C("mysql")，
-// 不经缓存——测的是「多实例各管各的」，不是三级读。
+// The user endpoints on MySQL: the same table as the PG group has, through the second xgorm
+// instance xgorm.C("mysql") and past the cache -- what they test is "several instances, each on
+// its own" and not the three-level read.
 //
-//	POST   /mysql/users        201 返回新用户
+//	POST   /mysql/users        201 with the new user
 //	GET    /mysql/users/:id    200 / 404
 //	PUT    /mysql/users/:id    200 / 404
 //	DELETE /mysql/users/:id    204 / 404
-//	GET    /mysql/sleep?ms=N   服务端 SELECT SLEEP(N/1000)，用请求的 ctx：测优雅退出时在途的查询做不做得完
+//	GET    /mysql/sleep?ms=N   a server-side SELECT SLEEP(N/1000) on the request's ctx: whether a query in flight finishes during a graceful exit
 func mysqlRoutes(e *gin.Engine) {
 	e.POST("/mysql/users", createMySQLUser)
 	e.GET("/mysql/users/:id", getMySQLUser)
@@ -31,16 +32,18 @@ func mysqlRoutes(e *gin.Engine) {
 }
 
 type badSQLReq struct {
-	DB    string `json:"db"` // mysql、pg 或 ch
+	DB    string `json:"db"` // mysql, pg or ch
 	Value string `json:"value"`
 }
 
-// badSQL 故意让服务端报一个原文里带着参数值的错：MySQL 把 value 塞进 BIGINT 列（1366），
-// PG 把 value 转成 bigint（22P02），ClickHouse 把 value 转成 Int64（6）。
+// badSQL has the server report an error that carries the parameter value in its text on purpose:
+// MySQL puts value into a BIGINT column (1366), PG casts value to bigint (22P02) and ClickHouse
+// casts value to Int64 (6).
 //
-// 测的是 xgorm 的 SQL 日志和 Span 里没有这个值；返回的错误原样不变，
-// 所以响应里告诉调用方「错误原文里有没有这个值」。这个 handler 自己不记错误原文——
-// 那是业务自己的事，不在 xgorm 管得着的范围里
+// What it tests is that xgorm's SQL log and spans hold no such value; the error is returned
+// unchanged, so the response tells the caller "whether the error text holds this value". This
+// handler records no error text of its own -- that is the business's own affair and outside what
+// xgorm can reach
 func badSQL(c *gin.Context) {
 	ctx := c.Request.Context()
 	var req badSQLReq
@@ -130,7 +133,7 @@ func deleteMySQLUser(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// mysqlFailed err 非空时写好 404 / 500 并返回 true
+// mysqlFailed writes the 404 / 500 and returns true when err is non-nil
 func mysqlFailed(c *gin.Context, msg string, id int64, err error) bool {
 	switch {
 	case err == nil:
@@ -144,8 +147,8 @@ func mysqlFailed(c *gin.Context, msg string, id int64, err error) bool {
 	return true
 }
 
-// sleepMySQL 让 MySQL 服务端睡 ms 毫秒（默认 500），传的是请求的 ctx。
-// 做完 200，失败 503；body 里都有 elapsed_ms
+// sleepMySQL has the MySQL server sleep ms milliseconds (500 by default) on the request's ctx.
+// Done it answers 200 and failed 503, both with elapsed_ms in the body
 func sleepMySQL(c *gin.Context) {
 	defer xmetric.TrackInFlight("mysql_sleep_inflight")()
 	ctx := c.Request.Context()

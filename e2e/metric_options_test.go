@@ -8,8 +8,10 @@ import (
 	"github.com/jupiter-eng/xone/e2e/harness"
 )
 
-// xmetric/README.md XMetric：Namespace「指标名前缀」，ConstLabels「附加到所有指标上」。
-// 查的是真的 /metrics：框架自带的请求指标、业务用快捷方法建的指标、Go 运行时与进程指标
+// xmetric/README.md, XMetric: Namespace is "the metric name prefix" and ConstLabels is "added to
+// every metric".
+// What is checked is the real /metrics: the framework's own request metrics, a metric the business
+// made with the shortcut, and the Go runtime and process metrics
 func TestCoverage_NamespaceAndConstLabelsOnRealMetrics(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -21,26 +23,26 @@ func TestCoverage_NamespaceAndConstLabelsOnRealMetrics(t *testing.T) {
     team: infra
 `})
 	p.PostJSON(t, "/login", map[string]string{"username": "metric"})
-	m := waitMetrics(t, p, "cov_http_requests_total 里出现 /login", func(m harness.Metrics) bool {
+	m := waitMetrics(t, p, "/login turning up in cov_http_requests_total", func(m harness.Metrics) bool {
 		return m.Sum("cov_http_requests_total", "route", "/login") == 1
 	})
 	if m.Has("e2e_http_requests_total") {
-		t.Errorf("Namespace 换成 cov 之后不该还有 e2e_ 前缀的请求指标")
+		t.Errorf("with Namespace changed to cov there should be no request metric under the e2e_ prefix any more")
 	}
 	for _, name := range []string{"cov_http_requests_total", "cov_http_request_duration_seconds_count", "cov_logins_total"} {
 		ss := m.Find(name)
 		if len(ss) == 0 {
-			t.Errorf("Namespace: cov 时应有 %s", name)
+			t.Errorf("with Namespace: cov there should be a %s", name)
 			continue
 		}
 		for _, s := range ss {
 			if s.Labels["env"] != "e2e-cov" || s.Labels["team"] != "infra" {
-				t.Errorf("ConstLabels 应附加到 %s 上（env=e2e-cov team=infra），实际 %v", name, s.Labels)
+				t.Errorf("ConstLabels should be added to %s (env=e2e-cov team=infra), got %v", name, s.Labels)
 				break
 			}
 		}
 	}
-	// 其余指标（Go 运行时、进程、连接池、log_errors_total……）同样是「所有指标」
+	// The other metrics (the Go runtime, the process, the pools, log_errors_total and so on) are "every metric" too
 	var missing []string
 	seen := map[string]bool{}
 	for _, s := range m.Samples {
@@ -51,18 +53,18 @@ func TestCoverage_NamespaceAndConstLabelsOnRealMetrics(t *testing.T) {
 	}
 	if len(missing) > 0 {
 		sort.Strings(missing)
-		// 从前 go_* / process_* 两组没有 ConstLabels：xmetric 的 New 把 client_golang 现成的
-		// collector 直接注册在 Registry 上。按 env 过滤的看板查 go_goroutines{env="prod"} 什么都查不到
-		t.Errorf("ConstLabels 应附加到所有指标上，没带的 %d 个：%s", len(missing), strings.Join(missing, ", "))
+		// The go_* and process_* families used to carry no ConstLabels: xmetric's New registered client_golang's
+		// ready-made collectors on the Registry directly. A dashboard filtering by env would find nothing for go_goroutines{env="prod"}
+		t.Errorf("ConstLabels should be added to every metric, and %d carry none: %s", len(missing), strings.Join(missing, ", "))
 	}
 	for _, name := range []string{"go_goroutines", "process_cpu_seconds_total"} {
 		if !m.Has(name) {
-			t.Errorf("默认应采集 %s，才能说明它也带上了 ConstLabels", name)
+			t.Errorf("%s should be collected by default, which is what shows it carries the ConstLabels as well", name)
 		}
 	}
 }
 
-// xmetric/README.md「行为与实测」那张表
+// The table in xmetric/README.md, "Behavior (measured)"
 func TestCoverage_NamespaceOrConstLabelsTypoFailsStartup(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -71,36 +73,39 @@ func TestCoverage_NamespaceOrConstLabelsTypoFailsStartup(t *testing.T) {
 		name, overlay string
 		want          []string
 	}{
-		{"Namespace 带连字符", "XMetric:\n  Namespace: my-app\n", []string{"xmetric", `Namespace "my-app" is not a valid metric name prefix`}},
-		{"Namespace 以数字开头", "XMetric:\n  Namespace: 1app\n", []string{`Namespace "1app" is not a valid metric name prefix`}},
-		{"ConstLabels 撞上 route", "XMetric:\n  ConstLabels:\n    route: x\n", []string{`ConstLabels key "route" is reserved`}},
-		{"ConstLabels 撞上 level", "XMetric:\n  ConstLabels:\n    level: x\n", []string{`ConstLabels key "level" is reserved`}},
-		{"ConstLabels 是 le", "XMetric:\n  ConstLabels:\n    le: x\n", []string{`ConstLabels key "le" is reserved`}},
-		{"ConstLabels 撞上 go_info 的 version", "XMetric:\n  ConstLabels:\n    version: x\n", []string{`ConstLabels key "version" is reserved`, "go_info"}},
-		{"ConstLabels 以 __ 开头", "XMetric:\n  ConstLabels:\n    __x: y\n", []string{"__x"}},
-		{"ConstLabels 带连字符", "XMetric:\n  ConstLabels:\n    my-env: y\n", []string{"my-env"}},
+		{"a Namespace with a hyphen", "XMetric:\n  Namespace: my-app\n", []string{"xmetric", `Namespace "my-app" is not a valid metric name prefix`}},
+		{"a Namespace starting with a digit", "XMetric:\n  Namespace: 1app\n", []string{`Namespace "1app" is not a valid metric name prefix`}},
+		{"a ConstLabels key colliding with route", "XMetric:\n  ConstLabels:\n    route: x\n", []string{`ConstLabels key "route" is reserved`}},
+		{"a ConstLabels key colliding with level", "XMetric:\n  ConstLabels:\n    level: x\n", []string{`ConstLabels key "level" is reserved`}},
+		{"a ConstLabels key of le", "XMetric:\n  ConstLabels:\n    le: x\n", []string{`ConstLabels key "le" is reserved`}},
+		{"a ConstLabels key colliding with go_info's version", "XMetric:\n  ConstLabels:\n    version: x\n", []string{`ConstLabels key "version" is reserved`, "go_info"}},
+		{"a ConstLabels key starting with __", "XMetric:\n  ConstLabels:\n    __x: y\n", []string{"__x"}},
+		{"a ConstLabels key with a hyphen", "XMetric:\n  ConstLabels:\n    my-env: y\n", []string{"my-env"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			faultMustContain(t, c.name+" 的启动错误", covStartupError(t, harness.Options{Overlay: c.overlay}), c.want...)
+			faultMustContain(t, "the start error for "+c.name, covStartupError(t, harness.Options{Overlay: c.overlay}), c.want...)
 		})
 	}
 }
 
-// xapp/README.md App：「指标不读这一块，/metrics 上没有应用名和版本：要在指标上区分应用，用 XMetric.ConstLabels」。
-// 文档从前写「指标的默认标题取自 App」，指标上并没有这回事（xmetric 不 import xapp），改的是文档。
-// 链路那一半见 TestCoverage_service_NameFromAppOverriddenByOTELEnv，接口文档那一半见 swagger_ui_test.go；
-// ConstLabels 附加到所有指标上见 TestCoverage_NamespaceAndConstLabelsOnRealMetrics
+// xapp/README.md, App: "the metrics do not read this block, and /metrics carries no application
+// name and no version: to tell applications apart in the metrics, use XMetric.ConstLabels".
+// The documentation used to say "a metric's default title comes from App", which is not the case
+// for the metrics at all (xmetric does not import xapp), and the documentation was what changed.
+// The tracing half is TestCoverage_service_NameFromAppOverriddenByOTELEnv and the API
+// documentation half is in swagger_ui_test.go; ConstLabels being added to every metric is
+// TestCoverage_NamespaceAndConstLabelsOnRealMetrics
 func TestCoverage_MetricsCarryNoAppName(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
 
 	p := harness.Start(t, harness.Options{})
 	p.Get(t, "/ping")
-	waitMetrics(t, p, "/metrics 里有 /ping 的请求指标", func(m harness.Metrics) bool {
+	waitMetrics(t, p, "the request metric for /ping turning up in /metrics", func(m harness.Metrics) bool {
 		return m.Sum("e2e_http_requests_total", "route", "/ping") >= 1
 	})
 	if body := string(p.Get(t, "/metrics").Body); strings.Contains(body, "xone.e2e.service") {
-		t.Errorf("文档说指标不读 App，/metrics 里却出现了 App.Name（xone.e2e.service）：改了行为就要同步 xapp/README.md 的 App 一节")
+		t.Errorf("the documentation says the metrics do not read App, and /metrics holds App.Name (xone.e2e.service): a change in behavior has to go into the App section of xapp/README.md")
 	}
 }

@@ -13,26 +13,32 @@ import (
 	"github.com/jupiter-eng/xone/e2e/harness"
 )
 
-// 压测。只在 XONE_E2E_LOAD=1 时跑（scripts/e2e.sh --load），一轮十来分钟。
+// The load tests. They run with XONE_E2E_LOAD=1 alone (scripts/e2e.sh --load), and one round takes
+// a dozen minutes.
 //
-// 压测器、被测服务、PostgreSQL 挤在同一台机器上（本机 4 核），高并发下三者抢 CPU：
-// 这里的 QPS 和延迟只能拿来在不同配置之间互相比，不代表独立部署时的绝对性能。
-// 「服务 CPU µs/请求」受挤占的影响最小，比 QPS 更适合拿来算框架的开销。
+// The load generator, the service under test and PostgreSQL share one machine (4 cores here) and
+// fight over the CPU under high concurrency: the QPS and the latencies here can only be compared
+// between configurations and are not the absolute performance of a deployment of its own.
+// "service CPU us/request" is the least affected by that contention and suits the framework's
+// overhead better than the QPS.
 //
-// 开关（都是时长）：
+// The switches (all durations):
 //
-//	XONE_E2E_LOAD_STEP    每档正式测多久，默认 5s
-//	XONE_E2E_LOAD_WARMUP  每档先预热多久，默认 1s
-//	XONE_E2E_SOAK         浸泡多久，默认 3m
+//	XONE_E2E_LOAD_STEP    how long each step is measured, 5s by default
+//	XONE_E2E_LOAD_WARMUP  how long each step warms up first, 1s by default
+//	XONE_E2E_SOAK         how long the soak runs, 3m by default
 
-// 对照组裸 gin，实验组 xone 服务的三种配置，/ping 和 /users/:id（读 PG）两个接口，
-// 并发 1 / 16 / 64 / 256 各一档。
+// Bare gin as the control and the xone service in three configurations as the subject, over the two
+// endpoints /ping and /users/:id (reading PG), at concurrency 1 / 16 / 64 / 256.
 //
-// 断言的只是压测下该守住的承诺，数字本身只打印：
-//   - 一个请求都不失败（传输层错误、非 2xx 都算）
-//   - 指标开着时，xgin 的请求计数和耗时直方图一个不多一个不少（xgin/README.md「指标」）
-//   - 全开时每个请求一条访问日志，写进文件的每一行都是完整的 JSON（并发写不串行）
-//   - 压完之后 SIGTERM 照样以 0 退出
+// What is asserted are the promises that have to hold under load, and the numbers themselves are
+// only printed:
+//   - not one request fails (a transport error and anything that is not 2xx both count)
+//   - with the metrics on, xgin's request count and duration histogram are exact (xgin/README.md,
+//     "The metrics")
+//   - with everything on there is one access log line per request, and every line written to the
+//     file is whole JSON (the concurrent writes are not torn)
+//   - after the round a SIGTERM still exits with 0
 func TestLoad_FrameworkOverheadVsBareGinByConcurrency(t *testing.T) {
 	requireLoad(t)
 	table := "e2e_load_" + harness.NewID()
@@ -45,10 +51,10 @@ func TestLoad_FrameworkOverheadVsBareGinByConcurrency(t *testing.T) {
 		baseline bool
 		m        mw
 	}{
-		{"裸 gin", true, mw{}},
-		{"xone 全关", false, mwAllOff},
-		{"xone 默认", false, mwDefault},
-		{"xone 全开", false, mwAllOn},
+		{"bare gin", true, mw{}},
+		{"xone everything off", false, mwAllOff},
+		{"xone defaults", false, mwDefault},
+		{"xone everything on", false, mwAllOn},
 	}
 
 	var cells []cell
@@ -74,12 +80,13 @@ func TestLoad_FrameworkOverheadVsBareGinByConcurrency(t *testing.T) {
 		}
 
 		if tg.m.export {
-			// 只打印不断言：Span 丢不丢取决于使用者挂的 SpanProcessor（这里是 SDK 默认参数的
-			// BatchSpanProcessor，队列满了静默丢），不是框架承诺的东西。采样率 1 这一条
-			// 由对账的分母保证：每个请求都有一个服务端 Span 进了处理器
+			// Printed and not asserted: whether a span is dropped depends on the SpanProcessor the caller hung on (here
+			// a BatchSpanProcessor with the SDK's default settings, which drops silently when its queue is full) and is
+			// not something the framework promises. The sampling ratio of 1 is kept by the denominator of the reconciliation:
+			// every request had a server span that reached the processor
 			for _, ep := range eps {
 				exported, handled := waitSpansFlushed(t, p, ep.route)
-				t.Logf("%s %s：导出服务端 Span %.0f 个 / 处理请求 %.0f 个（%.2f%%）", tg.name, ep.route, exported, handled, 100*exported/handled)
+				t.Logf("%s %s: %.0f server spans exported / %.0f requests handled (%.2f%%)", tg.name, ep.route, exported, handled, 100*exported/handled)
 			}
 		}
 		var final harness.Metrics
@@ -89,7 +96,7 @@ func TestLoad_FrameworkOverheadVsBareGinByConcurrency(t *testing.T) {
 
 		exit := p.Terminate(t, 30*time.Second)
 		if exit.Code != 0 || exit.Signal != nil {
-			t.Errorf("%s 压完之后 SIGTERM 应以 0 退出，实际 %v\n%s", tg.name, exit, p.Stderr())
+			t.Errorf("%s should exit with 0 on the SIGTERM after the round, got %v\n%s", tg.name, exit, p.Stderr())
 		}
 
 		if tg.m.file {
@@ -98,22 +105,22 @@ func TestLoad_FrameworkOverheadVsBareGinByConcurrency(t *testing.T) {
 			for _, ep := range eps {
 				want := int(final.Sum("e2e_http_requests_total", "route", ep.route))
 				if byRoute[ep.route] != want {
-					t.Errorf("文档说每个请求一条访问日志；%s %s 处理了 %d 个请求，日志文件里只有 %d 条", tg.name, ep.route, want, byRoute[ep.route])
+					t.Errorf("the documentation says one access log line per request; %s %s handled %d requests and the log file holds only %d", tg.name, ep.route, want, byRoute[ep.route])
 				}
 				lines += byRoute[ep.route]
 			}
 			if bad > 0 {
-				t.Errorf("日志文件里有 %d 行不是完整的 JSON：并发写入串行了（xlog/rotate.go 说 Write 加锁保护）", bad)
+				t.Errorf("%d lines of the log file are not whole JSON: the concurrent writes were torn (xlog/rotate.go says Write is under a lock)", bad)
 			}
-			t.Logf("%s 日志文件 %.0fMB，%d 条访问日志，平均每条 %d 字节", tg.name, mb(size), lines, size/int64(max(lines, 1)))
+			t.Logf("%s log files %.0fMB, %d access log lines, %d bytes each on average", tg.name, mb(size), lines, size/int64(max(lines, 1)))
 		}
 	}
 
-	t.Logf("压测结果（每档预热 %v、正式 %v；压测器与服务同机，只作相对比较）：\n%s", loadWarmup(t), loadStep(t), cellTable(cells))
-	t.Logf("相对裸 gin：\n%s", overheadTable(cells, "裸 gin"))
+	t.Logf("The load results (%v warmup and %v measured per step; the load generator shares the machine with the service, so this is a relative comparison):\n%s", loadWarmup(t), loadStep(t), cellTable(cells))
+	t.Logf("Against bare gin:\n%s", overheadTable(cells, "bare gin"))
 }
 
-// overheadTable 每个实验组相对对照组的差：QPS 比、每请求多用的 CPU、p50 / p99 多出来的延迟
+// overheadTable is each subject's difference from the control: the QPS ratio, the extra CPU per request, and the extra p50 / p99 latency
 func overheadTable(cells []cell, base string) string {
 	find := func(target, ep string, conc int) (cell, bool) {
 		for _, c := range cells {
@@ -124,7 +131,7 @@ func overheadTable(cells []cell, base string) string {
 		return cell{}, false
 	}
 	var b strings.Builder
-	b.WriteString("| 接口 | 并发 | 目标 | QPS 比 | 服务 CPU µs/请求 | 多用 CPU µs/请求 | 多用 % | p50 多 ms | p99 多 ms |\n")
+	b.WriteString("| endpoint | concurrency | target | QPS ratio | service CPU us/request | extra CPU us/request | extra % | extra p50 ms | extra p99 ms |\n")
 	b.WriteString("|---|---:|---|---:|---:|---:|---:|---:|---:|\n")
 	for _, c := range cells {
 		if c.target == base {
@@ -142,10 +149,13 @@ func overheadTable(cells []cell, base string) string {
 	return b.String()
 }
 
-// 从「全关」出发一次只开一个中间件，并发 16 压两个接口，看每请求的 CPU 各多多少。
+// Starting from "everything off" and turning on one middleware at a time, under concurrency 16 over
+// both endpoints, to see how much CPU each one adds per request.
 //
-// 「只开访问日志（级别 warn）」对的是 xgin/middleware/log.go 的承诺：级别关掉时直接放行，
-// 缓存请求体、截响应、脱敏、序列化一样都不做——那它的开销应当接近零，远小于级别 info 时
+// "the access log alone (level warn)" is about the promise of xgin/middleware/log.go: with the
+// level turned off it passes straight through and does not buffer the request body, capture the
+// response, redact or serialize -- so its cost should be close to zero, far under what level info
+// costs
 func TestLoad_EnableMiddlewaresOneByOneToFindCost(t *testing.T) {
 	requireLoad(t)
 	table := "e2e_load_" + harness.NewID()
@@ -157,18 +167,18 @@ func TestLoad_EnableMiddlewaresOneByOneToFindCost(t *testing.T) {
 		name string
 		m    mw
 	}{
-		{"全关", mwAllOff},
-		{"只开访问日志", mw{log: true}},
-		{"只开访问日志（级别 warn）", mw{log: true, level: "warn"}},
-		{"只开访问日志（含 body）", mw{log: true, body: true}},
-		{"只开链路", mw{trace: true}},
-		// 采样率 0：照样生成、透传 TraceID（日志里的 trace_id、响应头的 X-Trace-Id 都在），
-		// 只是 Span 不记录。和上一行的差就是「记录了却没有 exporter 收」的那一份
-		{"只开链路（SampleRatio 0）", mw{trace: true, sample: "0"}},
-		{"只开链路 + 批量导出", mw{trace: true, export: true}},
-		{"只开指标", mw{metric: true}},
-		{"默认（三个都开）", mwDefault},
-		{"全开", mwAllOn},
+		{"everything off", mwAllOff},
+		{"the access log alone", mw{log: true}},
+		{"the access log alone (level warn)", mw{log: true, level: "warn"}},
+		{"the access log alone (bodies included)", mw{log: true, body: true}},
+		{"tracing alone", mw{trace: true}},
+		// SampleRatio 0: a TraceID is still generated and handed on (trace_id in the logs and X-Trace-Id in the response headers are both there),
+		// only the span is not recorded. The difference from the line above is what "recorded with no exporter to take it" costs
+		{"tracing alone (SampleRatio 0)", mw{trace: true, sample: "0"}},
+		{"tracing alone plus the batch export", mw{trace: true, export: true}},
+		{"the metrics alone", mw{metric: true}},
+		{"the defaults (all three on)", mwDefault},
+		{"everything on", mwAllOn},
 	}
 
 	var cells []cell
@@ -186,43 +196,45 @@ func TestLoad_EnableMiddlewaresOneByOneToFindCost(t *testing.T) {
 				return c.cpuUS()
 			}
 		}
-		t.Fatalf("没有 %s %s 这一档", target, ep)
+		t.Fatalf("there is no %s %s step", target, ep)
 		return 0
 	}
 
 	var b strings.Builder
-	b.WriteString("| 配置 | 接口 | QPS | p50 ms | p99 ms | 服务 CPU µs/请求 | 相对全关 µs/请求 |\n")
+	b.WriteString("| configuration | endpoint | QPS | p50 ms | p99 ms | service CPU us/request | against everything off us/request |\n")
 	b.WriteString("|---|---|---:|---:|---:|---:|---:|\n")
 	for _, c := range cells {
 		fmt.Fprintf(&b, "| %s | %s | %.0f | %s | %s | %.1f | %+.1f |\n",
-			c.target, c.endpoint, c.res.QPS, msf(c.res.P50), msf(c.res.P99), c.cpuUS(), c.cpuUS()-cpu("全关", c.endpoint))
+			c.target, c.endpoint, c.res.QPS, msf(c.res.P50), msf(c.res.P99), c.cpuUS(), c.cpuUS()-cpu("everything off", c.endpoint))
 	}
 	for _, ep := range eps {
-		off := cpu("全关", ep.name)
-		sum := cpu("只开访问日志", ep.name) + cpu("只开链路", ep.name) + cpu("只开指标", ep.name) - 3*off
-		fmt.Fprintf(&b, "\n%s：三个单独开的增量之和 %+.1fµs，三个一起开实测 %+.1fµs", ep.name, sum, cpu("默认（三个都开）", ep.name)-off)
+		off := cpu("everything off", ep.name)
+		sum := cpu("the access log alone", ep.name) + cpu("tracing alone", ep.name) + cpu("the metrics alone", ep.name) - 3*off
+		fmt.Fprintf(&b, "\n%s: the three increments added up are %+.1fus, and all three on together measured %+.1fus", ep.name, sum, cpu("the defaults (all three on)", ep.name)-off)
 	}
-	t.Logf("中间件逐个打开（并发 %d，每档预热 %v、正式 %v）：\n%s", conc, loadWarmup(t), loadStep(t), b.String())
+	t.Logf("The middleware turned on one at a time (concurrency %d, %v warmup and %v measured per step):\n%s", conc, loadWarmup(t), loadStep(t), b.String())
 
-	// 级别关掉时直接放行：增量不超过级别 info 时的一半。
+	// With the level turned off it passes straight through: the increment stays under half of what level info costs.
 	//
-	// 只在 /ping 上断言：/users/:id 每个请求还要等 PG，PG 的后端进程和被测服务抢同一批核，
-	// 同一个配置三轮之间每请求 CPU 差到 5µs（全关 82.5～87.6µs），级别 warn 的增量量出来
-	// 从 0 到 8.2µs 都有，和访问日志本身的增量（12.7～18.0µs）是一个量级。
-	// /ping 上三轮量下来级别 info 的增量是 5.5～7.2µs、级别 warn 是 0.8～1.6µs（比例不超过 0.22），
-	// 一半的线留足了余量
-	off := cpu("全关", "/ping")
-	info, warn := cpu("只开访问日志", "/ping")-off, cpu("只开访问日志（级别 warn）", "/ping")-off
+	// Asserted on /ping alone: every /users/:id request also waits for PG, whose backend processes fight over the same cores
+	// as the service under test, so the per-request CPU of one configuration differs by 5us between three rounds (82.5 to 87.6us with everything off),
+	// and level warn's increment measured anywhere from 0 to 8.2us, the same order as the access log's own increment (12.7 to 18.0us).
+	// On /ping, three rounds measured level info at 5.5 to 7.2us and level warn at 0.8 to 1.6us (a ratio under 0.22),
+	// so the half line leaves plenty of room
+	off := cpu("everything off", "/ping")
+	info, warn := cpu("the access log alone", "/ping")-off, cpu("the access log alone (level warn)", "/ping")-off
 	if warn > info/2 {
-		t.Errorf("xgin/middleware/log.go 说级别关掉时访问日志中间件直接放行；/ping 上级别 info 多用 %.1fµs/请求，级别 warn 仍多用 %.1fµs/请求",
+		t.Errorf("xgin/middleware/log.go says the access log middleware passes straight through when the level is off; on /ping level info costs %.1fus/request more and level warn still costs %.1fus/request more",
 			info, warn)
 	}
 }
 
-// 默认配置、64 并发，读写混合地持续压几分钟，每 10 秒采一次 RSS、goroutine 数、堆、fd。
+// The defaults at concurrency 64, a read-write mix held for a few minutes, sampling the RSS, the
+// goroutine count, the heap and the fds every 10 seconds.
 //
-// 泄漏的样子是「随请求数单调涨」：每请求漏一个 goroutine 的话几分钟就是上百万个，
-// 每连接漏一个的话压测的连接数固定，所以还要看压完之后能不能回落到压测前的水平
+// A leak looks like "it grows with the number of requests": one goroutine leaked per request is
+// millions in a few minutes, and one leaked per connection stays flat while the load holds the
+// connection count fixed -- so whether it falls back to the level before the load matters too
 func TestLoad_DefaultConfig64ConcurrencySoakNoLeak(t *testing.T) {
 	requireLoad(t)
 	soak := loadKnob(t, "XONE_E2E_SOAK", 3*time.Minute)
@@ -234,11 +246,11 @@ func TestLoad_DefaultConfig64ConcurrencySoakNoLeak(t *testing.T) {
 	ids := seedUsers(t, table, 1000)
 	p := harness.Start(t, mwDefault.options(table))
 
-	// 读写混合：一半走三级缓存读，两成直接读库，两成 /ping，一成改用户（删两级缓存，
-	// 下一次读就又落到库上），PG、Redis、本地缓存、访问日志、链路、指标全都在转
+	// A read-write mix: half read through the three cache levels, two tenths read the database directly, two tenths /ping
+	// and one tenth updates a user (dropping both cache levels, so the next read reaches the database again); PG, Redis, the local cache, the access log, the tracing and the metrics are all turning
 	newReq := func(ctx context.Context, i int) (*http.Request, error) {
-		// 连续 10 个请求用同一个 id：按 i 打散的话 i%10 定了请求类型也就定了 id 的余数，
-		// 改的那一成 id 和读的那几成永远不重合，删缓存就测了个寂寞
+		// Ten requests in a row use the same id: spread by i, i%10 would fix both the request kind and the id's remainder,
+		// so the tenth that updates and the tenths that read would never meet and dropping the cache would test nothing
 		id := ids[(i/10*7919)%len(ids)]
 		switch i % 10 {
 		case 0, 1, 2, 3, 4:
@@ -257,13 +269,13 @@ func TestLoad_DefaultConfig64ConcurrencySoakNoLeak(t *testing.T) {
 		}
 	}
 
-	// 预热 10 秒再记空闲水位：连接池、缓存、各个 sync.Pool 都建起来之后的 goroutine 数才是基线
+	// Warm up for 10 seconds before recording the idle level: the goroutine count after the pools, the caches and the sync.Pools are built is the baseline
 	warm := harness.Load(t, harness.LoadSpec{Concurrency: conc, Duration: 10 * time.Second, NewRequest: newReq})
 	if warm.Errors > 0 || warm.OK() != warm.Requests {
-		t.Fatalf("预热就有失败：%v %v", warm, warm.ErrorSamples)
+		t.Fatalf("there were failures in the warmup already: %v %v", warm, warm.ErrorSamples)
 	}
 	idle := waitIdle(t, p, 0)
-	t.Logf("预热之后空闲：%s", idle)
+	t.Logf("idle after the warmup: %s", idle)
 
 	samples := make(chan soakSample, 64)
 	stop := make(chan struct{})
@@ -290,38 +302,38 @@ func TestLoad_DefaultConfig64ConcurrencySoakNoLeak(t *testing.T) {
 	after := waitIdle(t, p, idle.goroutines)
 
 	var b strings.Builder
-	b.WriteString("| 时刻 | 累计请求 | 这 10s 的 QPS | RSS MB | goroutine | heap_inuse MB | fd | 线程 |\n")
+	b.WriteString("| moment | requests so far | QPS over these 10s | RSS MB | goroutines | heap_inuse MB | fds | threads |\n")
 	b.WriteString("|---:|---:|---:|---:|---:|---:|---:|---:|\n")
-	fmt.Fprintf(&b, "| 空闲（压前） | %.0f | | %.1f | %.0f | %.1f | %.0f | %d |\n", idle.requests, mb(idle.rss), idle.goroutines, mb(int64(idle.heap)), idle.fds, idle.threads)
+	fmt.Fprintf(&b, "| idle (before) | %.0f | | %.1f | %.0f | %.1f | %.0f | %d |\n", idle.requests, mb(idle.rss), idle.goroutines, mb(int64(idle.heap)), idle.fds, idle.threads)
 	prev := idle.requests
 	for _, s := range got {
 		if s.err != "" {
-			t.Errorf("%v 那次采样失败：%s", s.at, s.err)
+			t.Errorf("the sample at %v failed: %s", s.at, s.err)
 			continue
 		}
 		fmt.Fprintf(&b, "| %v | %.0f | %.0f | %.1f | %.0f | %.1f | %.0f | %d |\n",
 			s.at.Round(time.Second), s.requests, (s.requests-prev)/interval.Seconds(), mb(s.rss), s.goroutines, mb(int64(s.heap)), s.fds, s.threads)
 		prev = s.requests
 	}
-	fmt.Fprintf(&b, "| 空闲（压后） | %.0f | | %.1f | %.0f | %.1f | %.0f | %d |\n", after.requests, mb(after.rss), after.goroutines, mb(int64(after.heap)), after.fds, after.threads)
-	t.Logf("浸泡 %v（默认配置，并发 %d）：%v\n%s", soak, conc, res, b.String())
+	fmt.Fprintf(&b, "| idle (after) | %.0f | | %.1f | %.0f | %.1f | %.0f | %d |\n", after.requests, mb(after.rss), after.goroutines, mb(int64(after.heap)), after.fds, after.threads)
+	t.Logf("The soak over %v (the defaults, concurrency %d): %v\n%s", soak, conc, res, b.String())
 
 	if res.Errors > 0 || res.OK() != res.Requests {
-		t.Errorf("浸泡期间不该有失败的请求：%d 个里传输层失败 %d 个、非 2xx %d 个，状态码 %v，错误样本 %v",
+		t.Errorf("not one request should fail during the soak: of %d, %d failed in the transport and %d were not 2xx, with the status codes %v and the error samples %v",
 			res.Requests, res.Errors, res.Requests-res.Errors-res.OK(), res.Status, res.ErrorSamples)
 	}
 	checkSoak(t, conc, idle, after, got)
 
 	exit := p.Terminate(t, 30*time.Second)
 	if exit.Code != 0 || exit.Signal != nil {
-		t.Errorf("浸泡之后 SIGTERM 应以 0 退出，实际 %v\n%s", exit, p.Stderr())
+		t.Errorf("it should exit with 0 on the SIGTERM after the soak, got %v\n%s", exit, p.Stderr())
 	}
 }
 
-// soakSample 浸泡期间的一次采样
+// soakSample is one sample taken during the soak
 type soakSample struct {
 	at                    time.Duration
-	requests              float64 // xgin 请求计数的总和，除掉 /metrics 自己
+	requests              float64 // the sum of xgin's request counts, /metrics itself taken out
 	rss                   int64
 	threads               int
 	goroutines, heap, fds float64
@@ -329,13 +341,13 @@ type soakSample struct {
 }
 
 func (s soakSample) String() string {
-	return fmt.Sprintf("goroutine %.0f、RSS %.1fMB、heap_inuse %.1fMB、fd %.0f、线程 %d", s.goroutines, mb(s.rss), mb(int64(s.heap)), s.fds, s.threads)
+	return fmt.Sprintf("%.0f goroutines, RSS %.1fMB, heap_inuse %.1fMB, %.0f fds, %d threads", s.goroutines, mb(s.rss), mb(int64(s.heap)), s.fds, s.threads)
 }
 
-// sampleClient 采样用的客户端：服务卡住时采样也不跟着卡住
+// sampleClient is the client the sampling uses: the sampling does not hang when the service does
 var sampleClient = &http.Client{Timeout: 5 * time.Second}
 
-// sampleSoak 采一次样。在压测协程之外的协程里跑，所以不带 t：出错记进 err
+// sampleSoak takes one sample. It runs on a goroutine other than the load's, so it takes no t: an error goes into err
 func sampleSoak(p *harness.Process, at time.Duration) soakSample {
 	s := soakSample{at: at}
 	st, err := harness.ReadProc(p.Pid())
@@ -367,8 +379,10 @@ func sampleSoak(p *harness.Process, at time.Duration) soakSample {
 	return s
 }
 
-// waitIdle 压测停下之后等 goroutine 数回落：压测器关掉连接之后，服务端每条连接的协程
-// 要读到 EOF 才退出。等到不超过 want + idleSlack（want 为 0 时只等它连续两次不再变），最多 15 秒
+// waitIdle waits for the goroutine count to fall back once the load has stopped: after the load
+// generator closes its connections, the server's goroutine for each one exits when it reads EOF.
+// It waits until it is at most want + idleSlack (and with want 0, only until it stops changing
+// twice in a row), 15 seconds at most
 func waitIdle(t *testing.T, p *harness.Process, want float64) soakSample {
 	t.Helper()
 	deadline := time.Now().Add(15 * time.Second)
@@ -377,7 +391,7 @@ func waitIdle(t *testing.T, p *harness.Process, want float64) soakSample {
 		time.Sleep(time.Second)
 		s := sampleSoak(p, 0)
 		if s.err != "" {
-			t.Fatalf("采样失败：%s", s.err)
+			t.Fatalf("the sample failed: %s", s.err)
 		}
 		settled := want == 0 && last.goroutines == s.goroutines && last.fds == s.fds
 		if settled || (want > 0 && s.goroutines <= want+idleSlack) || time.Now().After(deadline) {
@@ -387,31 +401,40 @@ func waitIdle(t *testing.T, p *harness.Process, want float64) soakSample {
 	}
 }
 
-// idleSlack 下面几个判据共用的余量（个）。三轮浸泡量下来，压完之后的 goroutine 数
-// 和压前完全一样（都是 13），10 是给偶尔起落的后台协程留的
+// idleSlack is the slack (in counts) the criteria below share. Over three soaks, the goroutine
+// count after the load was exactly the one before it (13 both times), and the 10 is for the
+// background goroutines that come and go
 const idleSlack = 10
 
-// checkSoak 判有没有泄漏。泄漏的两种样子：
+// checkSoak judges whether anything leaked. A leak takes two shapes:
 //
-//   - 随请求数涨：浸泡几分钟是两百多万个请求，每十万个漏一个也有二十几个。
-//     看压完之后 goroutine 能不能回落到压前 + idleSlack 以内
-//   - 随连接数涨：压测的连接数固定是 conc，所以压的过程中数不会涨，要看压完之后
-//     那 conc 条连接占的 fd 有没有还回来：压完的 fd ≤ 浸泡末尾的 fd − conc + idleSlack。
-//     不和压前比：PG / Redis 的连接池在浸泡中途还会再涨几条（量到过压前 96、压后 99），
-//     它们有上限，不算漏
+//   - growing with the requests: a few minutes of soaking is over two million requests, so one
+//     leaked per hundred thousand is already two dozen.
+//     What is checked is whether the goroutines fall back to within idleSlack of the level before
+//     the load
+//   - growing with the connections: the load holds the connection count fixed at conc, so it cannot
+//     grow during the load, and what is checked is whether the fds those conc connections held are
+//     given back afterwards: the fds after the load <= the fds at the end of the soak - conc +
+//     idleSlack.
+//     Not compared against the level before the load: the PG / Redis pools grow by a few more
+//     connections mid-soak (measured at 96 before and 99 after), which are bounded and are no leak
 //
-// 压的过程中另有几条上限，挡的是「涨到把进程拖垮」：
+// A few bounds hold during the load as well, against "it grows until it drags the process down":
 //
-//   - goroutine ≤ 压前 + 3×conc：每条连接一个 serve 协程，handler 在跑时 net/http
-//     再起一个后台读（server.go startBackgroundRead），此外只有请求前后一闪而过的
-//     （pgx 的后台读、定时器回调；pgx v5.10 的 ctx 监视用的是 context.AfterFunc，不起协程）。
-//     三轮量下来是压前 + 64～135，也就是每条连接最多 2.1 个，所以上限按每条连接 3 个给
-//   - 稳定段（浸泡一分钟之后，连接池、sync.Pool、ristretto 的缓冲都摊开了）后半段
-//     RSS 的最大值不超过前半段最大值的 1.15 倍加 8MB。三轮量下来 RSS 在 56.6～61.5MB，
-//     一轮之内晃不出 3MB
-//   - heap_inuse 看每半段的最小值，也就是 GC 刚做完时的「底」：采样落在 GC 周期的哪一刻
-//     是随机的，最大值在 18～26MB 之间来回跳，底只在 18.3～19.6MB。
-//     后半段的底不超过前半段的底的 1.25 倍加 4MB
+//   - goroutines <= before the load + 3 x conc: one serve goroutine per connection, plus the
+//     background read net/http starts while a handler runs (startBackgroundRead in server.go), and
+//     besides them only the ones that flash by around a request (pgx's background read, a timer
+//     callback; pgx v5.10 watches ctx with context.AfterFunc, which starts no goroutine).
+//     Three rounds measured 64 to 135 above the level before the load, which is 2.1 per connection
+//     at most, so the bound is 3 per connection
+//   - in the steady stretch (after a minute of soaking, with the pools, the sync.Pools and
+//     ristretto's buffers all spread out) the highest RSS of the second half stays under 1.15 times
+//     the highest of the first half plus 8MB. Three rounds measured the RSS at 56.6 to 61.5MB,
+//     which does not swing by 3MB within one round
+//   - heap_inuse goes by the lowest of each half, which is the "floor" right after a GC: which
+//     moment of the GC cycle a sample lands on is random, and the highest bounced between 18 and
+//     26MB while the floor stayed at 18.3 to 19.6MB.
+//     The second half's floor stays under 1.25 times the first half's plus 4MB
 func checkSoak(t *testing.T, conc int, idle, after soakSample, got []soakSample) {
 	t.Helper()
 	var ok, steady []soakSample
@@ -425,19 +448,19 @@ func checkSoak(t *testing.T, conc int, idle, after soakSample, got []soakSample)
 		}
 	}
 	if len(steady) < 4 {
-		t.Fatalf("稳定段只采到 %d 个样本，判不了有没有泄漏（XONE_E2E_SOAK 至少给 2m）", len(steady))
+		t.Fatalf("the steady stretch sampled only %d points, which cannot tell whether anything leaked (give XONE_E2E_SOAK 2m at least)", len(steady))
 	}
 
 	if after.goroutines > idle.goroutines+idleSlack {
-		t.Errorf("压完之后 goroutine 没有回落：压前空闲 %.0f 个，压后空闲 %.0f 个", idle.goroutines, after.goroutines)
+		t.Errorf("the goroutines did not fall back after the load: %.0f idle before, %.0f idle after", idle.goroutines, after.goroutines)
 	}
 	if last := ok[len(ok)-1]; after.fds > last.fds-float64(conc)+idleSlack {
-		t.Errorf("压完之后 %d 条连接的 fd 没有还回来：浸泡末尾 %.0f 个，压后空闲 %.0f 个", conc, last.fds, after.fds)
+		t.Errorf("the fds of the %d connections were not given back after the load: %.0f at the end of the soak, %.0f idle after", conc, last.fds, after.fds)
 	}
 	limit := idle.goroutines + float64(3*conc)
 	for _, s := range ok {
 		if s.goroutines > limit {
-			t.Errorf("%v 时 goroutine %.0f 个，超过了压前 %.0f + 每连接 3 个的上限 %.0f", s.at, s.goroutines, idle.goroutines, limit)
+			t.Errorf("at %v there were %.0f goroutines, over the bound of %.0f before the load plus 3 per connection, %.0f", s.at, s.goroutines, idle.goroutines, limit)
 		}
 	}
 
@@ -454,9 +477,9 @@ func checkSoak(t *testing.T, conc int, idle, after soakSample, got []soakSample)
 	rss := func(s soakSample) float64 { return float64(s.rss) }
 	heap := func(s soakSample) float64 { return s.heap }
 	if a, b := fold(steady[:half], rss, hi), fold(steady[half:], rss, hi); b > a*1.15+8<<20 {
-		t.Errorf("RSS 在稳定段里还在涨：前半段最高 %.1fMB，后半段最高 %.1fMB", a/(1<<20), b/(1<<20))
+		t.Errorf("the RSS is still growing in the steady stretch: %.1fMB highest in the first half, %.1fMB in the second", a/(1<<20), b/(1<<20))
 	}
 	if a, b := fold(steady[:half], heap, lo), fold(steady[half:], heap, lo); b > a*1.25+4<<20 {
-		t.Errorf("heap_inuse 的底在稳定段里还在涨：前半段最低 %.1fMB，后半段最低 %.1fMB", a/(1<<20), b/(1<<20))
+		t.Errorf("heap_inuse's floor is still growing in the steady stretch: %.1fMB lowest in the first half, %.1fMB in the second", a/(1<<20), b/(1<<20))
 	}
 }

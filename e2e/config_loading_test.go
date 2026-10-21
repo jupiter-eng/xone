@@ -10,7 +10,7 @@ import (
 	"github.com/jupiter-eng/xone/e2e/harness"
 )
 
-// covSeen GET /probe/config：main 里（xone.Run 之前）读到的 Service 块，启动钩子里读到的 Cov 块
+// covSeen is GET /probe/config: the Service block main read (before xone.Run) and the Cov block the start hook read
 type covSeen struct {
 	Service struct {
 		Downstream string `json:"downstream"`
@@ -30,8 +30,9 @@ func covReadConfig(t *testing.T, p *harness.Process) covSeen {
 	return s
 }
 
-// covBase 一份 service/application.yml 加上 Cov 块（和 extra 里的其它顶层块），写进一个新的临时目录，返回路径。
-// profile 文件、Import 的片段都相对它所在的目录写
+// covBase writes one service/application.yml plus a Cov block (and the other top-level blocks in
+// extra) into a new temporary directory and returns the path. The profile files and the Imported
+// fragments are written relative to the directory it sits in
 func covBase(t *testing.T, extra map[string]string) string {
 	t.Helper()
 	blocks := map[string]string{"Cov": "Cov:\n  Label: base\n  Items: [x, y]\n  Labels: {b: base}\n"}
@@ -41,14 +42,15 @@ func covBase(t *testing.T, extra map[string]string) string {
 	return covConfig(t, blocks)
 }
 
-// docs/config.md「Profiles —— 按环境分文件」：
+// docs/config.md, "Profiles -- one file per environment":
 //
-//	优先级：--profile > XONE_PROFILE > 文件里的 XApp.Profiles
-//	--profile=prod,eu 多个用逗号分隔，靠后的压过靠前的
-//	点名的 profile 文件不存在时直接启动失败
+//	the precedence: --profile > XONE_PROFILE > XApp.Profiles in the file
+//	--profile=prod,eu takes several, comma separated, and a later one wins over an earlier one
+//	a profile file that is named and does not exist fails the start outright
 //
-// 「合并规则」：map 递归合并、列表整体替换、标量覆盖。
-// 「通用规则·什么时候读」：在 main 里、xone.Run 之前读到的也是最终值——e2e 服务的 Service 块就是在 main 里读的
+// "The merge rules": maps merge recursively, a list is replaced whole and a scalar is overridden.
+// "The common rules - when it is read": what is read in main before xone.Run is the final value as
+// well -- the e2e service's Service block is read in main
 func TestCoverage_ProfileThreeWaysToSetAndPrecedence_MergeRules(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -67,12 +69,12 @@ func TestCoverage_ProfileThreeWaysToSetAndPrecedence_MergeRules(t *testing.T) {
 		items  []string
 		labels map[string]string
 	}{
-		{name: "只有 XApp.Profiles", label: "fromfile", items: []string{"x", "y"}, labels: map[string]string{"b": "base"}},
-		{name: "XONE_PROFILE 压过 XApp.Profiles", env: map[string]string{"XONE_PROFILE": "envp"},
+		{name: "XApp.Profiles alone", label: "fromfile", items: []string{"x", "y"}, labels: map[string]string{"b": "base"}},
+		{name: "XONE_PROFILE wins over XApp.Profiles", env: map[string]string{"XONE_PROFILE": "envp"},
 			label: "envp", items: []string{"x", "y"}, labels: map[string]string{"b": "base", "e": "envp"}},
-		{name: "--profile 压过 XONE_PROFILE", args: []string{"--profile=argp"}, env: map[string]string{"XONE_PROFILE": "envp"},
+		{name: "--profile wins over XONE_PROFILE", args: []string{"--profile=argp"}, env: map[string]string{"XONE_PROFILE": "envp"},
 			label: "argp", items: []string{"z"}, labels: map[string]string{"b": "base", "a": "argp"}},
-		{name: "--profile=envp,argp：靠后的压过靠前的，map 逐层合并，列表整体替换", args: []string{"--profile=envp,argp"},
+		{name: "--profile=envp,argp: the later wins over the earlier, maps merge level by level and a list is replaced whole", args: []string{"--profile=envp,argp"},
 			label: "argp", items: []string{"z"}, labels: map[string]string{"b": "base", "e": "envp", "a": "argp"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -80,33 +82,33 @@ func TestCoverage_ProfileThreeWaysToSetAndPrecedence_MergeRules(t *testing.T) {
 			p := harness.Start(t, harness.Options{Config: cfg, Args: c.args, Env: c.env})
 			s := covReadConfig(t, p)
 			if s.Cov.Label != c.label || !slices.Equal(s.Cov.Items, c.items) || fmt.Sprint(s.Cov.Labels) != fmt.Sprint(c.labels) {
-				t.Errorf("生效的 Cov 应是 Label=%s Items=%v Labels=%v，实际 %+v", c.label, c.items, c.labels, s.Cov)
+				t.Errorf("the Cov in force should be Label=%s Items=%v Labels=%v, got %+v", c.label, c.items, c.labels, s.Cov)
 			}
-			// Service 块是 main 里、xone.Run 之前读的：argp 生效时读到的也得是 argp 里的值
+			// The Service block is read in main before xone.Run: with argp in force, what it read has to come from argp as well
 			wantDS := ""
 			if c.label == "argp" {
 				wantDS = "http://from-argp.invalid"
 			}
 			if s.Service.Downstream != wantDS {
-				t.Errorf("docs/config.md：在 main 里、xone.Run 之前读到的也是最终值；Service.Downstream 应是 %q，实际 %q", wantDS, s.Service.Downstream)
+				t.Errorf("docs/config.md: what is read in main before xone.Run is the final value as well; Service.Downstream should be %q, got %q", wantDS, s.Service.Downstream)
 			}
 		})
 	}
 
-	t.Run("点名的 profile 文件不存在时启动失败", func(t *testing.T) {
+	t.Run("a profile file that is named and does not exist fails the start", func(t *testing.T) {
 		t.Parallel()
 		stderr := covStartupError(t, harness.Options{Config: cfg, Args: []string{"--profile=nosuch"}})
-		faultMustContain(t, "--profile=nosuch 的启动错误", stderr, "application-nosuch.yml")
+		faultMustContain(t, "the start error for --profile=nosuch", stderr, "application-nosuch.yml")
 	})
 }
 
-// docs/config.md「Import —— 引入别的配置文件」：
+// docs/config.md, "Import -- pulling in another configuration file":
 //
-//	引进来的压过引它的那个文件；引进来的文件同样有 profile 变体（不存在不算错）
-//	相对路径按引它的文件所在目录解析，不是进程的工作目录
-//	optional: 前缀，文件不存在就跳过；没有前缀的不存在是错误
+//	what is pulled in wins over the file pulling it in; a file pulled in has its own profile variants (one that does not exist is no error)
+//	a relative path resolves against the directory of the file pulling it in and not the process's working directory
+//	the optional: prefix skips a file that does not exist; one without the prefix that does not exist is an error
 //
-// 「合并规则」：application.yml < 它 Import 的（含片段自己的 -prod 变体）< application-prod.yml
+// "The merge rules": application.yml < what it Imports (the fragment's own -prod variant included) < application-prod.yml
 func TestCoverage_ImportPrecedence_RelativePath_Optional_FragmentProfiles(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -117,34 +119,34 @@ func TestCoverage_ImportPrecedence_RelativePath_Optional_FragmentProfiles(t *tes
 	covWrite(t, dir, "parts/shared-prod.yml", "Cov:\n  Labels: {iv: variant}\n")
 	covWrite(t, dir, "application-prod.yml", "Cov:\n  Label: prod\n")
 
-	t.Run("没有 profile：片段压过 base", func(t *testing.T) {
+	t.Run("no profile: the fragment wins over base", func(t *testing.T) {
 		t.Parallel()
-		// 工作目录是 Process.Dir，和配置文件不在一处：parts/ 能找到说明是按引它的文件解析的
+		// The working directory is Process.Dir, away from the configuration file: parts/ being found shows it resolves against the file pulling it in
 		s := covReadConfig(t, harness.Start(t, harness.Options{Config: cfg}))
 		if s.Cov.Label != "imported" || !slices.Equal(s.Cov.Items, []string{"imp"}) || fmt.Sprint(s.Cov.Labels) != fmt.Sprint(map[string]string{"b": "base", "i": "imp"}) {
-			t.Errorf("引进来的压过引它的那个文件，应是 Label=imported Items=[imp] Labels={b i}，实际 %+v", s.Cov)
+			t.Errorf("what is pulled in wins over the file pulling it in, so it should be Label=imported Items=[imp] Labels={b i}, got %+v", s.Cov)
 		}
 	})
-	t.Run("--profile=prod：profile 压过片段，片段的变体也叠上来", func(t *testing.T) {
+	t.Run("--profile=prod: the profile wins over the fragment and the fragment's variant is laid on as well", func(t *testing.T) {
 		t.Parallel()
 		s := covReadConfig(t, harness.Start(t, harness.Options{Config: cfg, Args: []string{"--profile=prod"}}))
 		want := map[string]string{"b": "base", "i": "imp", "iv": "variant"}
 		if s.Cov.Label != "prod" || !slices.Equal(s.Cov.Items, []string{"imp"}) || fmt.Sprint(s.Cov.Labels) != fmt.Sprint(want) {
-			t.Errorf("应是 Label=prod（profile 压过片段）Items=[imp] Labels=%v（片段的 -prod 变体叠上来），实际 %+v", want, s.Cov)
+			t.Errorf("it should be Label=prod (the profile winning over the fragment) Items=[imp] Labels=%v (the fragment's -prod variant laid on), got %+v", want, s.Cov)
 		}
 	})
-	t.Run("没有 optional: 前缀的片段不存在时启动失败", func(t *testing.T) {
+	t.Run("a fragment without the optional: prefix that does not exist fails the start", func(t *testing.T) {
 		t.Parallel()
 		bad := covBase(t, map[string]string{"XApp": "XApp:\n  Name: xone.e2e.service\n  Version: e2e\n  Import: parts/nowhere.yml\n"})
-		faultMustContain(t, "Import 的文件不存在时的启动错误", covStartupError(t, harness.Options{Config: bad}), "nowhere.yml")
+		faultMustContain(t, "the start error for an Imported file that does not exist", covStartupError(t, harness.Options{Config: bad}), "nowhere.yml")
 	})
 }
 
-// docs/config.md「通用规则」：
+// docs/config.md, "The common rules":
 //
-//	${VAR:default}  可选，未设置时用默认值
-//	${VAR}          必填（functional_config_test.go 测过未设置时启动失败）
-//	占位符展开为空  ${VAR:} 等于这一项没写，保持结构体里的默认值；真要空串就加引号 "${VAR:}"
+//	${VAR:default}  optional, falling back to the default when it is unset
+//	${VAR}          required (functional_config_test.go tests that the start fails when it is unset)
+//	a placeholder expanding to nothing  ${VAR:} is the same as not writing the setting at all and keeps the struct's default; for a real empty string, quote it: "${VAR:}"
 func TestCoverage_PlaceholderDefaults_EmptyExpansionKeepsStructDefault(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -157,27 +159,28 @@ func TestCoverage_PlaceholderDefaults_EmptyExpansionKeepsStructDefault(t *testin
 		env       map[string]string
 		label     string
 	}{
-		{"没设置：用冒号后面的默认值", cfg, nil, "fallback"},
-		{"设置了：用变量的值", cfg, map[string]string{"COV_LABEL": "from-env"}, "from-env"},
-		{"${VAR:} 展开为空：保持结构体默认值", empty, nil, "default"},
-		{"\"${VAR:}\" 加了引号：空串", quoted, nil, ""},
+		{"unset: the default after the colon is used", cfg, nil, "fallback"},
+		{"set: the variable's value is used", cfg, map[string]string{"COV_LABEL": "from-env"}, "from-env"},
+		{"${VAR:} expanding to nothing keeps the struct's default", empty, nil, "default"},
+		{"a quoted \"${VAR:}\" is an empty string", quoted, nil, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			s := covReadConfig(t, harness.Start(t, harness.Options{Config: c.cfg, Env: c.env}))
 			if s.Cov.Label != c.label {
-				t.Errorf("Cov.Label 应是 %q，实际 %q", c.label, s.Cov.Label)
+				t.Errorf("Cov.Label should be %q, got %q", c.label, s.Cov.Label)
 			}
-			// 列表元素里加了引号的 "${COV_ITEM:}" 是空串，不是「没写」
+			// A quoted "${COV_ITEM:}" inside a list is an empty string and not "not written"
 			if c.cfg == cfg && !slices.Equal(s.Cov.Items, []string{"", "b"}) {
-				t.Errorf("Items 里加了引号的 \"${COV_ITEM:}\" 应展开成空串，实际 %q", s.Cov.Items)
+				t.Errorf("the quoted \"${COV_ITEM:}\" in Items should expand to an empty string, got %q", s.Cov.Items)
 			}
 		})
 	}
 }
 
-// docs/config.md 开头：「配置文件位置：--config=<path> > XONE_CONFIG > conf/application.yml 等约定路径」；
-// README：「显式指定的找不到是错误」
+// The top of docs/config.md: "where the configuration file is: --config=<path> > XONE_CONFIG > the
+// conventional paths such as conf/application.yml"; the README: "one that is named explicitly and
+// not found is an error"
 func TestCoverage_ConfigFileLocation_ConfigFlagBeatsXONE_CONFIG(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -185,39 +188,40 @@ func TestCoverage_ConfigFileLocation_ConfigFlagBeatsXONE_CONFIG(t *testing.T) {
 	a := covBase(t, map[string]string{"Cov": "Cov:\n  Label: file-a\n"})
 	b := covBase(t, map[string]string{"Cov": "Cov:\n  Label: file-b\n"})
 
-	t.Run("只有 XONE_CONFIG", func(t *testing.T) {
+	t.Run("XONE_CONFIG alone", func(t *testing.T) {
 		t.Parallel()
 		p := harness.StartArgs(t, harness.Options{Env: map[string]string{"XONE_CONFIG": a}})
 		if got := covReadConfig(t, p).Cov.Label; got != "file-a" {
-			t.Errorf("没给 --config 时读 XONE_CONFIG 指的文件（file-a），实际 %q", got)
+			t.Errorf("without --config it reads the file XONE_CONFIG names (file-a), got %q", got)
 		}
 	})
-	t.Run("--config 压过 XONE_CONFIG", func(t *testing.T) {
+	t.Run("--config wins over XONE_CONFIG", func(t *testing.T) {
 		t.Parallel()
 		p := harness.StartArgs(t, harness.Options{Env: map[string]string{"XONE_CONFIG": a}}, "--config="+b)
 		if got := covReadConfig(t, p).Cov.Label; got != "file-b" {
-			t.Errorf("--config 优先于 XONE_CONFIG，应读 file-b，实际 %q", got)
+			t.Errorf("--config comes before XONE_CONFIG and it should read file-b, got %q", got)
 		}
 	})
-	t.Run("XONE_CONFIG 指的文件不存在时启动失败", func(t *testing.T) {
+	t.Run("a file XONE_CONFIG names that does not exist fails the start", func(t *testing.T) {
 		t.Parallel()
 		missing := filepath.Join(t.TempDir(), "nope.yml")
 		p := harness.StartArgs(t, harness.Options{NoWait: true, Env: map[string]string{"XONE_CONFIG": missing}})
 		exit, ok := p.Wait(30 * time.Second)
 		if !ok || exit.Code == 0 {
-			t.Fatalf("显式指定的配置文件找不到应启动失败，实际 %v（退出了=%v）", exit, ok)
+			t.Fatalf("a configuration file named explicitly and not found should fail the start, got %v (exited=%v)", exit, ok)
 		}
-		faultMustContain(t, "XONE_CONFIG 指向不存在的文件时的启动错误", p.Stderr(), missing)
+		faultMustContain(t, "the start error when XONE_CONFIG points at a file that does not exist", p.Stderr(), missing)
 	})
 }
 
-// covAppRun 跑一次 covapp（一次性任务，读完就退出），返回退出情况、各次读到的 App.Name 和 stderr
+// covAppRun runs covapp once (a one-off job that exits as soon as it has read) and returns how it
+// exited, the App.Name each read saw, and stderr
 func covAppRun(t *testing.T, env map[string]string, args ...string) (harness.Exit, map[string]string, string) {
 	t.Helper()
 	p := harness.StartCovApp(t, harness.Options{Env: env}, args...)
 	exit, ok := p.Wait(30 * time.Second)
 	if !ok {
-		t.Fatalf("covapp 30s 了还没退出\n%s", p.Output())
+		t.Fatalf("covapp had not exited after 30s\n%s", p.Output())
 	}
 	seen := map[string]string{}
 	for _, l := range p.FindLogs(func(l harness.Log) bool { return l.Msg() == "covapp read" }) {
@@ -226,9 +230,10 @@ func covAppRun(t *testing.T, env map[string]string, args ...string) (harness.Exi
 	return exit, seen, p.Stderr()
 }
 
-// xone.WithConfigPath：「指定配置文件，优先于 --config、XONE_CONFIG 和约定路径。
-// 在 Run 之前就读过配置的话，配置已经按那几种方式加载过了，这里再点名另一个文件会让 Run 直接报错」。
-// e2e 服务不用 WithConfigPath，这一条用 e2e/covapp 测
+// xone.WithConfigPath: "names the configuration file, before --config, XONE_CONFIG and the
+// conventional paths. When the configuration has already been read before Run, it has been loaded
+// one of those ways, and naming another file here makes Run report an error outright".
+// The e2e service uses no WithConfigPath, so this is tested with e2e/covapp
 func TestCoverage_WithConfigPathBeatsConfigFlag_OtherFileAfterReadErrors(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -237,45 +242,45 @@ func TestCoverage_WithConfigPathBeatsConfigFlag_OtherFileAfterReadErrors(t *test
 	a := covWrite(t, dir, "a.yml", "XApp:\n  Name: from-a\n")
 	b := covWrite(t, dir, "b.yml", "XApp:\n  Name: from-b\n")
 
-	t.Run("没提前读：WithConfigPath 压过 --config", func(t *testing.T) {
+	t.Run("nothing read beforehand: WithConfigPath wins over --config", func(t *testing.T) {
 		t.Parallel()
 		exit, seen, stderr := covAppRun(t, map[string]string{"COVAPP_WITH_CONFIG_PATH": a}, "--config="+b)
 		if exit.Code != 0 || seen["in_run"] != "from-a" {
-			t.Errorf("WithConfigPath 优先于 --config，应读 a（from-a）、以 0 退出，实际 %v、读到 %q\n%s", exit, seen["in_run"], stderr)
+			t.Errorf("WithConfigPath comes before --config and should read a (from-a) and exit with 0, got %v having read %q\n%s", exit, seen["in_run"], stderr)
 		}
 	})
-	t.Run("提前读过（按 --config 加载了 b），再点名 a：Run 报错", func(t *testing.T) {
+	t.Run("read beforehand (b loaded through --config) and then naming a: Run reports an error", func(t *testing.T) {
 		t.Parallel()
 		exit, seen, stderr := covAppRun(t, map[string]string{"COVAPP_WITH_CONFIG_PATH": a, "COVAPP_READ_EARLY": "1"}, "--config="+b)
 		if exit.Code == 0 {
-			t.Errorf("提前读过之后 WithConfigPath 点名另一个文件，Run 应报错，实际以 0 退出、Start 读到 %q", seen["in_run"])
+			t.Errorf("naming another file with WithConfigPath after an earlier read should make Run report an error, and it exited with 0 having read %q in Start", seen["in_run"])
 		}
 		if seen["early"] != "from-b" {
-			t.Errorf("提前的那次读按 --config 加载 b，应读到 from-b，实际 %q", seen["early"])
+			t.Errorf("the earlier read loads b through --config and should have read from-b, got %q", seen["early"])
 		}
-		faultMustContain(t, "WithConfigPath 冲突时的错误", stderr, "config was already loaded by an earlier read", b, a, "--config", "XONE_CONFIG")
+		faultMustContain(t, "the error on a WithConfigPath conflict", stderr, "config was already loaded by an earlier read", b, a, "--config", "XONE_CONFIG")
 		if _, ran := seen["in_run"]; ran {
-			t.Errorf("Run 报错时不该跑到 Start")
+			t.Errorf("Start should not be reached when Run reports an error")
 		}
 	})
-	t.Run("提前读过，WithConfigPath 点名的就是那个文件：照常", func(t *testing.T) {
+	t.Run("read beforehand, with WithConfigPath naming that same file: it carries on", func(t *testing.T) {
 		t.Parallel()
 		exit, seen, stderr := covAppRun(t, map[string]string{"COVAPP_WITH_CONFIG_PATH": b, "COVAPP_READ_EARLY": "1"}, "--config="+b)
 		if exit.Code != 0 || seen["early"] != "from-b" || seen["in_run"] != "from-b" {
-			t.Errorf("点名的和已经加载的是同一个文件时不该报错，两次都读到 from-b，实际 %v early=%q in_run=%q\n%s", exit, seen["early"], seen["in_run"], stderr)
+			t.Errorf("naming the file that is already loaded should report no error and both reads should see from-b, got %v early=%q in_run=%q\n%s", exit, seen["early"], seen["in_run"], stderr)
 		}
 	})
-	t.Run("提前读过，WithConfigPath 是同一个文件的另一种写法", func(t *testing.T) {
+	t.Run("read beforehand, with WithConfigPath spelling the same file another way", func(t *testing.T) {
 		t.Parallel()
-		// 同一个文件：dir/./b.yml。「点名的文件和它不是同一个时报错」——是同一个就不该报错
+		// The same file: dir/./b.yml. "an error when the file named is not the same one" -- being the same one, it should report no error
 		same := filepath.Join(dir, ".") + string(filepath.Separator) + "." + string(filepath.Separator) + "b.yml"
 		exit, seen, stderr := covAppRun(t, map[string]string{"COVAPP_WITH_CONFIG_PATH": same, "COVAPP_READ_EARLY": "1"}, "--config="+b)
 		if exit.Code != 0 {
-			// 从前 Ensure 按字符串比，同一个文件换一种写法（./、相对路径、符号链接）就被当成另一个文件
-			t.Errorf("同一个文件换一种写法不该报错，实际 %v\n%s", exit, stderr)
+			// Ensure used to compare the strings, so the same file spelled another way (./, a relative path, a symbolic link) counted as another file
+			t.Errorf("the same file spelled another way should report no error, got %v\n%s", exit, stderr)
 		}
 		if seen["in_run"] != "from-b" {
-			t.Errorf("Start 里读到的应是 from-b，实际 %q", seen["in_run"])
+			t.Errorf("Start should have read from-b, got %q", seen["in_run"])
 		}
 	})
 }

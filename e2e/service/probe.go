@@ -27,19 +27,20 @@ import (
 	"github.com/jupiter-eng/xone/xredis"
 )
 
-// probeRoutes 给 TestCoverage_* 用例（e2e/*_options_test.go 等）用的接口，都挂在 /probe 下面（Swagger UI 除外）：
+// probeRoutes are the endpoints for the TestCoverage_* cases (e2e/*_options_test.go and others),
+// all of them under /probe (the Swagger UI aside):
 //
-//	GET  /swagger/*any（或 XGinSwagger.URLPrefix 下）  xginswagger 的 UI 和 doc.json
-//	GET  /probe/config                      main 里读到的 Service 块、启动钩子里读到的 Cov 块
-//	GET  /probe/log?level=warn&msg=xxx      按给定级别打一条业务日志
-//	GET  /probe/cache?name=&op=set|get&key=&ttl=  具名的本地缓存实例上 Set（等它生效）/ Get
-//	GET  /probe/cache/fill?name=&n=N        往实例里写 N 个不同的键（cost 1），再数还读得到几个
-//	GET  /probe/redis?name=&op=set|get&key=&val=  具名的 Redis 实例上 SET / GET，回耗时
-//	GET  /probe/fwd?url=http://host/path    经 xhttp 调任意 URL，测按域名透传的规则
-//	POST /probe/flow                        xflow：第二步的 Rollback 不看 ctx 地挂住，第三步失败
-//	POST /probe/zh                          必填字段校验失败时回 trans.ToZH 之后的报错
-//	POST /probe/upload                      multipart 上传，回这个文件是在内存里还是落了盘
-//	GET  /probe/skip/*any                   LogSkipPaths 前缀匹配用
+//	GET  /swagger/*any (or under XGinSwagger.URLPrefix)  xginswagger's UI and doc.json
+//	GET  /probe/config                      the Service block main read and the Cov block the start hook read
+//	GET  /probe/log?level=warn&msg=xxx      writes one business log line at the given level
+//	GET  /probe/cache?name=&op=set|get&key=&ttl=  a Set (waiting for it to take) / Get on a named local cache instance
+//	GET  /probe/cache/fill?name=&n=N        writes N distinct keys (cost 1) into the instance and counts how many are still readable
+//	GET  /probe/redis?name=&op=set|get&key=&val=  a SET / GET on a named Redis instance, answering how long it took
+//	GET  /probe/fwd?url=http://host/path    calls any URL through xhttp, to test the per-host forwarding rules
+//	POST /probe/flow                        xflow: the second step's Rollback hangs without watching ctx and the third step fails
+//	POST /probe/zh                          answers the validation error of a missing required field after trans.ToZH
+//	POST /probe/upload                      a multipart upload, answering whether the file stayed in memory or landed on disk
+//	GET  /probe/skip/*any                   for the LogSkipPaths prefix matching
 func probeRoutes(e *gin.Engine) {
 	apidoc.Register()
 	xginswagger.Register(e, apidoc.SwaggerInfo)
@@ -57,7 +58,8 @@ func probeRoutes(e *gin.Engine) {
 	g.GET("/skip/*any", func(c *gin.Context) { c.String(http.StatusOK, "skipped") })
 }
 
-// probeConfig main 里（xone.Run 之前）读到的 Service 块，和启动钩子里读到的 Cov 块
+// probeConfig is the Service block as main read it (before xone.Run) and the Cov block as the start
+// hook read it
 func probeConfig(c *gin.Context) {
 	s := conf.C()
 	c.JSON(http.StatusOK, gin.H{
@@ -70,7 +72,7 @@ func probeConfig(c *gin.Context) {
 	})
 }
 
-// probeLog 按 level 打一条业务日志，msg 原样当消息
+// probeLog writes one business log line at level, with msg as the message as it is
 func probeLog(c *gin.Context) {
 	var lv slog.Level
 	if err := lv.UnmarshalText([]byte(c.DefaultQuery("level", "info"))); err != nil {
@@ -81,7 +83,7 @@ func probeLog(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"level": lv.String()})
 }
 
-// cacheName 空串是默认实例
+// cacheName: an empty string is the default instance
 func cacheName(c *gin.Context) []string {
 	if n := c.Query("name"); n != "" {
 		return []string{n}
@@ -89,8 +91,9 @@ func cacheName(c *gin.Context) []string {
 	return nil
 }
 
-// probeCache op=set：用这个实例的 DefaultTTL（给了 ttl 就用它）写一个键并 Wait；op=get：读回来。
-// 名字写错时 xcache.C 会 panic，交给恢复中间件回 500
+// probeCache, with op=set, writes one key with this instance's DefaultTTL (or the ttl given) and
+// Waits; with op=get it reads it back.
+// A wrong name has xcache.C panic, which the recovery middleware answers with a 500
 func probeCache(c *gin.Context) {
 	name := cacheName(c)
 	cache := xcache.C(name...)
@@ -117,8 +120,10 @@ func probeCache(c *gin.Context) {
 	}
 }
 
-// probeCacheFill 往实例里写 n 个不同的键再逐个读回，回读得到几个。
-// 默认实例走包级的 xcache.Set（本包写入时 cost 固定为 1），具名实例自己给 cost 1
+// probeCacheFill writes n distinct keys into the instance, reads them back one by one and answers
+// how many are still there.
+// The default instance goes through the package-level xcache.Set (where this package writes with a
+// cost fixed at 1), and a named instance passes cost 1 itself
 func probeCacheFill(c *gin.Context) {
 	name := cacheName(c)
 	cache := xcache.C(name...)
@@ -135,7 +140,7 @@ func probeCacheFill(c *gin.Context) {
 		} else {
 			cache.SetWithTTL(k, i, 1, xcache.DefaultTTL(name...))
 		}
-		cache.Wait() // 一个一个等：不等的话一次写太多会被环形缓冲丢掉，量的就不是容量了
+		cache.Wait() // one at a time: without the wait, writing too many at once has the ring buffer drop them and what is measured is no longer the capacity
 	}
 	stored := 0
 	for i := range n {
@@ -146,7 +151,8 @@ func probeCacheFill(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"written": n, "stored": stored, "max_cost": cache.MaxCost()})
 }
 
-// probeRedis 具名的 Redis 实例上 SET / GET 一个键（键名自动加 KeyPrefix），回耗时和错误
+// probeRedis SETs / GETs one key on a named Redis instance (the key name gets KeyPrefix
+// automatically) and answers how long it took and any error
 func probeRedis(c *gin.Context) {
 	ctx := c.Request.Context()
 	var name []string
@@ -181,7 +187,7 @@ func probeRedis(c *gin.Context) {
 	c.JSON(http.StatusOK, body)
 }
 
-// probeForward 经 xhttp GET 任意 URL，把下游的状态码转回来
+// probeForward GETs any URL through xhttp and passes the downstream's status code back
 func probeForward(c *gin.Context) {
 	resp, err := xhttp.R(c.Request.Context()).Get(c.Query("url"))
 	if err != nil {
@@ -191,8 +197,10 @@ func probeForward(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": resp.StatusCode()})
 }
 
-// hangFlow 三步：first 成功（回滚很快）、hang 成功（回滚不看 ctx 地睡 HangMS）、fail 失败。
-// 回滚逆序：先 hang（挂住，被 RollbackTimeout 放弃），再 first（预算已经用完，记成「没执行」）
+// hangFlow has three steps: first succeeds (and rolls back quickly), hang succeeds (and its
+// rollback sleeps HangMS without watching ctx), and fail fails.
+// The rollback goes in reverse: hang first (where it hangs and is given up on by RollbackTimeout),
+// then first (where the budget is already spent and it is recorded as "not run")
 var hangFlow = xflow.New[*hangReq]("cov_hang_rollback", probeStep{"first", false}, probeStep{"hang", true}, probeStep{"fail", false})
 
 type hangReq struct {
@@ -213,7 +221,8 @@ func (s probeStep) Process(context.Context, *hangReq) error {
 	return nil
 }
 
-// Rollback hang 那一步故意不看 ctx：文档说这份预算对这样的 Rollback 同样有效
+// Rollback: the hang step deliberately does not watch ctx, and the documentation says this budget
+// holds for such a Rollback all the same
 func (s probeStep) Rollback(_ context.Context, r *hangReq) error {
 	if s.hang {
 		time.Sleep(time.Duration(r.HangMS) * time.Millisecond)
@@ -221,7 +230,7 @@ func (s probeStep) Rollback(_ context.Context, r *hangReq) error {
 	return nil
 }
 
-// probeFlow 跑 hangFlow，回耗时、rolled、每条回滚错误
+// probeFlow runs hangFlow and answers how long it took, rolled, and each rollback error
 func probeFlow(c *gin.Context) {
 	var r hangReq
 	if err := c.ShouldBindJSON(&r); err != nil {
@@ -247,7 +256,7 @@ type zhReq struct {
 	Age  int    `json:"age" binding:"gte=1"`
 }
 
-// probeZH 校验失败时回 trans.ToZH 之后的报错：没打开 ZHTranslations 时 ToZH 原样返回
+// probeZH answers the validation error after trans.ToZH: without ZHTranslations on, ToZH returns it unchanged
 func probeZH(c *gin.Context) {
 	var r zhReq
 	if err := c.ShouldBindJSON(&r); err != nil {
@@ -257,8 +266,9 @@ func probeZH(c *gin.Context) {
 	c.JSON(http.StatusOK, r)
 }
 
-// probeUpload 收一个 multipart 上传（字段 file），回大小、sha256，以及它在内存里还是落了盘：
-// mime/multipart 超过 maxMemory 的部分写进临时文件，这时 FileHeader.Open 返回的是 *os.File
+// probeUpload takes one multipart upload (the field file) and answers the size, the sha256 and
+// whether it stayed in memory or landed on disk: mime/multipart writes whatever goes past
+// maxMemory into a temporary file, and FileHeader.Open then returns an *os.File
 func probeUpload(c *gin.Context) {
 	fh, err := c.FormFile("file")
 	if err != nil {

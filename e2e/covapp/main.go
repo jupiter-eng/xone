@@ -1,14 +1,18 @@
-// covapp 一次性任务形状的最小程序，给 e2e 测配置加载时机的几条规矩：
-// e2e/service 在 main 里读完业务配置才调 MustRun、不带 WithConfigPath，
-// 「提前读过之后再点名另一个文件」这一条用它测不到。
+// covapp is a minimal program shaped like a one-off job, for the e2e cases about when the
+// configuration is read: e2e/service reads its business configuration in main before calling
+// MustRun and passes no WithConfigPath, so "another file named after the configuration has already
+// been read" cannot be tested with it.
 //
-//	COVAPP_WITH_CONFIG_PATH=a.yml   交给 xone.WithConfigPath
-//	COVAPP_READ_EARLY=1             xone.Run 之前先读一次 XApp 块
+//	COVAPP_WITH_CONFIG_PATH=a.yml   goes to xone.WithConfigPath
+//	COVAPP_READ_EARLY=1             reads the XApp block once before xone.Run
 //
-// 每读一次往标准输出写一行 JSON：{"msg":"covapp read","phase":"early|in_run","name":"<XApp.Name>"}。
-// Start 读完就返回 nil（一次性任务），Run 出错时把错误写到 stderr、以 1 退出。
+// Every read writes one JSON line to standard output:
+// {"msg":"covapp read","phase":"early|in_run","name":"<XApp.Name>"}.
+// Start returns nil as soon as it has read (a one-off job), and a failing Run writes the error to
+// stderr and exits with 1.
 //
-// 不用 xhook：scripts/check.sh 把登记钩子的目录当成集成包，集成包不许 import 根包
+// No xhook: scripts/check.sh takes a directory registering hooks for an integration package, and
+// an integration package may not import the root package
 package main
 
 import (
@@ -34,7 +38,7 @@ func emit(phase, name string) {
 
 type job struct{}
 
-// Start 读的是 xapp 在启动钩子里读好的 XApp 块
+// Start reads the XApp block xapp read in its start hook
 func (job) Start(context.Context) error {
 	emit("in_run", xapp.Name())
 	return nil

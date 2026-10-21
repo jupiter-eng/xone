@@ -14,19 +14,23 @@ import (
 	"github.com/jupiter-eng/xone/xmetric"
 )
 
-// ClickHouse 上的接口：第三个 xgorm 实例 xgorm.C("ch")，经 xgorm/clickhouse 方言、native 协议。
-// 实例只在 harness 激活 ch 那份 profile 时才有（service/application-ch.yml），没有时一律 503。
+// The endpoints on ClickHouse: the third xgorm instance xgorm.C("ch"), through the
+// xgorm/clickhouse dialect and the native protocol.
+// The instance exists only when the harness activates the ch profile
+// (service/application-ch.yml), and without it everything answers 503.
 //
-//	POST /ch/events              {"name": "...", "values": [1, 2]} 一条 INSERT 写一批，201 回 ids
-//	GET  /ch/events/:id          按主键点查，200 / 404
-//	GET  /ch/stats?name=x        按 name 聚合 count() / sum(value)，走 GORM 的 Scan
-//	GET  /ch/sleep?ms=N          服务端 SELECT sleep(N/1000)（服务端上限 3s），用请求的 ctx
-//	GET  /ch/echo?tag=x&ms=N     服务端在标量子查询里睡 N 毫秒再回 tag：表头之前一个字节都不回
-//	GET  /ch/stream?rows=N&ms=M  一行一个数据块、每行之间睡 M 毫秒：表头之后才慢下来
-//	GET  /ch/version             Dialector 上记下的版本号和两个按版本设的开关
+//	POST /ch/events              {"name": "...", "values": [1, 2]}, one INSERT writing a batch, 201 with the ids
+//	GET  /ch/events/:id          a point lookup by primary key, 200 / 404
+//	GET  /ch/stats?name=x        count() / sum(value) grouped by name, through GORM's Scan
+//	GET  /ch/sleep?ms=N          a server-side SELECT sleep(N/1000) (the server stops at 3s) on the request's ctx
+//	GET  /ch/echo?tag=x&ms=N     the server sleeps N milliseconds in a scalar subquery before answering tag: not a byte comes back before the header
+//	GET  /ch/stream?rows=N&ms=M  one data block per row, sleeping M milliseconds between rows: it only slows down after the header
+//	GET  /ch/version             the version recorded on the Dialector and the two switches set from it
 //
-// sleep / echo / stream 另收 &timeout=200ms：用 context.WithTimeout 包住请求的 ctx（「调用方给了截止时间」），
-// 不给就是请求的 ctx 本身。成功时 body 里都有 elapsed_ms，失败 503 另有 error：故障测试据此量「这一下要多久」
+// sleep / echo / stream also take &timeout=200ms: the request's ctx wrapped in
+// context.WithTimeout ("the caller gave a deadline"), and without it the request's ctx itself.
+// Success carries elapsed_ms in the body and a 503 carries error besides: a fault test measures
+// "how long does this one take" with them
 func clickhouseRoutes(e *gin.Engine) {
 	g := e.Group("/ch", requireCH)
 	g.POST("/events", createCHEvents)
@@ -38,7 +42,8 @@ func clickhouseRoutes(e *gin.Engine) {
 	g.GET("/version", chVersion)
 }
 
-// requireCH 没配 ClickHouse 实例时直接 503，免得 xgorm.C("ch") 在 handler 里 panic
+// requireCH answers 503 outright with no ClickHouse instance configured, so that xgorm.C("ch")
+// does not panic inside a handler
 func requireCH(c *gin.Context) {
 	if !store.HasCH() {
 		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "ch instance is not configured"})
@@ -97,7 +102,7 @@ func chStats(c *gin.Context) {
 	c.JSON(http.StatusOK, s)
 }
 
-// sleepCH 让 ClickHouse 服务端睡 ms 毫秒（默认 500），传的是请求的 ctx
+// sleepCH has the ClickHouse server sleep ms milliseconds (500 by default) on the request's ctx
 func sleepCH(c *gin.Context) {
 	defer xmetric.TrackInFlight("ch_sleep_inflight")()
 	ctx, cancel, ok := chCtx(c)
@@ -111,7 +116,8 @@ func sleepCH(c *gin.Context) {
 	chDone(c, "ch sleep", start, err, gin.H{"slept_ms": ms})
 }
 
-// echoCH 服务端睡 ms 毫秒（默认 0）之后把 tag 回来，body 的 got 是服务端回的那一串
+// echoCH has the server answer tag after sleeping ms milliseconds (0 by default), and got in the
+// body is the string the server sent back
 func echoCH(c *gin.Context) {
 	ctx, cancel, ok := chCtx(c)
 	if !ok {
@@ -124,7 +130,8 @@ func echoCH(c *gin.Context) {
 	chDone(c, "ch echo", start, err, gin.H{"got": got})
 }
 
-// streamCH 服务端吐 rows 行（默认 20），每行之间睡 ms 毫秒（默认 100）
+// streamCH has the server emit rows rows (20 by default), sleeping ms milliseconds (100 by
+// default) between them
 func streamCH(c *gin.Context) {
 	defer xmetric.TrackInFlight("ch_stream_inflight")()
 	ctx, cancel, ok := chCtx(c)
@@ -147,7 +154,8 @@ func chVersion(c *gin.Context) {
 	c.JSON(http.StatusOK, v)
 }
 
-// chCtx 请求的 ctx，给了 &timeout= 就再包一层截止时间。timeout 写错时写好 400 并返回 false
+// chCtx is the request's ctx, wrapped in a deadline when &timeout= was given. A malformed timeout
+// writes the 400 and returns false
 func chCtx(c *gin.Context) (context.Context, context.CancelFunc, bool) {
 	ctx := c.Request.Context()
 	s := c.Query("timeout")
@@ -163,9 +171,10 @@ func chCtx(c *gin.Context) (context.Context, context.CancelFunc, bool) {
 	return ctx, cancel, true
 }
 
-// chDone 写好 200 / 503，body 里带上 elapsed_ms；成功记 "<what> finished"，失败记 "<what> failed"
+// chDone writes the 200 / 503 with elapsed_ms in the body; a success records "<what> finished" and
+// a failure "<what> failed"
 func chDone(c *gin.Context, what string, start time.Time, err error, body gin.H) {
-	ctx := c.Request.Context() // 日志用请求的 ctx：截止时间到了也照样带着 trace_id
+	ctx := c.Request.Context() // the log goes on the request's ctx: it carries trace_id even once the deadline has passed
 	body["elapsed_ms"] = float64(time.Since(start).Microseconds()) / 1000
 	if err != nil {
 		slog.WarnContext(ctx, what+" failed", "error", err)

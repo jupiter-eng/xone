@@ -1,13 +1,15 @@
 package harness
 
-// TLS 的 e2e 里的 ClickHouse：另起一个只给这组用例用的容器（xone-ch 一个配置都不动），
-// 开 tcp_port_secure 和 https_port，证书是 NewTLSCerts 现造的那一套，测试结束时删掉容器。
+// The ClickHouse for the TLS e2e cases: a container of its own, used by this group alone (xone-ch
+// keeps every setting it has), with tcp_port_secure and https_port on, the certificates the ones
+// NewTLSCerts just made, and the container removed when the test ends.
 //
-// 同一个容器里明文端口（tcp_port / http_port）也开着：「TLS 块开着却连到明文端口」
-// 「不开 TLS 块却连到 TLS 端口」都要在真的服务端上量。
+// The plaintext ports (tcp_port / http_port) are open in the same container: both "a TLS block is
+// on but it connects to the plaintext port" and "no TLS block but it connects to the TLS port"
+// have to be measured against a real server.
 //
-// 没有 docker、或者 xone-ch 用的那个镜像不在本机时 t.Skip，并说清缺的是什么——
-// 不在测试里拉镜像：拉一次要几分钟，而且 CI 里没有 ClickHouse。
+// Without docker, or with the image xone-ch uses missing on this host, it t.Skips and says what is
+// missing -- images are not pulled from a test: one pull takes minutes, and CI has no ClickHouse.
 
 import (
 	"context"
@@ -22,42 +24,47 @@ import (
 	"time"
 )
 
-// TLSCHImage TLS 用的 ClickHouse 容器的镜像，与 xone-ch 同一个
+// TLSCHImage is the image of the ClickHouse container for TLS, the same one as xone-ch
 func TLSCHImage() string {
 	return env("XONE_E2E_CH_IMAGE", "mirror.gcr.io/clickhouse/clickhouse-server:24.8")
 }
 
-// TLSCHUser / TLSCHDB TLS 的 ClickHouse 上用密码登录的账号和库。密码是 TLSPassword
+// TLSCHUser / TLSCHDB are the account logging in with a password on the TLS ClickHouse and its
+// database. The password is TLSPassword
 const (
 	TLSCHUser = "xone"
 	TLSCHDB   = "xone_tls"
 )
 
-// TLSClickHouse 一个开了 TLS 端口的 ClickHouse 容器（host 网络，只听 127.0.0.1）
+// TLSClickHouse is a ClickHouse container with its TLS ports open (host networking, listening on
+// 127.0.0.1 alone)
 //
-// 账号 xone 用密码 TLSPassword 登录；账号 xone_mtls 没有密码，靠出示 CN=xone_mtls、
-// 由正确的 CA 签的客户端证书登录（ssl_certificates）。服务端 verificationMode 是 relaxed：
-// 请求客户端证书但不强求，带了就按 CA 校验。
+// The account xone logs in with the password TLSPassword; the account xone_mtls has no password and
+// logs in by presenting a client certificate with CN=xone_mtls signed by the right CA
+// (ssl_certificates). The server's verificationMode is relaxed: it asks for a client certificate
+// without insisting, and checks one that is presented against the CA.
 type TLSClickHouse struct {
-	Name string // 容器名
+	Name string // the container name
 
 	NativeTLS string // tcp_port_secure
 	HTTPS     string // https_port
-	Native    string // tcp_port（明文）
-	HTTP      string // http_port（明文）
+	Native    string // tcp_port (plaintext)
+	HTTP      string // http_port (plaintext)
 }
 
-// DSN 用 scheme（clickhouse / https / http）连 addr，账号 xone，不带任何 TLS 参数（TLS 交给配置里的 TLS 块）
+// DSN connects to addr with scheme (clickhouse / https / http) as the account xone, carrying no TLS
+// parameter at all (TLS is left to the TLS block in the configuration)
 func (c *TLSClickHouse) DSN(scheme, addr string) string {
 	return fmt.Sprintf("%s://%s:%s@%s/%s", scheme, TLSCHUser, TLSPassword, addr, TLSCHDB)
 }
 
-// MTLSDSN 用账号 xone_mtls（证书认证，没有密码）连 addr
+// MTLSDSN connects to addr as the account xone_mtls (certificate authentication, no password)
 func (c *TLSClickHouse) MTLSDSN(scheme, addr string) string {
 	return fmt.Sprintf("%s://%s@%s/%s", scheme, TLSMTLSUser, addr, TLSCHDB)
 }
 
-// StartTLSClickHouse 起容器、等四个端口都能连上，测试结束时 docker rm -f 掉
+// StartTLSClickHouse starts the container and waits until all four ports connect, then docker rm -f
+// it when the test ends
 func StartTLSClickHouse(t testing.TB, certs *TLSCerts) *TLSClickHouse {
 	t.Helper()
 	Require(t)
@@ -72,7 +79,7 @@ func StartTLSClickHouse(t testing.TB, certs *TLSCerts) *TLSClickHouse {
 	for _, f := range []struct{ from, to string }{
 		{certs.ServerCert, "server.pem"}, {certs.ServerKey, "server-key.pem"}, {certs.CAFile, "ca.pem"},
 	} {
-		// 容器里的 clickhouse 账号（uid 101）要读得到；目录只在测试期间存在
+		// The clickhouse account in the container (uid 101) has to be able to read them; the directory exists for the test alone
 		copyFile(t, f.from, filepath.Join(dir, f.to), 0o644)
 	}
 
@@ -81,8 +88,9 @@ func StartTLSClickHouse(t testing.TB, certs *TLSCerts) *TLSClickHouse {
 	addr := func(p int) string { return net.JoinHostPort("127.0.0.1", strconv.Itoa(p)) }
 	c.NativeTLS, c.HTTPS, c.Native, c.HTTP = addr(nativeTLS), addr(https), addr(native), addr(http)
 
-	// 盖掉镜像自带的 docker_related_config.xml（它听 0.0.0.0 / ::）：只听 127.0.0.1，
-	// 端口全换成空闲的，host 网络下与 xone-ch 的 9000 / 8123 / 9004 / 9005 / 9009 不撞
+	// Override the docker_related_config.xml the image carries (which listens on 0.0.0.0 / ::): listen
+	// on 127.0.0.1 alone and move every port to a free one, so that under host networking none of
+	// xone-ch's 9000 / 8123 / 9004 / 9005 / 9009 is hit
 	listen := `<clickhouse><listen_host>127.0.0.1</listen_host></clickhouse>`
 	conf := fmt.Sprintf(`<clickhouse>
   <tcp_port>%d</tcp_port>
@@ -113,7 +121,7 @@ func StartTLSClickHouse(t testing.TB, certs *TLSCerts) *TLSClickHouse {
 		}
 	}
 
-	// 密码经 --env-file 交过去，不上命令行（ps 看得见命令行）
+	// The password is handed over through --env-file and never on the command line (which ps shows)
 	envFile := filepath.Join(dir, "env")
 	envText := "CLICKHOUSE_USER=" + TLSCHUser + "\nCLICKHOUSE_PASSWORD=" + TLSPassword + "\n"
 	if err := os.WriteFile(envFile, []byte(envText), 0o600); err != nil {
@@ -150,9 +158,11 @@ func StartTLSClickHouse(t testing.TB, certs *TLSCerts) *TLSClickHouse {
 			time.Sleep(100 * time.Millisecond)
 		}
 	}
-	// 库自己建，不用 CLICKHOUSE_DB：入口脚本建库时调的 clickhouse-client 不带 --port，
-	// host 网络下连到的是 127.0.0.1:9000 上的 xone-ch（实测报 516，容器随即退出）。
-	// 经容器里的 clickhouse-client 连这个容器的明文端口，密码走环境变量，不上命令行
+	// The database is created here rather than through CLICKHOUSE_DB: the clickhouse-client the entry
+	// point script calls to create it carries no --port, so under host networking it reaches the
+	// xone-ch on 127.0.0.1:9000 (measured: it reports 516 and the container exits right after).
+	// This goes through the container's own clickhouse-client to this container's plaintext port,
+	// with the password in the environment rather than on the command line
 	for {
 		out, err := dockerEnv(30*time.Second, []string{"CLICKHOUSE_PASSWORD=" + TLSPassword},
 			"exec", "-e", "CLICKHOUSE_PASSWORD", c.Name, "clickhouse-client", "--port", strconv.Itoa(native),
@@ -168,7 +178,7 @@ func StartTLSClickHouse(t testing.TB, certs *TLSCerts) *TLSClickHouse {
 	}
 }
 
-// Log 容器的服务端日志里含 needle 的行（最多 limit 行）
+// Log is the lines of the container's server log holding needle (limit lines at most)
 func (c *TLSClickHouse) Log(needle string, limit int) []string {
 	out, _ := docker(30*time.Second, "exec", c.Name, "grep", "-F", needle, "/var/log/clickhouse-server/clickhouse-server.log")
 	var lines []string

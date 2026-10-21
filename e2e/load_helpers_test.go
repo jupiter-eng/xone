@@ -16,12 +16,14 @@ import (
 	"github.com/jupiter-eng/xone/e2e/harness"
 )
 
-// 压测的公共部分：开关、被测配置、一档的测量、对账和出表。
+// What the load tests share: the switches, the configurations under test, measuring one step,
+// reconciling and rendering the tables.
 //
-// 压测器（本测试进程）、被测服务、PostgreSQL 在同一台机器上抢 CPU，
-// 所以这里的数字只能拿来互相比，不是这个框架在独立机器上的绝对性能。
+// The load generator (this test process), the service under test and PostgreSQL fight over the CPU
+// of one machine, so these numbers can only be compared with each other and are not this
+// framework's absolute performance on a machine of its own.
 
-// requireLoad 压测慢，默认不跑：XONE_E2E_LOAD=1 才跑（scripts/e2e.sh --load）
+// requireLoad: the load tests are slow and do not run by default; XONE_E2E_LOAD=1 runs them (scripts/e2e.sh --load)
 func requireLoad(t *testing.T) {
 	t.Helper()
 	harness.Require(t)
@@ -30,7 +32,7 @@ func requireLoad(t *testing.T) {
 	}
 }
 
-// loadKnob 读一个时长开关，没设或写错时用默认值
+// loadKnob reads a duration switch, falling back to the default when it is unset or malformed
 func loadKnob(t *testing.T, name string, def time.Duration) time.Duration {
 	t.Helper()
 	v := os.Getenv(name)
@@ -39,45 +41,48 @@ func loadKnob(t *testing.T, name string, def time.Duration) time.Duration {
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil || d <= 0 {
-		t.Fatalf("%s=%q 不是正的时长", name, v)
+		t.Fatalf("%s=%q is no positive duration", name, v)
 	}
 	return d
 }
 
-// 每档先预热 warmup，再正式测 step。用 LoadSpec.Duration 而不是固定请求数：
-// 固定 2 万个的话，/ping 在 256 并发下 0.7s 就跑完了，连接都没摊开，p99 全是爬坡
+// Each step warms up for warmup first and is then measured for step. It uses LoadSpec.Duration
+// rather than a fixed number of requests: with 20,000 fixed, /ping is through in 0.7s at
+// concurrency 256 before the connections have spread out, and the p99 is all ramp-up
 func loadStep(t *testing.T) time.Duration   { return loadKnob(t, "XONE_E2E_LOAD_STEP", 5*time.Second) }
 func loadWarmup(t *testing.T) time.Duration { return loadKnob(t, "XONE_E2E_LOAD_WARMUP", time.Second) }
 
-// minLoadRequests 每档至少测这么多个请求，见 measure
+// minLoadRequests is how many requests each step measures at the least, see measure
 const minLoadRequests = 20000
 
-// mw 被测服务的一种配置：哪些中间件开着、日志往哪写
+// mw is one configuration of the service under test: which middleware is on and where the logs go
 type mw struct {
-	log    bool   // XGin.Log 访问日志
+	log    bool   // XGin.Log, the access log
 	body   bool   // XGin.LogRequestBody + LogResponseBody
-	trace  bool   // XTrace.Enable + XGin.Trace + 两个 XGorm 实例的 Trace：整套链路
-	export bool   // 挂 BatchSpanProcessor + 只计数的 exporter（Service.SpanDiscard）
-	metric bool   // XGin.Metric，关掉时没有 /metrics
-	file   bool   // 日志写文件、不写标准输出
-	level  string // XLog.Level，空串是 info
-	sample string // XTrace.SampleRatio，空串是 1
+	trace  bool   // XTrace.Enable + XGin.Trace + the Trace of both XGorm instances: the whole tracing pipeline
+	export bool   // a BatchSpanProcessor hung on with an exporter that only counts (Service.SpanDiscard)
+	metric bool   // XGin.Metric, with no /metrics when it is off
+	file   bool   // the logs go to a file rather than to standard output
+	level  string // XLog.Level, empty being info
+	sample string // XTrace.SampleRatio, empty being 1
 }
 
 var (
-	// mwDefault 就是 service/application.yml 本身，也就是框架的默认值：
-	// 访问日志写标准输出、链路 100% 采样但没有 exporter、指标开
+	// mwDefault is service/application.yml itself, which is the framework's defaults:
+	// the access log to standard output, tracing sampled at 100% with no exporter, and the metrics on
 	mwDefault = mw{log: true, trace: true, metric: true}
-	// mwAllOff 能关的都关：没有访问日志、链路是 noop provider、没有请求指标
+	// mwAllOff turns off everything that can be turned off: no access log, a noop tracing provider and no request metrics
 	mwAllOff = mw{}
-	// mwAllOn 访问日志写文件（连同请求体、响应体）、链路 100% 采样并经 BatchSpanProcessor 导出、指标开
+	// mwAllOn: the access log to a file (with the request and response bodies), tracing sampled at 100% and exported through a BatchSpanProcessor, and the metrics on
 	mwAllOn = mw{log: true, body: true, trace: true, export: true, metric: true, file: true}
 )
 
-// options 把配置翻成 harness.Options。
+// options turns the configuration into harness.Options.
 //
-// 标准输出一律接 /dev/null：访问日志一秒几万行，收进 harness 的内存既占地方又会拖慢
-// 被测进程。真实部署里标准输出后面是一根管道和采集器，比 /dev/null 贵，这里量不到
+// Standard output always goes to /dev/null: the access log runs to tens of thousands of lines a
+// second, and collecting that into the harness's memory both takes room and slows the process under
+// test down. In a real deployment standard output has a pipe and a collector behind it, which costs
+// more than /dev/null and is not what is measured here
 func (m mw) options(table string) harness.Options {
 	xlog := fmt.Sprintf("XLog:\n  Console: %v\n", !m.file)
 	if m.level != "" {
@@ -94,15 +99,15 @@ func (m mw) options(table string) harness.Options {
 		Overlay: fmt.Sprintf("XGin:\n  Log: %v\n  LogRequestBody: %v\n  LogResponseBody: %v\n  Trace: %v\n  Metric: %v\n",
 			m.log, m.body, m.body, m.trace, m.metric) + xlog + xtrace +
 			fmt.Sprintf("Service:\n  SpanDiscard: %v\n", m.export) +
-			// XGorm 放最后：chLoadOptions 往后接一个 ch 实例
+			// XGorm comes last: chLoadOptions appends a ch instance to it
 			fmt.Sprintf("XGorm:\n  Clients:\n    default:\n      Trace: %v\n    mysql:\n      Trace: %v\n", m.trace, m.trace),
 	}
 }
 
-// endpoint 被压的接口。baseline 和 xone 服务的路径略有不同：
-// xone 的 /users/:id 要带 ?cache=off 才直接读 PG，和 baseline 一样
+// endpoint is an endpoint under load. The paths differ slightly between baseline and the xone
+// service: xone's /users/:id needs ?cache=off to read PG directly, as baseline does
 type endpoint struct {
-	name  string // 表里的名字，也是 xgin 指标里的 route 标签
+	name  string // the name in the table, and the route label in xgin's metrics
 	path  func(i int, baseline bool) string
 	route string
 }
@@ -111,7 +116,7 @@ func loadEndpoints(ids []int64) []endpoint {
 	return []endpoint{
 		{name: "/ping", route: "/ping", path: func(int, bool) string { return "/ping" }},
 		{name: "/users/:id", route: "/users/:id", path: func(i int, baseline bool) string {
-			// 乘一个质数打散：相邻的请求读不同的行，不全压在同一个页上
+			// Multiplied by a prime to spread them out: neighboring requests read different rows rather than all landing on one page
 			id := ids[(i*7919)%len(ids)]
 			if baseline {
 				return fmt.Sprintf("/users/%d", id)
@@ -121,8 +126,8 @@ func loadEndpoints(ids []int64) []endpoint {
 	}
 }
 
-// seedUsers 建用户表、灌 n 个用户，返回它们的 id。
-// 表结构和 baseline、service/store 建的一样（它们都是 CREATE TABLE IF NOT EXISTS）
+// seedUsers creates the user table, fills in n users and returns their ids.
+// The table is the same as baseline and service/store create (both of them CREATE TABLE IF NOT EXISTS)
 func seedUsers(t *testing.T, table string, n int) []int64 {
 	t.Helper()
 	db := harness.DB(t)
@@ -133,42 +138,42 @@ func seedUsers(t *testing.T, table string, n int) []int64 {
 		email      TEXT NOT NULL DEFAULT '',
 		created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 	)`); err != nil {
-		t.Fatalf("建表 %s：%v", table, err)
+		t.Fatalf("creating the table %s: %v", table, err)
 	}
-	// 表是测试自己建的，进程还没起来就失败的话 harness 不会替它收尾
+	// The table is created by the test itself, and the harness cleans up none of it when the start fails before the process is up
 	t.Cleanup(func() { _, _ = db.Exec(`DROP TABLE IF EXISTS ` + table + `, ` + table + `_orders`) })
 	if _, err := db.ExecContext(ctx, `INSERT INTO `+table+` (name, email)
 		SELECT 'load-' || g, 'load-' || g || '@example.com' FROM generate_series(1, $1) g`, n); err != nil {
-		t.Fatalf("灌数据：%v", err)
+		t.Fatalf("filling in the data: %v", err)
 	}
 	rows, err := db.QueryContext(ctx, `SELECT id FROM `+table+` ORDER BY id`)
 	if err != nil {
-		t.Fatalf("读 id：%v", err)
+		t.Fatalf("reading the ids: %v", err)
 	}
 	defer rows.Close()
 	var ids []int64
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
-			t.Fatalf("读 id：%v", err)
+			t.Fatalf("reading the ids: %v", err)
 		}
 		ids = append(ids, id)
 	}
 	if err := rows.Err(); err != nil || len(ids) != n {
-		t.Fatalf("灌了 %d 个用户，读回 %d 个（%v）", n, len(ids), err)
+		t.Fatalf("filled in %d users and read %d back (%v)", n, len(ids), err)
 	}
 	return ids
 }
 
-// cell 一档的结果
+// cell is one step's result
 type cell struct {
 	target   string
 	endpoint string
 	conc     int
 	res      harness.LoadResult
-	// warm 预热发出去的请求数，对账时要算上
+	// warm is how many requests the warmup sent, which counts when reconciling
 	warm int
-	// cpu / loaderCPU 服务进程、压测进程每个请求用掉的 CPU
+	// cpu / loaderCPU are the CPU the service process and the load process used per request
 	cpu, loaderCPU time.Duration
 	peakRSS        int64
 	threads        int
@@ -176,9 +181,12 @@ type cell struct {
 
 func (c cell) cpuUS() float64 { return float64(c.cpu) / float64(time.Microsecond) }
 
-// measure 压一档：同样的并发先预热，重置峰值内存，再正式测，前后各读一次 /proc。
+// measure runs one step: a warmup at the same concurrency, the peak memory reset, and then the
+// measured run, reading /proc before and after.
 //
-// 预热单独算：刚起来的进程要建连接池、分配各种缓冲，JIT 式的一次性开销不该摊进每请求 CPU 里
+// The warmup counts separately: a process that has just come up builds its connection pools and
+// allocates its buffers, and that one-off, JIT-like cost should not be spread over the per-request
+// CPU
 func measure(t *testing.T, p *harness.Process, target string, ep endpoint, baseline bool, conc int) cell {
 	t.Helper()
 	spec := harness.LoadSpec{
@@ -192,11 +200,12 @@ func measure(t *testing.T, p *harness.Process, target string, ep endpoint, basel
 	warm.Duration = loadWarmup(t)
 	wr := harness.Load(t, warm)
 	if wr.Errors > 0 || wr.OK() != wr.Requests {
-		t.Fatalf("%s %s 并发 %d 预热就有失败：%v %v", target, ep.name, conc, wr, wr.ErrorSamples)
+		t.Fatalf("%s %s at concurrency %d had failures in the warmup already: %v %v", target, ep.name, conc, wr, wr.ErrorSamples)
 	}
 
-	// 至少跑 step，并且按预热的 QPS 估够 2 万个请求：/users/:id 在并发 1 下一秒只有两三千个，
-	// 5 秒才一万出头，p99 只由一百来个样本决定。最多拉长到 3 倍 step
+	// At least step long, and long enough for 20,000 requests at the warmup's QPS: /users/:id does
+	// two or three thousand a second at concurrency 1, so 5 seconds is barely over ten thousand and
+	// the p99 rests on a hundred samples. It stretches to 3 x step at most
 	spec.Duration = loadStep(t)
 	if need := time.Duration(float64(minLoadRequests) / wr.QPS * 1.1 * float64(time.Second)); need > spec.Duration {
 		spec.Duration = min(need, 3*loadStep(t))
@@ -213,15 +222,15 @@ func measure(t *testing.T, p *harness.Process, target string, ep endpoint, basel
 		c.cpu = (after.CPU - before.CPU) / time.Duration(res.Requests)
 		c.loaderCPU = (selfAfter.CPU - selfBefore.CPU) / time.Duration(res.Requests)
 	}
-	t.Logf("%-10s %-10s 并发 %-3d %v  服务 CPU %.1fµs/请求  峰值 RSS %.1fMB", target, ep.name, conc, res, c.cpuUS(), mb(c.peakRSS))
+	t.Logf("%-10s %-10s concurrency %-3d %v  service CPU %.1fus/request  peak RSS %.1fMB", target, ep.name, conc, res, c.cpuUS(), mb(c.peakRSS))
 
-	// 压测期间一个请求都不该失败：传输层错误（连接被拒、被重置、超时）和非 2xx 都算
+	// Not one request may fail under load: a transport error (a refused connection, a reset, a timeout) and anything that is not 2xx both count
 	if res.Errors > 0 || res.OK() != res.Requests {
-		t.Errorf("%s %s 并发 %d：%d 个请求里传输层失败 %d 个、非 2xx %d 个，状态码 %v，错误样本 %v",
+		t.Errorf("%s %s at concurrency %d: of %d requests, %d failed in the transport and %d were not 2xx, with the status codes %v and the error samples %v",
 			target, ep.name, conc, res.Requests, res.Errors, res.Requests-res.Errors-res.OK(), res.Status, res.ErrorSamples)
 	}
 	if res.Requests < minLoadRequests {
-		t.Logf("注意：%s %s 并发 %d 这一档只有 %d 个请求（不足 %d），分位数的抖动会大一些", target, ep.name, conc, res.Requests, minLoadRequests)
+		t.Logf("note: %s %s at concurrency %d measured only %d requests (fewer than %d), so the percentiles are shakier", target, ep.name, conc, res.Requests, minLoadRequests)
 	}
 	return c
 }
@@ -230,47 +239,50 @@ func readSelf(t *testing.T) harness.ProcStat {
 	t.Helper()
 	s, err := harness.ReadProc(os.Getpid())
 	if err != nil {
-		t.Fatalf("读压测进程自己的 /proc：%v", err)
+		t.Fatalf("reading the load process's own /proc: %v", err)
 	}
 	return s
 }
 
-// requestCount /metrics 里某个路由的 200 请求数（计数器和直方图的 _count 各一份）
+// requestCount is the number of 200 requests on one route in /metrics (once from the counter and once from the histogram's _count)
 func requestCount(m harness.Metrics, route string) (total, hist float64) {
 	return m.Sum("e2e_http_requests_total", "route", route, "status", "200"),
 		m.Sum("e2e_http_request_duration_seconds_count", "route", route, "status", "200")
 }
 
-// checkRequestMetric 指标对账：这一档（预热加正式）发出去多少个，xgin 的请求指标就该多多少。
+// checkRequestMetric reconciles the metrics: xgin's request metrics have to grow by exactly what
+// this step (the warmup and the measured run) sent.
 //
-// xgin/README.md XGin：「Metric: true # 请求指标」；xgin/middleware/metric.go 用 defer 记，
-// 每个请求都计入。并发下丢计数、重复计数都会在这里现形
+// xgin/README.md, XGin: "Metric: true # the request metrics"; metric.go in xgin/middleware records
+// them in a defer, so every request counts. A count lost or counted twice under concurrency shows
+// up here
 func checkRequestMetric(t *testing.T, c cell, route string, before, after harness.Metrics) {
 	t.Helper()
 	want := float64(c.warm + c.res.Requests)
 	t0, h0 := requestCount(before, route)
 	t1, h1 := requestCount(after, route)
 	if t1-t0 != want || h1-h0 != want {
-		t.Errorf("文档说每个请求都计进 e2e_http_requests_total 和耗时直方图；%s %s 并发 %d 发了 %.0f 个 200，计数器涨了 %.0f，直方图 _count 涨了 %.0f",
+		t.Errorf("the documentation says every request counts into e2e_http_requests_total and the duration histogram; %s %s at concurrency %d sent %.0f 200s, the counter grew by %.0f and the histogram's _count by %.0f",
 			c.target, c.endpoint, c.conc, want, t1-t0, h1-h0)
 	}
 }
 
-// accessLogStats 流式数一遍日志目录下的全部 app.log.* 文件：
-// 每个路由有几条访问日志、有几行不是完整的 JSON、一共多少字节。
+// accessLogStats streams through every app.log.* file in the log directory and counts: the access
+// log lines per route, the lines that are not whole JSON, and the bytes in all.
 //
-// 不用 Process.FileLogs：一轮全开的压测写下上百万行，全读进内存解析成 map 太重
+// Not Process.FileLogs: one round with everything on writes millions of lines, and reading them all
+// into memory and decoding them into maps is too heavy
 func accessLogStats(t *testing.T, dir string) (byRoute map[string]int, bad int, size int64) {
 	t.Helper()
 	files, err := filepath.Glob(filepath.Join(dir, "app.log.*"))
 	if err != nil || len(files) == 0 {
-		t.Fatalf("在 %s 里没找到日志文件（%v）", dir, err)
+		t.Fatalf("no log file was found in %s (%v)", dir, err)
 	}
 	byRoute = map[string]int{}
 	for _, name := range files {
 		f, err := os.Open(name)
 		if err != nil {
-			t.Fatalf("打开 %s：%v", name, err)
+			t.Fatalf("opening %s: %v", name, err)
 		}
 		st, _ := f.Stat()
 		size += st.Size()
@@ -292,14 +304,15 @@ func accessLogStats(t *testing.T, dir string) (byRoute map[string]int, bad int, 
 		err = sc.Err()
 		f.Close()
 		if err != nil {
-			t.Fatalf("读 %s：%v", name, err)
+			t.Fatalf("reading %s: %v", name, err)
 		}
 	}
 	return byRoute, bad, size
 }
 
-// waitSpansFlushed 等 BatchSpanProcessor 把手上的 Span 导完：导出计数追上请求计数，
-// 或者连续 7 秒不再变（它的默认 BatchTimeout 是 5s，队列里剩下的最迟那时候发出去）
+// waitSpansFlushed waits for the BatchSpanProcessor to export what it holds: the export count
+// catches up with the request count, or it stops changing for 7 seconds in a row (its default
+// BatchTimeout being 5s, by which time the rest of the queue has gone out at the latest)
 func waitSpansFlushed(t *testing.T, p *harness.Process, route string) (exported, handled float64) {
 	t.Helper()
 	last, stable := -1.0, time.Now()
@@ -319,16 +332,15 @@ func waitSpansFlushed(t *testing.T, p *harness.Process, route string) (exported,
 
 func mb(b int64) float64 { return float64(b) / (1 << 20) }
 
-// msf 毫秒，两位小数
+// msf is milliseconds with two decimals
 func msf(d time.Duration) string {
 	return strconv.FormatFloat(float64(d)/float64(time.Millisecond), 'f', 2, 64)
 }
 
-// cellTable 把若干档渲染成 Markdown 表格
+// cellTable renders a set of steps as a Markdown table
 func cellTable(cells []cell) string {
 	var b strings.Builder
-	b.WriteString("| 目标 | 接口 | 并发 | 请求数 | QPS | p50 ms | p90 ms | p99 ms | max ms | 错误 | 服务 CPU µs/请求 | 压测端 CPU µs/请求 | 峰值 RSS MB | 线程 |\n")
-	b.WriteString("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|\n")
+	b.WriteString("| target | endpoint | concurrency | requests | QPS | p50 ms | p90 ms | p99 ms | max ms | errors | service CPU us/request | loader CPU us/request | peak RSS MB | threads |\n")
 	for _, c := range cells {
 		fail := c.res.Errors + (c.res.Requests - c.res.Errors - c.res.OK())
 		fmt.Fprintf(&b, "| %s | %s | %d | %d | %.0f | %s | %s | %s | %s | %d | %.1f | %.1f | %.1f | %d |\n",

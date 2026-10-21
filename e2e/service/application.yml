@@ -1,17 +1,20 @@
-# e2e 服务的配置。每个进程各不相同的连接串、地址、端口、表名写成 ${VAR}，由 harness 注入：
-#   E2E_PORT               XGin.Port（必填）
-#   E2E_PG_DSN             XGorm.Clients.default.DSN（必填，PostgreSQL）
-#   E2E_MYSQL_DSN          XGorm.Clients.mysql.DSN（必填，MySQL）
-#   E2E_REDIS_ADDR         XRedis.Addr（必填）
-#   E2E_TABLE              Service.Table，订单表是它加 _orders
+# The e2e service's configuration. The connection strings, addresses, ports and table names that
+# differ per process are written as ${VAR} and injected by the harness:
+#   E2E_PORT               XGin.Port (required)
+#   E2E_PG_DSN             XGorm.Clients.default.DSN (required, PostgreSQL)
+#   E2E_MYSQL_DSN          XGorm.Clients.mysql.DSN (required, MySQL)
+#   E2E_REDIS_ADDR         XRedis.Addr (required)
+#   E2E_TABLE              Service.Table; the order table is this plus _orders
 #   E2E_KEY_PREFIX         Service.KeyPrefix
-#   E2E_DOWNSTREAM_URL     Service.Downstream，/proxy 调的下游
-#   E2E_SPAN_FILE          Service.SpanFile，留空不写 Span
-#   E2E_LOG_FILE           XLog.File.Enable，目录是 E2E_LOG_DIR
-#   E2E_CH_DSN             第三个实例 ch（ClickHouse），在 application-ch.yml 里，--profile=ch 才有
+#   E2E_DOWNSTREAM_URL     Service.Downstream, the downstream /proxy calls
+#   E2E_SPAN_FILE          Service.SpanFile; empty writes no spans
+#   E2E_LOG_FILE           XLog.File.Enable, with the directory in E2E_LOG_DIR
+#   E2E_CH_DSN             the third instance ch (ClickHouse), which lives in application-ch.yml and needs --profile=ch
 #
-# 开关不走环境变量：用例用 harness.Options.Overlay 叠一份 profile 上来，写的就是使用者会写的 YAML。
-# 这里没写的项就是框架的默认值——用例测默认行为时拿到的是真的默认值，不是这份文件替它写死的。
+# The switches do not go through the environment: a case lays a profile over this with
+# harness.Options.Overlay, which is the YAML a caller would write.
+# What is not written here is the framework's default -- a case testing the default behavior meets
+# the real default and not one this file pinned for it.
 
 XApp:
   Name: xone.e2e.service
@@ -21,19 +24,20 @@ XLog:
   Format: json
   File:
     Enable: ${E2E_LOG_FILE:false}
-    Path: ${E2E_LOG_DIR:}      # 留空保持默认值；只在 Enable 时用到
+    Path: ${E2E_LOG_DIR:}      # empty keeps the default; it is only used with Enable
     Name: app.log
 
 XTrace:
-  ForwardHeaders:          # 只收 XGin.TrustedProxies 里的对端发来的值，默认只信私有网段
+  ForwardHeaders:          # values are taken from the peers in XGin.TrustedProxies alone, which trusts the private ranges by default
     - X-Request-Id
 
 XMetric:
   Namespace: e2e
 
-# 两个实例：default 是 PG（C() 取的就是它），mysql 是 MySQL（C("mysql")）；
-# 第三个 ch（ClickHouse）在 application-ch.yml 里，--profile=ch 时才叠上来。
-# 每个实例的配置各管各的，overlay 里写 XGorm.Clients.<名字>.<字段> 单独改一个
+# Two instances: default is PG (what C() returns) and mysql is MySQL (C("mysql"));
+# the third, ch (ClickHouse), lives in application-ch.yml and is laid over with --profile=ch.
+# Each instance is configured on its own, and an overlay changes one field with
+# XGorm.Clients.<name>.<field>
 XGorm:
   Clients:
     default:

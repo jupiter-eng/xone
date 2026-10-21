@@ -9,67 +9,74 @@ import (
 	"github.com/jupiter-eng/xone/e2e/harness"
 )
 
-// 启动期建连验证的预算。
+// The budget of the connect validation at the start.
 //
-// docs/behavior.md「启动期建连探测」：连不上时按 3 次重试，两次之间的等待逐次翻倍并带抖动；
-// xutil.Retry 的注释：「整轮有一个总预算（attempts × timeout + 各次退避的上界之和）」。
-// 起始间隔 1s（docs/behavior.md「启动期建连探测」，即 xgorm.go / xredis.go 里的 pingInterval），
-// 所以两次退避的上界是 1s、2s。单次尝试的超时：
+// docs/behavior.md, "The connect probe at start": it retries 3 times when it cannot connect, and
+// the wait between two of them doubles each time with jitter; xutil.Retry's comment: "the whole
+// round has one budget (attempts x timeout plus the upper bounds of the backoffs)".
+// The first interval is 1s (docs/behavior.md, "The connect probe at start", which is pingInterval
+// in xgorm.go / xredis.go), so the two backoff bounds are 1s and 2s. The timeout of one attempt:
 //
-//	XGorm（PostgreSQL）「注入的 connect_timeout（DialTimeout 向上取整到整秒）+ DialTimeout，默认 1.5s」
-//	XRedis              xredis.go pingTimeout「建连加一个往返」= DialTimeout + ReadTimeout = 1s
+//	XGorm (PostgreSQL) "the injected connect_timeout (DialTimeout rounded up to whole seconds) + DialTimeout, 1.5s by default"
+//	XRedis             pingTimeout in xredis.go, "a connect plus one round trip" = DialTimeout + ReadTimeout = 1s
 const (
 	faultPingAttempts     = 3
 	faultPingBackoffs     = time.Second + 2*time.Second
 	faultPGAttempt        = 1500 * time.Millisecond
-	faultPGConnect        = time.Second                                                   // 注入的 connect_timeout
+	faultPGConnect        = time.Second                                                   // the injected connect_timeout
 	faultPGStartBudget    = faultPingAttempts*faultPGAttempt + faultPingBackoffs          // 7.5s
 	faultRedisStartBudget = faultPingAttempts*faultRedisAttemptBudget + faultPingBackoffs // 6s
 )
 
-// faultStartSlack 进程起停本身的开销：配置写错时整个进程 16–20ms 就退出了（本机空闲时实测）。
-// 但 Uptime 从 exec 算起，并发跑整套 e2e 时光把进程拉起来就要等很久：GitHub runner（4 核、-parallel=16）上
-// ClickHouse 密码错的那一例 1.075s 才退出，进程自己的日志从读配置到退出只占 140ms。
-// 给到 2s，留一倍余量，又远小于任何一个被测的预算（最小 6s）。
-// 「不重试」靠数代理收到的连接，不靠这个时长：重试第一次退避 1s，落在余量之内也照样被连接数抓到
+// faultStartSlack is what starting and stopping the process itself costs: with a malformed
+// configuration the whole process is out in 16 to 20ms (measured on an idle machine here).
+// But Uptime counts from the exec, and with the whole e2e suite running in parallel, merely
+// getting the process up takes a while: on a GitHub runner (4 cores, -parallel=16) the ClickHouse
+// wrong-password case exited only after 1.075s, with the process's own logs from reading the
+// configuration to exiting taking 140ms of it.
+// 2s leaves twice that and stays far under every budget under test (6s at the least).
+// "It does not retry" rests on counting the connections the proxy saw and not on this duration:
+// the first retry backs off 1s, which falls inside the slack and is still caught by the connection
+// count
 const faultStartSlack = 2 * time.Second
 
-// faultStartFails 起一个注定起不来的进程，等它退出：必须是非 0 退出、从没开始监听
+// faultStartFails starts a process that is bound to fail and waits for it: it has to exit non-zero and never start listening
 func faultStartFails(t *testing.T, o harness.Options) (harness.Exit, *harness.Process) {
 	t.Helper()
 	o.NoWait = true
 	p := harness.Start(t, o)
 	exit, ok := p.Wait(30 * time.Second)
 	if !ok {
-		t.Fatalf("启动应该失败退出，30s 了还在跑\n%s", p.Output())
+		t.Fatalf("the start should fail and exit, and it is still running after 30s\n%s", p.Output())
 	}
 	if exit.Code == 0 || exit.Signal != nil {
-		t.Fatalf("启动应该失败（非 0 退出），实际 %v\n%s", exit, p.Output())
+		t.Fatalf("the start should fail (a non-zero exit), got %v\n%s", exit, p.Output())
 	}
 	if len(p.FindLogs(func(l harness.Log) bool { return l.Msg() == "xgin listening" })) != 0 {
-		t.Errorf("依赖起不来时服务不该开始监听，实际看到了 xgin listening")
+		t.Errorf("the service should not start listening when a dependency will not come up, and xgin listening turned up")
 	}
 	return exit, p
 }
 
-// faultMustContain text 里每一个片段都得有
+// faultMustContain: text has to hold every one of the fragments
 func faultMustContain(t *testing.T, where, text string, parts ...string) {
 	t.Helper()
 	for _, s := range parts {
 		if !strings.Contains(text, s) {
-			t.Errorf("%s 里应有 %q，实际：\n%s", where, s, text)
+			t.Errorf("%s should hold %q, got:\n%s", where, s, text)
 		}
 	}
 }
 
-// 启动时 PG 不可达，三种不可达：
+// PG is unreachable at the start, in three ways:
 //
-//	拒绝连接    进程挂了，端口没人听：每次尝试立刻失败，总耗时只剩两次退避
-//	对端不回话  TCP 连得上、startup 没有回音：每次尝试等满 connect_timeout（1s）
-//	主机宕机    SYN 没有回音：同上，等满 connect_timeout
+//	connections refused     the process died and nothing listens on the port: every attempt fails at once and the total is the two backoffs alone
+//	the far end says nothing  TCP connects and startup is never answered: every attempt waits out connect_timeout (1s)
+//	the host is down        the SYN is never answered: the same, waiting out connect_timeout
 //
-// 都要在预算（faultPGStartBudget，7.5s）内失败；错误由 MustRun 打在 stderr 上，
-// 要说清连不上的是哪个地址（docs/observability.md「框架自己的日志」），不能有密码和 DSN
+// All of them have to fail within the budget (faultPGStartBudget, 7.5s); the error is written to
+// stderr by MustRun and has to say which address it cannot reach (docs/observability.md, "The
+// framework's own logs"), and may hold no password and no DSN
 func TestFault_PGUnreachableAtStartup_FailsInBudget_ErrHasAddrNoPassword(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -77,13 +84,13 @@ func TestFault_PGUnreachableAtStartup_FailsInBudget_ErrHasAddrNoPassword(t *test
 	for _, c := range []struct {
 		name     string
 		inject   func(*harness.Proxy)
-		lo       time.Duration // 至少这么久：每次尝试都等满 connect_timeout
+		lo       time.Duration // this long at the least: every attempt waits out connect_timeout
 		reason   string
-		attempts bool // 代理数得到尝试次数（连得上代理的那两种里只有「对端不回话」）
+		attempts bool // the proxy can count the attempts (of the two that reach it, "the far end says nothing" alone)
 	}{
-		{"拒绝连接", func(p *harness.Proxy) { p.Cut() }, 0, "connection refused", false},
-		{"对端不回话", func(p *harness.Proxy) { p.SetDelay(time.Hour) }, faultPingAttempts * faultPGConnect, "timeout", true},
-		{"主机宕机", func(p *harness.Proxy) { p.Blackhole() }, faultPingAttempts * faultPGConnect, "timeout", false},
+		{"connections refused", func(p *harness.Proxy) { p.Cut() }, 0, "connection refused", false},
+		{"the far end says nothing", func(p *harness.Proxy) { p.SetDelay(time.Hour) }, faultPingAttempts * faultPGConnect, "timeout", true},
+		{"the host is down", func(p *harness.Proxy) { p.Blackhole() }, faultPingAttempts * faultPGConnect, "timeout", false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
@@ -92,55 +99,58 @@ func TestFault_PGUnreachableAtStartup_FailsInBudget_ErrHasAddrNoPassword(t *test
 			exit, p := faultStartFails(t, harness.Options{PGAddr: pg.Addr()})
 			stderr := p.Stderr()
 			faultMustContain(t, "stderr", stderr, "xgorm connect failed", "cannot reach "+pg.Addr(), c.reason)
-			mustNotContain(t, "进程的 stdout / stderr", p.Output(), pw, harness.PGDSN(pg.Addr()))
+			mustNotContain(t, "the process's stdout / stderr", p.Output(), pw, harness.PGDSN(pg.Addr()))
 
 			if exit.Uptime > faultPGStartBudget+faultStartSlack {
-				t.Errorf("按文档，PG 建连验证最多 %d 次 × %v + 退避上界 %v = %v，实际 %v 才失败退出",
+				t.Errorf("by the documentation the PG connect validation takes %d attempts x %v plus the backoff bounds %v = %v, and it failed and exited only after %v",
 					faultPingAttempts, faultPGAttempt, faultPingBackoffs, faultPGStartBudget, exit.Uptime)
 			}
 			if exit.Uptime < c.lo {
-				t.Errorf("%s时每次尝试都该等满 connect_timeout（%v），%d 次至少 %v，实际 %v 就退出了：没按文档试满 3 次，或没等满超时",
+				t.Errorf("while %s every attempt should wait out connect_timeout (%v), so %d attempts take %v at least, and it exited after %v: it did not make the documented 3 attempts, or did not wait the timeouts out",
 					c.name, faultPGConnect, faultPingAttempts, c.lo, exit.Uptime)
 			}
 			if c.attempts && pg.Accepted() != faultPingAttempts {
-				t.Errorf("文档说建连探测最多试 %d 次，代理实际收到 %d 个连接", faultPingAttempts, pg.Accepted())
+				t.Errorf("the documentation says the connect probe makes %d attempts at most, and the proxy saw %d connections", faultPingAttempts, pg.Accepted())
 			}
-			t.Logf("数字：启动时 PG %s：%v 后以 %d 退出（预算 %v）；代理收到 %d 个连接；错误：%s",
-				c.name, exit.Uptime.Round(time.Millisecond), exit.Code, faultPGStartBudget, pg.Accepted(), lastLine(stderr))
+			t.Logf("numbers: at the start, with PG %s: it exited with %d after %v (budget %v); the proxy saw %d connections; the error: %s",
+				c.name, exit.Code, exit.Uptime.Round(time.Millisecond), faultPGStartBudget, pg.Accepted(), lastLine(stderr))
 		})
 	}
 }
 
-// 启动时 PG 密码错误：docs/behavior.md「启动期建连探测」——认证失败不重试，错误说清是认证失败、不说连不上；
-// 对的密码、错的密码都不能出现在输出里
+// A wrong PG password at the start: docs/behavior.md, "The connect probe at start" -- an
+// authentication failure is not retried, and the error says it is an authentication failure and not
+// that it cannot connect; neither the right password nor the wrong one may appear in the output
 func TestFault_PGBadPasswordAtStartup_ErrSaysAuthFailed_NoPassword(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
 	pw := pgPassword(t)
 	wrong := "wrong-pw-" + harness.NewID()
-	pg := harness.NewProxy(t, harness.PGAddr()) // 只为数连接
+	pg := harness.NewProxy(t, harness.PGAddr()) // only to count the connections
 	dsn := strings.Replace(harness.PGDSN(pg.Addr()), ":"+pw+"@", ":"+wrong+"@", 1)
 	exit, p := faultStartFails(t, harness.Options{Env: map[string]string{"E2E_PG_DSN": dsn}})
 
 	stderr := p.Stderr()
 	faultMustContain(t, "stderr", stderr, "xgorm connect failed", "authentication to "+pg.Addr()+" failed", `password authentication failed for user "xone"`)
-	mustNotContain(t, "进程的 stdout / stderr", p.Output(), pw, wrong, dsn)
+	mustNotContain(t, "the process's stdout / stderr", p.Output(), pw, wrong, dsn)
 	if strings.Contains(stderr, "cannot reach") {
-		t.Errorf("认证失败不是连不上，不该报 cannot reach：\n%s", stderr)
+		t.Errorf("an authentication failure is not a failure to connect and should not report cannot reach:\n%s", stderr)
 	}
-	// 只试一次就没有退避可等：进程起停的开销之内就该退出
+	// One attempt means no backoff to wait out: it should exit within what starting and stopping the process costs
 	if exit.Uptime > faultStartSlack {
-		t.Errorf("认证失败不重试，应在 %v 内退出，实际 %v", faultStartSlack, exit.Uptime)
+		t.Errorf("an authentication failure is not retried and should exit within %v, got %v", faultStartSlack, exit.Uptime)
 	}
 	if pg.Accepted() != 1 {
-		t.Errorf("认证失败不重试，代理应只收到 1 个连接，实际 %d 个", pg.Accepted())
+		t.Errorf("an authentication failure is not retried and the proxy should see 1 connection, got %d", pg.Accepted())
 	}
-	t.Logf("数字：启动时 PG 密码错误：%v 后以 %d 退出，试了 %d 次；错误：%s", exit.Uptime.Round(time.Millisecond), exit.Code, pg.Accepted(), lastLine(stderr))
+	t.Logf("numbers: at the start, with a wrong PG password: it exited with %d after %v in %d attempts; the error: %s", exit.Code, exit.Uptime.Round(time.Millisecond), pg.Accepted(), lastLine(stderr))
 }
 
-// 启动时 Redis 不可达。配了密码（随机串，反正连不上，服务端不会校验）：错误里要有地址、没有它。
-// xredis/README.md XRedis.Password：「本模块不会把它写进任何日志」。
-// 预算 faultRedisStartBudget（6s）：3 次 × (DialTimeout + ReadTimeout) + 两次退避的上界
+// Redis is unreachable at the start. A password is configured (a random string: it cannot connect
+// anyway and no server will check it), and the error has to hold the address and not it.
+// xredis/README.md, XRedis.Password: "this module writes it into no log at all".
+// The budget is faultRedisStartBudget (6s): 3 attempts x (DialTimeout + ReadTimeout) plus the two
+// backoff bounds
 func TestFault_RedisUnreachableAtStartup_FailsInBudget_ErrHasAddrNoPassword(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -150,12 +160,12 @@ func TestFault_RedisUnreachableAtStartup_FailsInBudget_ErrHasAddrNoPassword(t *t
 		lo     time.Duration
 		reason string
 	}{
-		// 拒绝连接的下限不卡：每次尝试当场失败，总耗时只剩两次带抖动的退避
-		{"拒绝连接", func(p *harness.Proxy) { p.Cut() }, 0, "connection refused"},
-		// 对端不回话：每次尝试至少等满 ReadTimeout（握手那一下）
-		{"对端不回话", func(p *harness.Proxy) { p.SetDelay(time.Hour) }, faultPingAttempts * faultRedisReadTimeout, "i/o timeout"},
-		// 主机宕机：每次尝试等满单次 Ping 的超时 DialTimeout + ReadTimeout
-		{"主机宕机", func(p *harness.Proxy) { p.Blackhole() }, faultPingAttempts * faultRedisAttemptBudget, "deadline exceeded"},
+		// No lower bound for connections refused: every attempt fails there and then, and the total is the two jittered backoffs alone
+		{"connections refused", func(p *harness.Proxy) { p.Cut() }, 0, "connection refused"},
+		// The far end says nothing: every attempt waits out ReadTimeout at least (the handshake)
+		{"the far end says nothing", func(p *harness.Proxy) { p.SetDelay(time.Hour) }, faultPingAttempts * faultRedisReadTimeout, "i/o timeout"},
+		// The host is down: every attempt waits out one Ping's timeout, DialTimeout + ReadTimeout
+		{"the host is down", func(p *harness.Proxy) { p.Blackhole() }, faultPingAttempts * faultRedisAttemptBudget, "deadline exceeded"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
@@ -165,25 +175,28 @@ func TestFault_RedisUnreachableAtStartup_FailsInBudget_ErrHasAddrNoPassword(t *t
 			exit, p := faultStartFails(t, harness.Options{RedisAddr: rp.Addr(), Overlay: fmt.Sprintf("XRedis:\n  Password: %q\n", secret)})
 			stderr := p.Stderr()
 			faultMustContain(t, "stderr", stderr, "xredis connect failed", "cannot reach "+rp.Addr(), c.reason)
-			mustNotContain(t, "进程的 stdout / stderr", p.Output(), secret)
+			mustNotContain(t, "the process's stdout / stderr", p.Output(), secret)
 			if exit.Uptime > faultRedisStartBudget+faultStartSlack {
-				t.Errorf("按文档，Redis 建连验证最多 %d 次 × %v + 退避上界 %v = %v，实际 %v 才失败退出",
+				t.Errorf("by the documentation the Redis connect validation takes %d attempts x %v plus the backoff bounds %v = %v, and it failed and exited only after %v",
 					faultPingAttempts, faultRedisAttemptBudget, faultPingBackoffs, faultRedisStartBudget, exit.Uptime)
 			}
 			if exit.Uptime < c.lo {
-				t.Errorf("%s时 %d 次尝试至少 %v，实际 %v 就退出了", c.name, faultPingAttempts, c.lo, exit.Uptime)
+				t.Errorf("while %s, %d attempts take %v at least, and it exited after %v", c.name, faultPingAttempts, c.lo, exit.Uptime)
 			}
-			t.Logf("数字：启动时 Redis %s：%v 后以 %d 退出（预算 %v）；错误：%s",
-				c.name, exit.Uptime.Round(time.Millisecond), exit.Code, faultRedisStartBudget, lastLine(stderr))
+			t.Logf("numbers: at the start, with Redis %s: it exited with %d after %v (budget %v); the error: %s",
+				c.name, exit.Code, exit.Uptime.Round(time.Millisecond), faultRedisStartBudget, lastLine(stderr))
 		})
 	}
 }
 
-// 启动时 Redis 密码错误：xredis/README.md XRedis「认证失败（WRONGPASS / NOAUTH）报的是
-// authentication to <地址> failed，不重试」，错误里是服务端回的原文，不含凭证。
+// A wrong Redis password at the start: xredis/README.md, XRedis -- "an authentication failure
+// (WRONGPASS / NOAUTH) is reported as authentication to <address> failed and is not retried", with
+// the server's own text in the error and no credential in it.
 //
-// 「不重试」数连接：经代理连 Redis、不预热（MinIdleConns: 0），建连验证每试一次是一条新连接
-// （认证失败的连接 go-redis 当场关掉），所以代理只该收到 1 条；重试的话是 3 条
+// "It is not retried" is counted in connections: it reaches Redis through the proxy with no warmup
+// (MinIdleConns: 0), so every attempt of the connect validation is a new connection (go-redis
+// closes a connection that failed to authenticate there and then) and the proxy should see 1
+// alone; retried it would be 3
 func TestFault_RedisBadPasswordAtStartup_ErrSaysAuthFailed_NoRetry_NoPassword(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -195,76 +208,82 @@ func TestFault_RedisBadPasswordAtStartup_ErrSaysAuthFailed_NoRetry_NoPassword(t 
 	stderr := p.Stderr()
 	faultMustContain(t, "stderr", stderr, "xredis connect failed", "authentication to "+rp.Addr()+" failed", "WRONGPASS")
 	if strings.Contains(stderr, "cannot reach") {
-		t.Errorf("认证失败不该说成连不上，实际：%s", lastLine(stderr))
+		t.Errorf("an authentication failure should not be reported as a failure to connect, got: %s", lastLine(stderr))
 	}
-	mustNotContain(t, "进程的 stdout / stderr", p.Output(), pw, wrong)
+	mustNotContain(t, "the process's stdout / stderr", p.Output(), pw, wrong)
 	if n := rp.Accepted(); n != 1 {
-		t.Errorf("密码不对再试也不对：建连验证应只试 1 次（1 条连接），实际代理收到 %d 条", n)
+		t.Errorf("a wrong password stays wrong on a retry: the connect validation should make 1 attempt (1 connection), and the proxy saw %d", n)
 	}
 	if exit.Uptime > faultStartSlack {
-		t.Errorf("不重试就没有退避：应在 %v 内失败退出，实际 %v", faultStartSlack, exit.Uptime)
+		t.Errorf("no retry means no backoff: it should fail and exit within %v, got %v", faultStartSlack, exit.Uptime)
 	}
-	t.Logf("数字：启动时 Redis 密码错误：%v 后以 %d 退出，代理收到 %d 条连接；错误：%s",
-		exit.Uptime.Round(time.Millisecond), exit.Code, rp.Accepted(), lastLine(stderr))
+	t.Logf("numbers: at the start, with a wrong Redis password: it exited with %d after %v and the proxy saw %d connections; the error: %s",
+		exit.Code, exit.Uptime.Round(time.Millisecond), rp.Accepted(), lastLine(stderr))
 }
 
-// 回归：key=value 写法里 password 的等号两边带空格，同时另一个参数写错。
+// A regression: the key=value spelling with spaces around password's equals sign, together with
+// another malformed parameter.
 //
-// xgorm/README.md XGorm：「pgx 自己的错误原文是整串 DSN、只遮得住 password=x 这种规整写法
-// （实测 v5.10.0，password = hunter2 原样带出），所以不回传它」；预检用 pgx.ParseConfig，
-// 「它比 pgconn.ParseConfig 多校验 default_query_exec_mode、statement_cache_capacity、
-// description_cache_capacity，这三项写错也在预检时报一句不带 DSN 的错」。
-// 上一轮修的正是 password = hunter2 配 default_query_exec_mode=bogus：密码原样进了错误。
+// xgorm/README.md, XGorm: "pgx's own error text is the whole DSN and masks the tidy password=x
+// spelling alone (measured on v5.10.0, where password = hunter2 is carried out as it is), so it is
+// not handed back"; the pre-check uses pgx.ParseConfig, "which checks default_query_exec_mode,
+// statement_cache_capacity and description_cache_capacity beyond what pgconn.ParseConfig does, and
+// a malformed one of those three is reported at the pre-check as well, in an error that carries no
+// DSN".
+// What the previous round fixed was exactly password = hunter2 together with
+// default_query_exec_mode=bogus: the password went into the error as it was.
 //
-// 预检失败是配置错，不该去建连、也不该重试：应当立刻退出（本机实测 16–20ms）。
-// 另外两例 DSN 解得开、但建连失败（密码错、端口没人听），走的是 pgx 建连的错误，同样不能带出密码
+// A failed pre-check is a configuration error, which should neither connect nor retry: it should
+// exit at once (16 to 20ms measured here).
+// The other two cases parse the DSN and fail to connect (a wrong password, nothing listening on the
+// port), which go through pgx's connect errors and may carry no password either
 func TestFault_DSNPasswordWithSpacedEqualsAndBadParam_FailsWithoutPassword(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
 	secret := "hunter2-" + harness.NewID()
 	base := "host=127.0.0.1 port=" + strings.Split(harness.PGAddr(), ":")[1] + " user=xone dbname=xone_e2e"
 	parse := []struct{ name, dsn string }{
-		{"default_query_exec_mode 写错（上一轮的 bug）", base + " password = " + secret + " default_query_exec_mode=bogus"},
-		{"statement_cache_capacity 不是数字", base + " password = " + secret + " statement_cache_capacity=abc"},
-		{"description_cache_capacity 不是数字", base + " password = " + secret + " description_cache_capacity=abc"},
-		{"sslmode 写错", base + " password = " + secret + " sslmode=bogus"},
-		{"connect_timeout 不是数字", base + " password = " + secret + " connect_timeout=abc"},
-		{"port 不是数字", "host=127.0.0.1 port=notaport user=xone dbname=xone_e2e password = " + secret},
-		{"只有等号后面有空格", base + " password= " + secret + " default_query_exec_mode=bogus"},
-		{"只有等号前面有空格", base + " password =" + secret + " default_query_exec_mode=bogus"},
-		{"带引号、密码里有空格", base + " password = '" + secret + " x' default_query_exec_mode=bogus"},
-		{"带引号、密码里有转义的单引号", base + ` password = 'it\'s-` + secret + `' default_query_exec_mode=bogus`},
-		{"URL 写法里 pgx 专有参数写错", "postgres://xone:" + secret + "@" + harness.PGAddr() + "/xone_e2e?sslmode=disable&default_query_exec_mode=bogus"},
+		{"a malformed default_query_exec_mode (the previous round's bug)", base + " password = " + secret + " default_query_exec_mode=bogus"},
+		{"a statement_cache_capacity that is not a number", base + " password = " + secret + " statement_cache_capacity=abc"},
+		{"a description_cache_capacity that is not a number", base + " password = " + secret + " description_cache_capacity=abc"},
+		{"a malformed sslmode", base + " password = " + secret + " sslmode=bogus"},
+		{"a connect_timeout that is not a number", base + " password = " + secret + " connect_timeout=abc"},
+		{"a port that is not a number", "host=127.0.0.1 port=notaport user=xone dbname=xone_e2e password = " + secret},
+		{"a space after the equals sign alone", base + " password= " + secret + " default_query_exec_mode=bogus"},
+		{"a space before the equals sign alone", base + " password =" + secret + " default_query_exec_mode=bogus"},
+		{"quoted, with a space inside the password", base + " password = '" + secret + " x' default_query_exec_mode=bogus"},
+		{"quoted, with an escaped single quote inside the password", base + ` password = 'it\'s-` + secret + `' default_query_exec_mode=bogus`},
+		{"a malformed pgx-only parameter in the URL spelling", "postgres://xone:" + secret + "@" + harness.PGAddr() + "/xone_e2e?sslmode=disable&default_query_exec_mode=bogus"},
 	}
 	for _, c := range parse {
-		t.Run("预检失败："+c.name, func(t *testing.T) {
+		t.Run("the pre-check fails: "+c.name, func(t *testing.T) {
 			t.Parallel()
 			exit, p := faultStartFails(t, harness.Options{Env: map[string]string{"E2E_PG_DSN": c.dsn}})
 			stderr := p.Stderr()
-			mustNotContain(t, "进程的 stdout / stderr", p.Output(), secret)
+			mustNotContain(t, "the process's stdout / stderr", p.Output(), secret)
 			faultMustContain(t, "stderr", stderr, "xgorm config failed", "failed to parse DSN")
 			if exit.Uptime > faultStartSlack {
-				t.Errorf("DSN 预检失败是配置错，不该建连、不该重试，应立刻退出，实际用了 %v", exit.Uptime)
+				t.Errorf("a failed DSN pre-check is a configuration error, which should neither connect nor retry and should exit at once, and it took %v", exit.Uptime)
 			}
-			t.Logf("数字：%s：%v 后以 %d 退出；错误：%s", c.name, exit.Uptime.Round(time.Millisecond), exit.Code, lastLine(stderr))
+			t.Logf("numbers: %s: it exited with %d after %v; the error: %s", c.name, exit.Code, exit.Uptime.Round(time.Millisecond), lastLine(stderr))
 		})
 	}
 
-	t.Run("解得开但密码错", func(t *testing.T) {
+	t.Run("it parses and the password is wrong", func(t *testing.T) {
 		t.Parallel()
 		exit, p := faultStartFails(t, harness.Options{Env: map[string]string{"E2E_PG_DSN": base + " sslmode=disable password = " + secret}})
-		mustNotContain(t, "进程的 stdout / stderr", p.Output(), secret)
+		mustNotContain(t, "the process's stdout / stderr", p.Output(), secret)
 		faultMustContain(t, "stderr", p.Stderr(), "xgorm connect failed", "password authentication failed")
-		t.Logf("数字：DSN 解得开、密码错：%v 后以 %d 退出；错误：%s", exit.Uptime.Round(time.Millisecond), exit.Code, lastLine(p.Stderr()))
+		t.Logf("numbers: the DSN parses and the password is wrong: it exited with %d after %v; the error: %s", exit.Code, exit.Uptime.Round(time.Millisecond), lastLine(p.Stderr()))
 	})
 
-	t.Run("解得开但端口没人听", func(t *testing.T) {
+	t.Run("it parses and nothing listens on the port", func(t *testing.T) {
 		t.Parallel()
 		addr := fmt.Sprintf("127.0.0.1:%d", harness.FreePort(t))
 		dsn := "host=127.0.0.1 port=" + strings.Split(addr, ":")[1] + " user=xone dbname=xone_e2e sslmode=disable password = " + secret
 		exit, p := faultStartFails(t, harness.Options{Env: map[string]string{"E2E_PG_DSN": dsn}})
-		mustNotContain(t, "进程的 stdout / stderr", p.Output(), secret)
+		mustNotContain(t, "the process's stdout / stderr", p.Output(), secret)
 		faultMustContain(t, "stderr", p.Stderr(), "xgorm connect failed", "cannot reach "+addr, "connection refused")
-		t.Logf("数字：DSN 解得开、端口没人听：%v 后以 %d 退出；错误：%s", exit.Uptime.Round(time.Millisecond), exit.Code, lastLine(p.Stderr()))
+		t.Logf("numbers: the DSN parses and nothing listens on the port: it exited with %d after %v; the error: %s", exit.Code, exit.Uptime.Round(time.Millisecond), lastLine(p.Stderr()))
 	})
 }

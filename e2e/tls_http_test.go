@@ -23,7 +23,7 @@ import (
 	"github.com/jupiter-eng/xone/xtls"
 )
 
-// tlsStub 一个要求客户端证书的 https 桩：回的 body 是「协议 TLS版本 客户端证书CN」
+// tlsStub is an https stub asking for a client certificate: the body it answers is "the protocol, the TLS version, the client certificate's CN"
 func tlsStub(t *testing.T, certs *harness.TLSCerts) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -46,19 +46,19 @@ func TestTLS_XHttp(t *testing.T) {
 	stub := tlsStub(t, certs)
 	ctx := context.Background()
 
-	t.Run("配置文件里的TLS块生效且服务端看到的是TLS和客户端证书", func(t *testing.T) {
+	t.Run("the TLS block in the configuration file takes and the server sees TLS and the client certificate", func(t *testing.T) {
 		xonetest.UseConfigYAML(t, "XHttp:\n  TLS: "+tlsBlock(xtls.Config{
 			Enable: true, CAFile: certs.CAFile, CertFile: certs.ClientCert, KeyFile: certs.ClientKey,
 		})+"\n")
 		xonetest.StartHooks(t)
 		resp, err := xhttp.R(ctx).Get(stub.URL)
 		if err != nil || resp.StatusCode() != 200 {
-			t.Fatalf("按配置的 CA 和客户端证书该成功：%v %v", resp, err)
+			t.Fatalf("with the configured CA and client certificate it should succeed: %v %v", resp, err)
 		}
 		if got := resp.String(); got != "HTTP/2.0 TLS 1.3 "+harness.TLSMTLSUser {
-			t.Errorf("服务端应看到 HTTP/2、TLS 和客户端证书 CN=%s，got=%q", harness.TLSMTLSUser, resp.String())
+			t.Errorf("the server should see HTTP/2, TLS and the client certificate CN=%s, got=%q", harness.TLSMTLSUser, resp.String())
 		}
-		t.Logf("数字：服务端看到 %s", resp.String())
+		t.Logf("numbers: the server saw %s", resp.String())
 	})
 
 	for _, c := range []struct {
@@ -66,18 +66,19 @@ func TestTLS_XHttp(t *testing.T) {
 		tls  xtls.Config
 		want string
 	}{
-		{"CA不对", xtls.Config{Enable: true, CAFile: certs.OtherCAFile, CertFile: certs.ClientCert, KeyFile: certs.ClientKey},
+		{"a wrong CA", xtls.Config{Enable: true, CAFile: certs.OtherCAFile, CertFile: certs.ClientCert, KeyFile: certs.ClientKey},
 			"certificate signed by unknown authority"},
-		{"ServerName对不上", xtls.Config{Enable: true, CAFile: certs.CAFile, ServerName: "wrong.e2e.internal", CertFile: certs.ClientCert, KeyFile: certs.ClientKey},
+		{"a ServerName mismatch", xtls.Config{Enable: true, CAFile: certs.CAFile, ServerName: "wrong.e2e.internal", CertFile: certs.ClientCert, KeyFile: certs.ClientKey},
 			"certificate is valid for"},
-		// 下面两条服务端都拒了，但客户端报什么说不准：TLS 1.3 下客户端发完 Finished 就当握手成功、
-		// 开始写请求，服务端的告警要等下一次读才到。实测 net/http 报的有时是
-		// remote error: tls: certificate required，有时是 write: broken pipe；
-		// HTTP/2 的连接只报 http2: client conn could not be established。所以只断言被拒
-		{"要客户端证书却没带", xtls.Config{Enable: true, CAFile: certs.CAFile}, ""},
-		// 服务端在握手里列出它认的 CA，Go 的客户端手里的证书不是它们签的就不出示
-		{"客户端证书不是服务端认的CA签的", xtls.Config{Enable: true, CAFile: certs.CAFile, CertFile: certs.StrangerCert, KeyFile: certs.StrangerKey}, ""},
-		{"没配TLS块", xtls.Config{}, "certificate signed by unknown authority"},
+		// The server refuses both of the next two, and what the client reports is not fixed: under TLS 1.3 the client
+		// takes the handshake for done once it has sent Finished and starts writing the request, so the server's alert
+		// arrives at the next read. Measured, net/http reports sometimes remote error: tls: certificate required and
+		// sometimes write: broken pipe; an HTTP/2 connection reports http2: client conn could not be established alone.
+		// So only the refusal is asserted
+		{"a client certificate is wanted and none is presented", xtls.Config{Enable: true, CAFile: certs.CAFile}, ""},
+		// The server lists the CAs it accepts in the handshake, and Go's client does not present a certificate that none of them signed
+		{"a client certificate signed by a CA the server does not accept", xtls.Config{Enable: true, CAFile: certs.CAFile, CertFile: certs.StrangerCert, KeyFile: certs.StrangerKey}, ""},
+		{"no TLS block", xtls.Config{}, "certificate signed by unknown authority"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			cfg := xhttp.DefaultConfig()
@@ -89,13 +90,14 @@ func TestTLS_XHttp(t *testing.T) {
 			defer closer.Close()
 			_, err = client.R().SetContext(ctx).Get(stub.URL)
 			rejected(t, c.name, err, c.want)
-			t.Logf("数字：%s：%v", c.name, err)
+			t.Logf("numbers: %s: %v", c.name, err)
 		})
 	}
 }
 
-// ginGet 用给定的客户端 TLS 设置请求一次 /who。h2 为 false 时只说 HTTP/1.1：
-// 握手失败时 HTTP/2 的客户端只报 http2: client conn could not be established，看不出原因
+// ginGet makes one /who request with the given client TLS settings. With h2 false it speaks
+// HTTP/1.1 alone: on a failed handshake an HTTP/2 client reports http2: client conn could not be
+// established alone, which does not say why
 func ginGet(certs *harness.TLSCerts, url string, cfg *tls.Config, h2 bool) (string, error) {
 	if cfg.RootCAs == nil {
 		cfg.RootCAs = certs.Pool
@@ -156,45 +158,45 @@ func TestTLS_XGin(t *testing.T) {
 
 	got, err := ginGet(certs, base, &tls.Config{Certificates: []tls.Certificate{mustPair(t, certs.ClientCert, certs.ClientKey)}}, true)
 	if err != nil || got != "200 HTTP/2.0 TLS 1.3 "+harness.TLSMTLSUser {
-		t.Fatalf("带着正确的客户端证书该成功，handler 看得到 TLS 1.3 和证书：got=%q err=%v", got, err)
+		t.Fatalf("with the right client certificate it should succeed and the handler should see TLS 1.3 and the certificate: got=%q err=%v", got, err)
 	}
-	t.Logf("数字：%s", got)
+	t.Logf("numbers: %s", got)
 
 	for _, c := range []struct {
 		name string
 		cfg  *tls.Config
 		want string
 	}{
-		{"不带客户端证书", &tls.Config{}, "certificate required"},
-		// 服务端在握手里列出 TLS.ClientCAFile 里的 CA，Go 的客户端手里的证书不是它们签的就不出示
-		{"客户端证书不是ClientCAFile里的CA签的", &tls.Config{Certificates: []tls.Certificate{mustPair(t, certs.StrangerCert, certs.StrangerKey)}},
+		{"no client certificate", &tls.Config{}, "certificate required"},
+		// The server lists the CAs of TLS.ClientCAFile in the handshake, and Go's client does not present a certificate that none of them signed
+		{"a client certificate signed by a CA that is not in ClientCAFile", &tls.Config{Certificates: []tls.Certificate{mustPair(t, certs.StrangerCert, certs.StrangerKey)}},
 			"certificate required"},
-		{"TLS1.2的客户端碰上MinVersion1.3", &tls.Config{MaxVersion: tls.VersionTLS12,
+		{"a TLS 1.2 client meeting MinVersion 1.3", &tls.Config{MaxVersion: tls.VersionTLS12,
 			Certificates: []tls.Certificate{mustPair(t, certs.ClientCert, certs.ClientKey)}}, "protocol version"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			before := hits.Load()
 			got, err := ginGet(certs, base, c.cfg, false)
 			if err == nil || !strings.Contains(err.Error(), c.want) {
-				t.Errorf("应被拒并说 %q，got=%q err=%v", c.want, got, err)
+				t.Errorf("it should be refused and say %q, got=%q err=%v", c.want, got, err)
 			}
 			if hits.Load() != before {
-				t.Error("被拒的请求不该到 handler")
+				t.Error("a refused request should not reach the handler")
 			}
 		})
 	}
 
-	t.Run("明文请求打到TLS端口", func(t *testing.T) {
+	t.Run("a plaintext request against the TLS port", func(t *testing.T) {
 		resp, err := http.Get("http://" + addr + "/who")
 		if err != nil {
-			t.Fatalf("net/http 对明文请求回 400，而不是断开：%v", err)
+			t.Fatalf("net/http answers 400 to a plaintext request rather than breaking the connection: %v", err)
 		}
 		b, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if resp.StatusCode != 400 || hits.Load() != 1 {
-			t.Errorf("明文请求应得 400 且到不了 handler，got=%d %q hits=%d", resp.StatusCode, b, hits.Load())
+			t.Errorf("a plaintext request should get a 400 and never reach the handler, got=%d %q hits=%d", resp.StatusCode, b, hits.Load())
 		}
-		t.Logf("数字：明文请求：%d %s", resp.StatusCode, strings.TrimSpace(string(b)))
+		t.Logf("numbers: the plaintext request: %d %s", resp.StatusCode, strings.TrimSpace(string(b)))
 	})
 }
 

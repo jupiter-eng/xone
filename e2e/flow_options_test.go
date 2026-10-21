@@ -9,7 +9,7 @@ import (
 	"github.com/jupiter-eng/xone/e2e/harness"
 )
 
-// covFlowResult POST /probe/flow 的响应，见 service/probe.go 的 hangFlow
+// covFlowResult is what POST /probe/flow answers, see hangFlow in service/probe.go
 type covFlowResult struct {
 	Success        bool     `json:"success"`
 	Rolled         bool     `json:"rolled"`
@@ -22,60 +22,64 @@ func covFlow(t *testing.T, p *harness.Process, hangMS int) covFlowResult {
 	t.Helper()
 	r := p.PostJSON(t, "/probe/flow", map[string]int{"hang_ms": hangMS})
 	if r.Status != http.StatusOK {
-		t.Fatalf("POST /probe/flow：%v", r)
+		t.Fatalf("POST /probe/flow: %v", r)
 	}
 	var res covFlowResult
 	r.JSON(t, &res)
 	return res
 }
 
-// xflow/README.md XFlow.RollbackTimeout：「回滚全部步骤的总预算」，「这份预算对不看 ctx 的 Rollback 同样有效：
-// 到点就不再等它，那一步记进 RollbackErrors（错误里带 context.DeadlineExceeded），没轮到的步骤也逐个记下，
-// Execute 随即返回」；写 0 启动失败。
-// 流程三步 first → hang → fail，fail 失败后逆序回滚：hang 的 Rollback 不看 ctx 地睡 4s
+// xflow/README.md, XFlow.RollbackTimeout: "the budget for rolling every step back", and "this
+// budget holds for a Rollback that does not watch ctx as well: once it is up that one is no longer
+// waited for, that step goes into RollbackErrors (with context.DeadlineExceeded in the error), the
+// steps that never had their turn are each recorded as well, and Execute returns right after";
+// writing 0 fails the start.
+// The flow has three steps, first -> hang -> fail, and after fail fails they roll back in reverse:
+// hang's Rollback sleeps 4s without watching ctx
 func TestCoverage_ExecuteReturnsAtRollbackTimeoutWhenRollbackIgnoresCtx(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
 
 	p := harness.Start(t, harness.Options{Overlay: "XFlow:\n  RollbackTimeout: 1s\n"})
 
-	t.Run("挂 4s，预算 1s", func(t *testing.T) {
+	t.Run("it hangs 4s with a budget of 1s", func(t *testing.T) {
 		start := time.Now()
 		res := covFlow(t, p, 4000)
 		took := time.Since(start)
 		if res.Success || !res.Rolled {
-			t.Fatalf("fail 那一步失败，流程应失败并回滚过，实际 %+v", res)
+			t.Fatalf("the fail step failed, so the flow should fail and have rolled back, got %+v", res)
 		}
 		if took < time.Second-50*time.Millisecond || took > time.Second+faultSlack {
-			t.Errorf("RollbackTimeout: 1s 时 Execute 应在 1s 左右返回，不等挂住的 4s，实际 %v", took)
+			t.Errorf("with RollbackTimeout: 1s, Execute should return at about 1s and not wait out the 4s it hangs, got %v", took)
 		}
 		if len(res.RollbackErrors) != 2 {
-			t.Fatalf("挂住的 hang 和没轮到的 first 都该记进 RollbackErrors，实际 %q", res.RollbackErrors)
+			t.Fatalf("the hang that hung and the first that never had its turn should both go into RollbackErrors, got %q", res.RollbackErrors)
 		}
 		if e := res.RollbackErrors[0]; !strings.Contains(e, `"hang"`) || !strings.Contains(e, "context deadline exceeded") {
-			t.Errorf("挂住的那一步记进 RollbackErrors、带 context.DeadlineExceeded，实际 %q", e)
+			t.Errorf("the step that hung goes into RollbackErrors with context.DeadlineExceeded, got %q", e)
 		}
 		if e := res.RollbackErrors[1]; !strings.Contains(e, `"first"`) || !strings.Contains(e, "never ran") {
-			t.Errorf("没轮到的 first 也要逐个记下，实际 %q", e)
+			t.Errorf("the first that never had its turn is recorded as well, got %q", e)
 		}
-		t.Logf("数字：Rollback 挂 4s、RollbackTimeout 1s：Execute %v 返回（服务端量 %dms）", took.Round(time.Millisecond), res.ElapsedMS)
+		t.Logf("numbers: the Rollback hangs 4s with RollbackTimeout 1s: Execute returned after %v (the server measured %dms)", took.Round(time.Millisecond), res.ElapsedMS)
 	})
 
-	t.Run("回滚在预算内做完", func(t *testing.T) {
+	t.Run("the rollback finishes within the budget", func(t *testing.T) {
 		res := covFlow(t, p, 200)
 		if !res.Rolled || len(res.RollbackErrors) != 0 || res.ElapsedMS < 200 || res.ElapsedMS > 200+faultSlack.Milliseconds() {
-			t.Errorf("200ms 的回滚在 1s 预算内应做完、没有 RollbackErrors，实际 %+v", res)
+			t.Errorf("a 200ms rollback should finish within the 1s budget with no RollbackErrors, got %+v", res)
 		}
 	})
 
-	t.Run("RollbackTimeout: 0 启动失败", func(t *testing.T) {
+	t.Run("RollbackTimeout: 0 fails the start", func(t *testing.T) {
 		stderr := covStartupError(t, harness.Options{Overlay: "XFlow:\n  RollbackTimeout: 0s\n"})
-		faultMustContain(t, "RollbackTimeout: 0s 的启动错误", stderr, "RollbackTimeout must be > 0")
+		faultMustContain(t, "the start error for RollbackTimeout: 0s", stderr, "RollbackTimeout must be > 0")
 	})
 }
 
-// xflow/README.md XFlow.Monitor：「关掉之后 Execute 一次监控回调都不走」。默认的监控写 slog：
-// 失败的步骤记 WARN，回滚没做完记 ERROR（xflow/monitor.go slogMonitor）
+// xflow/README.md, XFlow.Monitor: "turned off, Execute makes not one monitor call". The default
+// monitor writes to slog: a failing step records a WARN and an incomplete rollback an ERROR
+// (slogMonitor in xflow/monitor.go)
 func TestCoverage_XflowMonitorOnLogsStepsAndFlow_OffLogsNothing(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -84,7 +88,7 @@ func TestCoverage_XflowMonitorOnLogsStepsAndFlow_OffLogsNothing(t *testing.T) {
 		return strings.HasPrefix(l.Msg(), "xflow ") && l.Str("flow") == "cov_hang_rollback"
 	}
 	for _, on := range []bool{true, false} {
-		name := map[bool]string{true: "Monitor: true（默认）", false: "Monitor: false"}[on]
+		name := map[bool]string{true: "Monitor: true (the default)", false: "Monitor: false"}[on]
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			overlay := "XFlow:\n  RollbackTimeout: 1s\n"
@@ -93,11 +97,11 @@ func TestCoverage_XflowMonitorOnLogsStepsAndFlow_OffLogsNothing(t *testing.T) {
 			}
 			p := harness.Start(t, harness.Options{Overlay: overlay})
 			r := p.PostJSON(t, "/probe/flow", map[string]int{"hang_ms": 1500})
-			accessLog(t, p, traceIDOf(t, r)) // 界碑：Execute 返回之后才有访问日志，监控日志要打早就打了
+			accessLog(t, p, traceIDOf(t, r)) // a landmark: the access log comes after Execute returns, so a monitor line would be out by then
 			logs := p.FindLogs(isFlowLog)
 			if !on {
 				if len(logs) != 0 {
-					t.Errorf("Monitor: false 时一次监控回调都不走，实际有 %d 条 xflow 日志：%s", len(logs), logs[0].Line)
+					t.Errorf("with Monitor: false not one monitor call is made, and there are %d xflow log lines: %s", len(logs), logs[0].Line)
 				}
 				return
 			}
@@ -113,7 +117,7 @@ func TestCoverage_XflowMonitorOnLogsStepsAndFlow_OffLogsNothing(t *testing.T) {
 					}
 				}
 				if !found {
-					t.Errorf("Monitor 开着时应有一条 %s 的 %q，实际 %d 条 xflow 日志", level, msg, len(logs))
+					t.Errorf("with Monitor on there should be one %s %q, and there are %d xflow log lines", level, msg, len(logs))
 				}
 			}
 		})

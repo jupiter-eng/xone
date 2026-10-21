@@ -9,15 +9,18 @@ import (
 	"github.com/jupiter-eng/xone/xmetric"
 )
 
-// countingExporter 只计数、不上报的 exporter，压测用（Service.SpanDiscard）。
+// countingExporter is an exporter that only counts and reports nothing, for the load tests
+// (Service.SpanDiscard).
 //
-// 挂在 BatchSpanProcessor 后面，量的是文档推荐的那条导出管线
-// （xtrace.AddSpanProcessor(sdktrace.NewBatchSpanProcessor(exp))）本身的开销，
-// 而不是 SpanFile 那个同步写文件的 exporter——那是 e2e 自己的开销。
+// Hung behind a BatchSpanProcessor, it measures the overhead of the export pipeline the
+// documentation recommends (xtrace.AddSpanProcessor(sdktrace.NewBatchSpanProcessor(exp))) itself
+// rather than of the SpanFile exporter writing to a file synchronously, which is e2e's own
+// overhead.
 //
-// 每个 Span 计进 e2e_spans_exported_total{kind, route}：route 取服务端 Span 的
-// http.route，其余是空串。压测拿它和 e2e_http_requests_total 对账：
-// 两者对不上，就是有 Span 在导出之前被丢掉了（队列满了 BatchSpanProcessor 会静默丢）
+// Every span counts into e2e_spans_exported_total{kind, route}: route is a server span's
+// http.route and an empty string otherwise. A load test reconciles it against
+// e2e_http_requests_total: the two disagreeing means spans were dropped before the export (a
+// BatchSpanProcessor drops silently when its queue is full)
 type countingExporter struct{}
 
 func (countingExporter) ExportSpans(_ context.Context, spans []sdktrace.ReadOnlySpan) error {

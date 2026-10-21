@@ -10,11 +10,13 @@ import (
 	"github.com/jupiter-eng/xone/xcron"
 )
 
-// cronDrain e2e-tick 被取消之后不看 ctx 地收尾多久：测「停止钩子等在途的执行返回」
+// cronDrain is how long e2e-tick winds down without watching ctx after it was cancelled: it tests
+// "a stop hook waits for the run in flight to return"
 const cronDrain = 300 * time.Millisecond
 
-// addCron 登记 e2e-tick：每次执行先记一行 e2e cron tick（带着 job、trace_id），
-// 再看着 ctx 等 hold；ctx 被取消（退出）时收尾 cronDrain、记一行 e2e cron drained 再返回
+// addCron registers e2e-tick: every run records an e2e cron tick line (carrying job and trace_id)
+// first and then waits hold while watching ctx; when ctx is cancelled (the exit) it winds down for
+// cronDrain, records an e2e cron drained line and returns
 func addCron(every, hold time.Duration) {
 	err := xcron.Add(fmt.Sprintf("@every %v", every), func(ctx context.Context) error {
 		slog.InfoContext(ctx, "e2e cron tick")

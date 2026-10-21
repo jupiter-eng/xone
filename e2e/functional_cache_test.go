@@ -12,12 +12,14 @@ import (
 	"github.com/jupiter-eng/xone/e2e/harness"
 )
 
-// GET /users/:id 是「本地缓存（xcache）→ Redis（xredis）→ PG（xgorm）」三级读。
-// 响应里的 source 是服务自己说的，所以每一级都另找证据：
+// GET /users/:id reads through three levels: the local cache (xcache) -> Redis (xredis) -> PG
+// (xgorm).
+// source in the response is what the service says about itself, so every level gets evidence of
+// its own:
 //
-//	db     这条链路上有 gorm.query 的 Span，读完之后 Redis 里有了这个 key
-//	redis  Redis 里被直接塞了一份和 PG 不一样的值，读到的正是它；链路上只有 get、没有 SQL
-//	local  链路上一个客户端 Span 都没有：既没问 Redis 也没问 PG
+//	db     the trace holds a gorm.query span, and after the read Redis holds this key
+//	redis  a value different from PG's was put into Redis directly and that is what comes back; the trace holds a get alone and no SQL
+//	local  the trace holds not one client span: neither Redis nor PG was asked
 func TestFunctional_ThreeTierReadHitsLocalCacheRedisAndPG(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
@@ -30,43 +32,43 @@ func TestFunctional_ThreeTierReadHitsLocalCacheRedisAndPG(t *testing.T) {
 	u := createUser(t, p, "tier", "tier@example.com")
 	key := keyOf(u.ID)
 	if n := rdb.Exists(ctx, key).Val(); n != 0 {
-		t.Fatalf("刚建的用户缓存应是空的（POST 会删两级缓存），实际 Redis 里已有 %s", key)
+		t.Fatalf("the cache of a user that was just created should be empty (a POST drops both levels), and Redis already holds %s", key)
 	}
 
-	// 第一次：两级缓存都没有，落到 PG，再回填 Redis 和本地
+	// The first read: neither cache level holds it, so it reaches PG and fills Redis and the local cache back in
 	got, r, dbElapsed := getUser(t, p, u.ID)
 	if got.Source != "db" {
-		t.Fatalf("第一次读 source 应是 db，实际 %v", r)
+		t.Fatalf("the first read should have source db, got %v", r)
 	}
 	serverSpan(t, p, traceIDOf(t, r))
 	spans := traceSpans(t, p, traceIDOf(t, r))
 	if got := clientSpanNames(spans); got != "get,gorm.query,set" {
-		t.Errorf("落到 PG 的那次读，链路上应依次是 Redis get（未命中）→ gorm.query → Redis set（回填），实际 %s", spanNames(spans))
+		t.Errorf("the read that reached PG should hold, in order, a Redis get (a miss) -> gorm.query -> a Redis set (the fill), got %s", spanNames(spans))
 	}
 	cached, err := rdb.Get(ctx, key).Bytes()
 	if err != nil {
-		t.Fatalf("读过 PG 之后 Redis 里应回填了 %s：%v", key, err)
+		t.Fatalf("after the read reached PG, Redis should hold %s filled back in: %v", key, err)
 	}
 	var inRedis user
 	if err := json.Unmarshal(cached, &inRedis); err != nil || inRedis.ID != u.ID || inRedis.Name != "tier" {
-		t.Errorf("Redis 里回填的应是这个用户，实际 %s（%v）", cached, err)
+		t.Errorf("what was filled into Redis should be this user, got %s (%v)", cached, err)
 	}
-	// service/application.yml：Service.UserTTL: 60s
+	// service/application.yml: Service.UserTTL: 60s
 	if ttl := rdb.TTL(ctx, key).Val(); ttl <= 0 || ttl > 60*time.Second {
-		t.Errorf("回填的 key 应带 UserTTL（60s）的过期时间，实际 TTL=%v", ttl)
+		t.Errorf("the key filled back in should carry UserTTL's (60s) expiry, got TTL=%v", ttl)
 	}
 
-	// 第二次：本地缓存命中，连 Redis 都不问
+	// The second read: the local cache hits and Redis is not even asked
 	got, r, localElapsed := getUser(t, p, u.ID)
 	if got.Source != "local" || got.Name != "tier" {
-		t.Fatalf("第二次读应命中本地缓存（source=local），实际 %v", r)
+		t.Fatalf("the second read should hit the local cache (source=local), got %v", r)
 	}
 	serverSpan(t, p, traceIDOf(t, r))
 	if spans := traceSpans(t, p, traceIDOf(t, r)); len(spans) != 1 {
-		t.Errorf("本地缓存命中时链路上应只有服务端 Span，实际 %s", spanNames(spans))
+		t.Errorf("on a local cache hit the trace should hold the server span alone, got %s", spanNames(spans))
 	}
 
-	// Redis 这一级：给一个从没读过的用户（本地缓存里没有）在 Redis 里塞一份和 PG 不一样的值
+	// The Redis level: for a user never read before (and so absent from the local cache), put a value into Redis that differs from PG's
 	v := createUser(t, p, "pg-name", "pg@example.com")
 	marker := "from-redis-" + harness.NewID()
 	fake, _ := json.Marshal(user{ID: v.ID, Name: marker, Email: "redis@example.com"})
@@ -75,40 +77,40 @@ func TestFunctional_ThreeTierReadHitsLocalCacheRedisAndPG(t *testing.T) {
 	}
 	got, r, redisElapsed := getUser(t, p, v.ID)
 	if got.Source != "redis" || got.Name != marker {
-		t.Fatalf("本地没有、Redis 有：应读到 Redis 里的值（source=redis，name=%s），实际 %v", marker, r)
+		t.Fatalf("absent locally and present in Redis: the value from Redis should come back (source=redis, name=%s), got %v", marker, r)
 	}
 	serverSpan(t, p, traceIDOf(t, r))
 	spans = traceSpans(t, p, traceIDOf(t, r))
 	if got := clientSpanNames(spans); got != "get" {
-		t.Errorf("Redis 命中时链路上应只有一次 Redis get、没有 SQL，实际 %s", spanNames(spans))
+		t.Errorf("on a Redis hit the trace should hold one Redis get and no SQL, got %s", spanNames(spans))
 	}
-	// Redis 命中之后回填本地：下一次是 local，读到的仍是 Redis 那份
+	// A Redis hit fills the local cache back in: the next read is local and still holds Redis's value
 	got, r, _ = getUser(t, p, v.ID)
 	if got.Source != "local" || got.Name != marker {
-		t.Errorf("Redis 命中之后应回填本地缓存（source=local，name=%s），实际 %v", marker, r)
+		t.Errorf("a Redis hit should fill the local cache back in (source=local, name=%s), got %v", marker, r)
 	}
 
-	// 写：PUT 之后两级都失效，下一次读回到 PG，读到新值
+	// Writing: both levels are dropped after a PUT, so the next read goes back to PG and reads the new value
 	if r := p.Do(t, http.MethodPut, fmt.Sprintf("/users/%d", u.ID), map[string]string{"name": "tier2", "email": "tier@example.com"}); r.Status != http.StatusOK {
-		t.Fatalf("PUT：%v", r)
+		t.Fatalf("PUT: %v", r)
 	}
 	if n := rdb.Exists(ctx, key).Val(); n != 0 {
-		t.Errorf("PUT 之后 Redis 里的 %s 应被删掉", key)
+		t.Errorf("%s should be deleted from Redis after the PUT", key)
 	}
 	got, r, _ = getUser(t, p, u.ID)
 	if got.Source != "db" || got.Name != "tier2" {
-		t.Errorf("PUT 之后本地和 Redis 都该失效，下一次读回到 PG（source=db，name=tier2），实际 %v", r)
+		t.Errorf("after the PUT both the local cache and Redis should be gone and the next read should go back to PG (source=db, name=tier2), got %v", r)
 	}
 
-	// 指标和上面的读次数对得上：db 2 次、local 2 次、redis 1 次
-	m := waitMetrics(t, p, "e2e_user_reads_total 计到 5 次", func(m harness.Metrics) bool {
+	// The metrics add up to the reads above: 2 db, 2 local and 1 redis
+	m := waitMetrics(t, p, "e2e_user_reads_total reaching 5", func(m harness.Metrics) bool {
 		return m.Sum("e2e_user_reads_total") == 5
 	})
 	for src, want := range map[string]float64{"db": 2, "local": 2, "redis": 1} {
 		if got := m.Sum("e2e_user_reads_total", "source", src); got != want {
-			t.Errorf("e2e_user_reads_total{source=%q} 应是 %v，实际 %v", src, want, got)
+			t.Errorf("e2e_user_reads_total{source=%q} should be %v, got %v", src, want, got)
 		}
 	}
 
-	t.Logf("数字：三级读单次耗时（含客户端往返）db=%v redis=%v local=%v", dbElapsed, redisElapsed, localElapsed)
+	t.Logf("numbers: one three-level read (the client round trip included) db=%v redis=%v local=%v", dbElapsed, redisElapsed, localElapsed)
 }

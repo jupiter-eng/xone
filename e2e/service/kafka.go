@@ -19,19 +19,23 @@ import (
 	"github.com/jupiter-eng/xone/xutil"
 )
 
-// Kafka：生产经 xkafka.C()，消费经 xkafka.Consume。XKafka 只在 harness 激活 kafka 那份 profile 时才有
-// （service/application-kafka.yml），没有时 /kafka/... 一律 503。
+// Kafka: producing goes through xkafka.C() and consuming through xkafka.Consume. The XKafka exists
+// only when the harness activates the kafka profile (service/application-kafka.yml), and without
+// it every /kafka/... answers 503.
 //
-//	POST /kafka/produce   {"topic": "...", "key": "...", "value": "..."}，用请求的 ctx ProduceSync，回 partition / offset
+//	POST /kafka/produce   {"topic": "...", "key": "...", "value": "..."}, a ProduceSync on the request's ctx, answering partition / offset
 //
-// Service.KafkaTopic 非空时消费它。消息的 value 是一段 JSON，说处理函数该怎么做：
+// With Service.KafkaTopic non-empty it is consumed. A message's value is a piece of JSON saying
+// what the handler should do:
 //
-//	{"id": "m1", "fail": 2}          前 2 次返回错误，第 3 次成功；-1 是一直失败
-//	{"id": "m2", "permanent": true}  返回 xutil.Permanent，不重试
-//	{"id": "m3", "hold_ms": 2000}    不看 ctx 地睡这么久再成功（测退出时等在途的消息）
+//	{"id": "m1", "fail": 2}          returns an error the first 2 times and succeeds on the 3rd; -1 fails forever
+//	{"id": "m2", "permanent": true}  returns xutil.Permanent and is not retried
+//	{"id": "m3", "hold_ms": 2000}    sleeps that long without watching ctx and then succeeds (for waiting out the messages in flight on exit)
 //
-// 每次调用记一行 e2e kafka handle（id、attempt），成功时再记一行 e2e kafka done（id、ctx_err：退出时 ctx 没被取消的话是空）。
-// 两行都用处理函数收到的 ctx：xlog 由此带上 trace_id 和 topic / partition / offset / group
+// Every call records an e2e kafka handle line (id, attempt), and a successful one an e2e kafka done
+// line as well (id, ctx_err: empty when ctx was not cancelled during the exit).
+// Both go on the ctx the handler received, which is how xlog carries trace_id and topic /
+// partition / offset / group
 func kafkaRoutes(e *gin.Engine) {
 	g := e.Group("/kafka", requireKafka)
 	g.POST("/produce", kafkaProduce)
@@ -66,7 +70,7 @@ func kafkaProduce(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"partition": r.Partition, "offset": r.Offset})
 }
 
-// kafkaMsg 消息 value 里的指令
+// kafkaMsg is the instruction inside a message value
 type kafkaMsg struct {
 	ID        string `json:"id"`
 	Fail      int    `json:"fail"`
@@ -74,13 +78,14 @@ type kafkaMsg struct {
 	HoldMS    int    `json:"hold_ms"`
 }
 
-// attempts 每个 id 被调了几次。进程级的：重新投递到另一个进程时从 1 数起
+// attempts is how many times each id was called. It is per process: a redelivery to another process
+// starts counting from 1
 var attempts = struct {
 	sync.Mutex
 	n map[string]int
 }{n: map[string]int{}}
 
-// addConsumer 按 Service.KafkaTopic 登记消费者
+// addConsumer registers the consumer for Service.KafkaTopic
 func addConsumer(c conf.Config) {
 	var opts []xkafka.Option
 	if c.KafkaRetry >= 0 {
@@ -111,7 +116,7 @@ func handleKafka(ctx context.Context, r *kgo.Record) error {
 	case m.Fail < 0 || n <= m.Fail:
 		return fmt.Errorf("e2e failure %d", n)
 	}
-	time.Sleep(time.Duration(m.HoldMS) * time.Millisecond) // 故意不看 ctx：测退出时在途的消息做完
+	time.Sleep(time.Duration(m.HoldMS) * time.Millisecond) // deliberately not watching ctx: for a message in flight finishing during the exit
 	ctxErr := ""
 	if err := ctx.Err(); err != nil {
 		ctxErr = err.Error()

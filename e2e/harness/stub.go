@@ -11,17 +11,18 @@ import (
 	"time"
 )
 
-// Stub 下游桩服务器：记下收到的每个请求，状态码、延迟、响应体可以随时改。
+// Stub is a downstream stub server: it records every request it receives, and its status code,
+// delay and response body can be changed at any time.
 //
 //	stub := harness.NewStub(t)
 //	p := harness.Start(t, harness.Options{Downstream: stub.URL})
 //	p.Get(t, "/proxy?token=abc")
 //	req := stub.Last(t)  // req.Query.Get("token") == "abc"
 //
-// 要在它前面插一个 Proxy 注入网络故障：harness.NewProxy(t, stub.Addr())，
-// 再把 "http://" + proxy.Addr() 交给 Options.Downstream
+// To inject a network fault in front of it, put a Proxy there: harness.NewProxy(t, stub.Addr()),
+// and hand "http://" + proxy.Addr() to Options.Downstream
 type Stub struct {
-	// URL 形如 http://127.0.0.1:12345
+	// URL looks like http://127.0.0.1:12345
 	URL string
 	srv *httptest.Server
 
@@ -33,7 +34,7 @@ type Stub struct {
 	reqs        []StubRequest
 }
 
-// StubRequest 桩收到的一个请求
+// StubRequest is one request the stub received
 type StubRequest struct {
 	Method   string
 	Path     string
@@ -44,59 +45,60 @@ type StubRequest struct {
 	At       time.Time
 }
 
-// NewStub 起一个桩，默认 200 {"ok":true}，测试结束时关掉
+// NewStub starts a stub answering 200 {"ok":true} by default, and closes it when the test ends
 func NewStub(t testing.TB) *Stub {
 	t.Helper()
 	s := &Stub{status: http.StatusOK, contentType: "application/json", body: []byte(`{"ok":true}`)}
 	s.srv = httptest.NewServer(http.HandlerFunc(s.serve))
 	s.URL = s.srv.URL
 	t.Cleanup(func() {
-		// 先断开连接：还有请求在 SetDelay 里等着的话，Close 会一直等它
+		// Break the connections first: with a request still waiting in SetDelay, Close would wait for it
 		s.srv.CloseClientConnections()
 		s.srv.Close()
 	})
 	return s
 }
 
-// Addr 桩的 host:port
+// Addr is the stub's host:port
 func (s *Stub) Addr() string { return strings.TrimPrefix(s.URL, "http://") }
 
-// SetStatus 之后的响应用这个状态码
+// SetStatus has the responses from here on carry this status code
 func (s *Stub) SetStatus(code int) {
 	s.mu.Lock()
 	s.status = code
 	s.mu.Unlock()
 }
 
-// SetDelay 之后每个请求等 d 再响应；请求的 ctx 先结束（客户端放弃、连接断开）就不等了
+// SetDelay has every request from here on wait d before it is answered; a request whose ctx ends
+// first (the client gave up, the connection broke) is not waited for
 func (s *Stub) SetDelay(d time.Duration) {
 	s.mu.Lock()
 	s.delay = d
 	s.mu.Unlock()
 }
 
-// SetBody 之后的响应体
+// SetBody is the response body from here on
 func (s *Stub) SetBody(contentType, body string) {
 	s.mu.Lock()
 	s.contentType, s.body = contentType, []byte(body)
 	s.mu.Unlock()
 }
 
-// Requests 到目前为止收到的全部请求（收到时就记下，不等响应发完）
+// Requests are all the requests received so far (recorded on arrival, not once the response has gone out)
 func (s *Stub) Requests() []StubRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]StubRequest(nil), s.reqs...)
 }
 
-// Count 收到了几个请求
+// Count is how many requests arrived
 func (s *Stub) Count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.reqs)
 }
 
-// Last 最后一个请求，一个都没收到时 t.Fatal
+// Last is the last request, and t.Fatals when none arrived
 func (s *Stub) Last(t testing.TB) StubRequest {
 	t.Helper()
 	reqs := s.Requests()
@@ -106,7 +108,7 @@ func (s *Stub) Last(t testing.TB) StubRequest {
 	return reqs[len(reqs)-1]
 }
 
-// Reset 清掉记下的请求
+// Reset drops the recorded requests
 func (s *Stub) Reset() {
 	s.mu.Lock()
 	s.reqs = nil

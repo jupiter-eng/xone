@@ -14,19 +14,23 @@ import (
 	"github.com/jupiter-eng/xone/xredis"
 )
 
-// dep 对一个依赖做一次最小的操作，给故障测试量「这一下要多久才返回」：
+// dep runs one minimal operation against a dependency, so that a fault test can measure "how long
+// does this one take to return":
 //
-//	GET /dep?target=redis[&timeout=200ms]   Redis 上 GET 一个不存在的 key（redis.Nil 算成功）
-//	GET /dep?target=db[&timeout=200ms]      PG 上 SELECT 1
-//	GET /dep?target=mysql[&timeout=200ms]   MySQL 上 SELECT 1
-//	GET /dep?target=ch[&timeout=200ms]      ClickHouse 上 SELECT 1（没配 ch 实例时 503）
+//	GET /dep?target=redis[&timeout=200ms]   a GET of a key that does not exist on Redis (redis.Nil counts as success)
+//	GET /dep?target=db[&timeout=200ms]      SELECT 1 on PG
+//	GET /dep?target=mysql[&timeout=200ms]   SELECT 1 on MySQL
+//	GET /dep?target=ch[&timeout=200ms]      SELECT 1 on ClickHouse (503 with no ch instance configured)
 //
-// 给了 timeout 就用 context.WithTimeout 包住请求的 ctx——「调用方给了截止时间」；
-// 不给就是请求的 ctx 本身，没有截止时间，管得住它的只剩各客户端自己配的超时。
+// Given a timeout it wraps the request's ctx in context.WithTimeout -- "the caller gave a
+// deadline"; without one it is the request's ctx itself, which has no deadline, and the only thing
+// left holding it is each client's own timeout.
 //
-// 业务接口一次请求要碰好几下依赖（三级读是 Redis GET、PG、Redis SET），
-// 从它们的耗时反推单次操作的代价不准，所以单独开这个口子。
-// 成功 200、失败 503，body 里都有 elapsed_ms，失败时另有 error
+// One request to a business endpoint touches a dependency several times (the three-level read is a
+// Redis GET, PG and a Redis SET), so working back from those timings to the cost of one operation
+// is inaccurate, which is why this endpoint exists on its own.
+// Success answers 200 and failure 503, both with elapsed_ms in the body and failure with error
+// besides
 func dep(c *gin.Context) {
 	ctx := c.Request.Context()
 	if s := c.Query("timeout"); s != "" {

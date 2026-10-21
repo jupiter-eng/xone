@@ -10,16 +10,17 @@ import (
 	"github.com/jupiter-eng/xone/xgorm"
 )
 
-// MySQL 实例的名字，对应 application.yml 里 XGorm.Clients 下的 mysql。
+// MySQL is the name of the MySQL instance, matching mysql under XGorm.Clients in application.yml.
 //
-// 用户表在 MySQL 上和 PG 上同名（Service.Table）：两个库各是各的，名字撞不上，
-// 测试清理时也只用记一个名字
+// The user table carries the same name on MySQL as on PG (Service.Table): the two databases are
+// each their own, the names cannot collide, and a test cleaning up has one name to remember
 const MySQL = "mysql"
 
-// my 绑了 ctx 的 MySQL 实例
+// my is the MySQL instance bound to ctx
 func my(ctx context.Context) *gorm.DB { return xgorm.CWithCtx(ctx, MySQL) }
 
-// migrateMySQL 在 MySQL 上建用户表。和 PG 那张列一样，类型换成 MySQL 的写法
+// migrateMySQL creates the user table on MySQL. The same columns as the PG one, with the types
+// written MySQL's way
 func migrateMySQL(ctx context.Context) error {
 	if err := my(ctx).Exec(`CREATE TABLE IF NOT EXISTS ` + users() + ` (
 		id         BIGINT AUTO_INCREMENT PRIMARY KEY,
@@ -32,12 +33,12 @@ func migrateMySQL(ctx context.Context) error {
 	return nil
 }
 
-// CreateMySQLUser 在 MySQL 上插入一个用户，回填 ID
+// CreateMySQLUser inserts one user on MySQL and fills the ID back in
 func CreateMySQLUser(ctx context.Context, u *User) error {
 	return my(ctx).Table(users()).Create(u).Error
 }
 
-// GetMySQLUser 按 ID 取 MySQL 上的用户，没有时返回 ErrNotFound
+// GetMySQLUser takes a user on MySQL by ID, and returns ErrNotFound when there is none
 func GetMySQLUser(ctx context.Context, id int64) (User, error) {
 	var u User
 	err := my(ctx).Table(users()).Where("id = ?", id).Take(&u).Error
@@ -47,10 +48,11 @@ func GetMySQLUser(ctx context.Context, id int64) (User, error) {
 	return u, err
 }
 
-// UpdateMySQLUser 改名字和邮箱，没有这个用户时返回 ErrNotFound。
+// UpdateMySQLUser updates the name and the email, and returns ErrNotFound when there is no such
+// user.
 //
-// 不能拿 RowsAffected 判断有没有这一行：MySQL 默认报的是「改动了」的行数，
-// 改成和原来一样的值时是 0。所以先查一次在不在
+// RowsAffected cannot tell whether the row is there: MySQL reports the number of rows it "changed"
+// by default, which is 0 when the new values equal the old ones. So it looks the row up first
 func UpdateMySQLUser(ctx context.Context, u User) error {
 	if _, err := GetMySQLUser(ctx, u.ID); err != nil {
 		return err
@@ -59,7 +61,7 @@ func UpdateMySQLUser(ctx context.Context, u User) error {
 		Updates(map[string]any{"name": u.Name, "email": u.Email}).Error
 }
 
-// DeleteMySQLUser 删掉一个用户，没有时返回 ErrNotFound
+// DeleteMySQLUser deletes one user, and returns ErrNotFound when there is none
 func DeleteMySQLUser(ctx context.Context, id int64) error {
 	res := my(ctx).Table(users()).Where("id = ?", id).Delete(&User{})
 	if res.Error != nil {
@@ -71,27 +73,28 @@ func DeleteMySQLUser(ctx context.Context, id int64) error {
 	return nil
 }
 
-// PingMySQL 在 MySQL 上跑一次 SELECT 1
+// PingMySQL runs one SELECT 1 on MySQL
 func PingMySQL(ctx context.Context) error {
 	return my(ctx).Exec(`SELECT 1`).Error
 }
 
-// SleepMySQL 让 MySQL 服务端睡 seconds 秒：SELECT SLEEP(?)。
+// SleepMySQL has the MySQL server sleep seconds seconds: SELECT SLEEP(?).
 //
-// 用来造一条「真的在服务端执行着」的慢查询，测优雅退出时它能不能做完
+// It makes a slow query that really is running on the server, to test whether it finishes during a
+// graceful exit
 func SleepMySQL(ctx context.Context, seconds float64) error {
 	var r int64
 	return my(ctx).Raw(`SELECT SLEEP(?)`, seconds).Scan(&r).Error
 }
 
-// BadInsertMySQL 把 value 当 id 插进 BIGINT 列：严格模式下服务端报 1366，
-// 原文是 Incorrect integer value: '<value>' for column 'id' at row 1
+// BadInsertMySQL inserts value as the id into a BIGINT column: in strict mode the server reports
+// 1366, whose text is Incorrect integer value: '<value>' for column 'id' at row 1
 func BadInsertMySQL(ctx context.Context, value string) error {
 	return my(ctx).Exec(`INSERT INTO `+users()+` (id, name) VALUES (?, ?)`, value, "bad-sql").Error
 }
 
-// BadCastPG 在 PG 上把 value 转成 bigint：服务端报 22P02，
-// 原文是 invalid input syntax for type bigint: "<value>"
+// BadCastPG casts value to bigint on PG: the server reports 22P02, whose text is invalid input
+// syntax for type bigint: "<value>"
 func BadCastPG(ctx context.Context, value string) error {
 	return xgorm.CWithCtx(ctx).Exec(`SELECT CAST(CAST(? AS text) AS bigint)`, value).Error
 }

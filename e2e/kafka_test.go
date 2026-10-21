@@ -1,14 +1,18 @@
 package e2e
 
-// Kafka 端到端测试：TestKafka_* 系列，e2e 服务经 xkafka 连 Docker 里的 Kafka 3.9.1（KRaft 单节点）。
+// The Kafka end-to-end tests: the TestKafka_* family, with the e2e service reaching the Kafka
+// 3.9.1 in Docker (one KRaft node) through xkafka.
 //
 //	scripts/e2e.sh -run Kafka
 //
-// XKafka 是可选的：harness.Options.Kafka 激活 service/application-kafka.yml 那份 profile 才有；
-// Kafka 不可用时这一组各自跳过（harness.RequireKafka），其余 e2e 照跑。每个用例自己建 topic、用自己的消费组。
+// XKafka is optional: it exists only once harness.Options.Kafka activates the
+// service/application-kafka.yml profile; when Kafka is unavailable this group skips case by case
+// (harness.RequireKafka) while the rest of e2e runs. Every case creates a topic of its own and
+// uses a consumer group of its own.
 //
-// 断言对照 xkafka/README.md「语义」「可观测」「行为与实测」；失败信息写成「文档说 X，实际 Y」。
-// 消息怎么处理由 value 里的 JSON 决定，见 service/kafka.go。
+// The assertions follow xkafka/README.md, "The semantics", "Observability" and "Behavior
+// (measured)"; a failure message reads "the documentation says X, got Y".
+// What happens to a message is decided by the JSON in its value, see service/kafka.go.
 
 import (
 	"encoding/json"
@@ -22,14 +26,15 @@ import (
 	"github.com/jupiter-eng/xone/e2e/harness"
 )
 
-// kafkaEarliest 新建的 topic、新的消费组：从头消费，写进去的消息不用等「分到分区」之后才写。
-// 默认的 latest 由 xkafka 的单元测试钉着
+// kafkaEarliest: a topic just created and a new consumer group consume from the start, so a message
+// written does not have to wait for the partitions to be assigned.
+// The default, latest, is pinned by xkafka's unit tests
 const kafkaEarliest = "XKafka:\n  Consumer:\n    ResetOffset: earliest\n"
 
-// kafkaSessionTimeout franz-go v1.21.7 的 SessionTimeout 默认值：被 kill -9 的组员的分区要等这么久才交给别人
+// kafkaSessionTimeout is the SessionTimeout default of franz-go v1.21.7: how long the partitions of a member that was kill -9ed wait before they go to someone else
 const kafkaSessionTimeout = 45 * time.Second
 
-// kafkaMsg 一条消息的 value，字段见 service/kafka.go
+// kafkaMsg is one message's value, whose fields are in service/kafka.go
 func kafkaMsg(t *testing.T, fields map[string]any) string {
 	t.Helper()
 	b, err := json.Marshal(fields)
@@ -39,12 +44,12 @@ func kafkaMsg(t *testing.T, fields map[string]any) string {
 	return string(b)
 }
 
-// handled 进程 p 里处理过 id 的 e2e kafka handle 日志
+// handled are the e2e kafka handle log lines for id in the process p
 func handled(p *harness.Process, id string) []harness.Log {
 	return p.FindLogs(func(l harness.Log) bool { return l.Msg() == "e2e kafka handle" && l.Str("id") == id })
 }
 
-// done 等 p 处理完 id
+// done waits for p to finish handling id
 func done(t *testing.T, p *harness.Process, id string, timeout time.Duration) harness.Log {
 	t.Helper()
 	return p.WaitLog(t, timeout, func(l harness.Log) bool { return l.Msg() == "e2e kafka done" && l.Str("id") == id })
@@ -52,9 +57,11 @@ func done(t *testing.T, p *harness.Process, id string, timeout time.Duration) ha
 
 // TestKafka_ProduceConsume_TraceContinues
 //
-// 文档（xkafka/README.md「链路」「日志」）：生产时把链路上下文写进消息头，消费时从消息头接上——
-// 处理函数里的日志和 HTTP 请求是同一个 trace_id；<topic> process 挂在 <topic> publish 下面；
-// 处理函数的日志带 topic / partition / offset / group；Span 和日志里都没有 value
+// The documentation (xkafka/README.md, "Tracing" and "The logs"): producing writes the trace
+// context into the message headers and consuming picks it up again -- a log line inside the
+// handler carries the same trace_id as the HTTP request; <topic> process hangs under <topic>
+// publish; the handler's log lines carry topic / partition / offset / group; and neither the spans
+// nor the logs hold the value
 func TestKafka_ProduceConsume_TraceContinues(t *testing.T) {
 	harness.RequireKafka(t)
 	t.Parallel()
@@ -69,35 +76,37 @@ func TestKafka_ProduceConsume_TraceContinues(t *testing.T) {
 	access := p.WaitLog(t, 5*time.Second, func(l harness.Log) bool { return l.Str("path") == "/kafka/produce" && l.Str("trace_id") != "" })
 	d := done(t, p, "trace-1", 20*time.Second)
 	if d.Str("trace_id") != access.Str("trace_id") {
-		t.Errorf("文档说消费那一侧接着生产方的链路：请求 trace_id=%s，处理函数里 trace_id=%s", access.Str("trace_id"), d.Str("trace_id"))
+		t.Errorf("the documentation says the consuming side continues the producer's trace: the request has trace_id=%s and the handler trace_id=%s", access.Str("trace_id"), d.Str("trace_id"))
 	}
 	if d.Str("topic") != topic || d.Str("group") != p.KafkaGroup || d.Str("offset") != "0" || d.Str("partition") != "0" {
-		t.Errorf("文档说处理函数的日志带 topic / partition / offset / group：%s", d.Line)
+		t.Errorf("the documentation says the handler's log lines carry topic / partition / offset / group: %s", d.Line)
 	}
 
 	proc := p.WaitSpan(t, 10*time.Second, func(s harness.Span) bool { return s.Name == topic+" process" })
 	pub := p.WaitSpan(t, 10*time.Second, func(s harness.Span) bool { return s.Name == topic+" publish" })
 	if proc.TraceID != access.Str("trace_id") || proc.ParentSpanID != pub.SpanID || pub.TraceID != proc.TraceID {
-		t.Errorf("文档说 process 挂在 publish 下面、同一个 trace：publish=%+v process=%+v", pub, proc)
+		t.Errorf("the documentation says process hangs under publish on the same trace: publish=%+v process=%+v", pub, proc)
 	}
 	exit := p.Terminate(t, 20*time.Second)
 	if exit.Code != 0 {
-		t.Fatalf("SIGTERM 之后应以 0 退出：%v", exit)
+		t.Fatalf("it should exit with 0 after the SIGTERM: %v", exit)
 	}
 	if strings.Contains(p.Output(), "s3cret-value") {
-		t.Error("文档说从不记 value：输出里有消息的 value")
+		t.Error("the documentation says the value is never recorded: the output holds the message's value")
 	}
 	for _, s := range p.Spans(t) {
 		if strings.Contains(fmt.Sprint(s), "s3cret-value") || strings.Contains(fmt.Sprint(s), "user-42") {
-			t.Errorf("文档说 Span 里没有 key 和 value：%+v", s)
+			t.Errorf("the documentation says the spans hold neither the key nor the value: %+v", s)
 		}
 	}
 }
 
 // TestKafka_FailureRetriesThenDeadLetter_PermanentSkipsRetries
 //
-// 文档（xkafka/README.md「重试」「死信」）：处理函数失败按 WithRetry 重试，用完了写进 <topic>.dlq，
-// 带着原消息的 key / value / 头和 xkafka-dlq-* 几个头；xutil.Permanent 不重试；之后提交 offset
+// The documentation (xkafka/README.md, "Retries" and "Dead letters"): a failing handler is retried
+// as WithRetry says, and once the retries are used up the message goes into <topic>.dlq carrying
+// the original key / value / headers and the xkafka-dlq-* headers; xutil.Permanent is not retried;
+// and the offset is committed afterwards
 func TestKafka_FailureRetriesThenDeadLetter_PermanentSkipsRetries(t *testing.T) {
 	harness.RequireKafka(t)
 	t.Parallel()
@@ -112,7 +121,7 @@ func TestKafka_FailureRetriesThenDeadLetter_PermanentSkipsRetries(t *testing.T) 
 
 	dlq := harness.KafkaRead(t, topic+".dlq", 2, 30*time.Second)
 	if len(dlq) != 2 {
-		t.Fatalf("文档说重试用完写进死信：%s.dlq 里只有 %d 条\n%s", topic, len(dlq), lastLines(p.Output(), 30))
+		t.Fatalf("the documentation says a message goes to the dead letters once the retries are used up: %s.dlq holds only %d\n%s", topic, len(dlq), lastLines(p.Output(), 30))
 	}
 	first := dlq[0]
 	for k, want := range map[string]string{
@@ -120,42 +129,43 @@ func TestKafka_FailureRetriesThenDeadLetter_PermanentSkipsRetries(t *testing.T) 
 		"xkafka-dlq-group": p.KafkaGroup, "xkafka-dlq-error": "e2e failure 3",
 	} {
 		if got := harness.KafkaHeader(first, k); got != want {
-			t.Errorf("死信头 %s：文档说 %q，实际 %q", k, want, got)
+			t.Errorf("the dead letter header %s: the documentation says %q, got %q", k, want, got)
 		}
 	}
 	if string(first.Key) != "k-fail" || !strings.Contains(string(first.Value), `"always"`) || harness.KafkaHeader(first, "traceparent") == "" {
-		t.Errorf("死信带着原消息的 key、value，链路头接着消费的那个 Span：key=%s value=%s headers=%v", first.Key, first.Value, first.Headers)
+		t.Errorf("a dead letter carries the original key and value, and its trace headers continue the consuming span: key=%s value=%s headers=%v", first.Key, first.Value, first.Headers)
 	}
 	if n := len(handled(p, "always")); n != 3 {
-		t.Errorf("WithRetry(2) 是最多调 3 次，实际 %d 次", n)
+		t.Errorf("WithRetry(2) means 3 calls at most, got %d", n)
 	}
 	if n := len(handled(p, "perm")); n != 1 {
-		t.Errorf("xutil.Permanent 不重试，实际调了 %d 次", n)
+		t.Errorf("xutil.Permanent is not retried, and it was called %d times", n)
 	}
 	if got := harness.KafkaHeader(dlq[1], "xkafka-dlq-error"); got != "e2e permanent failure" {
-		t.Errorf("permanent 那条的错误头：%q", got)
+		t.Errorf("the error header of the permanent one: %q", got)
 	}
-	// 日志在死信写成功之后才记：读到死信的那一刻，第二行可能还没写出来
+	// The log line is recorded after the dead letter has been written: the moment the dead letter is read, the second line may not be out yet
 	p.WaitLog(t, 5*time.Second, func(l harness.Log) bool {
 		return l.Msg() == "kafka message dead-lettered" && l.Str("offset") == "1"
 	})
 	w := p.FindLogs(func(l harness.Log) bool { return l.Msg() == "kafka message dead-lettered" })
 	if len(w) != 2 || w[0].Level() != "WARN" || w[0].Str("dlq_topic") != topic+".dlq" {
-		t.Errorf("文档说进死信记一条 WARN kafka message dead-lettered：%v", w)
+		t.Errorf("the documentation says a dead letter records one WARN kafka message dead-lettered: %v", w)
 	}
 
 	if exit := p.Terminate(t, 20*time.Second); exit.Code != 0 {
-		t.Fatalf("SIGTERM 之后应以 0 退出：%v", exit)
+		t.Fatalf("it should exit with 0 after the SIGTERM: %v", exit)
 	}
 	if got := harness.KafkaCommitted(t, p.KafkaGroup, topic, 0); got != 2 {
-		t.Errorf("进了死信的消息也提交：committed=%d，应为 2", got)
+		t.Errorf("a message that went to the dead letters is committed as well: committed=%d, want 2", got)
 	}
 }
 
 // TestKafka_SIGTERMWhileInFlight_FinishesCommitsNotRedelivered
 //
-// 文档（xkafka/README.md「退出」）：退出时不再取新消息，在途的那一条处理完（ctx 不被取消）、提交之后才离开消费组；
-// 重启之后不会再收到它
+// The documentation (xkafka/README.md, "The exit"): on exit it fetches no new message, finishes
+// the one in flight (whose ctx is not cancelled) and leaves the consumer group only after
+// committing; after a restart it does not receive it again
 func TestKafka_SIGTERMWhileInFlight_FinishesCommitsNotRedelivered(t *testing.T) {
 	harness.RequireKafka(t)
 	t.Parallel()
@@ -171,34 +181,37 @@ func TestKafka_SIGTERMWhileInFlight_FinishesCommitsNotRedelivered(t *testing.T) 
 
 	exit := p.Terminate(t, 30*time.Second)
 	if exit.Code != 0 {
-		t.Fatalf("SIGTERM 之后应以 0 退出：%v\n%s", exit, lastLines(p.Output(), 30))
+		t.Fatalf("it should exit with 0 after the SIGTERM: %v\n%s", exit, lastLines(p.Output(), 30))
 	}
 	d := p.FindLogs(func(l harness.Log) bool { return l.Msg() == "e2e kafka done" && l.Str("id") == "inflight" })
 	if len(d) != 1 || d[0].Str("ctx_err") != "" {
-		t.Fatalf("文档说在途的消息处理完、它的 ctx 不随退出取消：%v", d)
+		t.Fatalf("the documentation says the message in flight is finished and its ctx is not cancelled by the exit: %v", d)
 	}
 	if exit.SinceSignal < 2*time.Second {
-		t.Errorf("在途的消息要睡 3s，SIGTERM 之后 %v 就退出了：没等它", exit.SinceSignal)
+		t.Errorf("the message in flight sleeps 3s and it exited %v after the SIGTERM: it did not wait", exit.SinceSignal)
 	}
 	if n := len(handled(p, "queued")); n != 0 {
-		t.Errorf("文档说退出时不再取新消息：排在后面的那条被处理了")
+		t.Errorf("the documentation says no new message is fetched on exit: the one queued behind it was handled")
 	}
 	if got := harness.KafkaCommitted(t, group, topic, 0); got != 1 {
-		t.Fatalf("在途的那条处理完之后提交：committed=%d，应为 1", got)
+		t.Fatalf("it commits once the message in flight is finished: committed=%d, want 1", got)
 	}
 
 	p2 := harness.Start(t, o)
 	done(t, p2, "queued", 30*time.Second)
 	if n := len(handled(p2, "inflight")); n != 0 {
-		t.Errorf("退出前处理完、提交了的消息，重启之后又收到了 %d 次", n)
+		t.Errorf("a message finished and committed before the exit was received %d times after the restart", n)
 	}
 	p2.Terminate(t, 20*time.Second)
 }
 
 // TestKafka_SIGKILLMidProcessing_Redelivered
 //
-// 文档（xkafka/README.md「提交」）：至少一次——处理完才标记、提交；kill -9 时在处理的那条没提交，重启之后重新投递。
-// 被 kill 的组员不会主动离开消费组：新的进程要等它的会话超时（franz-go 默认 45s）才分到分区
+// The documentation (xkafka/README.md, "Committing"): at least once -- it marks and commits only
+// once the message is handled; with a kill -9 the one being handled is not committed and is
+// redelivered after a restart.
+// A member that was killed does not leave the consumer group of its own accord: the new process
+// waits out its session timeout (45s by default in franz-go) before it is assigned partitions
 func TestKafka_SIGKILLMidProcessing_Redelivered(t *testing.T) {
 	harness.RequireKafka(t)
 	t.Parallel()
@@ -217,21 +230,22 @@ func TestKafka_SIGKILLMidProcessing_Redelivered(t *testing.T) {
 
 	start := time.Now()
 	p2 := harness.Start(t, o)
-	// 重新投递时它照样要睡 60s：看的是「又开始处理它了」
+	// Redelivered, it sleeps its 60s again: what is looked for is "it started handling it again"
 	d := p2.WaitLog(t, kafkaSessionTimeout+30*time.Second, func(l harness.Log) bool { return l.Msg() == "e2e kafka handle" && l.Str("id") == "killed" })
-	t.Logf("数字：kill -9 之后重启的进程 %v 收到了重新投递的消息（会话超时 %v）", time.Since(start), kafkaSessionTimeout)
+	t.Logf("numbers: after the kill -9 the restarted process received the redelivered message %v in (the session timeout being %v)", time.Since(start), kafkaSessionTimeout)
 	if d.Str("offset") != "1" {
-		t.Errorf("重新投递的是被 kill 时在处理的那条（offset 1）：%s", d.Line)
+		t.Errorf("what is redelivered is the one being handled at the kill (offset 1): %s", d.Line)
 	}
-	// before 在 kill 之前处理完：有没有重新投递取决于自动提交（5s 一次）赶没赶上，不卡
-	t.Logf("数字：kill 之前处理完的那条，重启之后重新投递了 %d 次", len(handled(p2, "before")))
-	p2.Kill() // 在途的那条要睡 60s，不等它
+	// before was finished before the kill: whether it is redelivered depends on whether the automatic commit (every 5s) got there, which is not asserted
+	t.Logf("numbers: the one finished before the kill was redelivered %d times after the restart", len(handled(p2, "before")))
+	p2.Kill() // the one in flight sleeps 60s and is not waited for
 }
 
 // TestKafka_TwoProcessesSplitPartitions_HandOverWithoutLoss
 //
-// 文档（xkafka/README.md「再均衡」）：同一个消费组的两个进程分摊分区；一个退出时它的分区交给另一个，
-// 交出去之前提交——不丢，也不重复
+// The documentation (xkafka/README.md, "Rebalancing"): two processes in one consumer group share
+// the partitions; when one exits its partitions go to the other, and it commits before handing
+// them over -- nothing is lost and nothing is handled twice
 func TestKafka_TwoProcessesSplitPartitions_HandOverWithoutLoss(t *testing.T) {
 	harness.RequireKafka(t)
 	t.Parallel()
@@ -252,7 +266,7 @@ func TestKafka_TwoProcessesSplitPartitions_HandOverWithoutLoss(t *testing.T) {
 			}
 		}
 	}
-	// 等两个进程都分到分区：各自处理到消息为止
+	// Wait until both processes have partitions: each of them handles a message
 	deadline := time.Now().Add(30 * time.Second)
 	for round := 0; ; round++ {
 		send(fmt.Sprintf("warm%d", round))
@@ -261,15 +275,15 @@ func TestKafka_TwoProcessesSplitPartitions_HandOverWithoutLoss(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("文档说同组的两个进程分摊分区：30s 内 p1 处理了 %d 条、p2 处理了 %d 条", len(p1.FindLogs(isDone)), len(p2.FindLogs(isDone)))
+			t.Fatalf("the documentation says two processes in one group share the partitions: in 30s p1 handled %d and p2 handled %d", len(p1.FindLogs(isDone)), len(p2.FindLogs(isDone)))
 		}
 	}
 
 	if exit := p1.Terminate(t, 30*time.Second); exit.Code != 0 {
-		t.Fatalf("p1 SIGTERM 之后应以 0 退出：%v", exit)
+		t.Fatalf("p1 should exit with 0 after the SIGTERM: %v", exit)
 	}
 	send("after")
-	// p2 要在下一次心跳（3s 一次）才知道 p1 走了，再走一遍两阶段的再均衡，才接手 p1 的分区
+	// p2 learns that p1 is gone at its next heartbeat (every 3s) and takes p1's partitions over only after another two-phase rebalance
 	count := func() map[string]int {
 		n := map[string]int{}
 		for _, p := range []*harness.Process{p1, p2} {
@@ -283,7 +297,7 @@ func TestKafka_TwoProcessesSplitPartitions_HandOverWithoutLoss(t *testing.T) {
 	for slices.ContainsFunc(ids, func(id string) bool { return count()[id] == 0 }) && time.Now().Before(deadline) {
 		time.Sleep(200 * time.Millisecond)
 	}
-	time.Sleep(time.Second) // 有重复的话给它时间冒出来
+	time.Sleep(time.Second) // give a duplicate time to turn up, if there is one
 	final := count()
 	var missing, dup []string
 	for _, id := range ids {
@@ -296,10 +310,10 @@ func TestKafka_TwoProcessesSplitPartitions_HandOverWithoutLoss(t *testing.T) {
 		}
 	}
 	if len(missing) > 0 {
-		t.Errorf("交接时丢了消息：%v", missing)
+		t.Errorf("messages were lost in the hand-over: %v", missing)
 	}
 	if len(dup) > 0 {
-		t.Errorf("文档说交出分区之前提交，不重复：%v 处理了不止一次", dup)
+		t.Errorf("the documentation says it commits before handing the partitions over, so nothing repeats: %v was handled more than once", dup)
 	}
 	p2.Terminate(t, 20*time.Second)
 }
@@ -308,8 +322,10 @@ func isDone(l harness.Log) bool { return l.Msg() == "e2e kafka done" }
 
 // TestKafka_BrokerUnreachableAtStartup_FailsFastNamingAddressNoSecret
 //
-// 文档（xkafka/README.md「行为与实测」）：启动时探测连通性，3 次、每次 2 × DialTimeout（默认 2s）、
-// 退避上界 1s、2s；连不上启动失败，错误里有地址、没有密码。黑洞（SYN 没有回音）和拒绝连接各一遍
+// The documentation (xkafka/README.md, "Behavior (measured)"): at the start it probes the
+// connection 3 times, each 2 x DialTimeout (2s by default), with the backoff bounds 1s and 2s;
+// when it cannot connect the start fails, with the address in the error and no password. Once with
+// a blackhole (no answer to the SYN) and once with connections refused
 func TestKafka_BrokerUnreachableAtStartup_FailsFastNamingAddressNoSecret(t *testing.T) {
 	harness.RequireKafka(t)
 	t.Parallel()
@@ -327,17 +343,17 @@ func TestKafka_BrokerUnreachableAtStartup_FailsFastNamingAddressNoSecret(t *test
 			p := harness.Start(t, harness.Options{KafkaAddr: addr, Overlay: overlay, NoWait: true})
 			exit, ok := p.Wait(budget + 10*time.Second)
 			if !ok {
-				t.Fatalf("文档说连不上启动失败：%v 之后还没退出", budget+10*time.Second)
+				t.Fatalf("the documentation says the start fails when it cannot connect: it had not exited after %v", budget+10*time.Second)
 			}
-			t.Logf("数字：%s 启动失败用了 %v（预算 %v）", name, exit.Uptime, budget)
+			t.Logf("numbers: %s took %v to fail the start (budget %v)", name, exit.Uptime, budget)
 			if exit.Code != 1 {
-				t.Errorf("启动失败应以 1 退出：%v", exit)
+				t.Errorf("a failed start should exit with 1: %v", exit)
 			}
 			if !strings.Contains(p.Stderr(), "xkafka connect failed") || !strings.Contains(p.Stderr(), "cannot reach "+addr) {
-				t.Errorf("文档说错误里点名地址：\n%s", lastLines(p.Stderr(), 10))
+				t.Errorf("the documentation says the error names the address:\n%s", lastLines(p.Stderr(), 10))
 			}
 			if strings.Contains(p.Output(), secret) {
-				t.Error("密码出现在了输出里")
+				t.Error("the password turned up in the output")
 			}
 		})
 	}
@@ -345,8 +361,9 @@ func TestKafka_BrokerUnreachableAtStartup_FailsFastNamingAddressNoSecret(t *test
 
 // TestKafka_ConsumerOnlyProcess
 //
-// 文档（xkafka/README.md「快速上手」）：只消费的进程 xone.MustRun(xone.UntilSignal())，消费者在 StageServer 起来，
-// SIGTERM 时停下、提交，以 0 退出
+// The documentation (xkafka/README.md, "Quick start"): a process that only consumes is
+// xone.MustRun(xone.UntilSignal()), its consumer comes up in StageServer, and on SIGTERM it stops,
+// commits and exits with 0
 func TestKafka_ConsumerOnlyProcess(t *testing.T) {
 	harness.RequireKafka(t)
 	t.Parallel()
@@ -363,7 +380,7 @@ func TestKafka_ConsumerOnlyProcess(t *testing.T) {
 
 	exit := p.Terminate(t, 20*time.Second)
 	if exit.Code != 0 {
-		t.Fatalf("SIGTERM 之后应以 0 退出：%v\n%s", exit, lastLines(p.Output(), 30))
+		t.Fatalf("it should exit with 0 after the SIGTERM: %v\n%s", exit, lastLines(p.Output(), 30))
 	}
 	var stops []string
 	for _, l := range p.Logs() {
@@ -371,14 +388,14 @@ func TestKafka_ConsumerOnlyProcess(t *testing.T) {
 			stops = append(stops, l.Str("hook"))
 		}
 	}
-	// 消费者先停（StageServer），生产客户端后关（StageClient）
+	// The consumer stops first (StageServer) and the producing client closes after it (StageClient)
 	i, j := slices.Index(stops, "xkafka.stopConsumers"), slices.Index(stops, "xkafka.closeXKafka")
 	if i < 0 || j < 0 || i > j {
-		t.Errorf("文档说消费者先停、客户端后关：%v", stops)
+		t.Errorf("the documentation says the consumer stops first and the client closes after it: %v", stops)
 	}
 	for part := range int32(2) {
 		if got := harness.KafkaCommitted(t, p.KafkaGroup, topic, part); got != 1 {
-			t.Errorf("分区 %d 退出前提交：committed=%d", part, got)
+			t.Errorf("partition %d is committed before the exit: committed=%d", part, got)
 		}
 	}
 }

@@ -1,33 +1,36 @@
-// Package harness 是 e2e 测试的辅助：构建并起真实的服务进程、发请求、发信号，
-// 读它的日志、Span、指标和 /proc，另有可控的 TCP 代理、下游桩和压测器。
+// Package harness is what the e2e tests lean on: it builds and starts a real service process,
+// sends requests and signals, and reads its logs, spans, metrics and /proc, with a TCP proxy under
+// the test's control, downstream stubs and a load generator besides.
 //
-// 所有入口都先过 Require：环境变量 XONE_E2E 不为 1 时 t.Skip。scripts/test.sh
-// 遍历每个模块跑测试，没有数据库的机器上这个模块必须照样全绿。
-// 真要跑用 scripts/e2e.sh，它负责拉起 PG / MySQL / Redis 并导出下面这些连接参数：
+// Every entry point goes through Require first, which t.Skips unless the XONE_E2E environment
+// variable is 1. scripts/test.sh runs the tests of every module, and on a machine with no databases
+// this module has to stay green all the same.
+// To really run them, use scripts/e2e.sh: it brings up PG / MySQL / Redis and exports the
+// connection settings below:
 //
-//	XONE_E2E_PG_ADDR      默认 127.0.0.1:5432
-//	XONE_E2E_PG_USER      默认 xone
-//	XONE_E2E_PG_PASSWORD  默认 e2e-secret-pw
-//	XONE_E2E_PG_DB        默认 xone_e2e
-//	XONE_E2E_REDIS_ADDR   默认 127.0.0.1:6379
-//	XONE_E2E_MYSQL_ADDR      默认 127.0.0.1:3306
-//	XONE_E2E_MYSQL_USER      默认 xone
-//	XONE_E2E_MYSQL_PASSWORD  默认 e2e-secret-pw
-//	XONE_E2E_MYSQL_DB        默认 xone_e2e
-//	XONE_E2E_CH_ADDR      ClickHouse native 协议，默认 127.0.0.1:9000
-//	XONE_E2E_CH_HTTP_ADDR ClickHouse HTTP 协议，默认 127.0.0.1:8123
-//	XONE_E2E_CH_USER      默认 xone
-//	XONE_E2E_CH_PASSWORD  默认 e2e-secret-pw
-//	XONE_E2E_CH_DB        默认 xone_e2e
-//	XONE_E2E_CH           scripts/e2e.sh 起不来 ClickHouse 时设成 0，CH 的用例跳过（RequireCH）
-//	XONE_E2E_KAFKA_ADDR   Kafka broker，默认 127.0.0.1:9092
-//	XONE_E2E_KAFKA        scripts/e2e.sh 起不来 Kafka 时设成 0，Kafka 的用例跳过（RequireKafka）
+//	XONE_E2E_PG_ADDR      127.0.0.1:5432 by default
+//	XONE_E2E_PG_USER      xone by default
+//	XONE_E2E_PG_PASSWORD  e2e-secret-pw by default
+//	XONE_E2E_PG_DB        xone_e2e by default
+//	XONE_E2E_REDIS_ADDR   127.0.0.1:6379 by default
+//	XONE_E2E_MYSQL_ADDR      127.0.0.1:3306 by default
+//	XONE_E2E_MYSQL_USER      xone by default
+//	XONE_E2E_MYSQL_PASSWORD  e2e-secret-pw by default
+//	XONE_E2E_MYSQL_DB        xone_e2e by default
+//	XONE_E2E_CH_ADDR      the ClickHouse native protocol, 127.0.0.1:9000 by default
+//	XONE_E2E_CH_HTTP_ADDR the ClickHouse HTTP protocol, 127.0.0.1:8123 by default
+//	XONE_E2E_CH_USER      xone by default
+//	XONE_E2E_CH_PASSWORD  e2e-secret-pw by default
+//	XONE_E2E_CH_DB        xone_e2e by default
+//	XONE_E2E_CH           set to 0 when scripts/e2e.sh cannot bring ClickHouse up, and the CH cases skip (RequireCH)
+//	XONE_E2E_KAFKA_ADDR   the Kafka broker, 127.0.0.1:9092 by default
+//	XONE_E2E_KAFKA        set to 0 when scripts/e2e.sh cannot bring Kafka up, and the Kafka cases skip (RequireKafka)
 //
-// 每个 Start 默认用自己的端口、自己的表名和 Redis key 前缀，测试结束时删掉，
-// 所以用例之间互不干扰，可以 t.Parallel。
+// Every Start uses a port, a table name and a Redis key prefix of its own by default and deletes
+// them when the test ends, so the cases do not disturb each other and can t.Parallel.
 //
-// 带 t 的辅助函数失败时 t.Fatal，只能在测试的主协程里调；
-// 在别的协程里发请求用不带 t 的 Request。
+// A helper taking a t t.Fatals on failure and can only be called on the test's main goroutine;
+// to send a request from another goroutine, use Request, which takes none.
 package harness
 
 import (
@@ -43,7 +46,7 @@ import (
 	"time"
 )
 
-// Require e2e 没开时跳过这个测试。每个 e2e 测试的第一行
+// Require skips this test when e2e is off. The first line of every e2e test
 func Require(t testing.TB) {
 	t.Helper()
 	if os.Getenv("XONE_E2E") != "1" {
@@ -51,10 +54,12 @@ func Require(t testing.TB) {
 	}
 }
 
-// RequireCH ClickHouse 用例的第一行：e2e 没开、或者 ClickHouse 不可用时跳过。
+// RequireCH is the first line of a ClickHouse case: it skips when e2e is off or ClickHouse is
+// unavailable.
 //
-// ClickHouse 跑在 Docker 里，不是每台机器都有：scripts/e2e.sh 起不来它时设 XONE_E2E_CH=0，
-// 这里跳过并说清为什么；没经过脚本直接跑的，拨一下 native 端口，拨不通同样跳过
+// ClickHouse runs in Docker, which not every machine has: scripts/e2e.sh sets XONE_E2E_CH=0 when it
+// cannot bring it up, and this skips and says why; run without the script, it dials the native port
+// and skips the same way when nothing answers
 func RequireCH(t testing.TB) {
 	t.Helper()
 	Require(t)
@@ -68,16 +73,17 @@ func RequireCH(t testing.TB) {
 	c.Close()
 }
 
-// KnownBug 标记一个测试揭示出来的框架 bug：打印 KNOWN BUG 并跳过。
+// KnownBug marks a bug in the framework that a test uncovered: it prints KNOWN BUG and skips.
 //
-// 断言照文档写的行为写，失败了不为了变绿去改断言，而是在失败的那个分支里调它，
-// 证据写在测试的注释里。修好之后这一行自然走不到，测试就回到正常的通过
+// The assertions follow the documented behavior, and a failing one is not bent to go green: the
+// failing branch calls this instead, with the evidence in the test's comment. Once the bug is
+// fixed this line is simply never reached and the test passes as it should
 func KnownBug(t testing.TB, msg string) {
 	t.Helper()
 	t.Skipf("KNOWN BUG: %s", msg)
 }
 
-// Main 给 TestMain 用：跑完全部测试后删掉构建出来的二进制。
+// Main is for TestMain: it deletes the binaries that were built once every test has run.
 //
 //	func TestMain(m *testing.M) { os.Exit(harness.Main(m)) }
 func Main(m *testing.M) int {
@@ -86,7 +92,7 @@ func Main(m *testing.M) int {
 	return code
 }
 
-// ModuleDir e2e 模块的根目录（e2e/ 的绝对路径）
+// ModuleDir is the e2e module's root (the absolute path of e2e/)
 func ModuleDir() string {
 	_, file, _, _ := runtime.Caller(0)
 	return filepath.Dir(filepath.Dir(file))
@@ -99,13 +105,13 @@ func env(key, def string) string {
 	return def
 }
 
-// PGAddr PostgreSQL 的 host:port，不经代理
+// PGAddr is PostgreSQL's host:port, not through the proxy
 func PGAddr() string { return env("XONE_E2E_PG_ADDR", "127.0.0.1:5432") }
 
-// RedisAddr Redis 的 host:port，不经代理
+// RedisAddr is Redis's host:port, not through the proxy
 func RedisAddr() string { return env("XONE_E2E_REDIS_ADDR", "127.0.0.1:6379") }
 
-// PGDSN 连到 addr 的 DSN。addr 传 PGAddr() 直连，传 Proxy.Addr() 经代理
+// PGDSN is the DSN connecting to addr. PGAddr() connects directly, Proxy.Addr() through the proxy
 func PGDSN(addr string) string {
 	u := url.URL{
 		Scheme:   "postgres",
@@ -117,35 +123,39 @@ func PGDSN(addr string) string {
 	return u.String()
 }
 
-// MySQLAddr MySQL 的 host:port，不经代理
+// MySQLAddr is MySQL's host:port, not through the proxy
 func MySQLAddr() string { return env("XONE_E2E_MYSQL_ADDR", "127.0.0.1:3306") }
 
-// MySQLPassword harness 连 MySQL 用的密码
+// MySQLPassword is the password the harness connects to MySQL with
 func MySQLPassword() string { return env("XONE_E2E_MYSQL_PASSWORD", "e2e-secret-pw") }
 
-// MySQLDSN 连到 addr 的 go-sql-driver DSN。addr 传 MySQLAddr() 直连，传 Proxy.Addr() 经代理。
+// MySQLDSN is the go-sql-driver DSN connecting to addr. MySQLAddr() connects directly, Proxy.Addr()
+// through the proxy.
 //
-// 不带任何超时参数：timeout / readTimeout / writeTimeout 由 xgorm 按配置注入，
-// 测试要验的正是注入的那一份；要测「DSN 里写了的不被覆盖」时自己在后面拼
+// It carries no timeout at all: timeout / readTimeout / writeTimeout are injected by xgorm from the
+// configuration, and the injected ones are exactly what a test is there to check; to test "what the
+// DSN says is not overridden", append it in the test
 func MySQLDSN(addr string) string {
 	return env("XONE_E2E_MYSQL_USER", "xone") + ":" + MySQLPassword() + "@tcp(" + addr + ")/" + env("XONE_E2E_MYSQL_DB", "xone_e2e")
 }
 
-// CHAddr ClickHouse native 协议的 host:port，不经代理
+// CHAddr is the host:port of the ClickHouse native protocol, not through the proxy
 func CHAddr() string { return env("XONE_E2E_CH_ADDR", "127.0.0.1:9000") }
 
-// CHHTTPAddr ClickHouse HTTP 协议的 host:port，不经代理
+// CHHTTPAddr is the host:port of the ClickHouse HTTP protocol, not through the proxy
 func CHHTTPAddr() string { return env("XONE_E2E_CH_HTTP_ADDR", "127.0.0.1:8123") }
 
-// CHPassword harness 连 ClickHouse 用的密码
+// CHPassword is the password the harness connects to ClickHouse with
 func CHPassword() string { return env("XONE_E2E_CH_PASSWORD", "e2e-secret-pw") }
 
-// CHDSN 连到 addr 的 native 协议 DSN。addr 传 CHAddr() 直连，传 Proxy.Addr() 经代理。
+// CHDSN is the native-protocol DSN connecting to addr. CHAddr() connects directly, Proxy.Addr()
+// through the proxy.
 //
-// 不带任何超时参数：dial_timeout 由 xgorm 按 DialTimeout 注入，测试要验的正是注入的那一份
+// It carries no timeout at all: dial_timeout is injected by xgorm from DialTimeout, and the
+// injected one is exactly what a test is there to check
 func CHDSN(addr string) string { return CHDSNWith("clickhouse", addr, CHPassword()) }
 
-// CHDSNWith 指定 scheme（clickhouse / tcp / http / https）和密码的 DSN
+// CHDSNWith is the DSN with the scheme (clickhouse / tcp / http / https) and the password given
 func CHDSNWith(scheme, addr, password string) string {
 	u := url.URL{
 		Scheme: scheme,
@@ -156,7 +166,8 @@ func CHDSNWith(scheme, addr, password string) string {
 	return u.String()
 }
 
-// NewID 一个随机的小写标识符，比如 3fa9c1d2b7e4。表名、key 前缀用它拼
+// NewID is a random lower-case identifier, 3fa9c1d2b7e4 for instance. Table names and key prefixes
+// are built from it
 func NewID() string {
 	b := make([]byte, 6)
 	_, _ = rand.Read(b)
@@ -168,7 +179,7 @@ var ports struct {
 	used map[int]bool
 }
 
-// FreePort 找一个本机空闲端口。同一个测试进程里不会发出两次同一个端口
+// FreePort finds a free port on this host. One test process never hands out the same port twice
 func FreePort(t testing.TB) int {
 	t.Helper()
 	ports.mu.Lock()

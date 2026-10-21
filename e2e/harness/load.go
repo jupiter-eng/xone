@@ -15,45 +15,50 @@ import (
 	"time"
 )
 
-// LoadSpec 一次压测。Duration 和 Requests 至少给一个，都给时哪个先到算哪个
+// LoadSpec is one load round. At least one of Duration and Requests has to be given, and with both
+// the first one reached wins
 type LoadSpec struct {
-	// Concurrency 固定并发数，默认 1
+	// Concurrency is the fixed number of concurrent requests, 1 by default
 	Concurrency int
-	// Duration 跑多久。到点时在途的请求照样等它做完、照样计数
+	// Duration is how long to run. The requests in flight when the time is up are still waited for
+	// and still counted
 	Duration time.Duration
-	// Requests 一共发多少个
+	// Requests is how many to send in all
 	Requests int
 
-	// Method / URL / Body / Header 每个请求都一样时用这几个。Method 默认 GET
+	// Method / URL / Body / Header are for when every request is the same. Method is GET by default
 	Method string
 	URL    string
 	Body   []byte
 	Header http.Header
 
-	// NewRequest 每个请求不一样时用它（比如轮着读不同的 id），i 从 0 开始。给了就不看上面四个
+	// NewRequest is for when the requests differ (reading one id after another, say), with i
+	// starting at 0. Given, it replaces the four fields above
 	NewRequest func(ctx context.Context, i int) (*http.Request, error)
 
-	// Timeout 单个请求的超时，默认 10s
+	// Timeout is one request's timeout, 10s by default
 	Timeout time.Duration
 }
 
-// LoadResult 压测结果。延迟统计的是每个请求从发出到读完 body，出错的请求也算在内
+// LoadResult is a load round's result. The latencies are measured from sending a request to having
+// read its body, failed requests included
 type LoadResult struct {
-	// Requests 发出去的请求数，Errors 其中传输层失败（没拿到响应）的个数
+	// Requests is how many were sent, and Errors how many of them failed in the transport (no
+	// response arrived)
 	Requests int
 	Errors   int
-	// Status 拿到响应的请求按状态码分桶
+	// Status buckets the requests that got a response by status code
 	Status  map[int]int
 	Elapsed time.Duration
 	QPS     float64
 
 	P50, P90, P99, Max time.Duration
 
-	// ErrorSamples 前几个不同的传输层错误，排查用
+	// ErrorSamples are the first few distinct transport errors, to look into
 	ErrorSamples []string
 }
 
-// OK 状态码在 [200, 300) 的请求数
+// OK is how many requests came back with a status code in [200, 300)
 func (r LoadResult) OK() int {
 	n := 0
 	for code, c := range r.Status {
@@ -78,7 +83,8 @@ func (r LoadResult) String() string {
 		r.Requests, r.Errors, r.QPS, r.P50, r.P90, r.P99, r.Max, r.Elapsed.Round(time.Millisecond), strings.Join(parts, " "))
 }
 
-// Load 按 spec 压一轮。连接池按并发数配（每个 worker 一条长连接），跑完就关
+// Load runs one round after spec. The connection pool is sized to the concurrency (one long-lived
+// connection per worker) and closed once the round is over
 func Load(t testing.TB, spec LoadSpec) LoadResult {
 	t.Helper()
 	if spec.Duration <= 0 && spec.Requests <= 0 {
@@ -188,14 +194,14 @@ func once(c *http.Client, newReq func(context.Context, int) (*http.Request, erro
 		return 0, err
 	}
 	defer resp.Body.Close()
-	// 读完 body 连接才回得了池子，否则每个请求都新建连接
+	// The connection only goes back to the pool once the body has been read; without it every request opens a new one
 	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
 		return 0, err
 	}
 	return resp.StatusCode, nil
 }
 
-// percentile 最近秩法：排好序的样本里第 ceil(p*n) 个
+// percentile takes the nearest rank: the ceil(p*n)-th of the sorted samples
 func percentile(sorted []time.Duration, p float64) time.Duration {
 	k := int(math.Ceil(float64(len(sorted))*p)) - 1
 	return sorted[min(max(k, 0), len(sorted)-1)]

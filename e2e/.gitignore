@@ -1,3 +1,4 @@
-# 在 service/ 或 baseline/ 目录里 go build 产出的二进制；harness 编到临时目录，不落在这里
+# The binaries go build leaves in service/ or baseline/; the harness builds into a temporary
+# directory and nothing of it lands here
 /service/service
 /baseline/baseline
