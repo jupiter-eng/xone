@@ -319,7 +319,7 @@ mutate("回滚预算不是正数要 panic", "xflow/xflow.go", ".", "TestWithRoll
        swap('\tif d <= 0 {\n\t\tpanic(fmt.Sprintf("xflow: rollback timeout', '\tif d < 0 {\n\t\tpanic(fmt.Sprintf("xflow: rollback timeout'))
 # 回滚的是已执行的那段前缀：失败的弱依赖算在内（它可能留下了副作用），
 # 失败的强依赖不算（它没成）
-mutate("失败的弱依赖也要回滚", "xflow/xflow.go", ".", "TestExecute", swap('\t\t\tn++ // 失败的弱依赖', '\t\t\t// 失败的弱依赖'))
+mutate("失败的弱依赖也要回滚", "xflow/xflow.go", ".", "TestExecute", swap('\t\t\tn++ // a failed weak dependency', '\t\t\t// a failed weak dependency'))
 mutate("失败的强依赖那一步不回滚", "xflow/xflow.go", ".", "TestExecute",
        swap('''\t\tf.rollback(ctx, data, f.steps[:n], res, m)
 \t\treturn res

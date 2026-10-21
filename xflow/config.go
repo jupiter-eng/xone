@@ -9,35 +9,35 @@ import (
 	"github.com/jupiter-eng/xone/xhook"
 )
 
-// ConfigKey 本模块在配置文件里的顶层 key
+// ConfigKey is this module's top-level key in the config file.
 const ConfigKey = "XFlow"
 
-// Config 流程编排配置
+// Config is the flow orchestration configuration.
 type Config struct {
-	// Monitor 是否开启监控回调。默认开启。
+	// Monitor says whether the monitoring callbacks are enabled. It defaults to on.
 	//
-	// 关掉之后 Execute 一次监控回调都不走，是真正的零开销。
+	// With it off, Execute makes no monitoring callback at all, which is really zero overhead.
 	Monitor bool `yaml:"Monitor"`
 
-	// RollbackTimeout 回滚全部步骤的总预算。默认 30s。
+	// RollbackTimeout is the total budget for rolling every step back. It defaults to 30s.
 	//
-	// 回滚不沿用调用方的 context（否则请求一超时，补偿必然全部失败），
-	// 改由这一项单独限时，免得补偿逻辑无限期挂住退出流程。
-	// 不看 ctx 的 Rollback 也挂不住：到点就不再等它，记进 RollbackErrors，
-	// 没轮到的步骤同样逐个记下；被放弃的那一步的协程仍在后台跑。
+	// A rollback does not inherit the caller's context (a request timing out would otherwise make every compensation
+	// fail); it is limited by this setting instead, so compensation logic cannot hang the shutdown sequence
+	// indefinitely. A Rollback that ignores the ctx cannot hang it either: once the budget is reached it is no longer
+	// waited for and is recorded in RollbackErrors, as is every step that never got a turn; the abandoned step's goroutine keeps running in the background.
 	RollbackTimeout time.Duration `yaml:"RollbackTimeout"`
 }
 
-// DefaultConfig 全部默认值集中在这里
+// DefaultConfig holds every default in one place.
 func DefaultConfig() Config {
 	return Config{Monitor: true, RollbackTimeout: 30 * time.Second}
 }
 
-// Validate 框架在配置加载完之后会调一次，在建任何东西之前。
+// Validate is called once by the framework after the configuration is loaded, before anything is built.
 //
-// 本模块没有要初始化的资源，只有这一件事要做：RollbackTimeout 配成 0 会让
-// 每次回滚一进去就判超时、所有补偿被跳过，而流程本身看起来一切正常。
-// 这种配错不会让任何初始化失败，只能在这里拦住。
+// This module has no resources to initialize and only one thing to do here: a RollbackTimeout of 0 would make every
+// rollback time out the moment it starts and skip every compensation, while the flow itself looks entirely normal.
+// A misconfiguration like that fails no initialization and can only be caught here.
 func (c Config) Validate() error {
 	if c.RollbackTimeout <= 0 {
 		return fmt.Errorf("RollbackTimeout must be > 0, got=%v", c.RollbackTimeout)
@@ -47,15 +47,15 @@ func (c Config) Validate() error {
 
 var cfg = DefaultConfig()
 
-// init 本模块没有要初始化的资源，只把配置读进来——Unmarshal 会顺手调 Validate
+// init has no resources to initialize; it only reads the configuration -- Unmarshal calls Validate along the way.
 func init() {
 	xhook.BeforeStart(loadConfig, xhook.At(xhook.StageLog))
 }
 
-// loadConfig 解进一份新的默认值，校验通过才换上。
+// loadConfig decodes into a fresh set of defaults and only swaps it in once validation passes.
 //
-// 直接解进 cfg 的话，同一进程里前一次 Run 的值会带进下一次（没写的字段不回到默认值），
-// 校验失败时那个非法值（比如 RollbackTimeout: 0）也已经落到了 cfg 上。
+// Decoding straight into cfg would carry values from a previous Run in the same process into the next one (fields
+// left unset would not return to their defaults), and a failed validation would already have written the invalid value (a RollbackTimeout: 0, say) onto cfg.
 func loadConfig(context.Context) error {
 	c := DefaultConfig()
 	if err := xconfig.Unmarshal(ConfigKey, &c); err != nil {

@@ -1,15 +1,15 @@
-// Package xflow 把一串步骤编排成一个流程，强依赖失败时自动逆序回滚。
+// Package xflow orchestrates a series of steps into one flow, rolling them back in reverse when a strong dependency fails.
 //
-//	flow := xflow.New("下单",
-//		&扣券{}, &扣库存{}, &扣款{}, &发通知{},
+//	flow := xflow.New("place-order",
+//		&DeductCoupon{}, &ReserveStock{}, &Charge{}, &Notify{},
 //	)
 //	result := flow.Execute(ctx, data)
 //	if !result.Success() { ... }
 //
-// 一个步骤只要写 Process 和 Rollback。默认是强依赖：失败就中断并回滚；
-// 弱依赖（失败只记一笔、继续往下走）再写一个 Dependency() 返回 Weak。
+// A step only has to write Process and Rollback. The default is a strong dependency: a failure interrupts the flow and
+// rolls it back; for a weak dependency (a failure is only recorded and the flow continues) add a Dependency() returning Weak.
 //
-// 本包零第三方依赖，所以留在核心模块里。
+// This package has no third-party dependencies, which is why it stays in the core module.
 package xflow
 
 import (
@@ -23,13 +23,13 @@ import (
 	"github.com/jupiter-eng/xone/xerror"
 )
 
-// Dependency 步骤的依赖强弱
+// Dependency is how strongly a step is depended on.
 type Dependency int
 
 const (
-	// Strong 强依赖：失败就中断流程并回滚
+	// Strong is a strong dependency: a failure interrupts the flow and rolls it back.
 	Strong Dependency = iota
-	// Weak 弱依赖：失败只记一笔，继续往下走
+	// Weak is a weak dependency: a failure is only recorded and the flow continues.
 	Weak
 )
 
@@ -44,35 +44,35 @@ func (d Dependency) String() string {
 	}
 }
 
-// Processor 流程里的一步。
+// Processor is one step in a flow.
 //
-// 类型参数 T 是贯穿整个流程的共享数据，建议用指针（如 *OrderData）：
-// 入参、出参、各步骤之间的中间结果都放进这一个结构体，
-// 于是每一步的方法签名里只出现业务自己的类型，不必重复框架的泛型。
+// The type parameter T is the data shared across the whole flow, and a pointer (such as *OrderData) is the natural
+// choice: the inputs, the outputs and the intermediate results between steps all go into that one struct, so each
+// step's method signatures mention only the business's own types and never repeat the framework's generics.
 //
-// Process 和 Rollback 要写在同一个类型上：谁做的事，谁负责撤销。
-// 拆开写迟早会出现「加了一步正向逻辑，忘了配套的补偿」。
+// Process and Rollback belong on the same type: whoever did something is responsible for undoing it.
+// Splitting them apart ends sooner or later in "a forward step was added and its compensation forgotten".
 //
-// 另有两个可选的方法，写了才用，构建流程时读一次：
+// There are two more optional methods, used when written and read once while the flow is built:
 //
-//	Name() string            步骤名，用于日志和错误信息。不写就是类型名：&扣券{} 叫「扣券」
-//	Dependency() Dependency  强依赖还是弱依赖。不写就是 Strong
+//	Name() string            the step name, for logs and error messages. Without it the type name is used: &DeductCoupon{} is called "DeductCoupon"
+//	Dependency() Dependency  a strong or a weak dependency. Without it, Strong
 type Processor[T any] interface {
-	// Process 正向逻辑
+	// Process is the forward logic.
 	Process(ctx context.Context, data T) error
 
-	// Rollback 补偿逻辑，强依赖失败时逆序调用已成功的步骤。
+	// Rollback is the compensation logic, called in reverse on the steps that succeeded when a strong dependency fails.
 	//
-	// 两件事要留意：
-	//   - 不能假设 Process 完全成功。弱依赖失败之后仍会被回滚，
-	//     所以这里要做幂等处理。
-	//   - 用的 ctx 已经剥掉了原来的取消和超时，改由 RollbackTimeout 限时
-	//     （见 rollback 的说明）。预算到点还没返回的，框架不再等它、记一笔超时，
-	//     但它的协程还在跑，之后仍可能读写 data——要看 ctx，别让它悬着。
+	// Two things to keep in mind:
+	//   - It cannot assume Process fully succeeded. A failed weak dependency is still rolled back,
+	//     so this has to be idempotent.
+	//   - The ctx it receives has had the original cancellation and timeout stripped off and is limited by
+	//     RollbackTimeout instead (see rollback's documentation). One that has not returned when the budget runs out is
+	//     no longer waited for and is recorded as a timeout, but its goroutine keeps running and may still read and write data -- watch the ctx and do not leave it dangling.
 	Rollback(ctx context.Context, data T) error
 }
 
-// StepError 某一步出的错
+// StepError is an error from one step.
 type StepError struct {
 	Processor  string
 	Dependency Dependency
@@ -85,47 +85,47 @@ func (e *StepError) Error() string {
 
 func (e *StepError) Unwrap() error { return e.Err }
 
-// PanicError 步骤的 Process 或 Rollback panic 了，它会出现在 StepError.Err 里。
+// PanicError means a step's Process or Rollback panicked; it appears in StepError.Err.
 //
-// 调用栈放在 Stack 里而不是错误消息里：消息会进告警标题、进日志检索，
-// 几十行的栈塞进去，一条错误就被拆成了几十行。默认监控把它记成单独的
-// stack 字段；自己实现 Monitor 的用 errors.As 取。
+// The call stack goes into Stack rather than into the error message: the message reaches alert titles and log search,
+// and a stack of a few dozen lines would split one error into a few dozen lines. The default monitor records it as a
+// separate stack field; an own Monitor implementation takes it with errors.As.
 type PanicError struct {
-	Value any    // recover() 拿到的值
-	Stack []byte // panic 那一刻的调用栈
+	Value any    // the value recover() returned
+	Stack []byte // the call stack at the moment of the panic
 }
 
 func (e *PanicError) Error() string { return fmt.Sprintf("panicked: %v", e.Value) }
 
-// Unwrap panic 出来的本身是 error 时返回它，errors.Is / errors.As 才问得出根因
+// Unwrap returns the panicked value when it is itself an error, so errors.Is / errors.As can reach the root cause.
 func (e *PanicError) Unwrap() error {
 	err, _ := e.Value.(error)
 	return err
 }
 
-// Result 一次执行的结果。
+// Result is the outcome of one execution.
 //
-// 业务数据不在这里——它在调用方传进 Execute 的那个 T 里。
-// 流程失败时，此前各步写进去的内容依然保留，便于排查和人工补偿。
+// The business data is not here -- it is in the T the caller passed to Execute.
+// When the flow fails, what the earlier steps wrote into it is kept, for investigation and manual compensation.
 type Result struct {
-	// Err 致命错误：强依赖失败，或者 ctx 被取消。nil 表示流程走完了。
+	// Err is the fatal error: a strong dependency failed, or the ctx was cancelled. nil means the flow ran to the end.
 	Err error
 
-	// Skipped 弱依赖失败的记录，不影响流程继续
+	// Skipped records the failed weak dependencies, which do not stop the flow.
 	Skipped []*StepError
 
-	// RollbackErrors 回滚过程中出的错。
+	// RollbackErrors are the errors that occurred during the rollback.
 	//
-	// 这个列表非空意味着有资源没能补偿回来，需要人工介入。
+	// A non-empty list means some resource was not compensated and needs a human.
 	RollbackErrors []*StepError
 
-	// Rolled 是否真的回滚过至少一步。
+	// Rolled says whether at least one step was really rolled back.
 	//
-	// 第一步开始前就被取消的流程没有可回滚的，这里是 false。
+	// A flow cancelled before the first step began has nothing to roll back, so this is false.
 	Rolled bool
 }
 
-// Success 流程是否走完了（没有强依赖失败）
+// Success reports whether the flow ran to the end (with no strong dependency failing).
 func (r *Result) Success() bool { return r.Err == nil }
 
 func (r *Result) String() string {
@@ -145,25 +145,25 @@ func (r *Result) String() string {
 	return msg
 }
 
-// Flow 一个编排好的流程。
+// Flow is one orchestrated flow.
 //
-// 构建之后字段不再变化，可以并发 Execute。
+// Its fields do not change after it is built, so Execute may be called concurrently.
 type Flow[T any] struct {
 	name  string
 	steps []entry[T]
 
-	// rollbackTimeout 这个流程自己的回滚预算，0 表示跟着 XFlow.RollbackTimeout 走
+	// rollbackTimeout is this flow's own rollback budget; 0 means it follows XFlow.RollbackTimeout
 	rollbackTimeout time.Duration
 }
 
-// entry 一个步骤，连同构建时就定下来的名字和依赖强弱
+// entry is one step together with the name and dependency strength fixed when it was built.
 type entry[T any] struct {
 	Processor[T]
 	name string
 	dep  Dependency
 }
 
-// entryOf 读出步骤可选的 Name / Dependency，没写的用默认值
+// entryOf reads a step's optional Name / Dependency, using the defaults for whatever is not written.
 func entryOf[T any](p Processor[T]) entry[T] {
 	s := entry[T]{Processor: p, name: typeName(p), dep: Strong}
 	if n, ok := p.(interface{ Name() string }); ok {
@@ -175,12 +175,12 @@ func entryOf[T any](p Processor[T]) entry[T] {
 	return s
 }
 
-// fail 把这一步出的错记成 StepError
+// fail records an error from this step as a StepError.
 func (s entry[T]) fail(err error) *StepError {
 	return &StepError{Processor: s.name, Dependency: s.dep, Err: err}
 }
 
-// typeName 没写 Name 的步骤用它的类型名：&扣券{} → 扣券
+// typeName gives a step without a Name its type name: &DeductCoupon{} -> DeductCoupon
 func typeName(p any) string {
 	t := reflect.TypeOf(p)
 	for t.Kind() == reflect.Pointer {
@@ -192,10 +192,10 @@ func typeName(p any) string {
 	return t.String()
 }
 
-// New 按传入顺序构建流程。
+// New builds a flow in the order the steps are passed.
 //
-// 传 nil 步骤直接 panic：它只会在执行到那一步时炸成空指针，
-// 而那时错误早就脱离了构建现场，越早暴露越好。
+// A nil step panics outright: it would otherwise only blow up as a nil pointer when that step runs, by which time the
+// error is long detached from where it was built, and the earlier it surfaces the better.
 func New[T any](name string, steps ...Processor[T]) *Flow[T] {
 	out := make([]entry[T], len(steps))
 	for i, p := range steps {
@@ -207,14 +207,14 @@ func New[T any](name string, steps ...Processor[T]) *Flow[T] {
 	return &Flow[T]{name: name, steps: out}
 }
 
-// Name 流程名
+// Name is the flow name.
 func (f *Flow[T]) Name() string { return f.name }
 
-// WithRollbackTimeout 给这个流程单独定回滚的总预算，压过配置里的 XFlow.RollbackTimeout。
+// WithRollbackTimeout sets this flow's own total rollback budget, overriding XFlow.RollbackTimeout from the configuration.
 //
-// 不跑 xone.Run、单独用 xflow 时，这是改回滚预算的办法：配置文件只在框架启动时才读。
-// 返回一个新的 Flow，原来那个不变，所以已经在别处并发 Execute 的流程不受影响。
-// d 必须为正：0 会让回滚一进去就判超时、所有补偿被跳过，传进来就 panic。
+// When using xflow on its own without xone.Run, this is how the rollback budget is changed: the config file is only
+// read when the framework starts. It returns a new Flow and leaves the original untouched, so a flow already being
+// Executed concurrently elsewhere is unaffected. d must be positive: 0 would make a rollback time out the moment it starts and skip every compensation, so passing it panics.
 func (f *Flow[T]) WithRollbackTimeout(d time.Duration) *Flow[T] {
 	if d <= 0 {
 		panic(fmt.Sprintf("xflow: rollback timeout of flow %q must be > 0, got=%v", f.name, d))
@@ -224,11 +224,11 @@ func (f *Flow[T]) WithRollbackTimeout(d time.Duration) *Flow[T] {
 	return &g
 }
 
-// Execute 按顺序执行各步骤，data 贯穿全程供各步读写。
+// Execute runs the steps in order, with data carried through for every step to read and write.
 //
-// 强依赖失败或 ctx 被取消时中断并逆序回滚已执行的步骤；
-// 弱依赖失败记进 Skipped 后继续，但同样会被纳入回滚范围——
-// 它可能已经产生了副作用，只是后面没走下去而已。
+// A failing strong dependency or a cancelled ctx interrupts the flow and rolls the executed steps back in reverse;
+// a failing weak dependency is recorded in Skipped and the flow continues, but it is included in the rollback range
+// all the same -- it may already have had side effects and merely did not carry on.
 func (f *Flow[T]) Execute(ctx context.Context, data T) *Result {
 	if ctx == nil {
 		ctx = context.Background()
@@ -238,17 +238,17 @@ func (f *Flow[T]) Execute(ctx context.Context, data T) *Result {
 	res := &Result{}
 	start := now(m)
 
-	// 用 defer 而不是在每个出口各写一遍：出口有三个（取消、失败、正常走完），
-	// 以后再加一个分支时漏掉通知，表现是监控上这次执行凭空消失，
-	// 而流程本身照常返回——不会有人发现
+	// A defer rather than writing it at each exit: there are three exits (cancelled, failed, ran to the end), and
+	// missing one when another branch is added later would show up as this execution vanishing from monitoring while
+	// the flow itself returns as usual -- nobody would notice.
 	defer func() { f.notifyFlow(ctx, m, res, start) }()
 
-	// 要回滚的总是已执行的那一段前缀：成功的、失败的弱依赖都算在内，
-	// 只有失败的强依赖不算——而它一定是最后执行的那一个。所以记个数就够了
+	// What is rolled back is always the executed prefix: the successful steps and the failed weak dependencies are all
+	// in it, and only a failed strong dependency is not -- and that is necessarily the last one executed. So a count is enough.
 	n := 0
 
 	for _, s := range f.steps {
-		// 调用方已经不等了，就不再启动新步骤；但已经做完的仍要回滚
+		// The caller is no longer waiting, so no new step is started; what is already done is still rolled back.
 		if err := ctx.Err(); err != nil {
 			res.Err = xerror.Newf("xflow", "execute", "flow %q canceled before step %q: %w", f.name, s.name, err)
 			f.rollback(ctx, data, f.steps[:n], res, m)
@@ -268,24 +268,24 @@ func (f *Flow[T]) Execute(ctx context.Context, data T) *Result {
 
 		if s.dep == Weak {
 			res.Skipped = append(res.Skipped, se)
-			n++ // 失败的弱依赖也可能留下了副作用，同样要回滚
+			n++ // a failed weak dependency may have left side effects too and is rolled back as well
 
-			// 弱依赖失败只记一笔继续走——除非它是被取消带下水的。
+			// A failing weak dependency is only recorded and the flow continues -- unless it was dragged down by a cancellation.
 			//
-			// 取消只在每步开始前查一次的话，最后一步撞上取消就查不到了：
-			// 它的 context.Canceled 走进这个「跳过」分支，循环随即结束，
-			// 于是一个被取消的流程报成了 Success，还一步都没回滚。
+			// Checking for cancellation only at the start of each step would miss a cancellation hitting the last step:
+			// its context.Canceled would walk into this "skipped" branch, the loop would end right after, and a cancelled
+			// flow would be reported as Success with not a single step rolled back.
 			if ctx.Err() == nil {
 				continue
 			}
 			res.Err = xerror.Newf("xflow", "execute", "flow %q canceled while running step %q: %w",
 				f.name, s.name, ctx.Err())
 		} else {
-			// 强依赖失败：这一步没成，不纳入回滚范围。
+			// A failing strong dependency: this step did not succeed and is not in the rollback range.
 			//
-			// 包一层 xerror：不包的话 res.Err 是个裸的 *StepError，
-			// xerror.Is(err, "xflow") 认不出它，而别处的错误都认得出。
-			// 包了之后 errors.As(err, &stepErr) 照样能拿到里面那个
+			// It is wrapped in an xerror: without that, res.Err would be a bare *StepError that
+			// xerror.Is(err, "xflow") does not recognize, while every other error is recognized.
+			// With it, errors.As(err, &stepErr) still reaches the one inside.
 			res.Err = xerror.New("xflow", "execute", se)
 		}
 
@@ -295,12 +295,12 @@ func (f *Flow[T]) Execute(ctx context.Context, data T) *Result {
 	return res
 }
 
-// rollback 逆序回滚已执行的步骤。
+// rollback rolls the executed steps back in reverse.
 //
-// 回滚用的 ctx 剥掉了原来的取消和超时：补偿逻辑（退款、还库存、解冻额度）
-// 最需要执行的时机恰恰是请求超时之后，沿用已经取消的 ctx 会让每个补偿调用
-// 一进去就被拒绝，资源就真的漏掉了。
-// 剥掉之后由 RollbackTimeout 单独限时，免得补偿无限期挂住退出流程。
+// The ctx used for the rollback has the original cancellation and timeout stripped off: compensation logic (a refund,
+// returning stock, unfreezing a limit) is needed most precisely after a request has timed out, and inheriting an
+// already cancelled ctx would have every compensation call rejected the moment it starts, really leaking the resources.
+// With them stripped off it is limited by RollbackTimeout instead, so compensation cannot hang the shutdown sequence indefinitely.
 func (f *Flow[T]) rollback(ctx context.Context, data T, done []entry[T], res *Result, m Monitor) {
 	rbCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cmp.Or(f.rollbackTimeout, cfg.RollbackTimeout))
 	defer cancel()
@@ -308,7 +308,7 @@ func (f *Flow[T]) rollback(ctx context.Context, data T, done []entry[T], res *Re
 	for i := len(done) - 1; i >= 0; i-- {
 		s := done[i]
 
-		// 预算耗尽也要把剩下的逐个记下来：调用方得知道还有哪些资源悬着
+		// Even once the budget is exhausted the rest are recorded one by one: the caller has to know which resources are still dangling.
 		if err := rbCtx.Err(); err != nil {
 			res.RollbackErrors = append(res.RollbackErrors,
 				s.fail(fmt.Errorf("rollback budget exhausted, this step never ran: %w", err)))
@@ -326,14 +326,14 @@ func (f *Flow[T]) rollback(ctx context.Context, data T, done []entry[T], res *Re
 	}
 }
 
-// rollbackWithin 在回滚预算之内执行一步 Rollback，到点就不再等它。
+// rollbackWithin runs one step's Rollback within the rollback budget and stops waiting for it once the budget is reached.
 //
-// Rollback 收了 ctx，但它未必真的看——里面可能是一个不吃 ctx 的第三方调用。
-// 只在步骤之间查预算的话，这样一步能把 Execute 无限期挂住（实测 50ms 的预算
-// 等了 2s），而且它自己不会出现在 RollbackErrors 里。所以另起一个协程去等，
-// 做法和 xone 的 runWithin 一样。超时之后那个协程还挂在原地、照样会读写 data，
-// 这是有意的：强行放弃它，好过让 Execute 连同调用方一起陪它挂着。
-// 预算这时已经耗尽，还没轮到的步骤由 rollback 逐个记成「没执行」。
+// Rollback receives a ctx, but it may not really watch it -- what is inside may be a third-party call that ignores it.
+// Checking the budget only between steps would let such a step hang Execute indefinitely (measured: a 50ms budget
+// waited 2s) without appearing in RollbackErrors itself. So another goroutine does the waiting, the same way as xone's
+// runWithin. After the timeout that goroutine is still sitting there and still reads and writes data, which is
+// deliberate: abandoning it outright beats having Execute, and the caller with it, hang alongside it.
+// The budget is exhausted by then, so rollback records every step that never got a turn as "not executed".
 func rollbackWithin[T any](ctx context.Context, p Processor[T], data T) error {
 	done := make(chan error, 1)
 	go func() { done <- safeRollback(ctx, p, data) }()
@@ -346,13 +346,12 @@ func rollbackWithin[T any](ctx context.Context, p Processor[T], data T) error {
 	}
 }
 
-// safeProcess 执行 Process 并隔离 panic
+// safeProcess runs Process and isolates panics.
 //
-// 一步炸了不该把整个进程打穿：它应该变成一个普通的步骤失败，
-// 好让前面几步有机会被回滚。
+// One step blowing up must not take the whole process down: it should become an ordinary step failure, so the earlier steps get a chance to be rolled back.
 //
-// 返回的是 *PanicError 而不是 xerror：它会被装进 StepError，再由 Execute
-// 在模块边界包一次 xerror。这里再包就是两层 xflow。
+// It returns a *PanicError rather than an xerror: that goes into a StepError, which Execute wraps in an xerror at the
+// module boundary. Wrapping here as well would be two layers of xflow.
 func safeProcess[T any](ctx context.Context, p Processor[T], data T) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -362,9 +361,9 @@ func safeProcess[T any](ctx context.Context, p Processor[T], data T) (err error)
 	return p.Process(ctx, data)
 }
 
-// safeRollback 执行 Rollback 并隔离 panic
+// safeRollback runs Rollback and isolates panics.
 //
-// 尤其重要：一步补偿炸了不该拦住其余步骤的补偿。
+// This matters especially: one compensation blowing up must not stop the others from running.
 func safeRollback[T any](ctx context.Context, p Processor[T], data T) (err error) {
 	defer func() {
 		if r := recover(); r != nil {

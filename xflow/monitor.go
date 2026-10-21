@@ -8,35 +8,35 @@ import (
 	"time"
 )
 
-// StepEvent 一步执行完的事件，Process 和 Rollback 共用
+// StepEvent is the event of one finished step, shared by Process and Rollback.
 type StepEvent struct {
 	Flow       string
 	Processor  string
 	Dependency Dependency
-	Rollback   bool // true 表示这是一次回滚
+	Rollback   bool // true means this was a rollback
 	Err        error
 	Duration   time.Duration
 }
 
-// FlowEvent 整个流程执行完的事件，Duration 含回滚耗时
+// FlowEvent is the event of a finished flow; Duration includes the rollback time.
 type FlowEvent struct {
 	Flow     string
 	Result   *Result
 	Duration time.Duration
 }
 
-// Monitor 观测流程执行。
+// Monitor observes flow execution.
 //
-// 两个回调都被 panic 隔离：监控实现出错只丢一次观测，不会打断业务流程。
+// Both callbacks are isolated against panics: a failing monitoring implementation loses one observation and never interrupts the business flow.
 type Monitor interface {
 	OnStep(ctx context.Context, e *StepEvent)
 	OnFlow(ctx context.Context, e *FlowEvent)
 }
 
-// monitor 当前生效的实现，原子读写：Execute 是热点路径，不该为它加锁
+// monitor is the implementation currently in effect, read and written atomically: Execute is a hot path and should not take a lock for it.
 var monitor atomic.Pointer[Monitor]
 
-// SetMonitor 换掉默认的监控实现。传 nil 表示关掉监控。
+// SetMonitor replaces the default monitoring implementation. Passing nil turns monitoring off.
 func SetMonitor(m Monitor) {
 	if m == nil {
 		monitor.Store(nil)
@@ -47,7 +47,7 @@ func SetMonitor(m Monitor) {
 
 func init() { SetMonitor(slogMonitor{}) }
 
-// activeMonitor 本次执行用哪个 Monitor，关掉时返回 nil（零开销）
+// activeMonitor is the Monitor this execution uses, returning nil when monitoring is off (zero overhead).
 func activeMonitor() Monitor {
 	if !cfg.Monitor {
 		return nil
@@ -59,8 +59,8 @@ func activeMonitor() Monitor {
 	return *m
 }
 
-// now 开着监控才读时钟：耗时只有监控看，关掉之后每步照读的话，
-// 五步的流程一次执行要白读六次时钟，「零开销」就不成立了
+// now reads the clock only while monitoring is on: the elapsed time is only for monitoring, and reading it per step
+// anyway would mean six wasted clock reads per execution of a five-step flow, which would make "zero overhead" untrue.
 func now(m Monitor) time.Time {
 	if m == nil {
 		return time.Time{}
@@ -87,25 +87,25 @@ func (f *Flow[T]) notifyFlow(ctx context.Context, m Monitor, res *Result, start 
 	m.OnFlow(ctx, &FlowEvent{Flow: f.name, Result: res, Duration: time.Since(start)})
 }
 
-// recoverNotify 隔离监控实现的 panic
+// recoverNotify isolates panics in a monitoring implementation.
 //
-// 直接 defer 它，而不是 defer 一个调用 m.OnX 的闭包：闭包要捕获 m、ctx
-// 和事件，于是每一步都多一次分配，而这是每步都走的路径。
+// It is deferred directly rather than deferring a closure that calls m.OnX: the closure would capture m, the ctx and
+// the event, costing one more allocation per step on a path every step takes.
 func recoverNotify() {
 	if r := recover(); r != nil {
 		slog.Error("xflow monitor panicked, isolated", "error", r)
 	}
 }
 
-// slogMonitor 默认实现，写到标准库 slog。
+// slogMonitor is the default implementation, writing to the standard library's slog.
 //
-// 成功的步骤记 info：开着 XFlow.Monitor 就是想看每一步，默认级别下就该看得到。
-// 一个五步的流程每次执行会写六行；不想要逐步日志的，关掉 Monitor 或者用 SetMonitor 换成自己的实现。
+// A successful step is recorded at info: turning XFlow.Monitor on means wanting to see every step, and that should be visible at the default level.
+// A five-step flow writes six lines per execution; anyone not wanting per-step logs turns Monitor off or replaces it with SetMonitor.
 type slogMonitor struct{}
 
 func (slogMonitor) OnStep(ctx context.Context, e *StepEvent) {
-	// 成功的步骤记 info。级别没开（比如日志级别设成 warn）就在这里返回，不要先把这一行拼出来
-	// 再交给 slog 丢掉——一个五步的流程每次执行要拼五次，全是白干
+	// A successful step is recorded at info. When the level is not enabled (the log level is set to warn, say) it returns
+	// here rather than assembling the line first and handing it to slog to discard -- a five-step flow would assemble five lines per execution, all for nothing.
 	if e.Err == nil && !slog.Default().Enabled(ctx, slog.LevelInfo) {
 		return
 	}
@@ -118,7 +118,7 @@ func (slogMonitor) OnStep(ctx context.Context, e *StepEvent) {
 
 	if e.Err != nil {
 		attrs = append(attrs, "error", e.Err)
-		// panic 的调用栈不在错误消息里（见 PanicError），在这里单独记一个字段
+		// A panic's call stack is not in the error message (see PanicError), so it is recorded as a field of its own here.
 		var pe *PanicError
 		if errors.As(e.Err, &pe) {
 			attrs = append(attrs, "stack", string(pe.Stack))
@@ -132,7 +132,7 @@ func (slogMonitor) OnStep(ctx context.Context, e *StepEvent) {
 func (slogMonitor) OnFlow(ctx context.Context, e *FlowEvent) {
 	attrs := []any{"flow", e.Flow, "elapsed_ms", millis(e.Duration), "result", e.Result.String()}
 
-	// 回滚有失败意味着有资源没补偿回来，需要人工介入——这一条必须醒目
+	// A failed rollback means some resource was not compensated and needs a human -- this one has to stand out.
 	if len(e.Result.RollbackErrors) > 0 {
 		slog.ErrorContext(ctx, "xflow rollback did not complete, resources may be left dangling",
 			append(attrs, "uncompensated_steps", len(e.Result.RollbackErrors))...)
@@ -145,5 +145,5 @@ func (slogMonitor) OnFlow(ctx context.Context, e *FlowEvent) {
 	slog.InfoContext(ctx, "xflow flow done", attrs...)
 }
 
-// millis 耗时换成毫秒，保留到微秒。字段名带单位：slog 的 JSON 把 Duration 写成纳秒整数
+// millis converts an elapsed time to milliseconds, keeping microseconds. The field name carries the unit: slog's JSON writes a Duration as an integer number of nanoseconds.
 func millis(d time.Duration) float64 { return float64(d.Microseconds()) / 1000 }

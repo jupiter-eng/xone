@@ -413,5 +413,5 @@ and its troubleshooting.
 | `XGin` | A web server | [xgin/README.md](../xgin/README.md#configuration) |
 | `XGinSwagger` | API documentation | [xginswagger/README.md](../xginswagger/README.md#configuration) |
 | `XEcho` | A web server (Echo) | [xecho/README.md](../xecho/README.md#configuration) |
-| `XFlow` | Flow orchestration | [xflow/README.md](../xflow/README.md#配置) |
+| `XFlow` | Flow orchestration | [xflow/README.md](../xflow/README.md#configuration) |
 | `TLS` (inside the XGorm / XRedis / XHttp / XKafka blocks) | Client-side TLS | [xtls/README.md](../xtls/README.md#configuration) |
