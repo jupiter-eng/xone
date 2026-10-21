@@ -200,8 +200,6 @@ scripts/mutations/xtrace.py
 scripts/release.sh
 scripts/test.sh
 xapp/README.md
-xapp/xapp.go
-xapp/xapp_test.go
 xcache/README.md
 xcache/config.go
 xcache/go.mod

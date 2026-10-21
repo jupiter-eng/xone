@@ -400,7 +400,7 @@ and its troubleshooting.
 
 | Block | What it is | Module documentation |
 |---|---|---|
-| `XApp` | Application identity, profiles, Import | [xapp/README.md](../xapp/README.md#配置) |
+| `XApp` | Application identity, profiles, Import | [xapp/README.md](../xapp/README.md#configuration) |
 | `XLog` | Logging | [xlog/README.md](../xlog/README.md#配置) |
 | `XTrace` | Tracing | [xtrace/README.md](../xtrace/README.md#配置) |
 | `XMetric` | Metrics | [xmetric/README.md](../xmetric/README.md#配置) |

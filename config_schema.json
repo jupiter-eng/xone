@@ -9,7 +9,7 @@
         "object",
         "null"
       ],
-      "description": "应用身份",
+      "description": "is the application identity.",
       "properties": {
         "Import": {
           "type": [
@@ -23,7 +23,7 @@
         },
         "Name": {
           "type": "string",
-          "description": "应用名，建议全局唯一，如 team.system.app"
+          "description": "is the application name, preferably globally unique, such as team.system.app."
         },
         "Profiles": {
           "type": [
@@ -37,7 +37,7 @@
         },
         "Version": {
           "type": "string",
-          "description": "应用版本，如 v1.2.0"
+          "description": "is the application version, such as v1.2.0."
         }
       },
       "additionalProperties": false

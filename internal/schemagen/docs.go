@@ -14,7 +14,7 @@ import (
 // configDocs 每个配置块写在哪一节：模块的配置块在那个模块 README 的「## 配置」。
 // 加了一个配置块就在这里登记，没登记的 checkDocs 会报出来
 var configDocs = map[string]docSection{
-	"XApp":        {"xapp/README.md", "配置"},
+	"XApp":        {"xapp/README.md", "Configuration"},
 	"XLog":        {"xlog/README.md", "配置"},
 	"XTrace":      {"xtrace/README.md", "配置"},
 	"XMetric":     {"xmetric/README.md", "配置"},

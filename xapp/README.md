@@ -1,56 +1,57 @@
 # xapp
 
-`XApp` 块写应用本身的事：叫什么、什么版本、默认跑在哪个环境、配置从哪些文件来。
+The `XApp` block covers the application itself: what it is called, which version it is, which environment it runs in by default, and which files its configuration comes from.
 
-- 链路的 `service.name` / `service.version`、接口文档的默认标题和版本都取自这里，只配一次
-- 根包 `xone` 带着它，不用为了这块配置 import xapp
-- `Profiles`：默认激活哪个环境的配置文件
-- `Import`：再读哪些配置文件
+- Tracing's `service.name` / `service.version` and the API docs' default title and version all come from here, configured once
+- The root package `xone` brings it along, so there is no need to import xapp for this block
+- `Profiles`: which environment's config files are active by default
+- `Import`: which further config files to read
 
-## 快速上手
+## Quick start
 
 ```yaml
 # conf/application.yml
 XApp:
   Name: shop.order.api
   Version: v1.2.0
-  Profiles: ${APP_ENV:dev}    # 默认激活的 profile
-  Import: [common/log.yml]    # 再读哪些文件
+  Profiles: ${APP_ENV:dev}    # the profile active by default
+  Import: [common/log.yml]    # which further files to read
 ```
 
 ```go
 slog.Info("build info", "app", xapp.Name(), "version", xapp.Version())
 ```
 
-## 配置
+## Configuration
 
 ```yaml
 XApp:
-  Name: shop.order.api     # 建议 team.system.app，默认空
-  Version: v1.2.0          # 默认空
-  Profiles: dev            # 默认激活的 profile：一个名字、"prod,eu" 或 [prod, eu]；只能写在主配置文件里
-  Import:                  # 再读哪些文件：一个写字符串，多个写列表；optional: 前缀表示可以没有
+  Name: shop.order.api     # preferably team.system.app, empty by default
+  Version: v1.2.0          # empty by default
+  Profiles: dev            # the profile active by default: one name, "prod,eu" or [prod, eu]; it can only be written in the main config file
+  Import:                  # which further files to read: a string for one, a list for several; the optional: prefix allows it to be missing
     - common/log.yml
 ```
 
-- `Name`、`Version`：环境文件里可以覆盖，比如 `application-prod.yml` 换一个 `Name`。
-- `Profiles`：`--profile` / `XONE_PROFILE` 给了就不看这一项（替换，不是追加）。规则见
-  [docs/config.md「Profiles」](../docs/config.md#profiles--one-file-per-environment)。
-- `Import`：相对路径按写着它的那个文件所在的目录解析，引进来的压过引它的；被引进来的文件里可以再写 `Import`，
-  但不能写 `Profiles`。规则见 [docs/config.md「Import」](../docs/config.md#import--pulling-in-other-config-files)。
+- `Name` and `Version` can be overridden in an environment file, for example a different `Name` in `application-prod.yml`.
+- `Profiles` is ignored when `--profile` or `XONE_PROFILE` is given (a replacement, not an addition). The rules are in
+  [docs/config.md "Profiles"](../docs/config.md#profiles--one-file-per-environment).
+- `Import`: a relative path resolves against the directory of the file that writes it, and an imported file wins over the
+  one importing it; an imported file may write `Import` of its own, but not `Profiles`. The rules are in
+  [docs/config.md "Import"](../docs/config.md#import--pulling-in-other-config-files).
 
 ## API
 
-| 函数 | 说明 |
+| Function | Description |
 |---|---|
-| `Name() string` | 应用名，未配置时为空字符串 |
-| `Version() string` | 应用版本，未配置时为空字符串 |
+| `Name() string` | The application name, or an empty string when it is not configured |
+| `Version() string` | The application version, or an empty string when it is not configured |
 
-`XApp` 在日志那一档（`StageLog`）就读好，链路、客户端、业务、服务各档的钩子里读到的都是最终值。
+`XApp` is read on the logging stage (`StageLog`), so the hooks on the tracing, client, business and server stages all read the final value.
 
-## 注意事项
+## Notes
 
-- **`Profiles`、`Import` 由配置加载本身读**，读完就从 `XApp` 里拿走，xapp 看到的只有 `Name`、`Version`。
-- **指标不读这一块**：要在指标上区分应用，用 `XMetric.ConstLabels`（如 `app: shop.order.api`）。
-- **环境变量压过这里**：`OTEL_RESOURCE_ATTRIBUTES` / `OTEL_SERVICE_NAME` 压过 `Name` / `Version`，优先级见
-  [xtrace「行为与实测」](../xtrace/README.md#行为与实测)。
+- **`Profiles` and `Import` are read by the configuration loader itself** and taken out of `XApp` once read, so what xapp sees is only `Name` and `Version`.
+- **Metrics do not read this block**: to tell applications apart in metrics, use `XMetric.ConstLabels` (such as `app: shop.order.api`).
+- **Environment variables win over this block**: `OTEL_RESOURCE_ATTRIBUTES` / `OTEL_SERVICE_NAME` override `Name` / `Version`. The precedence is in
+  [xtrace "行为与实测"](../xtrace/README.md#行为与实测).
