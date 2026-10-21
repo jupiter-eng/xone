@@ -12,13 +12,13 @@ func TestFileExist(t *testing.T) {
 	os.WriteFile(f, []byte("x"), 0o600)
 
 	if !FileExist(f) {
-		t.Error("存在的文件应返回 true")
+		t.Error("an existing file must give true")
 	}
 	if FileExist(dir) {
-		t.Error("目录不是文件，应返回 false")
+		t.Error("a directory is not a file and must give false")
 	}
 	if FileExist(filepath.Join(dir, "nope")) {
-		t.Error("不存在的路径应返回 false")
+		t.Error("a path that does not exist must give false")
 	}
 }
 
@@ -28,9 +28,9 @@ func TestDirExist(t *testing.T) {
 	os.WriteFile(f, []byte("x"), 0o600)
 
 	if !DirExist(dir) {
-		t.Error("存在的目录应返回 true")
+		t.Error("an existing directory must give true")
 	}
 	if DirExist(f) {
-		t.Error("文件不是目录，应返回 false")
+		t.Error("a file is not a directory and must give false")
 	}
 }

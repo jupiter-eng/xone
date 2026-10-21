@@ -59,7 +59,7 @@ mutate("片段也有 profile 变体", "internal/config/source.go", ".", "TestLoa
 mutate("重试的等待逐次翻倍", "xutil/retry.go", ".", "TestRetry", swap('\t\t\tbackoff = nextBackoff(backoff)\n', ''))
 mutate("预算按退避上界算", "xutil/retry.go", ".", "TestRetryBudget",
        swap('''\tbudget := timeout * time.Duration(attempts)
-\tbackoff := min(interval, maxBackoff) // 与 Retry 一致：第一次也封顶
+\tbackoff := min(interval, maxBackoff) // same as Retry: the first one is capped too
 \tfor i := 1; i < attempts; i++ {
 \t\tbudget += backoff
 \t\tbackoff = nextBackoff(backoff)
@@ -69,7 +69,7 @@ mutate("预算按退避上界算", "xutil/retry.go", ".", "TestRetryBudget",
 mutate("第一次等待也封顶", "xutil/retry.go", ".", "TestRetry_FirstWaitAlsoCapped",
        swap('\tvar last error\n\tbackoff := min(interval, maxBackoff)', '\tvar last error\n\tbackoff := interval'))
 mutate("预算里的第一次退避也封顶", "xutil/retry.go", ".", "TestRetryBudget_FirstBackoffAlsoCapped",
-       swap('\tbackoff := min(interval, maxBackoff) // 与 Retry 一致', '\tbackoff := interval // 与 Retry 一致'))
+       swap('\tbackoff := min(interval, maxBackoff) // same as Retry', '\tbackoff := interval // same as Retry'))
 mutate("重试的等待带抖动", "xutil/retry.go", ".", "TestJitter",
        swap('\treturn time.Duration(rand.Int64N(int64(d) + 1))', '\treturn d - time.Duration(rand.Int64N(2))'))
 # 密码错、库不存在也照样重试满整轮，启动白白拖长几十秒

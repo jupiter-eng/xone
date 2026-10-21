@@ -302,7 +302,3 @@ xtrace/propagator.go
 xtrace/propagator_test.go
 xtrace/xtrace.go
 xtrace/xtrace_test.go
-xutil/file.go
-xutil/file_test.go
-xutil/retry.go
-xutil/retry_test.go
