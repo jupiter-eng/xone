@@ -22,8 +22,6 @@ docs/guide.md
 # The two diagrams hold their text as SVG nodes at fixed coordinates. English is wider than
 # Chinese at the same font size, so translating them without rendering the result risks text
 # overflowing its boxes; they need a pass where the rendering can be checked.
-docs/images/architecture.svg
-docs/images/lifecycle.svg
 docs/observability.md
 e2e/.gitignore
 e2e/baseline/main.go
