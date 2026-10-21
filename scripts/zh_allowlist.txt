@@ -231,10 +231,6 @@ xginswagger/README.md
 xginswagger/go.mod
 xginswagger/swagger.go
 xginswagger/swagger_test.go
-xhook/internal/viahelper/viahelper.go
-xhook/registrant_test.go
-xhook/xhook.go
-xhook/xhook_test.go
 xhttp/README.md
 xhttp/bench_test.go
 xhttp/config.go

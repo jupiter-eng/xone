@@ -1,7 +1,7 @@
-// Package viahelper 只给 xhook 的测试用：一个替别的包登记钩子的辅助包。
+// Package viahelper is only for xhook's tests: a helper package that registers hooks on behalf of others.
 //
-// 登记的是这里造的闭包，函数名属于本包；登记它的却是调用 Register 的那个包。
-// 框架该把钩子算在后者头上，否则所有经辅助包登记的包都会被当成同一个。
+// What it registers is a closure built here, so the function name belongs to this package while the package doing
+// the registering is the one calling Register. The framework must credit the hook to the latter, otherwise every package registering through a helper is taken for the same one.
 package viahelper
 
 import (
@@ -10,11 +10,11 @@ import (
 	"github.com/jupiter-eng/xone/xhook"
 )
 
-// Register 替调用方登记一个什么都不做的启动钩子。
+// Register registers a start hook that does nothing, on behalf of the caller.
 //
-// 不许内联：内联之后这个闭包会在调用方那里实例化，名字随之变成调用方的，
-// 测试就分辨不出「按名字认包」和「按调用栈认包」了。真实的辅助包没有这个保证——
-// 稍大一点的函数就不会被内联，方法值更是从来不会
+// Inlining is forbidden: once inlined, this closure is instantiated at the caller and its name becomes the
+// caller's, so the test could no longer tell "recognize the package by name" from "recognize it by call stack".
+// A real helper package has no such guarantee -- a slightly larger function is not inlined, and a method value never is.
 //
 //go:noinline
 func Register() {
