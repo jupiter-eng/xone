@@ -94,9 +94,9 @@ var reservedLabels = map[string]string{
 	"quantile": "summary quantiles",
 	"level":    "log_errors_total",
 	"caller":   "log_errors_total",
-	"method":   "the xgin / xecho and xhttp request metrics",
-	"status":   "the xgin / xecho and xhttp request metrics",
-	"route":    "the xgin / xecho request metrics",
+	"method":   "the xgin / xecho / xbeego and xhttp request metrics",
+	"status":   "the xgin / xecho / xbeego and xhttp request metrics",
+	"route":    "the xgin / xecho / xbeego request metrics",
 	"host":     "the xhttp request metrics",
 	"name":     "the xgorm, xredis and xcache instance metrics",
 	// go_info carries the constant label version, and constant labels are attached to the Go runtime metrics too;

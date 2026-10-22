@@ -1,0 +1,32 @@
+# The beego e2e service's configuration. What differs per process is written as ${VAR} and injected
+# by the harness:
+#   E2E_PORT       XBeego.Port (required)
+#   E2E_LOG_FILE   XLog.File.Enable, with the directory in E2E_LOG_DIR
+#
+# E2E_SPAN_FILE is read by main.go itself rather than through a configuration block of its own:
+# this service has no business configuration, and a top-level block nothing claims fails startup.
+#
+# What is not written here is the framework's default, so a case testing the default behavior meets
+# the real default and not one this file pinned for it.
+
+XApp:
+  Name: xone.e2e.beego
+  Version: e2e
+
+XLog:
+  Format: json
+  File:
+    Enable: ${E2E_LOG_FILE:false}
+    Path: ${E2E_LOG_DIR:}      # empty keeps the default; it is only used with Enable
+    Name: app.log
+
+XTrace:
+  ForwardHeaders:          # accepted from the peers in XBeego.TrustedProxies alone, private by default
+    - X-Request-Id
+
+XMetric:
+  Namespace: e2e
+
+XBeego:
+  Host: 127.0.0.1
+  Port: ${E2E_PORT}

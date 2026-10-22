@@ -27,6 +27,7 @@ var configDocs = map[string]docSection{
 	"XGin":        {"xgin/README.md", "Configuration"},
 	"XGinSwagger": {"xginswagger/README.md", "Configuration"},
 	"XEcho":       {"xecho/README.md", "Configuration"},
+	"XBeego":      {"xbeego/README.md", "Configuration"},
 	"XFlow":       {"xflow/README.md", "Configuration"},
 }
 

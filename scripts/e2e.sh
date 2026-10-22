@@ -19,7 +19,8 @@
 #     address that is not on this host -- it is then only waited for (60 seconds at most) and never
 #     started.
 # Readiness goes by whether TCP connects (through bash's /dev/tcp) and requires no psql / mysqladmin
-# / redis-cli; with a client installed it connects once more with the test's account, so a wrong
+# / redis-cli; it is wrapped in timeout (or gtimeout, or nothing at all on a host that has neither,
+# see tcp_up); with a client installed it connects once more with the test's account, so a wrong
 # account or database is reported once here rather than once per case.
 #
 # ClickHouse is optional: one that is running is used, and on this host it runs in the Docker
@@ -93,10 +94,24 @@ export XONE_E2E_KAFKA_ADDR
 # The address is host:port; taking the host removes IPv6's square brackets
 host_of() { h=${1%:*}; h=${h#[}; echo "${h%]}"; }
 is_local() { case $(host_of "$1") in 127.*|localhost|::1) ;; *) return 1;; esac; }
+has() { command -v "$1" >/dev/null 2>&1; }
+
+# timeout is GNU coreutils' and macOS does not ship it; Homebrew installs it as gtimeout. Without
+# either, tcp_up below runs the connect without one: /dev/tcp then waits out the OS's own connect
+# timeout, which only ever shows up for an address that drops packets -- a refused or an accepted
+# connection answers immediately.
+#
+# Calling a missing timeout was the worse half of this: tcp_up redirects stderr to /dev/null, so
+# "command not found" was swallowed, every service was reported as never connecting, and e2e could
+# not be run on a Mac at all.
+if has timeout; then TIMEOUT=timeout
+elif has gtimeout; then TIMEOUT=gtimeout
+else TIMEOUT=""
+fi
+
 # tcp_up <address>: connecting counts as up. It uses bash's own /dev/tcp alone, and the timeout
 # guards against hanging on an address that is a black hole
-tcp_up() { timeout 2 bash -c ': <>"/dev/tcp/$0/$1"' "$(host_of "$1")" "${1##*:}" 2>/dev/null; }
-has() { command -v "$1" >/dev/null 2>&1; }
+tcp_up() { ${TIMEOUT:+$TIMEOUT 2} bash -c ': <>"/dev/tcp/$0/$1"' "$(host_of "$1")" "${1##*:}" 2>/dev/null; }
 
 # wait_for <attempts> <command>...: until the command succeeds, trying every 0.2 seconds
 wait_for() {

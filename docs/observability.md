@@ -9,7 +9,7 @@ README (the index is in [`config.md`](config.md#config-blocks--module-documentat
 | What you want | Where it is |
 |---|---|
 | Business logs carrying `trace_id` and per-request fields | [Logs](#logs): use `slog.InfoContext(ctx, …)` and `xlog.AddKV(ctx, k, v)` |
-| The access log fields and the masking rules | [xgin "Access log"](../xgin/README.md#access-log) (xecho's fields and rules are identical, see [xecho "Access log"](../xecho/README.md#access-log)) |
+| The access log fields and the masking rules | [xgin "Access log"](../xgin/README.md#access-log) (xecho's and xbeego's fields and rules are identical, see [xecho](../xecho/README.md#access-log) and [xbeego](../xbeego/README.md#access-log)) |
 | Building a dashboard: which metrics the framework ships | [Metrics](#metrics) |
 | How tracing propagates and whose headers are accepted | [Propagation and the trust boundary](#propagation-and-the-trust-boundary) |
 | Exporting spans | [xtrace "Quick start"](../xtrace/README.md#quick-start): `xtrace.AddSpanProcessor(...)` |
@@ -24,7 +24,7 @@ README (the index is in [`config.md`](config.md#config-blocks--module-documentat
 ## Logs
 
 xlog replaces `slog.Default()` with a handler configured from `XLog`, which both the business and
-the framework write to. It comes along with xgin / xecho / xcron; a program without a web framework
+the framework write to. It comes along with xgin / xecho / xbeego / xcron; a program without a web framework
 (a consumer, a one-off job, anything using only xgorm / xredis / xkafka) that wants it imports
 `github.com/jupiter-eng/xone/xlog` anonymously, since otherwise `slog.Default()` stays as it was
 and none of the below exists. To write to your own logging backend (zap, a company logging SDK),
@@ -36,7 +36,7 @@ call `xlog.UseHandler(h)` before `xone.Run`; everything below still applies, see
   xlog itself does not depend on OpenTelemetry).
 - **Per-request fields**: `xlog.AddKV(ctx, "user_id", id)` adds a field at any depth of the call
   stack, and every later log line in the same request (the access log included) carries it. The
-  scope is opened at the start of each request by xgin's / xecho's `LogScope` middleware; a
+  scope is opened at the start of each request by xgin's / xecho's / xbeego's `LogScope` middleware; a
   non-web entry point of your own opens it with `xlog.CtxWithScope(ctx)`.
 - **Fields for one stretch of calls**: `xlog.CtxWithKV(ctx, map[string]any{"order_id": id})`
   derives a new ctx, and only lines written through it carry those fields; fields already on the
@@ -61,6 +61,8 @@ Each module's own logs are under "Observability" in its README:
 [xgin](../xgin/README.md#observability) (the access log, `xgin listening`,
 `xgin http server error`) · [xecho](../xecho/README.md#observability) (the access log,
 `xecho listening`, `echo internal log`, `xecho http server error`) ·
+[xbeego](../xbeego/README.md#observability) (the access log, `xbeego listening`,
+`beego internal log`, `xbeego http server error`) ·
 [xgorm](../xgorm/README.md#logs) (`xgorm connected`, SQL logs) ·
 [xredis](../xredis/README.md#logs) (`xredis connected`, `redis command`, `redis pipeline`) ·
 [xhttp](../xhttp/README.md#logs) (`xhttp ready`, `http request`) ·
@@ -79,7 +81,7 @@ Every metric the framework ships carries `XMetric.ConstLabels`; apart from clien
 
 | Module | Metrics |
 |---|---|
-| [xgin](../xgin/README.md#metrics) · [xecho](../xecho/README.md#metrics) | `http_requests_total`, `http_request_duration_seconds` (identical names and labels on both sides, so one dashboard serves both) |
+| [xgin](../xgin/README.md#metrics) · [xecho](../xecho/README.md#metrics) · [xbeego](../xbeego/README.md#metrics) | `http_requests_total`, `http_request_duration_seconds` (identical names and labels on all three, so one dashboard serves them all) |
 | [xhttp](../xhttp/README.md#metrics) | `http_client_request_duration_seconds` |
 | [xgorm](../xgorm/README.md#metrics) | `db_pool_*` |
 | [xredis](../xredis/README.md#metrics) | `redis_pool_*` |
@@ -101,7 +103,7 @@ A few things worth knowing:
 ## Tracing
 
 xtrace installs the global TracerProvider and Propagator. Every integration that produces spans
-(xgin, xecho, xgorm, xredis, xhttp, xcron, xkafka) depends on it, so using any one of them gives
+(xgin, xecho, xbeego, xgorm, xredis, xhttp, xcron, xkafka) depends on it, so using any one of them gives
 tracing with nothing extra to import; to go without tracing set `XTrace.Enable: false`, and to turn
 it off for one component only set that component's own `Trace: false`. For a program using none of
 them (a consumer process with only xcache, say) that still wants tracing, import
@@ -116,6 +118,7 @@ Each module's span names and key attributes are under "Observability · Tracing"
 |---|---|
 | [xgin](../xgin/README.md#tracing) | Inbound, one per request; see also [the X-Trace-Id response header](../xgin/README.md#the-x-trace-id-response-header) and [499](../xgin/README.md#499-aborted-requests) |
 | [xecho](../xecho/README.md#tracing) | Inbound, with span names and attributes identical to xgin's and the error attribute called `echo.errors` |
+| [xbeego](../xbeego/README.md#tracing) | Inbound, the same again with the error attribute called `beego.errors`; the span is named on the way out, since the route template only exists inside beego |
 | [xhttp](../xhttp/README.md#tracing) | Outbound |
 | [xgorm](../xgorm/README.md#tracing) | One per SQL statement, with attributes following OTel's database semantic conventions |
 | [xredis](../xredis/README.md#tracing) | One per command |
@@ -123,7 +126,7 @@ Each module's span names and key attributes are under "Observability · Tracing"
 | [xkafka](../xkafka/README.md#tracing) | `<topic> publish` when producing and `<topic> process` when consuming, with consumption joining the trace from the message headers |
 | [xflow](../xflow/README.md#tracing) | Opens no spans |
 
-The status is marked as an error only for a server-side 5xx (xgin, xecho), a failing SQL statement
+The status is marked as an error only for a server-side 5xx (xgin, xecho, xbeego), a failing SQL statement
 (xgorm) or a failed scheduled job (xcron); a 4xx is not. For a server-side error the status
 description holds the error code alone and `RecordError` is not called (it would write the original
 text, parameter values included, into `exception.message`).
@@ -145,7 +148,7 @@ Three things are accepted inbound and sent outbound, under different trust rules
   spans — the cost lands on the tracing backend's storage and export bandwidth. To limit it, strip
   or rewrite inbound `traceparent` at the entrance (the gateway or the load balancer).
 - **A trusted peer is one whose directly connected hop is in `XGin.TrustedProxies`** (or
-  `XEcho.TrustedProxies` with xecho) — the TCP hop, not the client IP derived from
+  `XEcho.TrustedProxies` / `XBeego.TrustedProxies`) — the TCP hop, not the client IP derived from
   `X-Forwarded-For`. `TrustedProxies` trusts private ranges only by default (load balancers,
   Kubernetes ingresses and pods, sidecars), and accepts nothing from a public peer connecting
   directly. "Who counts as one of us" is stated here and nowhere else.
@@ -155,7 +158,7 @@ Three things are accepted inbound and sent outbound, under different trust rules
 - `XGin.Trace: false`, `XEcho.Trace: false` and `XHttp.Trace: false` only turn off the span for that
   hop; all three of the above are still accepted and still sent. With `XTrace.Enable: false` the
   trace identifiers and baggage are no longer propagated, while forwarded headers still are.
-- Code calling `Extract` itself, outside xgin / xecho (reading from message queue headers, for
+- Code calling `Extract` itself, outside xgin / xecho / xbeego (reading from message queue headers, for
   instance), has to provide a carrier implementing `TrustedPeer() bool` returning `true` to be
   treated as trusted; otherwise baggage and forwarded headers are not accepted at all. xkafka
   treats Kafka message headers as trusted when consuming (whoever can write to a topic holds the

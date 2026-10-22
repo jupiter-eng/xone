@@ -35,7 +35,7 @@ xone/
 │   ├── config/          config loading: locating, profiles / imports, merging, placeholders, strict decoding
 │   ├── hook/            hook registration, pairing and running by stage
 │   ├── xclient/         the named-instance management and startup probe shared by xgorm / xredis / xcache / xkafka
-│   ├── web/             the half xgin / xecho share: listening, TLS, graceful shutdown, trusted proxies, masking; dependency-free
+│   ├── web/             the half xgin / xecho / xbeego share: listening, TLS, graceful shutdown, trusted proxies, masking; dependency-free
 │   ├── logext/          xlog's extension points (trace_id extraction, error log counting, log fields on a ctx), injected into by xtrace / xmetric / xkafka
 │   ├── testkit/         small helpers shared by this repository's own unit tests, standard library only
 │   ├── coreonly/        proof that a program using only the core, importing no integration, still works (tests)
@@ -54,6 +54,9 @@ xone/
 ├── xginswagger/         Swagger UI (its own module)
 ├── xecho/               a web server, built on Echo v4 (its own module); shares internal/web with xgin
 │   └── middleware/      the same as xgin/middleware, plus "the error is rendered in this layer"
+├── xbeego/              a beego v2 application served without web.Run (its own module); shares internal/web with xgin
+│   ├── middleware/      the same again, as plain net/http middleware mounted outside beego's router
+│   └── internal/reqstate/  the route template, the status code and the bytes written, which beego hands no http.Handler
 ├── docs/                cross-module documentation for callers (the README has the navigation) + this file + CHANGELOG.md;
 │                        each module's own documentation is the README.md in its directory (see "Configuration and documentation")
 ├── example/             one module: runnable examples that double as in-process cross-module integration tests
@@ -61,6 +64,7 @@ xone/
 │   └── component/       writing an integration of your own: a complete sample of two hooks plus a C()
 ├── e2e/                 tests against a real web server (its own module, not published)
 │   ├── service/         the service under test: uses every integration, with all configuration coming from YAML
+│   ├── service-beego/   a beego application served by xbeego: the three beego globals it takes over, in a real process
 │   ├── baseline/        a bare gin service for comparison, to measure the framework's overhead under load
 │   ├── covapp/          a minimal program shaped like a one-off job, to test when the configuration loads (early reads, WithConfigPath)
 │   ├── harness/         starting processes, reading logs / spans / metrics / /proc, a TCP fault proxy, downstream stubs, a load generator
@@ -110,7 +114,7 @@ and a consumer module outside the repository.
 - The core's module graph holds at most 3 third-party modules, and the core depends on no
   integration module; `xhook` / `xerror` / `xutil` / `xtls` / `internal/web` have no third-party
   dependencies;
-- only xgin / xecho bring in xlog: no package of the root module, xtrace, xmetric or the data
+- only xgin / xecho / xbeego / xcron bring in xlog: no package of the root module, xtrace, xmetric or the data
   integrations may import it;
 - `init()` appears only in integration packages;
 - caps on the number of exported APIs: 15 for the root package, 6 for `xhook`, 6 for `xconfig`,
@@ -207,7 +211,7 @@ Run them before and after touching hot code, and back a change with numbers (see
 [Elegance before speed](#elegance-before-speed)):
 
 ```bash
-go test -run=NONE -bench=. -benchtime=100000x ./xlog/ ./xflow/ ./xgin/middleware/ ./xecho/middleware/
+go test -run=NONE -bench=. -benchtime=100000x ./xlog/ ./xflow/ ./xgin/middleware/ ./xecho/middleware/ ./xbeego/middleware/
 ```
 
 ## e2e: tests against a real web server

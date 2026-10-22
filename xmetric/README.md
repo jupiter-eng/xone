@@ -2,7 +2,7 @@
 
 Prometheus metrics: the native `*prometheus.Registry` comes from `xmetric.Registry()`, and day-to-day recording has a set of shortcuts that save the boilerplate.
 
-- The metrics endpoint is mounted at `/metrics` automatically by xgin / xecho; without them, mount `xmetric.Handler()` yourself
+- The metrics endpoint is mounted at `/metrics` automatically by xgin / xecho / xbeego; without them, mount `xmetric.Handler()` yourself
 - The shortcuts build metrics by name and reuse them by labels, with nothing to declare first
 - Duration metrics take a `time.Duration` and get the `_seconds` suffix automatically
 - `log_errors_total` (a count of Error-level logs) and `go_*` / `process_*` come with it
@@ -69,7 +69,7 @@ XMetric:
 | `MustRegister(cs...)` | Registers a custom collector; registering the same one twice panics |
 | `Register(c)` / `RegisterAs[T](c) (T, error)` | Registers, reusing an existing instance with the same name and labels; **always use the return value** |
 | `ConstLabels()` / `Namespace()` / `HTTPDurationBuckets()` | Reads the configuration in effect, to fill into `prometheus.Opts` so your own metrics carry the same labels as the framework's |
-| `Handler() http.Handler` | The `/metrics` handler, to mount yourself in a service not using xgin / xecho |
+| `Handler() http.Handler` | The `/metrics` handler, to mount yourself in a service not using xgin / xecho / xbeego |
 | `New(cfg) (*Metrics, io.Closer, error)` | The pure constructor: touches no globals, reads no config file, usable outside the framework |
 
 ## Notes

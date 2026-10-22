@@ -2,7 +2,7 @@
 
 Tracing: sets up OpenTelemetry's global TracerProvider and Propagator, with business code using the native `otel.Tracer("...")`.
 
-- xgin / xecho / xgorm / xredis / xhttp carry it, so using any one of them needs no separate import
+- xgin / xecho / xbeego / xgorm / xredis / xhttp carry it, so using any one of them needs no separate import
 - With an upstream, the upstream's sampling decision is followed; without one, `SampleRatio` decides
 - Custom headers (such as `X-Request-Id`) are forwarded from the configuration, optionally only to named domains
 - Forwarded headers and `baggage` are accepted only from a trusted peer

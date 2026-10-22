@@ -47,7 +47,7 @@ import (
 	// The XApp block comes along with the framework: a program importing xone alone can still write
 	// an application name. It only reads configuration and changes no global state.
 	// xlog is not here: it replaces slog.Default, and a program using only xhook and xgorm should not
-	// have its logging taken over. Only xgin / xecho / xcron bring it along (xtrace and xmetric do
+	// have its logging taken over. Only xgin / xecho / xbeego / xcron bring it along (xtrace and xmetric do
 	// not import it); any other program that wants it imports it anonymously
 	_ "github.com/jupiter-eng/xone/xapp"
 )
@@ -224,7 +224,7 @@ func Run(r Runnable, opts ...Option) error {
 		if slices.Contains(orphan, "XLog") {
 			// XLog does not come along with the root package (see the imports), which is easiest to trip
 			// over in a program using only the core and the data integrations
-			hint = `; XLog needs import _ "github.com/jupiter-eng/xone/xlog" (xgin, xecho and xcron bring it along)`
+			hint = `; XLog needs import _ "github.com/jupiter-eng/xone/xlog" (xgin, xecho, xbeego and xcron bring it along)`
 		}
 		return errors.Join(xerror.Newf("xone", "config",
 			"config keys %v are not read by anyone: check the spelling, or whether the matching package is imported; "+

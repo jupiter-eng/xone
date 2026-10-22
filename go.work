@@ -9,6 +9,7 @@ use (
 	./e2e
 	./example
 	./internal/schemagen
+	./xbeego
 	./xcache
 	./xcron
 	./xkafka

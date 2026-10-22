@@ -1,4 +1,5 @@
-// Package web is the framework-independent half that the web integrations (xgin, xecho) share.
+// Package web is the framework-independent half that the web integrations (xgin, xecho, xbeego)
+// share.
 //
 // More than half of what a web integration does has nothing to do with which framework it uses:
 //
