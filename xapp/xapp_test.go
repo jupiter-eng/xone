@@ -47,8 +47,8 @@ func TestNameVersion(t *testing.T) {
 
 func keepCfg(t *testing.T) {
 	t.Helper()
-	old := cfg
-	t.Cleanup(func() { cfg = old })
+	oldCfg, oldDefaults := cfg, defaults
+	t.Cleanup(func() { cfg, defaults = oldCfg, oldDefaults })
 }
 
 func TestLoadConfig_ReadsAppBlock(t *testing.T) {
@@ -132,5 +132,49 @@ func TestLoadConfig_LoadsBeforeReadingIfNotLoaded(t *testing.T) {
 	}
 	if Name() != "early" {
 		t.Errorf("the values from the file must be read, got=%q", Name())
+	}
+}
+
+func TestSetDefault_ReadableBeforeTheConfigurationIsLoaded(t *testing.T) {
+	// The identity a program stamps in at build time has to be readable without a configuration file at all,
+	// which is what keeps the XApp block optional.
+	keepCfg(t)
+	SetDefault(Config{Name: "shop.order.api", Version: "v1.2.0"})
+
+	if Name() != "shop.order.api" || Version() != "v1.2.0" {
+		t.Errorf("what the program supplied must be readable right away, got=%q %q", Name(), Version())
+	}
+}
+
+func TestSetDefault_ConfigFileWinsFieldByField(t *testing.T) {
+	// Whoever deploys has the last word over whoever built: the file overrides the field it writes, and the
+	// field it leaves out keeps what the program supplied.
+	keepCfg(t)
+	SetDefault(Config{Name: "shop.order.api", Version: "v1.2.0"})
+	xonetest.UseConfigYAML(t, "XApp:\n  Version: v2.0.0\n")
+
+	if err := loadConfig(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if Name() != "shop.order.api" {
+		t.Errorf("a field the file does not write must keep what the program supplied, got=%q", Name())
+	}
+	if Version() != "v2.0.0" {
+		t.Errorf("a field the file writes must override what the program supplied, got=%q", Version())
+	}
+}
+
+func TestSetDefault_UnconfiguredRunReturnsToIt(t *testing.T) {
+	// A second Run in the same process must fall back to what the program supplied, not to the previous run's file.
+	keepCfg(t)
+	SetDefault(Config{Name: "shop.order.api"})
+	cfg = Config{Name: "last.run", Version: "v0"}
+	xonetest.UseConfigYAML(t, "XLog:\n  Level: info\n")
+
+	if err := loadConfig(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if Name() != "shop.order.api" || Version() != "" {
+		t.Errorf("an unconfigured run must return to what the program supplied, got=%q %q", Name(), Version())
 	}
 }

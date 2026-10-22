@@ -46,8 +46,8 @@ type ClientConfig struct {
 	Brokers []string `yaml:"Brokers"`
 
 	// ClientID is the client.id sent to the brokers, which the broker-side logs, quotas and monitoring use to tell clients apart.
-	// It defaults to empty: one built through the framework uses XApp.Name, and without XApp.Name configured it is franz-go's default kgo
-	// (measured on v1.21.7); a direct call to New does not read XApp, so empty means kgo.
+	// It defaults to empty: one built through the framework falls back to XApp.Name and then to the executable's name, so it never
+	// goes by franz-go's shared default kgo; a direct call to New reads neither, so there empty means kgo (measured on v1.21.7).
 	ClientID string `yaml:"ClientID"`
 
 	// DialTimeout is the timeout for making one connection (TCP, plus the TLS handshake). It defaults to 1s; franz-go's own default is 10s.

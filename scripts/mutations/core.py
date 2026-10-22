@@ -66,6 +66,10 @@ mutate("CtxWithKV carries the fields the parent ctx already has", "internal/loge
 mutate("an imported fragment has profile variants too", "internal/config/source.go", ".", "TestLoad",
        swap('nested, err := fileSet(target, d, false, profiles, seen, depth+1)',
      'nested, err := withImports(target, d, profiles, seen, depth+1)'))
+# A path would be useless as the client id or service name a component falls back on
+mutate("the executable fallback is a name, not a path", "xutil/proc.go", ".", "TestExecutableName",
+       swap('return filepath.Base(path)', 'return path'),
+       swap('\t"path/filepath"\n', ''))
 mutate("the wait between retries doubles each time", "xutil/retry.go", ".", "TestRetry", swap('\t\t\tbackoff = nextBackoff(backoff)\n', ''))
 mutate("the budget is computed from the backoff ceiling", "xutil/retry.go", ".", "TestRetryBudget",
        swap('''\tbudget := timeout * time.Duration(attempts)
@@ -424,6 +428,12 @@ section("The registration board")
 mutate("xapp decodes into fresh defaults and swaps them in", "xapp/xapp.go", ".", "TestLoadConfig_",
        swap('\tc := DefaultConfig()\n\tif err := xconfig.Unmarshal(ConfigKey, &c); err != nil {\n\t\treturn err\n\t}\n\tcfg = c\n\treturn nil',
             '\treturn xconfig.Unmarshal(ConfigKey, &cfg)'))
+# What SetDefault supplies has to outlive the configuration being loaded: loadConfig starts each Run
+# from DefaultConfig(), so dropping this leaves the file as the only way to have an identity at all
+mutate("SetDefault survives the configuration being loaded", "xapp/xapp.go", ".", "TestSetDefault_",
+       swap('\tdefaults = c\n\tcfg = c\n', '\tcfg = c\n'))
+mutate("SetDefault is readable before the configuration is loaded", "xapp/xapp.go", ".", "TestSetDefault_",
+       swap('\tdefaults = c\n\tcfg = c\n', '\tdefaults = c\n'))
 # The stages are everything the caller has to understand the lifecycle by: logging comes up first,
 # tracing before the clients and the servers last. One stage out of order shows up as "the instance
 # becomes ready after whatever uses it", and nothing else catches it

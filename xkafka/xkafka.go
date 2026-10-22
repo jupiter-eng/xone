@@ -19,6 +19,7 @@ import (
 	"github.com/jupiter-eng/xone/xconfig"
 	"github.com/jupiter-eng/xone/xerror"
 	"github.com/jupiter-eng/xone/xhook"
+	"github.com/jupiter-eng/xone/xutil"
 
 	// Using xkafka brings tracing: xtrace installs the global TracerProvider and Propagator, and the trace context is
 	// written into the message headers when producing and picked up from them when consuming, both through otel's global API.
@@ -258,10 +259,15 @@ func closeXKafka(ctx context.Context) error {
 	return errors.Join(append(errs, reg.Close())...)
 }
 
-// build builds one cluster's producing client. Without ClientID configured it uses XApp.Name: the brokers tell services apart by it.
+// build builds one cluster's producing client; the resolved ClientConfig it keeps is also what this cluster's
+// consumers are built from, so the client id settled here is the one both sides send.
+//
+// Without ClientID configured it falls back to XApp.Name and then to the executable's name: the brokers tell
+// clients apart by client.id in their logs, quotas and monitoring, and franz-go's own default would have every
+// service on the cluster calling itself kgo.
 func build(ctx context.Context, name string, c ClientConfig) (instance, io.Closer, error) {
 	if c.ClientID == "" {
-		c.ClientID = xapp.Name()
+		c.ClientID = defaultClientID()
 	}
 	client, closer, err := newClient(ctx, name, c)
 	if err != nil {
@@ -270,4 +276,17 @@ func build(ctx context.Context, name string, c ClientConfig) (instance, io.Close
 	// Only the address and the authentication mechanism go into the log; the user name and password do not.
 	slog.Info("xkafka connected", "name", name, "brokers", c.Brokers, "tls", c.TLS.Enable, "sasl", c.SASL.Mechanism)
 	return instance{client: client, name: name, cfg: c}, closer, nil
+}
+
+// defaultClientID is the client.id to send when none is configured: the application name when there is one, and
+// the executable's name otherwise. OTel's SDK builds its own service.name fallback out of that same executable name
+// (as unknown_service:<name>), so the brokers and the traces at least point at one program. XApp is optional and
+// this must not depend on it being configured.
+//
+// It is empty only when the operating system cannot name the executable either, and franz-go then uses its kgo.
+func defaultClientID() string {
+	if name := xapp.Name(); name != "" {
+		return name
+	}
+	return xutil.ExecutableName()
 }

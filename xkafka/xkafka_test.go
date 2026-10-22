@@ -18,6 +18,7 @@ import (
 	"github.com/jupiter-eng/xone/internal/hook"
 	"github.com/jupiter-eng/xone/internal/xclient"
 	"github.com/jupiter-eng/xone/xerror"
+	"github.com/jupiter-eng/xone/xutil"
 )
 
 // newProducer builds a producing client through New and closes it when the test ends.
@@ -275,6 +276,32 @@ func TestBuild_ClientIDDefaultsToAppName(t *testing.T) {
 	defer closer.Close()
 	if got := inst.client.OptValue(kgo.ClientID); got != "billing-svc" {
 		t.Fatalf("ClientID = %v, want XApp.Name", got)
+	}
+}
+
+func TestBuild_ClientIDFallsBackToTheExecutableWithoutXApp(t *testing.T) {
+	// XApp is optional, so there may be no application name anywhere. The brokers still have to be able to tell
+	// this service apart in their logs, quotas and monitoring, and franz-go's own default has every service on
+	// the cluster calling itself kgo.
+	want := xutil.ExecutableName()
+	if want == "" {
+		t.Skip("this operating system cannot name the executable, which leaves franz-go its own default")
+	}
+	_, cfg := cluster(t, 1, "orders")
+	useConfig(t, "XLog:\n  Level: info\n")
+	runHook(t, "xapp.loadConfig")
+
+	inst, closer, err := build(context.Background(), "default", cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closer.Close()
+	if got := inst.client.OptValue(kgo.ClientID); got != want {
+		t.Errorf("ClientID = %v, want the executable name %q", got, want)
+	}
+	// The consumers on this cluster are built from the ClientConfig kept here, so settling it once covers both sides.
+	if inst.cfg.ClientID != want {
+		t.Errorf("the kept config has ClientID = %q, so the consumers would send something else", inst.cfg.ClientID)
 	}
 }
 
