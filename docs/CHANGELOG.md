@@ -10,6 +10,8 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
 
 ## [Unreleased]
 
+## [v1.1.0] - 2026-10-22
+
 ### Added
 
 - **xbeego**, a new module: a [beego](https://github.com/beego/beego) v2 application served by the

@@ -29,7 +29,7 @@ standard library's `slog` -- with no new API to learn.
 number, so write the same one)
 
 ```bash
-go get github.com/jupiter-eng/xone@v1.0.4 github.com/jupiter-eng/xone/xgin@v1.0.4
+go get github.com/jupiter-eng/xone@v1.1.0 github.com/jupiter-eng/xone/xgin@v1.1.0
 ```
 
 Upgrading likewise lists every xone module in use with the same version number. Upgrading the core
