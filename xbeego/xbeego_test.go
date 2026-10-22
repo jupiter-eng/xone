@@ -1161,9 +1161,20 @@ func TestStop_WaitsForRequestsInFlight(t *testing.T) {
 	x := New().WithConfig(configWith(quiet, on(port)))
 	base := serving(t, x, port)
 
+	// A client of this test's own, with no connection pool to share. serving's warmup leaves a
+	// connection in http.DefaultTransport's pool, and a request that shares that pool races the
+	// pooled connection against a fresh dial: both can win, and the dial that lost leaves a
+	// connection the server has accepted and will never read a request from. net/http calls such a
+	// StateNew connection idle only once it is five seconds old (closeIdleConns, go#22682), while
+	// the graceful phase below has four -- Stop holds a fifth of the deadline back, a second at
+	// most. That one stray connection times the shutdown out on its own, with the request in flight
+	// long since finished: measured at 3 to 9 failures in 20 runs with -race, the rest green.
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	t.Cleanup(client.CloseIdleConnections)
+
 	done := make(chan string, 1)
 	go func() {
-		resp, err := http.Get(base + "/slow")
+		resp, err := client.Get(base + "/slow")
 		if err != nil {
 			done <- "error: " + err.Error()
 			return
