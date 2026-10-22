@@ -105,6 +105,47 @@ XMetric:
 The metric name prefix, the constant labels and a few general rules are in
 [`docs/observability.md` "Metrics"](../docs/observability.md#metrics).
 
+### Process metrics in a container
+
+`ProcessMetrics` registers client_golang's `NewProcessCollector` with no options, so every number
+below is read out of `/proc/<pid>` for the process that registered it -- its own PID, taken once
+when the collector is built. Inside a container that is **this process**: not the container, and
+not the Pod around it.
+
+| Metric | Read from | Scope |
+|---|---|---|
+| `process_cpu_seconds_total` | `/proc/<pid>/stat`, utime + stime | this process |
+| `process_resident_memory_bytes` | `/proc/<pid>/stat`, rss | this process |
+| `process_virtual_memory_bytes` | `/proc/<pid>/stat`, vsize | this process |
+| `process_start_time_seconds` | `/proc/<pid>/stat` | this process |
+| `process_open_fds` | `/proc/<pid>/fd` | this process |
+| `process_max_fds` | `/proc/<pid>/limits`, `RLIMIT_NOFILE` | this process |
+| `process_virtual_memory_max_bytes` | `/proc/<pid>/limits`, `RLIMIT_AS` | this process |
+| `process_network_receive_bytes_total` | `/proc/<pid>/net/netstat` | the whole network namespace |
+| `process_network_transmit_bytes_total` | `/proc/<pid>/net/netstat` | the whole network namespace |
+
+Three things to know before an alert is built on them:
+
+- **`process_resident_memory_bytes` is not the number an orchestrator kills on.** That one belongs
+  to the cgroup (`container_memory_working_set_bytes` as cAdvisor exports it) and counts page cache
+  and the container's other processes as well. Held against the container's memory limit, this
+  metric under-reports.
+- **`process_cpu_seconds_total` cannot show cgroup throttling.** A service throttled to a crawl by
+  its CPU limit draws a flat line here; the cgroup's own throttling counter is the one that moves.
+- **The two network counters cover the network namespace**, which the containers of one Pod share,
+  so a sidecar's traffic is counted in.
+
+What they are for is the view from inside the process, which no cgroup metric gives:
+`process_open_fds` against `process_max_fds` is the only warning of a descriptor leak,
+`process_start_time_seconds` jumping means the process restarted while the container did not, and
+`process_resident_memory_bytes` minus `go_memstats_heap_inuse_bytes` growing steadily points at
+something outside the Go heap (cgo, mmap, thread stacks).
+
+The set is not the same everywhere. Measured on darwin, the nine above come out as seven -- there
+is no `process_network_*` at all -- and as five with `CGO_ENABLED=0`, which drops
+`process_resident_memory_bytes` and `process_virtual_memory_bytes` as well. A dashboard built
+against what a development machine exports is missing what the service exports in production.
+
 ## Behavior (measured)
 
 The measurement environment and the cross-module summary table are in [`docs/behavior.md`](../docs/behavior.md).

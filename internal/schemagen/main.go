@@ -209,13 +209,30 @@ func configDirs(repo string) ([]string, error) {
 	return out, err
 }
 
+// parsePkg reads a package's non-test files.
+//
+// go/parser.ParseDir would do it in one call, but it is deprecated, and it hands the files back
+// inside a map of packages keyed by name, so they arrive in map order. Underneath it does the same
+// os.ReadDir, the same ".go" and filter test and the same ParseFile as the loop here, which only
+// adds that the files come in the order the directory lists them.
 func parsePkg(dir string) (*pkg, error) {
-	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, dir, func(fi os.FileInfo) bool {
-		return !strings.HasSuffix(fi.Name(), "_test.go")
-	}, parser.ParseComments)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, err
+	}
+
+	fset := token.NewFileSet()
+	var files []*ast.File
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, parser.ParseComments)
+		if err != nil {
+			return nil, err
+		}
+		files = append(files, f)
 	}
 
 	p := &pkg{
@@ -223,32 +240,30 @@ func parsePkg(dir string) (*pkg, error) {
 		aliases: map[string]ast.Expr{},
 		docs:    map[string]*ast.CommentGroup{},
 	}
-	for _, ap := range pkgs {
-		for _, f := range ap.Files {
-			for _, decl := range f.Decls {
-				gd, ok := decl.(*ast.GenDecl)
-				if !ok {
-					continue
-				}
-				for _, spec := range gd.Specs {
-					switch s := spec.(type) {
-					case *ast.TypeSpec:
-						// A type's comment may hang off the TypeSpec, or off the GenDecl around it (the
-						// latter when `type X struct` is declared on its own)
-						if d := s.Doc; d != nil {
-							p.docs[s.Name.Name] = d
-						} else if gd.Doc != nil && len(gd.Specs) == 1 {
-							p.docs[s.Name.Name] = gd.Doc
-						}
-						if st, ok := s.Type.(*ast.StructType); ok {
-							p.structs[s.Name.Name] = st
-						} else {
-							p.aliases[s.Name.Name] = s.Type
-						}
-					case *ast.ValueSpec:
-						if p.configKey == "" {
-							p.configKey = configKeyOf(s)
-						}
+	for _, f := range files {
+		for _, decl := range f.Decls {
+			gd, ok := decl.(*ast.GenDecl)
+			if !ok {
+				continue
+			}
+			for _, spec := range gd.Specs {
+				switch s := spec.(type) {
+				case *ast.TypeSpec:
+					// A type's comment may hang off the TypeSpec, or off the GenDecl around it (the
+					// latter when `type X struct` is declared on its own)
+					if d := s.Doc; d != nil {
+						p.docs[s.Name.Name] = d
+					} else if gd.Doc != nil && len(gd.Specs) == 1 {
+						p.docs[s.Name.Name] = gd.Doc
+					}
+					if st, ok := s.Type.(*ast.StructType); ok {
+						p.structs[s.Name.Name] = st
+					} else {
+						p.aliases[s.Name.Name] = s.Type
+					}
+				case *ast.ValueSpec:
+					if p.configKey == "" {
+						p.configKey = configKeyOf(s)
 					}
 				}
 			}
