@@ -10,6 +10,8 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
 
 ## [Unreleased]
 
+## [v1.3.0] - 2026-10-22
+
 ### Changed
 
 - **A route of the application's own on `MetricPath` now fails startup** in xgin, xecho and xbeego,
