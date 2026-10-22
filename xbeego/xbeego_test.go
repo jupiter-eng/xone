@@ -113,6 +113,12 @@ func TestMain(m *testing.M) {
 	// through c.Ctx.Request.Context().
 	beeweb.Router("/users-ctl/:id", &userController{})
 
+	// An application route for a test to point MetricPath at, see
+	// TestMetrics_PathTakenByTheApplicationFailsStartup. It is not /metrics: beego's router is one
+	// global, so a route registered on that path would turn every later test's metrics endpoint
+	// into a collision.
+	beeweb.Get("/app-metrics", func(ctx *beectx.Context) { _ = ctx.Output.Body([]byte("mine")) })
+
 	// Beego copies the request body into ctx.Input.RequestBody only with this on, which is what an
 	// API service turns on in conf/app.conf. The access log reads the body from the http.Request
 	// instead, and the two must not take it from each other.
@@ -773,6 +779,48 @@ func TestMetrics_Off(t *testing.T) {
 	x := New().WithConfig(configWith(func(c *Config) { c.Log, c.Trace, c.Metric = false, false, false }))
 	if w := do(t, x, "GET", "/metrics", nil); w.Code != 404 {
 		t.Errorf("with metrics off the endpoint should not exist, got=%d", w.Code)
+	}
+}
+
+func TestMetrics_PathTakenByTheApplicationFailsStartup(t *testing.T) {
+	// The endpoint is answered in front of beego's router, so an application route on the same
+	// path was never reached and nothing said so. It is a startup error now, the sentence xgin and
+	// xecho report too.
+	//
+	// /app-metrics rather than /metrics: beego's router is one global, and a route registered on
+	// the default path would make every later test's endpoint a collision (TestMain registers it).
+	logs := captureLog(t)
+	x := New().WithConfig(configWith(func(c *Config) {
+		c.Log, c.Trace = false, false
+		c.MetricPath = "/app-metrics"
+	}))
+
+	if w := do(t, x, "GET", "/app-metrics", nil); w.Body.String() != "mine" {
+		t.Errorf("the application's own route should be the one left standing, got=%q", w.Body.String())
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- x.Start(context.Background()) }()
+	select {
+	case err := <-done:
+		if !xerror.Is(err, "xbeego") || !strings.Contains(err.Error(), "MetricPath") {
+			t.Fatalf("Start should report the collision and name MetricPath, got=%v", err)
+		}
+	case <-time.After(2 * time.Second):
+		_ = x.Stop(context.Background())
+		t.Fatal("with MetricPath taken Start should return an error, but it started listening")
+	}
+
+	// A caller who only ever uses Handler() never sees that error, so the warning has to stand on
+	// its own.
+	var warned bool
+	for _, l := range logs() {
+		if strings.Contains(fmt.Sprint(l["msg"]), "MetricPath") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Error("assembly should warn about the collision")
 	}
 }
 

@@ -112,8 +112,17 @@ func Log(opts ...LogOption) gin.HandlerFunc {
 		defer func() {
 			// How the fields are assembled and masked is in web.AccessLog.Log; only the values that can
 			// be obtained from gin are read here.
+			//
+			// The line is written with the ctx this layer was entered with, not with whatever
+			// c.Request carries by now. c.Request is one field every layer shares, and a handler is
+			// free to put another ctx on it — a timeout layer, or a scope derived with
+			// xlog.CtxWithKV. Taking the one left behind would carry fields CtxWithKV promises stay
+			// inside their own stretch of calls, and would lose trace_id and the whole scope
+			// outright when what was swapped in is not derived from the request's ctx at all. xecho
+			// and xbeego record the ctx from the way in for the same reason.
 			a := web.Access{
 				Request:  c.Request,
+				Ctx:      ctx,
 				Elapsed:  time.Since(start),
 				Route:    routeOf(c), // unmatched when nothing matched; the real path is in path
 				Status:   status(c, ctx),

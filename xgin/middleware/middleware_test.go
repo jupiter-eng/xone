@@ -109,6 +109,55 @@ func TestLogScope_HandlersCanAddFieldsAtAnyDepth(t *testing.T) {
 
 func deepInBusinessCode(ctx context.Context) { xlog.AddKV(ctx, "user", "u9") }
 
+func TestLogScope_CtxSwappedByTheHandlerDoesNotDecideTheAccessLog(t *testing.T) {
+	// The access log is written with the ctx this layer was entered with. gin's c.Request is one
+	// field every layer shares, so a handler can leave another ctx on it -- and xlog.CtxWithKV
+	// promises the fields of a derived scope stay inside their own stretch of calls and never reach
+	// the access log at the entry point. Reading c.Request.Context() on the way out used to break
+	// that promise here while xecho and xbeego kept it.
+	lines := capture(t)
+	serve(t, get("/hello"), []gin.HandlerFunc{LogScope(), Log()}, func(c *gin.Context) {
+		xlog.AddKV(c.Request.Context(), "scoped", "yes")
+		c.Request = c.Request.WithContext(xlog.CtxWithKV(c.Request.Context(), map[string]any{"derived": "yes"}))
+		xlog.AddKV(c.Request.Context(), "after_derive", "yes")
+		c.String(200, "ok")
+	})
+
+	got := lines()
+	if len(got) == 0 {
+		t.Fatal("no access log")
+	}
+	last := got[len(got)-1]
+	if last["scoped"] != "yes" {
+		t.Errorf("a field written into the request's own scope should still appear, got=%v", last)
+	}
+	for _, k := range []string{"derived", "after_derive"} {
+		if _, ok := last[k]; ok {
+			t.Errorf("%s belongs to the derived scope and must not reach the access log, got=%v", k, last)
+		}
+	}
+}
+
+func TestLogScope_CtxSwappedByTheHandlerKeepsTheTraceID(t *testing.T) {
+	// The other half of the same promise: a handler that hands the request a ctx of its own which
+	// is not derived from the request's at all used to take trace_id and every scoped field down
+	// with it, because the access log read whatever was left on c.Request.
+	lines := capture(t)
+	serve(t, get("/hello"), []gin.HandlerFunc{LogScope(), Log()}, func(c *gin.Context) {
+		xlog.AddKV(c.Request.Context(), "scoped", "yes")
+		c.Request = c.Request.WithContext(context.Background())
+		c.String(200, "ok")
+	})
+
+	got := lines()
+	if len(got) == 0 {
+		t.Fatal("no access log")
+	}
+	if last := got[len(got)-1]; last["scoped"] != "yes" {
+		t.Errorf("the scope opened at the entry point should survive a handler swapping the ctx, got=%v", last)
+	}
+}
+
 // ---- Recover ----
 
 func TestRecover_CatchesPanicAndReturns500(t *testing.T) {
@@ -638,16 +687,20 @@ func TestLog_ErrAbortHandlerAbortLoggedAs499(t *testing.T) {
 
 func TestLog_ErrorTextIsRedacted(t *testing.T) {
 	// An error recorded with c.Error reaches the errors field as is; errors from drivers and
-	// downstreams often carry credentials.
-	for msg, want := range map[string]string{"db down": "db down", "login failed password=hunter2": Redacted} {
+	// downstreams often carry credentials. What goes is the value under a sensitive name, while the
+	// sentence around it stays, see web.RedactText.
+	for msg, want := range map[string]string{
+		"db down":                       "Error #01: db down",
+		"token expired":                 "Error #01: token expired", // names a credential and carries none
+		"login failed password=hunter2": "Error #01: login failed password=" + Redacted,
+	} {
 		lines := capture(t)
 		serve(t, get("/hello"), []gin.HandlerFunc{Log()}, func(c *gin.Context) {
 			_ = c.Error(errors.New(msg))
 			c.Status(500)
 		})
-		got, _ := lines()[0]["errors"].(string)
-		if want == Redacted && got != Redacted || want != Redacted && !strings.Contains(got, msg) {
-			t.Errorf("errors=%q, %q should be recorded as %q", got, msg, want)
+		if got, _ := lines()[0]["errors"].(string); got != want {
+			t.Errorf("errors=%q for %q, want %q", got, msg, want)
 		}
 	}
 }
@@ -685,7 +738,7 @@ func TestRecover_PanicValueIsRedacted(t *testing.T) {
 	// into the error field as is writes the password to disk.
 	for msg, want := range map[string]string{
 		"dial postgres://app:hunter2@db:5432/prod failed": "dial postgres://app:" + Redacted + "@db:5432/prod failed",
-		"login failed password=hunter2":                   Redacted,
+		"login failed password=hunter2":                   "login failed password=" + Redacted,
 	} {
 		lines := capture(t)
 		serve(t, get("/hello"), []gin.HandlerFunc{Recover(nil)}, func(c *gin.Context) { panic(errors.New(msg)) })

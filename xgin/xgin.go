@@ -2,6 +2,7 @@ package xgin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -220,15 +221,10 @@ func (g *XGin) build() {
 		e.Use(middleware.Recover(g.recover))
 		e.Use(g.extra...)
 
-		// Routes are always registered after every middleware.
+		// Routes are always registered after every middleware: gin fixes the handler chain at the
+		// moment a route is registered, and middleware added with Use afterwards does not apply to
+		// it.
 		//
-		// Gin fixes the handler chain at the moment a route is registered: middleware added with Use
-		// afterwards does not apply to it. The metrics endpoint used to be registered before g.extra,
-		// so the shared auth a caller mounted with WithMiddleware applied to business routes and not
-		// to /metrics — an endpoint believed to be protected was in fact open.
-		if c.Metric {
-			e.GET(c.MetricPath, serveMetrics)
-		}
 		// Gin writes its default 404 / 405 body only after the whole middleware chain has run
 		// (serveError in gin.go, gin v1.12.0), so it is unwritten when the access log records
 		// bytes_out: measured, 0 was recorded while the client received 18 bytes. Writing the same
@@ -240,6 +236,27 @@ func (g *XGin) build() {
 			f(e)
 		}
 
+		// The metrics endpoint goes on last, after the caller's routes, so that a caller's own
+		// route on the same path is seen rather than run into: registered first, gin panics
+		// ("handlers are already registered for path") from inside the caller's routing code, with
+		// nothing in the message pointing at MetricPath. Here it becomes a config error that names
+		// the field, the same one xecho and xbeego report (web.MetricPathTaken).
+		//
+		// Registering last costs nothing and keeps what matters: gin takes the Use chain as it
+		// stands at that moment, and every Use above has already happened. The endpoint used to be
+		// registered before g.extra, where the shared auth a caller mounted with WithMiddleware
+		// applied to business routes and not to /metrics — an endpoint believed to be protected
+		// was in fact open.
+		if c.Metric {
+			if metricPathTaken(e, c.MetricPath) {
+				g.confErr = errors.Join(g.confErr, web.MetricPathTaken(ConfigKey, c.MetricPath))
+				slog.Warn("xgin the application already has a route on MetricPath, the metrics endpoint was not registered; Start will return the error",
+					"path", c.MetricPath)
+			} else {
+				e.GET(c.MetricPath, serveMetrics)
+			}
+		}
+
 		if c.ZHTranslations {
 			if err := trans.RegisterZH(); err != nil {
 				slog.Warn("xgin failed to register the zh validation translator", "error", err)
@@ -248,6 +265,15 @@ func (g *XGin) build() {
 
 		g.engine = e
 	})
+}
+
+// metricPathTaken reports whether the caller's own routes already hold path.
+//
+// The method is not compared, only the route template: the access log and the tracing leave
+// MetricPath out by path alone (SkipPaths, skipMetrics), so a caller's POST on that path would be
+// just as invisible as a GET, and gin would answer the scraper's GET with a 405 besides.
+func metricPathTaken(e *gin.Engine, path string) bool {
+	return slices.ContainsFunc(e.Routes(), func(r gin.RouteInfo) bool { return r.Path == path })
 }
 
 // serveMetrics is the metrics endpoint. The handler is fetched per request rather than fixed at

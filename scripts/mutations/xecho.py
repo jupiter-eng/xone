@@ -188,9 +188,18 @@ mutate("the XEcho tracing switch reads the config", "xecho/xecho.go", "./xecho",
 mutate("XEcho mounts no metrics middleware with metrics off", "xecho/xecho.go", "./xecho", "TestMetric_",
        swap('\t\tif c.Metric {\n\t\t\te.Pre(middleware.Metric())', '\t\tif true {\n\t\t\te.Pre(middleware.Metric())'))
 mutate("XEcho registers no endpoint with metrics off", "xecho/xecho.go", "./xecho", "TestBuild_NoMetricsEndpointWhenDisabled",
-       swap('\t\tif c.Metric {\n\t\t\te.GET(c.MetricPath, serveMetrics)', '\t\tif true {\n\t\t\te.GET(c.MetricPath, serveMetrics)'))
+       swap('\t\tif c.Metric {\n\t\t\tif metricPathTaken(', '\t\tif true {\n\t\t\tif metricPathTaken('))
 mutate("the XEcho metrics endpoint uses the configured path", "xecho/xecho.go", "./xecho", "TestBuild_MetricsPathConfigurable",
        swap('e.GET(c.MetricPath, serveMetrics)', 'e.GET("/metrics", serveMetrics)'))
+# Echo replaces a route registered earlier without a word: the endpoint disappeared, and the path
+# kept being left out of the access log and the tracing, which both go by MetricPath.
+mutate("a route of the application's own on MetricPath fails startup", "xecho/xecho.go", "./xecho", "TestBuild_MetricPathTakenByTheApplicationFailsStartup",
+       swap('if metricPathTaken(e, c.MetricPath) {', 'if false {'))
+# e.Group(prefix, mw...) registers a RouteNotFound at the bare prefix, which is echo's own
+# bookkeeping and not a route of the caller's -- read as one, a group named after MetricPath would
+# fail startup for nothing.
+mutate("echo's own group fallback is not a MetricPath collision", "xecho/xecho.go", "./xecho", "TestBuild_MetricPathUnderAGroupIsNotACollision",
+       swap('return r.Path == path && r.Method != echo.RouteNotFound', 'return r.Path == path'))
 # The metrics endpoint takes the handler per request: fixed at assembly time, before xmetric is
 # initialized, it pins a fallback registry that stays empty forever
 mutate("the XEcho metrics endpoint takes the current registry per request", "xecho/xecho.go", "./xecho", "TestBuild_MetricsEndpointOKWhenEngineFetchedFirst",

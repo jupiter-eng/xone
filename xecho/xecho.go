@@ -2,6 +2,7 @@ package xecho
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -276,18 +277,47 @@ func (x *XEcho) build() {
 		e.Use(attachContext)
 		e.Use(x.extra...)
 
-		// Echo wraps e.Use around each request as it arrives, regardless of when routes were
-		// registered (gin fixes the chain at registration time): the metrics endpoint therefore
-		// goes through the shared auth a caller mounted with WithMiddleware too. Written after
-		// the middleware, in xgin's order.
-		if c.Metric {
-			e.GET(c.MetricPath, serveMetrics)
-		}
 		for _, f := range x.routes {
 			f(e)
 		}
 
+		// Echo wraps e.Use around each request as it arrives, regardless of when routes were
+		// registered (gin fixes the chain at registration time), so the metrics endpoint goes
+		// through the shared auth a caller mounted with WithMiddleware wherever it is written.
+		//
+		// It is written after the caller's routes so that a route of their own on the same path is
+		// seen rather than silently overwritten: echo lets a later registration replace an earlier
+		// one with no error and no panic, which would take the metrics endpoint away while the
+		// path kept being left out of the access log and the tracing (both go by MetricPath).
+		// Here it becomes a config error that names the field, the same one xgin and xbeego
+		// report (web.MetricPathTaken).
+		if c.Metric {
+			if metricPathTaken(e, c.MetricPath) {
+				x.confErr = errors.Join(x.confErr, web.MetricPathTaken(ConfigKey, c.MetricPath))
+				slog.Warn("xecho the application already has a route on MetricPath, the metrics endpoint was not registered; Start will return the error",
+					"path", c.MetricPath)
+			} else {
+				e.GET(c.MetricPath, serveMetrics)
+			}
+		}
+
 		x.engine = e
+	})
+}
+
+// metricPathTaken reports whether the caller's own routes already hold path.
+//
+// Only the default router is looked at, which is the one xecho registers the endpoint on: a route
+// registered through e.Host(...) lives in a router of its own and shadows nothing here. The method
+// is not compared, only the route template — the access log and the tracing leave MetricPath out by
+// path alone (SkipPaths, skipMetrics), so a caller's POST on that path would be just as invisible.
+//
+// echo's own RouteNotFound entries are left out: e.Group(prefix, mw...) registers one at the bare
+// prefix so that group middleware reaches 404s under it, which would make a group named after
+// MetricPath look like a collision while a real GET on the same template still wins over it.
+func metricPathTaken(e *echo.Echo, path string) bool {
+	return slices.ContainsFunc(e.Routes(), func(r *echo.Route) bool {
+		return r.Path == path && r.Method != echo.RouteNotFound
 	})
 }
 

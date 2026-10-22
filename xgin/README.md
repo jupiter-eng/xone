@@ -203,7 +203,7 @@ paths in `LogSkipPaths` and the metrics endpoint are not recorded):
 | `request_body` | With `LogRequestBody: true`, the first 256KB at most, masked field by field; multipart and `application/octet-stream` record only `omitted` |
 | `response_headers` | With `LogResponseHeaders: true`, masked as request headers are (`Set-Cookie` and friends) |
 | `response_body` | With `LogResponseBody: true` and a textual response, the first 4KB at most, masked field by field; when the response carries `Content-Encoding` (compressed by a middleware) it records only `[gzip-encoded content omitted]` |
-| `errors` | The errors recorded in a handler with `c.Error(...)`, absent when there are none; several are separated by `; ` (`Error #01: a; Error #02: b`); a sensitive word masks the whole thing as `***REDACTED***`, and otherwise only the password inside `postgres://app:pw@db` or `app:pw@tcp(db:3306)` becomes `***REDACTED***` (the span's `gin.errors` works the same way) |
+| `errors` | The errors recorded in a handler with `c.Error(...)`, absent when there are none; several are separated by `; ` (`Error #01: a; Error #02: b`); a sensitive **name** followed by `=` or `:` has its value masked to the end of that line (`login failed password=***REDACTED***`), and the password inside `postgres://app:pw@db` or `app:pw@tcp(db:3306)` becomes `***REDACTED***` (the span's `gin.errors` works the same way) |
 | `trace_id` / `span_id` | When tracing is on |
 
 **Masking** matches sensitive words rather than exact field names: both sides are lowercased with
@@ -213,16 +213,23 @@ is masked.
 | | Rule |
 |---|---|
 | Default sensitive words | `password` `passwd` `secret` `token` `authorization` `apikey` `accesskey` `privatekey` `credential` `cookie` `session` `signature` |
-| Bodies (JSON / forms) | A key containing a sensitive word masks its value, at any nesting depth; JSON string values then go through the rules of the `errors` field as well (a sensitive word masks the whole thing, a DSN masks only the password); other form values have only the password in a URL or DSN masked (`https://u:pw@host`); every other value is written back as is |
-| Other bodies (plain text, XML, no Content-Type, ...) | Anything that is itself a valid JSON object, array or string is masked as JSON (`ShouldBindJSON` ignores the Content-Type); for the rest no field can be located, so a sensitive word masks the whole thing and without one only the password in a URL or DSN is masked |
+| Bodies (JSON / forms) | A key containing a sensitive word masks its value, at any nesting depth; JSON string values then go through the rules of the `errors` field as well (a sensitive name followed by `=` or `:` masks its value, a DSN masks only the password); other form values have only the password in a URL or DSN masked (`https://u:pw@host`); every other value is written back as is |
+| Other bodies (plain text, XML, no Content-Type, ...) | Anything that is itself a valid JSON object, array or string is masked as JSON (`ShouldBindJSON` ignores the Content-Type); for the rest no field can be located, so a sensitive **word** masks the whole thing -- stricter than the `errors` field above -- and without one only the password in a URL or DSN is masked |
 | Request / response headers | A name on the list (`Authorization` `Proxy-Authorization` `Cookie` `Set-Cookie` `X-Api-Key` `X-Auth-Token`, plus whatever `AddSensitiveHeaders` added) **or** a name containing a sensitive word is masked; other values have only the password inside `postgres://app:pw@db` or `app:pw@tcp(db:3306)` masked, and are not masked wholesale by sensitive word: `Vary: Cookie` and `Access-Control-Allow-Headers: Authorization` are recorded as is |
 | Headers whose value is a URL | `Referer`, `X-Original-URL`, `X-Original-URI`, `X-Rewrite-URL`, `X-Forwarded-URI`, and the response headers `Location`, `Content-Location`, `Refresh`: everything after `?` and `#` is dropped, then the userinfo after `://` (`https://tok@host` is recorded as `https://host`) |
 
-**A structural limit**: JSON is matched by key name only. In a name-value array such as
+**Two limits worth knowing.** JSON is matched by key name only: in a name-value array such as
 `[{"name":"password","value":"x"}]` the password sits in `value`, whose key holds no sensitive word,
-so `x` reaches the log as is (the value `password` under `name` is masked). For a body of that
-shape, either add the key to the word list with `AddSensitiveFields("value")` or do not record the
-body.
+so `x` reaches the log as is. For a body of that shape, either add the key to the word list with
+`AddSensitiveFields("value")` or do not record the body.
+
+And in an error, a panic or a JSON string value, a credential is located by the **name in front of
+it**: `password=hunter2` and `Authorization: Bearer ...` are masked, while `bad token abc123` --
+with nothing naming the value -- is written as it is. The alternative, masking the whole text
+whenever a sensitive word appears anywhere in it, takes `token expired`, `session not found` and
+`invalid signature` out of the logs as well, which are the messages wanted most while tracking an
+authentication failure down. A **body** is a different matter and is still masked whole (the row
+above): nobody here knows its shape, while an error is a sentence this codebase wrote.
 
 `middleware.AddSensitiveFields(...)` appends sensitive words (applying to bodies and request headers
 alike) and `middleware.AddSensitiveHeaders(...)` appends exact header names. Case is compared by
@@ -355,6 +362,12 @@ and a client that left cannot cancel anything downstream. Here it is on and all 
 mounted on the root path `/`, where gin panics inside the business's own routing code when a home
 page is registered later. So both fail while the config is read.
 
+The framework mounts that path itself, so **a route of your own on it fails startup**, whatever
+method it was registered for — gin would otherwise panic on the duplicate, again out of your own
+routing code and with nothing in the message pointing at this field. The endpoint is mounted after
+`WithRoutes` so that the collision is seen rather than run into; your middleware still covers it.
+xecho and xbeego report the same sentence, where the collision would otherwise be silent.
+
 **`Mode`** is set before `gin.New`: in debug mode `gin.New` prints a warning and then one line per
 route registered afterwards. `gin.SetMode` is process-wide.
 
@@ -398,6 +411,7 @@ written explicitly: defaults change with Go versions.
 | `read TLS.ClientCAFile: ...` / `TLS.ClientCAFile ... contains no PEM certificate` (XGin) | The CA file cannot be read, or holds no PEM certificate | Check the path and the contents; the server does not listen |
 | `field CertFile not found in type xgin.Config (did you mean TLS.CertFile? move it under TLS:)` (same for `KeyFile`, `ClientCAFile`, `MinVersion`) | Written at the top level of `XGin`, while these belong to the `TLS:` block | Indent those lines into the `TLS:` block, see [Configuration](#configuration) |
 | `TrustedProxies entry "::ffff:10.0.0.1" is an IPv4-mapped IPv6 address; write it as 10.0.0.1` (XGin) | An IPv4-mapped IPv6 address or range in `TrustedProxies` | Write it as the message says: `::ffff:10.0.0.1` → `10.0.0.1`, `::ffff:10.0.0.0/104` → `10.0.0.0/8` |
+| `XGin.MetricPath="/metrics" is already registered as a route by the application` | The application registers a route on the path the framework serves the metrics endpoint on | Move one of the two (`MetricPath`, or your own route), or turn the endpoint off with `Metric: false` |
 
 The `N handler(s) still running when the shutdown deadline passed` on shutdown is covered in
 [`docs/troubleshooting.md` "Runnable and shutdown"](../docs/troubleshooting.md#runnable-and-shutdown); client-side

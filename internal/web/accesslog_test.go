@@ -160,7 +160,10 @@ func TestAccessLog_ErrorsFieldIsRedacted(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(old) })
 
 	var l AccessLog
-	for msg, want := range map[string]string{"db down": `"errors":"db down"`, "login failed password=hunter2": `"errors":"` + Redacted + `"`} {
+	for msg, want := range map[string]string{
+		"db down":                       `"errors":"db down"`,
+		"login failed password=hunter2": `"errors":"login failed password=` + Redacted + `"`, // the value goes, the sentence stays
+	} {
 		buf.Reset()
 		l.Log(&Access{Request: httptest.NewRequest("GET", "/x", nil), Route: "/x", Status: 500, Errors: msg})
 		if !strings.Contains(buf.String(), want) || strings.Contains(buf.String(), "hunter2") {

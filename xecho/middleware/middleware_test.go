@@ -400,7 +400,8 @@ var errorCases = []struct {
 }{
 	{"unmatched route (404)", "GET", "/nope", 404, "unmatched", "code=404, message=Not Found"},
 	{"wrong method (405)", "POST", "/only-get", 405, "unmatched", "code=405, message=Method Not Allowed"},
-	{"plain error (500)", "GET", "/plain", 500, "/plain", Redacted}, // the error text carries password=, so the whole thing is masked
+	// The error text carries password=, so that value is masked and the sentence around it stays
+	{"plain error (500)", "GET", "/plain", 500, "/plain", "db down: password=" + Redacted},
 	{"echo.NewHTTPError(418)", "GET", "/teapot", 418, "/teapot", "code=418, message=I'm a teapot"},
 	// A group with middleware: echo quietly registers RouteNotFound fallbacks for it (/api/v1,
 	// /api/v1/*), so c.Path() is the fallback's template.
@@ -924,8 +925,13 @@ func TestLog_ErrAbortHandlerAbortLoggedAs499(t *testing.T) {
 
 func TestLog_ErrorTextIsRedacted(t *testing.T) {
 	// Returning an error is the normal thing to do in echo, and the error text goes into the
-	// errors field: errors from drivers and downstreams often carry credentials.
-	for msg, want := range map[string]string{"db down": "db down", "login failed password=hunter2": Redacted} {
+	// errors field: errors from drivers and downstreams often carry credentials. What goes is the
+	// value under a sensitive name, while the sentence around it stays, see web.RedactText.
+	for msg, want := range map[string]string{
+		"db down":                       "db down",
+		"token expired":                 "token expired", // names a credential and carries none
+		"login failed password=hunter2": "login failed password=" + Redacted,
+	} {
 		lines := capture(t)
 		serve(t, get("/hello"), []echo.MiddlewareFunc{Log()}, func(c echo.Context) error { return errors.New(msg) })
 		if got := accessLogs(lines())[0]["errors"]; got != want {
@@ -951,7 +957,7 @@ func TestRecover_PanicValueIsRedacted(t *testing.T) {
 	// it into the error field as is writes the password to disk.
 	for msg, want := range map[string]string{
 		"dial app:hunter2@tcp(db:3306)/prod failed": "dial app:" + Redacted + "@tcp(db:3306)/prod failed",
-		"login failed password=hunter2":             Redacted,
+		"login failed password=hunter2":             "login failed password=" + Redacted,
 	} {
 		lines := capture(t)
 		serve(t, get("/hello"), []echo.MiddlewareFunc{Recover(nil)}, func(c echo.Context) error { panic(errors.New(msg)) })
