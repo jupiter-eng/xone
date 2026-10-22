@@ -4,9 +4,9 @@ go 1.25.0
 
 require (
 	github.com/go-resty/resty/v2 v2.17.2
-	github.com/jupiter-eng/xone v1.1.0
-	github.com/jupiter-eng/xone/xmetric v1.1.0
-	github.com/jupiter-eng/xone/xtrace v1.1.0
+	github.com/jupiter-eng/xone v1.2.0
+	github.com/jupiter-eng/xone/xmetric v1.2.0
+	github.com/jupiter-eng/xone/xtrace v1.2.0
 	github.com/prometheus/client_golang v1.24.1
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.71.0
 	go.opentelemetry.io/otel v1.46.0

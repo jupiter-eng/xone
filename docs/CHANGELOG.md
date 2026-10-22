@@ -10,6 +10,8 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
 
 ## [Unreleased]
 
+## [v1.2.0] - 2026-10-22
+
 ### Changed
 
 - **One name for the application across all three signals** (incompatible). The identity configured in
