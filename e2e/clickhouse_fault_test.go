@@ -175,10 +175,24 @@ func TestClickHouse_HungOrDown_PooledConnsObeyDeadline_NewConnsWaitDialTimeout(t
 					t.Errorf("attempt %d (a new connection): the dial and the handshake are governed by dial_timeout (%v) and it should return then, got %v: %s", i+1, chDialTimeout, r.Server, r.Error)
 				}
 			}
-			if len(fromPool) == 0 || len(fresh) == 0 {
-				t.Fatalf("both halves should be measured: %d pooled connections and %d new ones", len(fromPool), len(fresh))
-			}
+			// The numbers go out before the check rather than after it. "No pooled connection was
+			// measured" has been seen on CI (and on main before this test was in English), and the
+			// one thing that tells its two causes apart is in exactly these timings -- which the old
+			// order printed only when the test passed, so every failure arrived with nothing to go
+			// on.
+			//
+			// What to read: the minimum of the new ones. A genuinely new connection waits out
+			// dial_timeout, so a minimum at about dial_timeout means the pool really was empty. A
+			// minimum at about the caller's deadline means it was not: an attempt that started on a
+			// pooled connection was counted as a new one, which isNew above can do in two ways --
+			// chp.Accepted() counts a connection from any source during the attempt, and
+			// database/sql's DB.retry falls back to alwaysNewConn after driver.ErrBadConn, so the
+			// error of an attempt that began on a pooled connection can still end up saying
+			// dial tcp.
 			t.Logf("numbers: ClickHouse %s with the caller giving %v: the pooled connections %s; the new ones %s", m.name, deadline, faultSummary(fromPool), faultSummary(fresh))
+			if len(fromPool) == 0 || len(fresh) == 0 {
+				t.Fatalf("both halves should be measured: %d pooled connections and %d new ones (the timings are in the line above)", len(fromPool), len(fresh))
+			}
 		})
 	}
 }
