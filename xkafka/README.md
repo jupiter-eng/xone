@@ -102,7 +102,7 @@ xhook.BeforeStart(func(ctx context.Context) error {
 ```yaml
 XKafka:
   Brokers: ["127.0.0.1:9092"]   # required, the seed brokers
-  ClientID: ""                  # empty = XApp.Name, and with XApp.Name empty too it is franz-go's kgo
+  ClientID: ""                  # empty = XApp.Name, and without one the executable's name
   DialTimeout: 1s               # TCP + the TLS handshake; 0 = franz-go's default of 10s
   SASL:
     Mechanism: ""               # PLAIN / SCRAM-SHA-256 / SCRAM-SHA-512; empty = no authentication
@@ -381,7 +381,7 @@ upgrade is a number here that has to be measured again.
 
 | Setting | franz-go's default | Here |
 |---|---|---|
-| `ClientID` | `kgo` | `XApp.Name` (still `kgo` when unconfigured) |
+| `ClientID` | `kgo` | `XApp.Name`, falling back to the executable's name; `New` reads neither, so there it stays `kgo` |
 | `RequiredAcks` / idempotent writes | all / on | Unchanged (`Producer.Acks` can change it, and anything other than all turns idempotent writes off for you -- without that, `NewClient` reports an error) |
 | `ProducerLinger` | 10ms | Unchanged (`Producer.Linger`) |
 | `ProducerBatchCompression` | snappy, falling back to none | Unchanged (`Producer.Compression`) |

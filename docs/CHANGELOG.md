@@ -10,6 +10,8 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
 
 ## [Unreleased]
 
+## [v1.1.0] - 2026-10-22
+
 ### Added
 
 - **xbeego**, a new module: a [beego](https://github.com/beego/beego) v2 application served by the
@@ -32,6 +34,22 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
   - It is for API services: `web.Run` is not called, so beego's sessions, templates, gzip, admin
     server and default error pages are not set up. A service needing one of those keeps `web.Run`
     and imports `xlog` alone.
+
+- **`xapp.SetDefault(xapp.Config)`**: the application identity given in code rather than in a file,
+  which is where a version stamped in at build time (`-ldflags "-X main.version=v1.2.0"`) already is.
+  The `XApp` block stays optional, and the file still wins over it field by field: a field it writes
+  overrides what the program supplied, a field it leaves out keeps it. Call it before `xone.Run`,
+  since the block is read on `StageLog`. See [xapp/README.md](../xapp/README.md).
+- **`xutil.ExecutableName()`**: the running program's own file name, which is what a component falls
+  back on for a name nobody configured.
+
+### Changed
+
+- **xkafka: `client.id` no longer ends up as franz-go's shared `kgo`.** With `ClientID` unconfigured
+  it still uses `XApp.Name`, and when there is no application name either it now uses the executable's
+  name -- the one OTel builds its own `unknown_service:<name>` from -- so a service that configures no identity is
+  still told apart in the brokers' logs, quotas and monitoring. Producers and consumers send the same
+  id. A direct call to `xkafka.New` reads neither and is unchanged.
 
 ## [v1.0.4] - 2026-10-21
 

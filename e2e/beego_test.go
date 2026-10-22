@@ -16,6 +16,26 @@ import (
 // The service is e2e/service-beego, which connects to nothing -- what xbeego does with a database
 // is xgorm's business and service/ already covers it.
 
+// beegoAccessLog is this path's access log line, waited for and insisted to be the only one.
+//
+// The accessLog in functional_test.go waits by trace_id; this one waits by path, which is what these
+// cases have to hand.
+//
+// Waited for rather than read straight away: the line is written once the response has gone out, so
+// a client that already holds its answer can look before the server has written it. Read straight
+// away it passed everywhere and then failed on a loaded CI runner with "got=0", which is what the
+// rest of the suite uses LookForLog / WaitLog for.
+func beegoAccessLog(t *testing.T, p *harness.Process, path string) harness.Log {
+	t.Helper()
+	match := func(l harness.Log) bool { return l.Msg() == "request completed" && l.Str("path") == path }
+	p.WaitLog(t, 10*time.Second, match)
+	logs := p.FindLogs(match)
+	if len(logs) != 1 {
+		t.Fatalf("exactly one access log line for %s was expected, got=%d\n%s", path, len(logs), p.Output())
+	}
+	return logs[0]
+}
+
 // startBeego starts the beego service with the spans written to a file.
 func startBeego(t *testing.T, o harness.Options) *harness.Process {
 	t.Helper()
@@ -65,21 +85,19 @@ func TestBeego_AccessLogAndSpanUseTheRouteTemplate(t *testing.T) {
 		}
 	}
 
-	logs := p.FindLogs(func(l harness.Log) bool {
-		return l.Msg() == "request completed" && l.Str("path") == "/users/2"
-	})
-	if len(logs) != 1 {
-		t.Fatalf("exactly one access log line for /users/2 was expected, got=%d\n%s", len(logs), p.Output())
-	}
-	if got := logs[0].Str("route"); got != "/users/:id" {
+	line := beegoAccessLog(t, p, "/users/2")
+	if got := line.Str("route"); got != "/users/:id" {
 		t.Errorf("the access log should use the route template, got=%q", got)
 	}
-	if logs[0].Str("trace_id") == "" {
-		t.Errorf("the access log should carry trace_id, got=%v", logs[0].Fields)
+	if line.Str("trace_id") == "" {
+		t.Errorf("the access log should carry trace_id, got=%v", line.Fields)
 	}
 
-	// The three requests fold into one series rather than three
-	m := p.Metrics(t)
+	// The three requests fold into one series rather than three. Waited for: the middleware records
+	// the metric in a defer, which in principle lands after the response has reached the client.
+	m := waitMetrics(t, p, `e2e_http_requests_total{route="/users/:id"} == 3`, func(m harness.Metrics) bool {
+		return m.Sum("e2e_http_requests_total", "route", "/users/:id") == 3
+	})
 	if n := m.Sum("e2e_http_requests_total", "route", "/users/:id"); n != 3 {
 		t.Errorf("the three requests should fold into one series, got=%v\n%v", n, m.Find("e2e_http_requests_total"))
 	}
@@ -104,10 +122,9 @@ func TestBeego_MetricsScrapeIsNotRecordedAsUnmatched(t *testing.T) {
 	p := startBeego(t, harness.Options{})
 
 	p.Metrics(t) // the first scrape is counted by the time of the second
-	m := p.Metrics(t)
-	if n := m.Sum("e2e_http_requests_total", "route", "/metrics"); n < 1 {
-		t.Errorf("a scrape should be labelled with the metrics path, got=%v\n%v", n, m.Find("e2e_http_requests_total"))
-	}
+	m := waitMetrics(t, p, `e2e_http_requests_total{route="/metrics"} >= 1`, func(m harness.Metrics) bool {
+		return m.Sum("e2e_http_requests_total", "route", "/metrics") >= 1
+	})
 	if n := m.Sum("e2e_http_requests_total", "route", "unmatched"); n != 0 {
 		t.Errorf("a scrape must not land in the unmatched bucket, got=%v", n)
 	}
@@ -171,18 +188,12 @@ func TestBeego_PanicIsRecoveredLoggedAndCounted(t *testing.T) {
 		t.Errorf("the panic line should carry this request's trace_id, got=%v", l.Fields)
 	}
 
-	access := p.FindLogs(func(l harness.Log) bool {
-		return l.Msg() == "request completed" && l.Str("path") == "/boom"
-	})
-	if len(access) != 1 {
-		t.Fatalf("one access log line for /boom was expected, got=%d", len(access))
-	}
-	if status, _ := access[0].Get("status"); status != float64(500) {
+	if status, _ := beegoAccessLog(t, p, "/boom").Get("status"); status != float64(500) {
 		t.Errorf("the access log should record the 500, got=%v", status)
 	}
-	if n := p.Metrics(t).Sum("e2e_http_requests_total", "route", "/boom", "status", "500"); n != 1 {
-		t.Errorf("a panicking request should be counted as a 500, got=%v", n)
-	}
+	waitMetrics(t, p, `e2e_http_requests_total{route="/boom",status="500"} == 1`, func(m harness.Metrics) bool {
+		return m.Sum("e2e_http_requests_total", "route", "/boom", "status", "500") == 1
+	})
 
 	// The process is still serving
 	if r := p.Get(t, "/ping"); r.Status != http.StatusOK {
@@ -256,16 +267,11 @@ func TestBeego_ClientIPIgnoresAForgedHeaderFromAnUntrustedPeer(t *testing.T) {
 		t.Errorf("a forged X-Forwarded-For must not decide client_ip, got=%q", u.ClientIP)
 	}
 
-	logs := p.FindLogs(func(l harness.Log) bool {
-		return l.Msg() == "request completed" && l.Str("path") == "/users/7"
-	})
-	if len(logs) != 1 {
-		t.Fatalf("one access log line was expected, got=%d", len(logs))
-	}
-	if got := logs[0].Str("client_ip"); got != u.ClientIP {
+	got := beegoAccessLog(t, p, "/users/7").Str("client_ip")
+	if got != u.ClientIP {
 		t.Errorf("the handler and the access log should agree on client_ip, got=%q and %q", u.ClientIP, got)
 	}
-	if got := logs[0].Str("client_ip"); got == "1.2.3.4" {
+	if got == "1.2.3.4" {
 		t.Errorf("a forged X-Forwarded-For must not reach the access log, got=%q", got)
 	}
 }

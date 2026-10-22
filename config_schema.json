@@ -1238,7 +1238,7 @@
             },
             "ClientID": {
               "type": "string",
-              "description": "is the client.id sent to the brokers, which the broker-side logs, quotas and monitoring use to tell clients apart. It defaults to empty: one built through the framework uses XApp.Name, and without XApp.Name configured it is franz-go's default kgo (measured on v1.21.7); a direct call to New does not read XApp, so empty means kgo."
+              "description": "is the client.id sent to the brokers, which the broker-side logs, quotas and monitoring use to tell clients apart. It defaults to empty: one built through the framework falls back to XApp.Name and then to the executable's name, so it never goes by franz-go's shared default kgo; a direct call to New reads neither, so there empty means kgo (measured on v1.21.7)."
             },
             "Consumer": {
               "type": "object",
@@ -1369,7 +1369,7 @@
                   },
                   "ClientID": {
                     "type": "string",
-                    "description": "is the client.id sent to the brokers, which the broker-side logs, quotas and monitoring use to tell clients apart. It defaults to empty: one built through the framework uses XApp.Name, and without XApp.Name configured it is franz-go's default kgo (measured on v1.21.7); a direct call to New does not read XApp, so empty means kgo."
+                    "description": "is the client.id sent to the brokers, which the broker-side logs, quotas and monitoring use to tell clients apart. It defaults to empty: one built through the framework falls back to XApp.Name and then to the executable's name, so it never goes by franz-go's shared default kgo; a direct call to New reads neither, so there empty means kgo (measured on v1.21.7)."
                   },
                   "Consumer": {
                     "type": "object",

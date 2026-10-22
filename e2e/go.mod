@@ -26,19 +26,19 @@ require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/jupiter-eng/xone v1.0.4
-	github.com/jupiter-eng/xone/xbeego v1.0.4
-	github.com/jupiter-eng/xone/xcache v1.0.4
-	github.com/jupiter-eng/xone/xcron v1.0.4
-	github.com/jupiter-eng/xone/xgin v1.0.4
-	github.com/jupiter-eng/xone/xginswagger v1.0.4
-	github.com/jupiter-eng/xone/xgorm v1.0.4
-	github.com/jupiter-eng/xone/xgorm/clickhouse v1.0.4
-	github.com/jupiter-eng/xone/xhttp v1.0.4
-	github.com/jupiter-eng/xone/xkafka v1.0.4
-	github.com/jupiter-eng/xone/xmetric v1.0.4
-	github.com/jupiter-eng/xone/xredis v1.0.4
-	github.com/jupiter-eng/xone/xtrace v1.0.4
+	github.com/jupiter-eng/xone v1.1.0
+	github.com/jupiter-eng/xone/xbeego v1.1.0
+	github.com/jupiter-eng/xone/xcache v1.1.0
+	github.com/jupiter-eng/xone/xcron v1.1.0
+	github.com/jupiter-eng/xone/xgin v1.1.0
+	github.com/jupiter-eng/xone/xginswagger v1.1.0
+	github.com/jupiter-eng/xone/xgorm v1.1.0
+	github.com/jupiter-eng/xone/xgorm/clickhouse v1.1.0
+	github.com/jupiter-eng/xone/xhttp v1.1.0
+	github.com/jupiter-eng/xone/xkafka v1.1.0
+	github.com/jupiter-eng/xone/xmetric v1.1.0
+	github.com/jupiter-eng/xone/xredis v1.1.0
+	github.com/jupiter-eng/xone/xtrace v1.1.0
 	github.com/prometheus/client_model v0.6.2
 	github.com/prometheus/common v0.70.1
 	github.com/redis/go-redis/v9 v9.22.0
