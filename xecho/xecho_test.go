@@ -1873,9 +1873,10 @@ func TestBuild_PreMethodOverrideStillRoutes(t *testing.T) {
 	// copy in Pre, a MethodOverride placed after it would change the Method on the copy and the
 	// router would still match POST. With Trace off it is Propagate that swaps the ctx, and it has
 	// to swap in place just the same.
-	for _, trace := range []bool{true, false} {
+	// traceOn, not trace: the name trace is the imported otel package here.
+	for _, traceOn := range []bool{true, false} {
 		buf := captureLog(t)
-		e := New().WithConfig(configWith(func(c *Config) { c.Trace = trace })).WithRoutes(func(e *echo.Echo) {
+		e := New().WithConfig(configWith(func(c *Config) { c.Trace = traceOn })).WithRoutes(func(e *echo.Echo) {
 			e.Pre(echomw.MethodOverride())
 			e.POST("/a", func(c echo.Context) error { return c.String(200, "post") })
 			e.PUT("/a", func(c echo.Context) error { return c.String(200, "put") })
@@ -1885,10 +1886,10 @@ func TestBuild_PreMethodOverrideStillRoutes(t *testing.T) {
 		w := httptest.NewRecorder()
 		e.ServeHTTP(w, req)
 		if w.Code != 200 || w.Body.String() != "put" {
-			t.Errorf("Trace=%v: MethodOverride should route the request to PUT, got=%d %q", trace, w.Code, w.Body.String())
+			t.Errorf("Trace=%v: MethodOverride should route the request to PUT, got=%d %q", traceOn, w.Code, w.Body.String())
 		}
 		if out := buf.String(); !strings.Contains(out, `"method":"PUT","route":"/a"`) {
-			t.Errorf("Trace=%v: the access log should record the rewritten method and route:\n%s", trace, out)
+			t.Errorf("Trace=%v: the access log should record the rewritten method and route:\n%s", traceOn, out)
 		}
 	}
 }

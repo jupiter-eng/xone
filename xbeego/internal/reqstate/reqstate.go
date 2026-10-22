@@ -25,12 +25,6 @@ import (
 	"github.com/jupiter-eng/xone/internal/web"
 )
 
-// State is what one request carries for the built-in middleware.
-//
-// Route is written by xbeego's BeforeExec filter and read once beego's handler has returned,
-// both on the request's own goroutine, so the write happens before the read and no lock is
-// needed. A handler that hands the ctx to a goroutine outliving the request must not read Route
-// there.
 // Peers is what the layer accepting a request has to know about the one that sent it: whether it
 // is one of ours, and which address counts as the client's. internal/web.Proxies implements it
 // from XBeego.TrustedProxies, which is the only place that is stated.
@@ -48,6 +42,12 @@ type Peers interface {
 	ClientIP(r *http.Request) string
 }
 
+// State is what one request carries for the built-in middleware.
+//
+// Route is written by xbeego's BeforeExec filter and read once beego's handler has returned,
+// both on the request's own goroutine, so the write happens before the read and no lock is
+// needed. A handler that hands the ctx to a goroutine outliving the request must not read Route
+// there.
 type State struct {
 	// Route is the route template beego matched. It stays empty when the filter never ran --
 	// nothing matched, or a filter at BeforeRouter ended the request first -- and the middleware
