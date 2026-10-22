@@ -16,9 +16,9 @@ require (
 	github.com/go-playground/locales v0.14.1
 	github.com/go-playground/universal-translator v0.18.1
 	github.com/go-playground/validator/v10 v10.30.4
-	github.com/jupiter-eng/xone v1.2.0
-	github.com/jupiter-eng/xone/xmetric v1.2.0
-	github.com/jupiter-eng/xone/xtrace v1.2.0
+	github.com/jupiter-eng/xone v1.3.0
+	github.com/jupiter-eng/xone/xmetric v1.3.0
+	github.com/jupiter-eng/xone/xtrace v1.3.0
 	github.com/prometheus/client_golang v1.24.1
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/sdk v1.46.0
