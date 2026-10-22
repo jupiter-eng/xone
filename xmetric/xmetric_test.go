@@ -14,6 +14,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/jupiter-eng/xone/internal/hook"
+	"github.com/jupiter-eng/xone/xapp"
 	"github.com/jupiter-eng/xone/xlog"
 	"github.com/jupiter-eng/xone/xonetest"
 )
@@ -611,6 +612,64 @@ func keepGlobals(t *testing.T) {
 		slog.SetDefault(oldLogger)
 		current.Store(oldCurrent)
 	})
+}
+
+// keepApp puts the application identity back the way the test found it: SetDefault writes a global, and leaving
+// one test's name behind would have the next one pass or fail for the wrong reason.
+func keepApp(t *testing.T) {
+	t.Helper()
+	old := xapp.Config{Name: xapp.Name(), Version: xapp.Version()}
+	t.Cleanup(func() { xapp.SetDefault(old) })
+}
+
+func TestInitXMetric_CarriesTheAppIdentityAsConstLabels(t *testing.T) {
+	// One name per signal: the logs write service_name, the spans carry service.name, and the metrics have to carry
+	// it too -- otherwise telling applications apart on a dashboard means writing ConstLabels by hand everywhere.
+	keepGlobals(t)
+	keepApp(t)
+	xapp.SetDefault(xapp.Config{Name: "order-api", Version: "v1.2.3"})
+	xonetest.UseConfigYAML(t, "XMetric:\n  ConstLabels:\n    env: test\n")
+
+	if err := initXMetric(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	labels := ConstLabels()
+	if labels["service_name"] != "order-api" || labels["service_version"] != "v1.2.3" {
+		t.Errorf("the identity must reach the constant labels, got=%v", labels)
+	}
+	if labels["env"] != "test" {
+		t.Errorf("the configured labels must be kept alongside it, got=%v", labels)
+	}
+}
+
+func TestInitXMetric_AConfiguredLabelWinsOverTheAppIdentity(t *testing.T) {
+	keepGlobals(t)
+	keepApp(t)
+	xapp.SetDefault(xapp.Config{Name: "order-api"})
+	xonetest.UseConfigYAML(t, "XMetric:\n  ConstLabels:\n    service_name: billing\n")
+
+	if err := initXMetric(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := ConstLabels()["service_name"]; got != "billing" {
+		t.Errorf("what the file configured must win over XApp, got=%q", got)
+	}
+}
+
+func TestInitXMetric_NoIdentityAddsNoEmptyLabel(t *testing.T) {
+	// A constant label with an empty value is worse than none: every query would carry a service_name="" that says
+	// nothing, on the Go runtime and process metrics as well.
+	keepGlobals(t)
+	keepApp(t)
+	xapp.SetDefault(xapp.Config{})
+	xonetest.UseConfigYAML(t, "XMetric:\n  Namespace: demoapp\n")
+
+	if err := initXMetric(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ConstLabels()["service_name"]; ok {
+		t.Errorf("with no identity anywhere there must be no service_name label, got=%v", ConstLabels())
+	}
 }
 
 func TestInitXMetric_InstallsDefaultMetricsWhenUnconfigured(t *testing.T) {

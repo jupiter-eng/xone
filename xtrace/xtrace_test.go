@@ -378,7 +378,7 @@ func TestNew_StartsWhenSomeResourceAttrsFail(t *testing.T) {
 	if got["deployment.environment"] != "prod" {
 		t.Errorf("the correctly written entry must still take effect, got=%v", got)
 	}
-	for _, k := range []string{"service.name", "telemetry.sdk.language"} {
+	for _, k := range []string{"service.instance.id", "telemetry.sdk.language"} {
 		if _, ok := got[k]; !ok {
 			t.Errorf("the other attributes must all still be there, missing %s, got=%v", k, got)
 		}
@@ -992,19 +992,22 @@ func useApp(t *testing.T, name, version string) {
 	t.Cleanup(func() { set("", "") })
 }
 
-func TestNew_Resource_NoEmptyServiceNameWithoutAppName(t *testing.T) {
-	// Regression case. With App.Name unconfigured it used to write service.name="" anyway,
-	// covering OTel's own unknown_service fallback and adding a nameless service to the dashboards.
+func TestNew_Resource_NoServiceNameWithoutAppName(t *testing.T) {
+	// An identity nobody configured produces no attribute at all -- neither an empty service.name nor the SDK's
+	// unknown_service:<executable name>, which looks like a real service on a dashboard without being one.
 	useApp(t, "", "")
 	t.Setenv("OTEL_SERVICE_NAME", "")
 	t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "")
 
 	got := resourceAttrs(t)
-	if !strings.HasPrefix(got["service.name"], "unknown_service:") {
-		t.Errorf("without an application name it must fall back to OTel's own name, got=%q", got["service.name"])
+	if v, ok := got["service.name"]; ok {
+		t.Errorf("without an application name no service.name may be written, got=%q", v)
 	}
 	if v, ok := got["service.version"]; ok {
 		t.Errorf("without a configured version no service.version may be written, got=%q", v)
+	}
+	if got["service.instance.id"] == "" {
+		t.Error("service.instance.id tells replicas apart and does not depend on an identity being configured")
 	}
 }
 

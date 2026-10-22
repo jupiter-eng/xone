@@ -947,19 +947,20 @@ func identityLines(t *testing.T, yml string) []map[string]any {
 }
 
 func TestIdentity_DefaultFieldsOnEveryLine(t *testing.T) {
-	// They match service.name / host.name / process.pid on the Spans: a logging platform can filter by service and by instance.
+	// They are semconv's service.name / host.name / process.pid with underscores for the dots, the same names the
+	// metrics carry: a logging platform can filter by service and by instance, with one name per signal.
 	lines := identityLines(t, "XApp:\n  Name: order-api\n  Version: v1.2.3\nXLog:\n")
 	host, _ := os.Hostname()
 	l := lines[len(lines)-1]
 	for k, want := range map[string]any{
-		"service": "order-api", "version": "v1.2.3", "hostname": host, "pid": float64(os.Getpid()),
+		"service_name": "order-api", "service_version": "v1.2.3", "host_name": host, "process_pid": float64(os.Getpid()),
 	} {
 		if l[k] != want {
 			t.Errorf("%s must be %v, got=%v", k, want, l[k])
 		}
 	}
 	if _, ok := l["host"]; ok {
-		t.Errorf("the machine name is called hostname: host is the request's Host header in xgin's access log, got=%v", l)
+		t.Errorf("the machine name is called host_name: host is the request's Host header in xgin's access log, got=%v", l)
 	}
 }
 
@@ -967,21 +968,21 @@ func TestIdentity_EmptyAppFieldsAreOmitted(t *testing.T) {
 	// Without XApp.Name / Version configured, no empty service is written.
 	lines := identityLines(t, "XLog:\n")
 	l := lines[len(lines)-1]
-	if _, ok := l["service"]; ok {
-		t.Errorf("without XApp.Name configured there must be no service, got=%v", l)
+	if _, ok := l["service_name"]; ok {
+		t.Errorf("without XApp.Name configured there must be no service_name, got=%v", l)
 	}
-	if _, ok := l["version"]; ok {
-		t.Errorf("without XApp.Version configured there must be no version, got=%v", l)
+	if _, ok := l["service_version"]; ok {
+		t.Errorf("without XApp.Version configured there must be no service_version, got=%v", l)
 	}
-	if l["hostname"] == nil || l["pid"] == nil {
-		t.Errorf("hostname and pid are still there, got=%v", l)
+	if l["host_name"] == nil || l["process_pid"] == nil {
+		t.Errorf("host_name and process_pid are still there, got=%v", l)
 	}
 }
 
 func TestFields_ExtraOverrideAndDrop(t *testing.T) {
 	t.Setenv("XLOG_TEST_POD", "order-api-7d9f")
 	lines := identityLines(t, "XApp:\n  Name: order-api\nXLog:\n  Fields:\n"+
-		"    pod: ${XLOG_TEST_POD}\n    zone: ${XLOG_TEST_UNSET_ZONE:}\n    service: renamed\n    hostname: \"\"\n")
+		"    pod: ${XLOG_TEST_POD}\n    zone: ${XLOG_TEST_UNSET_ZONE:}\n    service_name: renamed\n    host_name: \"\"\n")
 	l := lines[len(lines)-1]
 	if l["pod"] != "order-api-7d9f" {
 		t.Errorf("a Fields value must come from the environment, got=%v", l["pod"])
@@ -989,10 +990,10 @@ func TestFields_ExtraOverrideAndDrop(t *testing.T) {
 	if _, ok := l["zone"]; ok {
 		t.Errorf("${VAR:} is an empty string when unset, and a field with an empty string is not written, got=%v", l)
 	}
-	if l["service"] != "renamed" {
-		t.Errorf("a name of the same name must take the Fields value, got=%v", l["service"])
+	if l["service_name"] != "renamed" {
+		t.Errorf("a name of the same name must take the Fields value, got=%v", l["service_name"])
 	}
-	if _, ok := l["hostname"]; ok {
+	if _, ok := l["host_name"]; ok {
 		t.Errorf("writing an empty string drops that default field, got=%v", l)
 	}
 }
@@ -1012,7 +1013,7 @@ func TestNew_OnlyFieldsNoIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	line := string(b)
-	if !strings.Contains(line, `"a":"1","b":"2"`) || strings.Contains(line, "hostname") {
+	if !strings.Contains(line, `"a":"1","b":"2"`) || strings.Contains(line, "host_name") {
 		t.Errorf("New carries only Fields (sorted by name), got=%s", line)
 	}
 }
@@ -1026,7 +1027,7 @@ func TestUseHandler_CarriesIdentityAndFields(t *testing.T) {
 	xonetest.StartHooks(t)
 	slog.Info("hello")
 	out := buf.String()
-	if !strings.Contains(out, `"service":"order-api"`) || !strings.Contains(out, `"zone":"az1"`) || !strings.Contains(out, `"pid":`) {
+	if !strings.Contains(out, `"service_name":"order-api"`) || !strings.Contains(out, `"zone":"az1"`) || !strings.Contains(out, `"process_pid":`) {
 		t.Errorf("a handler of your own must carry the identity fields and Fields too, got=%s", out)
 	}
 }

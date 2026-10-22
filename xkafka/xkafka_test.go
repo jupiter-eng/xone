@@ -18,7 +18,6 @@ import (
 	"github.com/jupiter-eng/xone/internal/hook"
 	"github.com/jupiter-eng/xone/internal/xclient"
 	"github.com/jupiter-eng/xone/xerror"
-	"github.com/jupiter-eng/xone/xutil"
 )
 
 // newProducer builds a producing client through New and closes it when the test ends.
@@ -279,29 +278,35 @@ func TestBuild_ClientIDDefaultsToAppName(t *testing.T) {
 	}
 }
 
-func TestBuild_ClientIDFallsBackToTheExecutableWithoutXApp(t *testing.T) {
-	// XApp is optional, so there may be no application name anywhere. The brokers still have to be able to tell
-	// this service apart in their logs, quotas and monitoring, and franz-go's own default has every service on
-	// the cluster calling itself kgo.
-	want := xutil.ExecutableName()
-	if want == "" {
-		t.Skip("this operating system cannot name the executable, which leaves franz-go its own default")
-	}
+func TestBuild_NoClientIDAnywhereWarnsAndInventsNothing(t *testing.T) {
+	// Nothing is invented for a name nobody configured, here as for the logs, the metrics and the spans. But
+	// client.id goes into every request header and franz-go sends its own kgo when none is set, so unlike those
+	// three the consequence cannot simply be left out -- it is said out loud at startup instead.
 	_, cfg := cluster(t, 1, "orders")
 	useConfig(t, "XLog:\n  Level: info\n")
 	runHook(t, "xapp.loadConfig")
+	logs := captureLogs(t)
 
 	inst, closer, err := build(context.Background(), "default", cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer closer.Close()
-	if got := inst.client.OptValue(kgo.ClientID); got != want {
-		t.Errorf("ClientID = %v, want the executable name %q", got, want)
+	if inst.cfg.ClientID != "" {
+		t.Errorf("no name was configured anywhere, so none may be invented, got=%q", inst.cfg.ClientID)
 	}
-	// The consumers on this cluster are built from the ClientConfig kept here, so settling it once covers both sides.
-	if inst.cfg.ClientID != want {
-		t.Errorf("the kept config has ClientID = %q, so the consumers would send something else", inst.cfg.ClientID)
+	// franz-go's own default is what goes on the wire, which is exactly what the warning is about.
+	if got := inst.client.OptValue(kgo.ClientID); got != "kgo" {
+		t.Errorf("franz-go's default must be left as it is, got=%v", got)
+	}
+	var warned bool
+	for _, l := range logs() {
+		if l["level"] == "WARN" && strings.Contains(l["msg"].(string), "no client id configured") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("a client id nobody configured must be one WARN at startup, otherwise the brokers see kgo and nobody is told, got=%v", logs())
 	}
 }
 

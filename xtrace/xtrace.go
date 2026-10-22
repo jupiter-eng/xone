@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"go.opentelemetry.io/contrib/propagators/b3"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -144,16 +145,23 @@ func newPropagator(cfg Config) (propagation.TextMapPropagator, error) {
 //
 // These are all descriptive attributes, and keeping the whole service from starting for them is not a fair trade.
 //
-// service.name's precedence, from lowest to highest: OTel's own unknown_service:<executable name>,
-// XApp.Name / XApp.Version, OTEL_RESOURCE_ATTRIBUTES, OTEL_SERVICE_NAME.
-// resource.New merges in option order with a later name overriding an earlier one (measured), so the order is the
-// precedence: an environment variable is the deployer's last word and should override a config file baked into the image.
-// Nothing is written when XApp.Name is not configured: it used to write service.name="" unconditionally, covering
-// OTel's fallback name and OTEL_SERVICE_NAME alike and adding a nameless service to the dashboards.
-// The fallback name comes from WithService, which also gives each process a random service.instance.id.
+// service.name's precedence, from lowest to highest: XApp.Name / XApp.Version, OTEL_RESOURCE_ATTRIBUTES,
+// OTEL_SERVICE_NAME. resource.New merges in option order with a later name overriding an earlier one (measured), so
+// the order is the precedence: an environment variable is the deployer's last word and should override a config file
+// baked into the image.
+//
+// An identity nobody configured produces no attribute at all. The SDK's own resource.WithService is deliberately not
+// used: half of it invents a service.name (unknown_service:<executable name>, resource/builtin.go), which looks like
+// an answer on a dashboard without being one, and the same reasoning that keeps xapp from guessing a name keeps that
+// guess out of the spans. The other half of WithService is worth keeping, so service.instance.id is written here --
+// first in the list, which leaves the environment free to override it.
+//
+// Note that service.name is a required attribute in OTel's semantic conventions, so a backend receiving spans without
+// one falls back to whatever it uses for unnamed services. That is the intended trade: "no name" is visible as a gap
+// to fix, while unknown_service:<executable name> quietly looks like a real service.
 func newResource(ctx context.Context) *resource.Resource {
 	res, err := resource.New(ctx,
-		resource.WithService(),
+		resource.WithAttributes(semconv.ServiceInstanceID(instanceID())),
 		resource.WithAttributes(appAttributes()...),
 		resource.WithFromEnv(),
 		resource.WithProcess(),
@@ -164,6 +172,20 @@ func newResource(ctx context.Context) *resource.Resource {
 		slog.WarnContext(ctx, "xtrace some resource attributes could not be detected, continuing without them", "error", err)
 	}
 	return res
+}
+
+// instanceID is this process's service.instance.id, a random UUIDv4 as OTel's own detector produces (its
+// defaultServiceInstanceIDDetector, which comes with the service.name guess this package does not want).
+//
+// It tells one replica from another where host.name and process.pid are not enough -- two Pods of a Deployment on
+// one node, or the runs before and after a restart. An error from the random source leaves it out rather than
+// failing startup, as with every other attribute here.
+func instanceID() string {
+	id, err := uuid.NewRandom()
+	if err != nil {
+		return ""
+	}
+	return id.String()
 }
 
 // appAttributes are the service name and version configured in the XApp block, writing nothing for whichever is unset.

@@ -43,7 +43,7 @@ func Place(ctx context.Context, o *Order) (err error) {
 XMetric:
   Namespace: myapp         # the metric name prefix, none by default
   ConstLabels:             # attached to every metric (including go_* / process_*), none by default
-    env: "${ENV:dev}"
+    env: "${ENV:dev}"       # service_name / service_version come from XApp by themselves; an entry of that name wins
   HTTPDurationBuckets: [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]  # inbound and outbound HTTP duration (seconds); this is the default
   HistogramBuckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]           # the histograms the shortcuts build, that is prometheus.DefBuckets
   GoMetrics: true          # the Go runtime metrics, on by default
@@ -78,6 +78,13 @@ XMetric:
   letters, digits and underscores and must not start with a digit, and a `ConstLabels` key must not start with `__`
   either (client_golang reports no error and quietly exports `my-app` as `my_app_...`). See
   ["Behavior (measured)"](#behavior-measured).
+- **The application identity is attached by itself**: `XApp.Name` and `XApp.Version` become the constant labels
+  `service_name` and `service_version`, named as xlog's log fields are and as `service.name` / `service.version` on
+  the spans (the rule is in
+  [observability.md "One application, three signals"](../docs/observability.md#one-application-three-signals)).
+  Configuring neither attaches neither label -- a constant `service_name=""` would say nothing on every query -- and
+  a `ConstLabels` entry of the same name overrides what `XApp` says. Note that `name` and `version` are reserved
+  (see below), which is why the labels are not called that.
 - **Some `ConstLabels` keys are reserved**: `le`, `quantile`, `version` and the framework metrics' own variable labels
   (`level`, `caller`, `method`, `status`, `route`, `host`, `name`) cannot be used and fail while the config is read.
 - **An empty bucket list `[]` does not mean "use the defaults"** and fails outright; for the defaults, leave the field

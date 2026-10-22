@@ -235,9 +235,9 @@ func TestCoverage_ConsolePrintsSpansToStdout(t *testing.T) {
 	}
 }
 
-// xapp/README.md, App: "a trace's service.name / service.version come from these in order, each
-// overriding the one before it: OTel's own fallback name unknown_service:<executable> ->
-// App.Name / App.Version -> OTEL_RESOURCE_ATTRIBUTES -> OTEL_SERVICE_NAME";
+// xtrace/README.md: "service.name's precedence, each overriding the one before: XApp.Name /
+// XApp.Version -> OTEL_RESOURCE_ATTRIBUTES -> OTEL_SERVICE_NAME. Configured nowhere, the attribute
+// is not written at all -- not even OTel's own unknown_service:<executable name>";
 // XTrace: "one malformed item in OTEL_RESOURCE_ATTRIBUTES (where the well-formed ones still take)
 // ... no longer keeps the service from coming up"
 func TestCoverage_service_NameFromAppOverriddenByOTELEnv(t *testing.T) {
@@ -248,14 +248,14 @@ func TestCoverage_service_NameFromAppOverriddenByOTELEnv(t *testing.T) {
 		name          string
 		env           map[string]string
 		noApp         bool
-		wantName      string
+		wantName      any // nil means the attribute should not be there
 		wantVersion   any // nil means the attribute should not be there
 		wantExtraKey  string
 		wantExtraVal  string
 		wantStartWarn bool
 	}{
 		{name: "App alone", wantName: "xone.e2e.service", wantVersion: "e2e"},
-		{name: "no App: OTel's fallback name and no version", noApp: true, wantName: "unknown_service:service", wantVersion: nil},
+		{name: "no App: no service.name and no service.version at all", noApp: true, wantName: nil, wantVersion: nil},
 		{name: "OTEL_RESOURCE_ATTRIBUTES wins over App",
 			env:      map[string]string{"OTEL_RESOURCE_ATTRIBUTES": "service.name=from-attrs,service.version=v-attrs"},
 			wantName: "from-attrs", wantVersion: "v-attrs"},
@@ -274,8 +274,13 @@ func TestCoverage_service_NameFromAppOverriddenByOTELEnv(t *testing.T) {
 			}
 			p := harness.Start(t, o)
 			srv := serverSpan(t, p, traceIDOf(t, p.Get(t, "/ping")))
-			if got := srv.Resource["service.name"]; got != c.wantName {
-				t.Errorf("service.name should be %q, got %v", c.wantName, got)
+			if got, ok := srv.Resource["service.name"]; (c.wantName == nil && ok) || (c.wantName != nil && got != c.wantName) {
+				t.Errorf("service.name should be %v, got %v (present=%v)", c.wantName, got, ok)
+			}
+			// The half of OTel's WithService that is kept: it tells replicas apart and does not depend on
+			// an identity having been configured
+			if srv.Resource["service.instance.id"] == nil {
+				t.Error("service.instance.id must be written whether or not an identity is configured")
 			}
 			if got, ok := srv.Resource["service.version"]; (c.wantVersion == nil && ok) || (c.wantVersion != nil && got != c.wantVersion) {
 				t.Errorf("service.version should be %v, got %v (present=%v)", c.wantVersion, got, ok)

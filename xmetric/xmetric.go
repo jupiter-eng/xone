@@ -15,6 +15,7 @@ import (
 	promcollectors "github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/jupiter-eng/xone/xapp"
 	"github.com/jupiter-eng/xone/xconfig"
 	"github.com/jupiter-eng/xone/xerror"
 	"github.com/jupiter-eng/xone/xhook"
@@ -206,7 +207,50 @@ func initXMetric(context.Context) error {
 	if err := xconfig.Unmarshal(ConfigKey, &c); err != nil {
 		return err
 	}
-	return install(c)
+	return install(withIdentity(c))
+}
+
+// The constant labels carrying the application identity. They are named as xlog's per-line fields are -- OTel's
+// semantic conventions with the dots written as underscores, which a Prometheus label name cannot hold -- so one
+// name covers the logs, the metrics and (as service.name) the spans.
+//
+// They are deliberately absent from reservedLabels: configuring one by hand is how a caller overrides XApp here.
+// They are not exported either -- ConstLabels() already hands back every label in effect, which is what a package
+// building metrics of its own needs.
+const (
+	serviceNameLabel    = "service_name"
+	serviceVersionLabel = "service_version"
+)
+
+// withIdentity attaches the XApp identity to the constant labels, so that telling applications apart on a
+// dashboard does not require everyone to write ConstLabels by hand.
+//
+// It happens here and not in New, which touches no globals and knows nothing of XApp. What the file configured
+// wins: an entry of the same name is left as it is. An identity nobody supplied adds no label, since a constant
+// label with an empty value is worse than none -- every query would carry a service_name="" nobody can read.
+func withIdentity(c Config) Config {
+	identity := [...]struct{ key, value string }{
+		{serviceNameLabel, xapp.Name()},
+		{serviceVersionLabel, xapp.Version()},
+	}
+	labels := maps.Clone(c.ConstLabels)
+	for _, l := range identity {
+		if l.value == "" {
+			continue
+		}
+		if _, ok := labels[l.key]; ok {
+			continue
+		}
+		if labels == nil {
+			labels = map[string]string{}
+		}
+		labels[l.key] = l.value
+	}
+	if len(labels) == 0 {
+		return c // nothing was configured and there is no identity: leave ConstLabels nil rather than empty
+	}
+	c.ConstLabels = labels
+	return c
 }
 
 // install builds the metrics setup from the configuration and makes it the global default instance.

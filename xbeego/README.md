@@ -180,7 +180,7 @@ leaves these unavailable:
 
 For a JSON API none of those is in use. A service that needs one of them should keep `web.Run` and
 take logging alone -- a blank `import _ "github.com/jupiter-eng/xone/xlog"` gives it JSON logs with
-`service` / `version` / `hostname` and nothing else changes.
+`service_name` / `service_version` / `host_name` and nothing else changes.
 
 **Middleware runs outside beego's router**, so `WithMiddleware` sees no beego context and no route
 template. Anything that needs them is a filter: `web.InsertFilter(pattern, web.BeforeRouter, f)` as
@@ -212,12 +212,12 @@ program's `-h` output, and **a program that defines a flag of either name panics
 
 ### Access log
 
-One `INFO` line per request, message `request completed`. Measured, with `service` / `hostname` /
-`pid` added by xlog and `trace_id` / `span_id` by xtrace:
+One `INFO` line per request, message `request completed`. Measured, with `service_name` / `host_name` /
+`process_pid` added by xlog and `trace_id` / `span_id` by xtrace:
 
 ```json
 {"time":"2026-10-22T11:20:27.944388+08:00","level":"INFO","msg":"request completed",
- "service":"smoke.beego.api","hostname":"host-1","pid":66236,
+ "service_name":"smoke.beego.api","host_name":"host-1","process_pid":66236,
  "method":"GET","route":"/users/:id","path":"/users/1","status":200,"elapsed_ms":0.071,
  "client_ip":"127.0.0.1","host":"127.0.0.1:18099","proto":"HTTP/1.1","user_agent":"curl/8.7.1",
  "bytes_in":0,"bytes_out":6,

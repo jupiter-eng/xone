@@ -24,8 +24,8 @@ func BenchmarkHandle_Bare(b *testing.B) {
 
 // Compared against BenchmarkHandle_Bare: the framework's 4 default identity fields plus 3 Fields.
 func BenchmarkHandle_WithIdentityFields(b *testing.B) {
-	base := []slog.Attr{slog.String("service", "order-api"), slog.String("version", "v1.2.3"),
-		slog.String("hostname", "order-api-7d9f5c8b6-x2k4q"), slog.Int("pid", 1)}
+	base := []slog.Attr{slog.String("service_name", "order-api"), slog.String("service_version", "v1.2.3"),
+		slog.String("host_name", "order-api-7d9f5c8b6-x2k4q"), slog.Int("process_pid", 1)}
 	l := withStatic(benchLogger(b), base, map[string]string{"pod": "order-api-7d9f5c8b6-x2k4q", "node": "node-3", "zone": "az1"})
 	ctx := context.Background()
 	b.ReportAllocs()
