@@ -116,8 +116,8 @@ admin := xecho.New().WithConfig(c).WithRoutes(adminRoutes)
   can reach the service directly), do not use `private`: list the exact ranges, or write `[]`.
 - `TLS.ClientCAFile` governs the whole port: `/metrics` requires a client certificate too. Inside
   a handler, `c.Request().TLS.PeerCertificates` says who it is.
-- xgin and xecho can be used in one process: the two config blocks are separate (`XGin` /
-  `XEcho`), just keep the ports apart.
+- xgin, xecho and xbeego can be used in one process: their config blocks are separate (`XGin` /
+  `XEcho` / `XBeego`), just keep the ports apart.
 
 ## API
 
@@ -285,7 +285,7 @@ The same names, labels and buckets as xgin, so dashboards and alerts work for bo
 
 - **`route`** is the route template; anything unmatched is `unmatched`, by the same rules as the
   access log. `method` folds into the standard methods, and anything else is recorded as `OTHER`.
-- When one process uses both xgin and xecho, their requests land on the same metrics and cannot be
+- When one process uses more than one of xgin / xecho / xbeego, their requests land on the same metrics and cannot be
   told apart; to separate them, give them different route prefixes.
 
 ### Tracing

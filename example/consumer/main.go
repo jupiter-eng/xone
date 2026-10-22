@@ -24,7 +24,7 @@ import (
 	// xredis or xhttp, which bring tracing along, is here, and without it the logs carry no trace_id
 	_ "github.com/jupiter-eng/xone/xtrace"
 
-	// xlog comes along with xgin / xecho / xcron alone. A program with no web framework that wants
+	// xlog comes along with xgin / xecho / xbeego / xcron alone. A program with no web framework that wants
 	// its logging configured by XLog imports it anonymously itself; without the import
 	// slog.Default() stays the standard library's default, and writing an XLog block fails startup
 	_ "github.com/jupiter-eng/xone/xlog"

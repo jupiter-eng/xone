@@ -90,7 +90,7 @@ stop signal arrives, and any blocking call should be given it.
 | `StageTelemetry` | Has to come before the clients, so their spans attach and their metrics are collected | xtrace, xmetric |
 | `StageClient` | The clients the business depends on | xgorm, xredis, xcache, xhttp, xkafka (the producer client) |
 | `StageBusiness` | Your own business resources: warm-ups, scheduled jobs, subscriptions. **This is what you get without `At`** | your hooks |
-| `StageServer` | Anything serving the outside: last up, first down | xgin, xecho, xginswagger (which reads config), xcron (the scheduler), xkafka (consumers) |
+| `StageServer` | Anything serving the outside: last up, first down | xgin, xecho, xbeego, xginswagger (which reads config), xcron (the scheduler), xkafka (consumers) |
 
 Write `xhook.At(xhook.StageClient)` and friends only when something genuinely has to come before or
 after somebody else. **Within one stage the order is Go's package initialization order**: identical
@@ -331,7 +331,7 @@ func TestInitXKV(t *testing.T) {
 - **The termination grace period has to be longer than the stop budget.** `xone.WithStopTimeout`
   (15s by default) is the ceiling from the start of shutdown to `Run` returning, and Kubernetes'
   `terminationGracePeriodSeconds` (30s by default) only has to be longer than it; there is no other
-  number to keep aligned. xgin / xecho use 2/3 of it to wait for in-flight requests.
+  number to keep aligned. xgin / xecho / xbeego use 2/3 of it to wait for in-flight requests.
 
   ```go
   xone.MustRun(app, xone.WithStopTimeout(25*time.Second))

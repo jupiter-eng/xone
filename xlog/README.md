@@ -2,7 +2,7 @@
 
 Logging: once it is set up, `slog.Default()` is a native `*slog.Logger` configured from `XLog`, and business code uses the standard library's `log/slog` directly.
 
-- A core module with no dependencies, arriving only with xgin / xecho / xcron: using any of them sets it up, and without a configuration it is info-level JSON on standard output
+- A core module with no dependencies, arriving only with xgin / xecho / xbeego / xcron: using any of them sets it up, and without a configuration it is info-level JSON on standard output
 - The root package `xone` does not carry it. A program using only the data integrations (xgorm, xredis, xhttp, xcache) or xtrace / xmetric does not get xlog installed and `slog.Default()` stays as it was; to use it, `import _ "github.com/jupiter-eng/xone/xlog"`. Writing an `XLog` block without that import fails startup and suggests exactly that line
 - With tracing, every log line carries `trace_id` / `span_id` automatically
 - `xlog.AddKV` adds fields for a whole request (the access log carries them too), `xlog.CtxWithKV` only for one stretch of calls
@@ -146,7 +146,7 @@ func main() {
 
 - **Use `slog.InfoContext(ctx, ...)`**: a `slog.Info` without a ctx cannot reach the `trace_id` and carries none of the
   `AddKV` / `CtxWithKV` fields.
-- **`AddKV` needs a scope**: xgin / xecho open one at the start of every request (not with `Log: false`); a non-web entry
+- **`AddKV` needs a scope**: xgin / xecho / xbeego open one at the start of every request (not with `Log: false`); a non-web entry
   point of your own opens it with `xlog.CtxWithScope(ctx)`, or the fields are dropped (and counted in
   `DroppedKVCount`). See [observability.md "Logs"](../docs/observability.md#logs).
 - **The division of labor between `AddKV` and `CtxWithKV` is the reach**: `AddKV` writes in place and the whole request

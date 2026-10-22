@@ -42,6 +42,173 @@
       },
       "additionalProperties": false
     },
+    "XBeego": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "is the server configuration.",
+      "properties": {
+        "BeegoLogs": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "routes beego's own logs package into slog. On by default. Beego's logs writes plain text to the console: a service whose logs are collected as JSON has those lines fall out of every field-based query, and an application using beego's logs as its own logger has all of its logging fall out. With this on, every line beego writes becomes one slog record (the message under message, beego's eight levels folded onto slog's four), so XLog governs the format and the level for the whole process. It replaces whatever the application configured on beego's logger, so turn it off to keep a setup of your own -- a file adapter with rotation, say. beego's logger is process-wide, as its router is. These lines carry no trace_id: beego's logs API has no ctx to take one from. A handler that wants one writes through slog with the request's ctx (c.Ctx.Request.Context()).",
+          "pattern": "\\$\\{"
+        },
+        "Host": {
+          "type": "string",
+          "description": "is the listen address. Defaults to 0.0.0.0."
+        },
+        "IdleTimeout": {
+          "type": "string",
+          "description": "bounds how long a keep-alive connection may sit idle. Defaults to 60s, must be \u003e 0. Same reasoning as ReadHeaderTimeout: 0 falls back to ReadTimeout (itself 0 by default), which means idle connections are never reclaimed. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
+        },
+        "Log": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "enables the access log middleware. On by default. It replaces whatever access logging the application had of its own (a filter pair at BeforeRouter / AfterExec is the usual shape). Leaving both in place writes every request twice, with two different sets of field names; remove the application's.",
+          "pattern": "\\$\\{"
+        },
+        "LogQuery": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "records the query string in the access log, as the query field. Off by default. Query strings often carry credentials: GET /login?token=..., signed links, an OAuth callback's code. With it on, fields are masked by the same rules as a form body; a name missing from the word list (code, for instance) still goes through in the clear, so add it with middleware.AddSensitiveFields.",
+          "pattern": "\\$\\{"
+        },
+        "LogRequestBody": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "records the request body in the access log. Off by default. Recording a body means buffering its first 256KB and masking every field, which costs enough and risks enough to be a decision. Before turning it on, make sure the sensitive words are complete (middleware.AddSensitiveFields; the rules are under \"Access log\" in xbeego/README.md).",
+          "pattern": "\\$\\{"
+        },
+        "LogRequestHeaders": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "records the request headers in the access log, as the request_headers field. Off by default. With it on, credential-bearing values are masked: the listed ones such as Authorization, Cookie and X-Api-Key, plus any name containing a sensitive word; values that are URLs (Referer) lose their query string. Add business headers outside the list with middleware.AddSensitiveHeaders.",
+          "pattern": "\\$\\{"
+        },
+        "LogResponseBody": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "records the response body in the access log. Off by default.",
+          "pattern": "\\$\\{"
+        },
+        "LogResponseHeaders": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "records the response headers in the access log, as the response_headers field. Off by default. Masking works as it does for request headers: the listed ones such as Set-Cookie, plus any name containing a sensitive word, have their values masked.",
+          "pattern": "\\$\\{"
+        },
+        "LogSkipPaths": {
+          "type": "array",
+          "description": "lists paths that are not access-logged. Empty by default. A path ending in / matches by prefix, anything else matches exactly. With Metric on, MetricPath is added automatically and needs no entry.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "Metric": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "enables the metrics middleware. On by default. When on, MetricPath (/metrics by default) is served by the framework and needs no route of your own. It is answered before the request reaches beego, so beego's router never sees it and an application that already registers a /metrics route of its own has to drop it or move this one -- the framework's answer wins.",
+          "pattern": "\\$\\{"
+        },
+        "MetricPath": {
+          "type": "string",
+          "description": "is the path of the metrics endpoint. Defaults to /metrics, and must start with / while Metric is on. It is matched on URL.Path exactly, as the access log's SkipPaths does, so a spelling without the leading / would match nothing and leave the endpoint unreachable without a word. That is why it is rejected at startup instead."
+        },
+        "Port": {
+          "type": [
+            "integer",
+            "string"
+          ],
+          "description": "is the listen port. Defaults to 8080. This is the only listen setting that counts: web.Run is not called, so beego's own httpaddr and httpport in conf/app.conf are read by beego and used by nobody.",
+          "pattern": "\\$\\{"
+        },
+        "ReadHeaderTimeout": {
+          "type": "string",
+          "description": "bounds reading the request headers. Defaults to 10s, must be \u003e 0. This is the main defense against slow-connection attacks: without a limit, a slow client holds a connection indefinitely, and once the connection count is exhausted the whole service is unavailable. Beego sets ReadTimeout and WriteTimeout from a single ServerTimeOut in conf/app.conf (0 by default, that is, no limit at all) and has no setting for the other two; this module does not use beego's server and builds an http.Server from these fields instead. 0 does not mean \"use some default\": net/http falls back to ReadTimeout, whose default is also 0, so there is no limit at all. Both 0 and negative values are therefore rejected. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
+        },
+        "ReadTimeout": {
+          "type": "string",
+          "description": "bounds reading the whole request, body included. Unlimited by default. Unlimited by default because a limit cuts off large uploads. A value matching the business ceiling is better, but only the business knows that value. 0 means unlimited; a negative value fails startup. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
+        },
+        "RecoverPanic": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "takes beego's panic recovery over (web.BConfig.RecoverPanic). On by default. Beego recovers panics inside its own router and writes them with its logs package: plain text on stderr, no trace_id, no masking, and the whole thing invisible to the access log and the metrics, which see a 500 with no reason attached. With this on, the framework's own recovery is installed in its place (web.BConfig.RecoverFunc): one ERROR line through slog carrying trace_id, the panic value masked by the same rules as the access log's, and a stack. The response is a bare 500 unless WithRecoverFunc says otherwise. Turning it off leaves beego's recovery as it is. The framework then still catches whatever escapes beego (a panic in middleware mounted with WithMiddleware, for one), since a panic reaching net/http kills the connection with no log at all. This is a process-wide setting of beego's, not a per-instance one: two XBeego instances in one process share it, as they share the router.",
+          "pattern": "\\$\\{"
+        },
+        "TLS": {
+          "type": "object",
+          "description": "holds the server certificate and mutual authentication. Off by default: setting both CertFile and KeyFile makes it https.",
+          "properties": {
+            "CertFile": {
+              "type": "string",
+              "description": "is the path to the TLS certificate. It and KeyFile must both be set or both be empty."
+            },
+            "ClientCAFile": {
+              "type": "string",
+              "description": "is the CA used to verify client certificates (PEM, several are allowed). Empty by default, meaning no client certificate is requested. Setting it turns on mutual authentication (tls.RequireAndVerifyClientCert): the client must present a certificate signed by this CA, and without one -- or with one signed by someone else -- the handshake fails and the request reaches no handler, including framework routes such as /metrics. It can only be set together with CertFile and KeyFile."
+            },
+            "KeyFile": {
+              "type": "string",
+              "description": "is the path to the TLS private key."
+            },
+            "MinVersion": {
+              "type": "string",
+              "description": "is the lowest TLS version accepted: \"1.2\" or \"1.3\", and empty means \"1.2\". Defaults to \"1.2\". It applies, and is validated, only when a certificate is configured. Lower versions are not accepted: TLS 1.0 and 1.1 have long been deprecated (RFC 8996)."
+            }
+          },
+          "additionalProperties": false
+        },
+        "Trace": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "opens a server span for inbound requests. On by default. It governs the span only. With it off, an incoming traceparent, baggage and forwarded headers are still accepted (under the same trust rules as TrustedProxies), trace_id in the log is the upstream one, and requests sent through xhttp still carry it downstream; the response no longer carries X-Trace-Id back.",
+          "pattern": "\\$\\{"
+        },
+        "TrustedProxies": {
+          "type": "array",
+          "description": "lists which directly connected peers are trusted: only their X-Forwarded-For / X-Real-IP is used to compute client_ip, and only their forwarded headers (XTrace.ForwardHeaders / ForwardHeaderRules) and baggage are accepted and passed downstream. \"Who counts as one of us\" is stated here and nowhere else. The default is [private]: loopback, the private ranges, 100.64.0.0/10, and IPv6 ::1 and fc00::/7. Load balancers, Kubernetes ingresses and pods, and sidecars all fall inside those ranges, so however random pod IPs are, they need no listing. For a service exposed directly to the internet the peer is a public address, none of which is trusted, so X-Forwarded-For still cannot forge client_ip. Beego's own ctx.Input.IP() is not used and is not governed by this: it walks X-Forwarded-For from the left and believes whoever sent it (Proxy / IP in server/web/context/input.go). The client_ip in the access log, in the metrics and on the span is computed here instead, by the same algorithm xgin and xecho use, so moving a service between frameworks does not change it. Business code reading ctx.Input.IP() keeps beego's answer; to get the framework's, read the client_ip field of the access log or call xbeego.ClientIP(r). To add ranges on top of the default, write private alongside them (the list replaces the default wholesale); to trust nobody, write []: When the internal network also holds untrusted clients (an office network or VPN users can reach the service directly), do not use private: list the exact ranges. Write IPv4 as 10.0.0.1 or 10.0.0.0/8; an IPv4-mapped IPv6 form such as ::ffff:10.0.0.1 fails startup.",
+          "items": {
+            "type": "string"
+          }
+        },
+        "UseH2C": {
+          "type": [
+            "boolean",
+            "string"
+          ],
+          "description": "enables HTTP/2 without TLS. Off by default. Under TLS, HTTP/2 is automatic and this option is not needed. Prior knowledge only: the client opens with the HTTP/2 preface (gRPC and curl --http2-prior-knowledge both do). The HTTP/1.1 Upgrade: h2c handshake is not supported, and a client sending it gets an ordinary HTTP/1.1 response.",
+          "pattern": "\\$\\{"
+        },
+        "WriteTimeout": {
+          "type": "string",
+          "description": "bounds writing the response. Unlimited by default. Unlimited by default because a limit cuts off SSE, long polling and large downloads. 0 means unlimited; a negative value fails startup. (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
+        }
+      },
+      "additionalProperties": false
+    },
     "XCache": {
       "description": "is this module's configuration. There are two forms",
       "oneOf": [

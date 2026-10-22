@@ -81,6 +81,7 @@ for an empty application importing only that integration:
 | `xgin` (tracing through xtrace) | 89 | 85 |
 | `xginswagger` | 84 | 82 |
 | `xecho` (tracing through xtrace) | 63 | 59 |
+| `xbeego` (tracing through xtrace) | 109 | 105 |
 
 How it was measured: create an empty consumer module outside the repository whose `main.go` holds
 a single `import _ "<package>"`, point its `go.mod` at this repository's modules with `replace`,
@@ -89,7 +90,7 @@ run `GOWORK=off go mod tidy`, and count the lines of `GOWORK=off go list -m all`
 `github.com/jupiter-eng/xone`. The numbers move with dependency upgrades, so measure again after
 changing a `go.mod`.
 
-- **The integrations that produce spans (xgin, xecho, xgorm, xredis, xhttp, xcron, xkafka) depend
+- **The integrations that produce spans (xgin, xecho, xbeego, xgorm, xredis, xhttp, xcron, xkafka) depend
   on xtrace**: using them gives tracing with nobody having to remember importing xtrace — and
   forgetting it would raise no error, it would only make every span a noop and leave `trace_id` out
   of the logs. The cost measured small: they already depend on OpenTelemetry's API (xgin and xgorm
@@ -125,6 +126,29 @@ it directly for a clean instance, and a second configuration has a way out. The 
 `xcache`, `xhttp`) do not — the signature says honestly whether this constructor can hold you up.
 A multi-instance module takes the configuration of one instance (`ClientConfig`). `check.sh`
 checks that every integration registering a stop hook has a `New`.
+
+### 3.1 Where the dependency's own shape forces an exception
+
+A principle that cannot survive a real library is a principle only on paper. Two of them bend for
+**xbeego**, and both are written down rather than quietly tolerated:
+
+- **`New` touches no globals.** Beego's routing API is package level: `web.Router` and
+  `web.InsertFilter` register on the single global `web.BeeApp`, and an application's routers
+  package registers into it from its own `init`. A server built beside that global would serve
+  none of the application's routes, so `xbeego.New()` stays pure -- it reads nothing and touches
+  nothing -- while **assembly** binds to `web.BeeApp`. The consequence is stated in the module's
+  README: two `XBeego` instances in one process serve the same routes on two ports.
+- **`init()` only registers.** Importing beego runs its own package `init`, which reads
+  `conf/app.conf` from the working directory and panics when it cannot be parsed -- before xone has
+  read anything, so such an error does not get the file and line the framework's own configuration
+  errors get. Its `grace` package additionally registers the command-line flags `-graceful` and
+  `-socketorder`, so a program defining a flag of either name panics at startup. Nothing in xone
+  can prevent a dependency's `init` from doing either; what it can do is not add to it, which is
+  why `xbeego`'s own `init` registers one hook and nothing else, and say so plainly in the module's
+  README so a caller is not surprised by it.
+
+The test is whether the exception is contained: in both cases what leaks out is a property a caller
+can read in one line of the module's README, not a rule they have to carry everywhere.
 
 ### 4. Joining the framework takes two verbs
 
@@ -193,7 +217,7 @@ grace period only has to be longer. It has to really govern every step, or it is
   ones after it (`min(1s, remaining ÷ number of hooks)`) — a server that will not exit and a
   connection pool that will not close cannot eat anybody else's share, and xlog, which comes last,
   always has time to close its file.
-- **xgin / xecho have no stop timeout of their own**: `Stop` waits for in-flight requests for the
+- **xgin / xecho / xbeego have no stop timeout of their own**: `Stop` waits for in-flight requests for the
   server's share, force-closes at the deadline and then waits for the handlers to really return. To
   make it wait more or less, change the total budget — there is no second number to keep aligned
   with it.
@@ -219,7 +243,7 @@ apart. So they are gathered into one:
 | Decoding the single- and multi-instance forms | `xconfig.UnmarshalClients` |
 | The client TLS block: its fields, validation, and building a `*tls.Config` | `xtls.Config` (shared by xgorm, xredis, xhttp and xkafka; dependency-free) |
 | Registering a metric and asserting it back to its concrete type | `xmetric.RegisterAs` |
-| The half of a web server that has nothing to do with the framework: listening, h2c, server TLS, graceful shutdown; trusted proxies; masking and the sensitive word list; the access log fields | `internal/web` (not exported; used by both xgin and xecho) |
+| The half of a web server that has nothing to do with the framework: listening, h2c, server TLS, graceful shutdown; trusted proxies; masking and the sensitive word list; the access log fields | `internal/web` (not exported; used by xgin, xecho and xbeego) |
 
 `C()` panics with a message saying which of the four cases it is, because being called too early,
 being called too late, the whole block being unconfigured and a misspelled name are four different
@@ -230,7 +254,7 @@ anyway, which is how the registry knows the start hooks ran.
 
 - `xclient` is internal: it is code shared by three modules, not something a caller has to learn.
   An integration of your own that wants several instances needs nothing beyond a map with a lock.
-- Server-side TLS (the `TLS:` block of xgin and xecho, with `ClientCAFile` / `MinVersion` and no
+- Server-side TLS (the `TLS:` block of xgin, xecho and xbeego, with `ClientCAFile` / `MinVersion` and no
   `Enable`) has a different shape, lives in `internal/web`, and is not added to `xtls`.
 - `internal/web` is likewise not exported: what the caller sees is still `xgin.Config` and the
   functions of `xgin/middleware`; the word list is one per process, and moving to another web
@@ -248,14 +272,14 @@ holds an extension point and the upper layer injects into it:
 | `internal/logext.AddObserver` | xmetric | Error log lines are counted while xlog does not depend on Prometheus |
 | `internal/logext.WithKV` | xkafka | Each message's ctx carries the `topic` / `partition` / `offset` / `group` log fields while xkafka does not import xlog |
 | `xgorm.RegisterDialect` | driver modules such as xgorm/clickhouse | A driver is added while xgorm does not carry its dependencies |
-| A carrier's `TrustedPeer() bool` | xgin, xecho | xtrace is told the peer is trusted while xtrace does not know them |
+| A carrier's `TrustedPeer() bool` | xgin, xecho, xbeego | xtrace is told the peer is trusted while xtrace does not know them |
 
 xlog's extension points live in the core's `internal/logext` (with `xlog.SetTraceExtractor` /
 `xlog.AddObserver` / `xlog.CtxWithKV` forwarding to them) rather than in xlog itself: the injecting
 side — xtrace, xmetric, xkafka — therefore does not import xlog. xlog replaces `slog.Default()`,
 and a program using only integrations such as xgorm, xredis and xkafka (which all carry xtrace and
 xmetric) should not have its logging taken over by that; xlog comes along with xgin / xecho /
-xcron alone.
+xbeego / xcron alone.
 
 The "wrap something around `slog.Default()`" approach is not used: `slog.SetDefault` also routes
 the standard library's `log` package into the new handler, and once the chain loops back to slog's

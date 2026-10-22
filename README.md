@@ -89,6 +89,7 @@ an integration of your own.
 | [xgin](xgin/README.md) | [gin](https://github.com/gin-gonic/gin) | A web service, with the access log, tracing, metrics and panic recovery built in |
 | [xginswagger](xginswagger/README.md) | [gin-swagger](https://github.com/swaggo/gin-swagger) | Swagger UI |
 | [xecho](xecho/README.md) | [Echo](https://github.com/labstack/echo) v4 | A web service with the same access log, tracing, metrics and panic recovery as xgin, on Echo |
+| [xbeego](xbeego/README.md) | [beego](https://github.com/beego/beego) v2 | The same again for a beego application: the routes stay on `web.BeeApp` and `web.Run` is replaced |
 | [xgorm](xgorm/README.md) | [gorm](https://gorm.io/) | `*gorm.DB`, with MySQL / PostgreSQL built in, and several data sources |
 | [xgorm/clickhouse](xgorm/clickhouse/README.md) | [the gorm ClickHouse driver](https://github.com/go-gorm/clickhouse) | ClickHouse for xgorm |
 | [xredis](xredis/README.md) | [go-redis](https://github.com/redis/go-redis) | `*redis.Client`, with several instances |
@@ -97,7 +98,7 @@ an integration of your own.
 | [xkafka](xkafka/README.md) | [franz-go](https://github.com/twmb/franz-go) | The native `*kgo.Client` for producing; `Consume` registers a consumer: in order within a partition, committed only once handled, with retries and a dead letter topic, and the handlers in flight finished on exit |
 | [xcron](xcron/README.md) | [cronexpr](https://github.com/hashicorp/cronexpr) (for parsing only) | In-process scheduled jobs, each run carrying a trace and log fields, with the runs in flight finished on exit |
 | [xtrace](xtrace/README.md) | [OpenTelemetry](https://github.com/open-telemetry/opentelemetry-go) | Tracing, installed as the global TracerProvider |
-| [xmetric](xmetric/README.md) | [Prometheus](https://github.com/prometheus/client_golang) | Recording metrics, with `/metrics` mounted by xgin / xecho |
+| [xmetric](xmetric/README.md) | [Prometheus](https://github.com/prometheus/client_golang) | Recording metrics, with `/metrics` mounted by xgin / xecho / xbeego |
 | [xlog](xlog/README.md) | [log/slog](https://pkg.go.dev/log/slog) (the standard library) | Structured logging, file rotation, per-request fields |
 | [xconfig](xconfig/README.md) | — | Reading a configuration block of your own |
 | [xflow](xflow/README.md) | — | Orchestrating a flow, rolling back automatically on a failure |
@@ -110,8 +111,8 @@ with something else:
 | Module | Comes along with | When none of them is used |
 |---|---|---|
 | `xapp` (the `XApp` block) | `xone` itself | — |
-| `xlog` | xgin, xecho, xcron | The framework does not take logging over and `slog.Default()` stays yours; to use it, import `github.com/jupiter-eng/xone/xlog` anonymously |
-| `xtrace`, `xmetric` | xgin, xecho, xgorm, xredis, xhttp, xkafka; xcache brings xmetric alone and xcron xtrace alone | Import it anonymously when it is wanted, see [Observability, "Tracing"](docs/observability.md#tracing) |
+| `xlog` | xgin, xecho, xbeego, xcron | The framework does not take logging over and `slog.Default()` stays yours; to use it, import `github.com/jupiter-eng/xone/xlog` anonymously |
+| `xtrace`, `xmetric` | xgin, xecho, xbeego, xgorm, xredis, xhttp, xkafka; xcache brings xmetric alone and xcron xtrace alone | Import it anonymously when it is wanted, see [Observability, "Tracing"](docs/observability.md#tracing) |
 
 ## Everyday usage
 

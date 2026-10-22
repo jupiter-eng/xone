@@ -10,6 +10,29 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
 
 ## [Unreleased]
 
+### Added
+
+- **xbeego**, a new module: a [beego](https://github.com/beego/beego) v2 application served by the
+  framework. The routes stay where they are -- on beego's global `web.BeeApp`, registered with
+  `web.Router` / `web.InsertFilter` -- and `xone.MustRun(xbeego.New())` replaces `web.Run`, so a
+  beego service gets the access log, tracing, metrics, panic recovery and graceful shutdown that
+  xgin and xecho have, with the same field names, metric names and span names (they come from the
+  same `internal/web`). The details are in [xbeego/README.md](../xbeego/README.md).
+  - The `route` label and the span name use beego's route template (`/users/:id`), so the series
+    count follows the number of routes rather than the number of ids.
+  - `client_ip` comes from `XBeego.TrustedProxies` rather than beego's `ctx.Input.IP()`, which
+    believes whoever sent `X-Forwarded-For`; `xbeego.ClientIP(r)` gives a controller the same
+    value.
+  - `XBeego.RecoverPanic` (on by default) takes beego's panic recovery over, so a panic is one
+    ERROR line through slog with `trace_id`, the panic value masked and a stack still pointing at
+    the controller. The two ways beego stops a handler by panicking keep working as they did:
+    `web.ErrAbort` is swallowed, and `c.Abort("404")` onto a handler registered with
+    `web.ErrorHandler` still renders it rather than becoming a 500.
+  - `XBeego.BeegoLogs` (on by default) routes beego's own `logs` package into slog.
+  - It is for API services: `web.Run` is not called, so beego's sessions, templates, gzip, admin
+    server and default error pages are not set up. A service needing one of those keeps `web.Run`
+    and imports `xlog` alone.
+
 ## [v1.0.4] - 2026-10-21
 
 ### Other

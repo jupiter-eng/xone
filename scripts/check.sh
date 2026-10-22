@@ -43,7 +43,7 @@ for pkg in ./xhook ./xerror ./xutil ./xtls ./internal/web; do
 done
 echo "✓ xhook / xerror / xutil / xtls / internal/web have zero third-party dependencies"
 
-# xlog replaces slog.Default() and comes along with xgin / xecho / xcron alone (they are "the body
+# xlog replaces slog.Default() and comes along with xgin / xecho / xbeego / xcron alone (they are "the body
 # of the process": a web service or a scheduled-job process, which want JSON logs and trace_id to
 # begin with). No data integration, xtrace or xmetric may bring it in: otherwise a program using only
 # xgorm would have its logging taken over again. xtrace / xmetric / xkafka install into
@@ -60,7 +60,15 @@ for m in . xtrace xmetric xgorm xredis xhttp xcache xkafka; do
   [ -z "$bad" ] || fail "these packages of $m bring xlog in (the root module, the data integrations, xtrace and xmetric all must not):
 $bad"
 done
-echo "✓ xgin / xecho / xcron alone bring xlog along"
+# The other way round: a web framework and the scheduler are "the body of the process" and have to
+# bring xlog along, or a service's logs are whatever slog.Default() was and none of the access log,
+# the trace_id or xlog.AddKV exists. Checked positively as well, since the negative check above
+# passes just as happily when nobody brings it in at all
+for m in xgin xecho xbeego xcron; do
+  (cd "$m" && GOWORK=off go list -f "{{range .Deps}}{{if eq . \"$xlog\"}}yes{{end}}{{end}}" . | grep -q yes) \
+    || fail "$m does not bring xlog in, so a service using it would not have its logging configured"
+done
+echo "✓ xgin / xecho / xbeego / xcron alone bring xlog along"
 
 # ---- 4. Only an integration may have an init() ----
 # An integration's init registers and initializes nothing, while the core should not even register.

@@ -127,8 +127,8 @@ and release the next patch once it is fixed.
 
 ```bash
 git fetch -q origin --tags
-git ls-remote --tags origin | sed 's#.*refs/tags/##' | sort        # 13 of them: the root + 12 submodules
-for m in "" /xgin /xgorm /xredis /xkafka /xcron /xecho /xcache /xhttp /xmetric /xtrace /xginswagger /xgorm/clickhouse; do
+git ls-remote --tags origin | sed 's#.*refs/tags/##' | sort        # 14 of them: the root + 13 submodules
+for m in "" /xgin /xgorm /xredis /xkafka /xcron /xecho /xbeego /xcache /xhttp /xmetric /xtrace /xginswagger /xgorm/clickhouse; do
   curl -s -o /dev/null -w "$m %{http_code}\n" "https://proxy.golang.org/github.com/jupiter-eng/xone$m/@v/$V.info"
 done                                                               # all have to be 200
 ```

@@ -8,7 +8,8 @@ These are the cross-module errors; anything belonging to one module is under "Tr
 its README: [xgorm](../xgorm/README.md#troubleshooting) (`unknown Driver=…`) ·
 [xtls](../xtls/README.md#troubleshooting) (client-side TLS) ·
 [xgin](../xgin/README.md#troubleshooting) (server certificates) ·
-[xecho](../xecho/README.md#troubleshooting) (server certificates, an XGin block copied over).
+[xecho](../xecho/README.md#troubleshooting) (server certificates, an XGin block copied over) ·
+[xbeego](../xbeego/README.md#troubleshooting) (what `web.Run` would have set up, duplicated access logs).
 
 - [Configuration](#configuration)
 - [Taking an instance: C()](#taking-an-instance-c)
@@ -148,11 +149,12 @@ than it.
 
 ### `N handler(s) still running when the shutdown deadline passed`
 
-xgin / xecho reached the end of the server's share of the stop budget (2/3 of `WithStopTimeout`,
+xgin / xecho / xbeego reached the end of the server's share of the stop budget (2/3 of `WithStopTimeout`,
 10s by default) with handlers still running. The connections have been closed and the request ctx
 cancelled (a WebSocket handler holding a hijacked connection included), so what is left are
 **handlers that ignore the ctx**: slow work and WebSocket read loops have to watch
-`c.Request.Context()` (`c.Request().Context()` in xecho). A handler stuck on a Redis read ends up
+`c.Request.Context()` (`c.Request().Context()` in xecho, `c.Ctx.Request.Context()` in xbeego). A
+handler stuck on a Redis read ends up
 here too — go-redis does not honor cancellation, so give the ctx a deadline
 (`context.WithTimeout`). When more time is genuinely needed, raise `WithStopTimeout`.
 
@@ -199,5 +201,6 @@ The startup connection probe tries at most 3 times
 
 Errors from the client-side TLS block (XGorm / XRedis / XHttp) are in
 [xtls "Troubleshooting"](../xtls/README.md#troubleshooting), XGin's server certificate errors are in
-[xgin "Troubleshooting"](../xgin/README.md#troubleshooting), and XEcho's are in
-[xecho "Troubleshooting"](../xecho/README.md#troubleshooting).
+[xgin "Troubleshooting"](../xgin/README.md#troubleshooting), and XEcho's and XBeego's are in
+[xecho "Troubleshooting"](../xecho/README.md#troubleshooting) and
+[xbeego "Troubleshooting"](../xbeego/README.md#troubleshooting).
