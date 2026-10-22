@@ -244,12 +244,18 @@ func isJSON(body []byte) bool {
 // RedactText redacts a piece of text with no structure, such as an error a handler returned or a
 // panicked value. There are three rules:
 //
-//   - a sensitive word masks the whole of it, as in a plain-text body: in "login failed for user=x
-//     password=y" the piece cannot be located, so none of it is kept;
-//   - with no sensitive word, the password in a URL's or a MySQL DSN's userinfo is masked and the
-//     rest is kept: a driver's error loves carrying a whole DSN -- dial
-//     postgres://app:pw@db:5432/prod, app:pw@tcp(db:3306)/prod -- which holds not one sensitive word
-//     and would reach the log as it is by the word list alone;
+//   - a sensitive name followed by = or : has its value masked and the rest of the text is kept:
+//     "login failed for user=x password=y" keeps everything up to password= and masks what comes
+//     after it. Masking the whole text on a sensitive word alone would take "token expired",
+//     "session not found" and "invalid signature" with it -- the messages wanted most while
+//     tracking an authentication failure down, and all of them carrying no credential at all. The
+//     price is that a credential written into a sentence with no name in front of it ("bad token
+//     abc123") is kept: a name is what makes a value locatable, and there is none there. An
+//     unstructured body is a different matter and is still masked whole, see redactOpaque;
+//   - the password in a URL's or a MySQL DSN's userinfo is masked and the rest is kept: a driver's
+//     error loves carrying a whole DSN -- dial postgres://app:pw@db:5432/prod,
+//     app:pw@tcp(db:3306)/prod -- which holds not one sensitive word and would reach the log as it
+//     is by the word list alone;
 //   - a line break becomes "; " and a trailing one is removed: gin's c.Errors.String() puts one
 //     error per line, and removing the line breaks as a body does would glue two errors into one
 //     sentence.
@@ -263,18 +269,75 @@ func RedactText(s string) string {
 	if s == "" {
 		return ""
 	}
-	if sensitive(s, words()) {
-		return Redacted
+	// The word list over the whole text is the gate: a name inside it is a substring of it, so with
+	// no sensitive word anywhere there is no sensitive name to find either and the scan below is
+	// skipped. One normalization of the text pays for every name in it
+	if ws := words(); sensitive(s, ws) {
+		s = redactAssignments(s, ws)
 	}
 	return textNewlines.Replace(strings.TrimRight(redactCredentials(s), "\r\n"))
 }
 
+// nameSeparator finds a "<name>=" or "<name>:" inside free text, with the quotes JSON puts around a
+// key allowed. Only the name and the separator are matched; how far the value reaches is
+// redactAssignments' decision.
+//
+// The separator may be surrounded by spaces and tabs but not by line breaks: a name at the end of a
+// line has its value on the next one, which this cannot see, and reading across the break would
+// mask a whole second message instead.
+var nameSeparator = regexp.MustCompile(`["']?([A-Za-z0-9_.\-]+)["']?[ \t]*[:=][ \t]*`)
+
+// redactAssignments masks the value of every "<name>=<value>" whose name is a sensitive one and
+// leaves the rest of the text alone. ws is the sensitive word list, already normalized.
+//
+// The value runs to the end of its line rather than to the next space: a request header dumped into
+// an error (Authorization: Bearer eyJ...) carries its credential in the second word, and stopping
+// at the first space would write that word out in full. What comes before the name is kept, which
+// is usually the sentence saying what went wrong.
+//
+// A name with nothing after it on that line is passed over: there is no value to mask, and masking
+// would only eat the line break that keeps two errors apart.
+func redactAssignments(s string, ws []string) string {
+	ms := nameSeparator.FindAllStringSubmatchIndex(s, -1)
+	if ms == nil {
+		return s
+	}
+
+	var b strings.Builder
+	last := 0 // how much of s has been written out; 0 means nothing has been masked yet
+	for _, m := range ms {
+		// The matches do not overlap, but one can still start inside a value already masked
+		if m[0] < last || !sensitive(s[m[2]:m[3]], ws) {
+			continue
+		}
+		end := strings.IndexAny(s[m[1]:], "\r\n")
+		if end < 0 {
+			end = len(s)
+		} else {
+			end += m[1]
+		}
+		if end == m[1] {
+			continue
+		}
+		if last == 0 {
+			b.Grow(len(s) + len(Redacted))
+		}
+		b.WriteString(s[last:m[1]])
+		b.WriteString(Redacted)
+		last = end
+	}
+	if last == 0 {
+		return s
+	}
+	b.WriteString(s[last:])
+	return b.String()
+}
+
 // redactCredentials masks the password in a URL's or a MySQL DSN's userinfo and nothing else:
 // RedactText's second rule.
-// A header value goes through this one alone and not through the "a sensitive word masks the whole
-// of it" rule -- the words in Vary: Cookie and Access-Control-Allow-Headers: Authorization are
-// header names and not credentials, and a sensitive header name is masked by name through the list
-// and the word list.
+// A header value goes through this one alone and through no name-based rule -- the words in
+// Vary: Cookie and Access-Control-Allow-Headers: Authorization are header names and not
+// credentials, and a sensitive header name is masked by name through the list and the word list.
 //
 // Neither DSN spelling exists without an @, so with no @ the regexps are not run. Every header and
 // every JSON string value passes through here and the vast majority carry no @, which saves two
@@ -310,7 +373,9 @@ var textNewlines = strings.NewReplacer("\r", "", "\n", "; ")
 // No single field can be located, while "does it hold a sensitive field name" can still be seen. If
 // it does, the whole of it is masked.
 // This is the same rule as the JSON branch applies when parsing fails: what cannot be located
-// cannot be let through.
+// cannot be let through. It is deliberately stricter than RedactText, which keeps the sentence
+// around a located value: a body is data somebody sent, whose shape nobody here knows, while an
+// error or a panic is a sentence this codebase wrote and the part worth reading is the sentence.
 //
 // Only a literal scan happens here, and unlike JSON a backslash is not treated as suspicious on
 // sight: a backslash is JSON's escape syntax, while in plain text it is an ordinary character, and
@@ -330,9 +395,9 @@ func redactOpaque(body []byte) string {
 //
 // A structural limit: it goes by key names alone. In an array of "name/value pairs" such as
 // [{"name":"password","value":"x"}], what is sensitive is name's value with the password in value,
-// and neither key name holds a sensitive word -- name's value is masked by RedactText because it
-// contains one, while value's x is kept as it is. A body of that shape is masked by adding a key
-// such as value to the word list with AddSensitiveFields, or by not recording the body at all.
+// and neither key name holds a sensitive word -- so both reach the log as they are. A body of that
+// shape is masked by adding a key such as value to the word list with AddSensitiveFields, or by not
+// recording the body at all.
 //
 // Decoding uses UseNumber and encoding turns HTML escaping off: the default any decodes a number as
 // a float64 and writes 12345678901234567890 back out as 12345678901234567000, while the default
@@ -493,9 +558,9 @@ func RedactHeaders(h http.Header) slog.Value {
 		}
 		// A header whose name holds no sensitive word may still carry a whole DSN in its value: only
 		// the password in it is masked (redactCredentials).
-		// RedactText's sensitive-word rule is not applied: the words in Vary: Cookie and
+		// RedactText's name rule is not applied: the words in Vary: Cookie and
 		// Access-Control-Allow-Headers: Authorization are header names and not credentials, and
-		// masking them whole would make the header log unreadable.
+		// masking what follows them would make the header log unreadable.
 		// A value with no @ returns unchanged and allocates nothing: RedactHeaders over five headers
 		// was measured still at 11 allocs and about 1.9µs
 		attrs = append(attrs, slog.String(k, redactCredentials(v)))

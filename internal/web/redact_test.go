@@ -514,15 +514,78 @@ func TestRedactHeaders_URLHeadersStripQueryString(t *testing.T) {
 	}
 }
 
-func TestRedactText_SensitiveWordRedactsWholeText(t *testing.T) {
+func TestRedactText_MasksTheValueUnderASensitiveName(t *testing.T) {
 	for in, want := range map[string]string{
-		"":                              "",
-		"db down":                       "db down",
-		"login failed password=hunter2": Redacted,
-		"invalid Access_Token abc":      Redacted, // separators removed and lowercased before the comparison, as in a body
+		"":        "",
+		"db down": "db down",
+		// The sentence in front of the value is what says what went wrong, so it is kept
+		"login failed password=hunter2": "login failed password=" + Redacted,
+		// The name is folded and its separators removed before the comparison, as a body field is
+		"login failed for user=x New-Password=y": "login failed for user=x New-Password=" + Redacted,
+		"access_token: abc":                      "access_token: " + Redacted,
+		`{"session_id":"abc"} rejected`:          `{"session_id":` + Redacted,
+		"cfg={Secret: abc, Host: db}":            "cfg={Secret: " + Redacted,
+		"upstream said: x-api-key = sent":        "upstream said: x-api-key = " + Redacted,
+		// A header dumped into an error carries its credential in the second word: stopping at the
+		// first space would write the token out in full
+		"unexpected reply, Authorization: Bearer eyJhbGciOi": "unexpected reply, Authorization: " + Redacted,
+		// A name with nothing after it on that line has no value to mask, and masking would eat the
+		// line break that keeps two errors apart
+		"token:\nsecond error": "token:; second error",
 	} {
 		if got := RedactText(in); got != want {
 			t.Errorf("RedactText(%q)=%q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestRedactText_KeepsAMessageThatOnlyNamesACredential(t *testing.T) {
+	// These are the messages wanted most while tracking an authentication failure down, and not one
+	// of them carries a credential. Masking the whole text on a sensitive word alone took every one
+	// of them out of the logs.
+	for _, in := range []string{
+		"token expired",
+		"jwt token is malformed",
+		"session not found for user 42",
+		"invalid signature",
+		"failed to parse cookie header",
+		"missing credential for upstream",
+		"Authorization required",
+		"Key: 'LoginReq.Password' Error:Field validation for 'Password' failed on the 'required' tag",
+		"pq: password authentication failed for user app",
+	} {
+		if got := RedactText(in); got != in {
+			t.Errorf("RedactText(%q)=%q, a message naming a credential is not one", in, got)
+		}
+	}
+}
+
+func TestRedactText_MasksEveryPairOnTheLine(t *testing.T) {
+	// The first name on the line is not sensitive, so the scan has to carry on past its value
+	got := RedactText("retry: user=app password=hunter2")
+	if strings.Contains(got, "hunter2") {
+		t.Errorf("RedactText leaked the password: %q", got)
+	}
+	if want := "retry: user=app password=" + Redacted; got != want {
+		t.Errorf("RedactText=%q, want %q", got, want)
+	}
+}
+
+func TestRedactText_MasksOnlyToTheEndOfTheLine(t *testing.T) {
+	// gin's c.Errors.String() puts one error per line: a value running to the end of the text would
+	// swallow every error after this one
+	got := RedactText("Error #01: password=hunter2\nError #02: db down\n")
+	if want := "Error #01: password=" + Redacted + "; Error #02: db down"; got != want {
+		t.Errorf("RedactText=%q, want %q", got, want)
+	}
+}
+
+func TestRedactOpaque_StillMasksAWholeBody(t *testing.T) {
+	// A body is data somebody sent, whose shape nobody here knows, so a sensitive word in it still
+	// masks the whole of it -- the rule RedactText relaxed is not relaxed here
+	for _, in := range []string{"hunter2 is my password", "invalid Access_Token abc"} {
+		if got := RedactBody([]byte(in), "text/plain"); got != Redacted {
+			t.Errorf("RedactBody(%q)=%q, want %q", in, got, Redacted)
 		}
 	}
 }

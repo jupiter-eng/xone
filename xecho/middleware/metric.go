@@ -28,6 +28,9 @@ import (
 // once is per middleware instance rather than package-level: a package-level one would pin the
 // collectors to whichever registry existed when the first middleware was built, and after a
 // registry change the recorded values would again never be exported.
+//
+// One value serves one *echo.Echo: the route table behind the route label is taken from the first
+// request's c.Echo() and kept (see routes). Call Metric again for a second echo.
 func Metric() echo.MiddlewareFunc {
 	var (
 		once    sync.Once

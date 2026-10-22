@@ -240,7 +240,7 @@ description is in [xgin "Access log"](../xgin/README.md#access-log):
 | `bytes_in` | The `Content-Length` of the request; a chunked upload records `-1` |
 | `bytes_out` | The response body bytes written (`c.Response().Size`), headers excluded; error responses count too. With `echomw.Gzip` installed this is the byte count **before** compression (xgin with gin-contrib/gzip records the compressed one), see [Behavior (measured)](#behavior-measured) |
 | `query` / `request_headers` / `request_body` / `response_headers` / `response_body` | Each when its own switch is on, masked by the same rules as xgin; when the response carries `Content-Encoding` (compressed by `echomw.Gzip`), `response_body` records only `[gzip-encoded content omitted]` |
-| `errors` | The error returned by the handler (`err.Error()`, such as `code=404, message=Not Found`), or the reason for an abort or a broken connection; absent when there is none; a sensitive word masks the whole thing as `***REDACTED***`, and otherwise only the password inside `postgres://app:pw@db` or `app:pw@tcp(db:3306)` becomes `***REDACTED***` (the span's `echo.errors` works the same way) |
+| `errors` | The error returned by the handler (`err.Error()`, such as `code=404, message=Not Found`), or the reason for an abort or a broken connection; absent when there is none; a sensitive **name** followed by `=` or `:` has its value masked to the end of that line (`login failed password=***REDACTED***`), and the password inside `postgres://app:pw@db` or `app:pw@tcp(db:3306)` becomes `***REDACTED***` (the span's `echo.errors` works the same way) |
 | `trace_id` / `span_id` | When tracing is on |
 
 `middleware.AddSensitiveFields(...)` / `AddSensitiveHeaders(...)` write to the same table as
@@ -473,6 +473,13 @@ be passed to a function expecting one: always pass `c.Request().Context()`.
 `/`, where a home page registered later silently replaces one or the other (with no error and no
 panic). So both fail while the config is read.
 
+The framework registers that path itself, so **a route of your own on it fails startup**, whatever
+method it was registered for. Echo would otherwise let the later registration replace the earlier
+one without a word: the metrics endpoint would simply be gone, and the path would keep being left
+out of the access log and the tracing, which both go by this field. The endpoint is registered
+after `WithRoutes` so that the collision is seen; echo applies `e.Use` per request, so your
+middleware covers it either way. xgin and xbeego report the same sentence.
+
 **The request body**: there is no limit, and a 64MB body measured fine. `c.FormValue`,
 `c.FormFile` and `c.Bind` parse multipart with a fixed 32MB spill threshold
 (`ParseMultipartForm(32 << 20)`, with no config field): a 60MB upload measured 128MB allocated
@@ -499,6 +506,7 @@ query parameter makes `c.JSON` indent its output (`{"a":"b"}` becomes 15 bytes).
 | `TrustedProxies entry "::ffff:10.0.0.1" is an IPv4-mapped IPv6 address; write it as 10.0.0.1` (XEcho) | An IPv4-mapped IPv6 address or range in `TrustedProxies` | Write it as the message says: `::ffff:10.0.0.1` → `10.0.0.1`, `::ffff:10.0.0.0/104` → `10.0.0.0/8` |
 | A 500 `{"message":"Internal Server Error"}` with `validator not registered` in the access log's `errors` | A handler called `c.Validate` without a validator installed | `xecho.New().WithValidator(...)`, see [Notes](#notes) |
 | `field Mode not found in type xecho.Config` (same for `MaxMultipartMemory`, `ZHTranslations`) | An XGin block was copied over | Remove those fields, the reasoning is under [Configuration](#configuration) |
+| `XEcho.MetricPath="/metrics" is already registered as a route by the application` | The application registers a route on the path the framework serves the metrics endpoint on | Move one of the two (`MetricPath`, or your own route), or turn the endpoint off with `Metric: false` |
 
 The `N handler(s) still running when the shutdown deadline passed` on shutdown is covered in
 [`docs/troubleshooting.md` "Runnable and shutdown"](../docs/troubleshooting.md#runnable-and-shutdown).

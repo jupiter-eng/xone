@@ -186,6 +186,19 @@ take logging alone -- a blank `import _ "github.com/jupiter-eng/xone/xlog"` give
 template. Anything that needs them is a filter: `web.InsertFilter(pattern, web.BeforeRouter, f)` as
 before.
 
+**The request body limits stay beego's**, and they are generous (`server/web/router.go`,
+v2.3.8): `web.BConfig.MaxMemory`, 64MB by default, is both the ceiling on a non-upload body and the
+threshold `ParseMultipartForm` spills to disk above, while `web.BConfig.MaxUploadSize`, 1GB by
+default, caps an upload. Both come from `conf/app.conf` (`maxmemory`, `maxuploadsize`) -- `XBeego`
+has no field for either, since reading the body is beego's job here and not the framework's.
+
+That threshold is worth a look before accepting uploads: the parsing step costs roughly three times
+it in heap (measured for the same `ParseMultipartForm` call under
+[`XGin.MaxMultipartMemory`](../xgin/README.md#configuration)), so at 64MB a handful of concurrent
+uploads is gigabytes. The three integrations do not agree on this number -- xgin defaults to 8MB
+and makes it a config field, xecho is stuck with echo's fixed 32MB, beego's is 64MB -- which is
+worth knowing when a service moves between them.
+
 **The route template travels on the request.** The template only exists inside beego, so xbeego
 registers one filter at `web.BeforeExec` that copies it onto the request for the layers outside to
 read. `BeforeExec` rather than `FinishRouter`: a panic in a controller unwinds straight to beego's
@@ -237,9 +250,11 @@ One `INFO` line per request, message `request completed`. Measured, with `servic
 
 `query`, `request_headers`, `response_headers`, `request_body` and `response_body` are added by
 their own switches. Masking is the same word list xgin and xecho use: a field whose name contains
-a sensitive word, the listed credential headers, and URLs lose their query string. The request body
-is buffered up to 256KB and the response body recorded up to 4KB; an upload and a compressed
-response are recorded as omitted.
+a sensitive word, the listed credential headers, and URLs lose their query string. In the panic
+text (and on the span's `beego.errors`) a credential is located by the name in front of it, so
+`password=hunter2` is masked while `token expired` is kept whole; the full rules are in
+[xgin "Access log"](../xgin/README.md#access-log). The request body is buffered up to 256KB and the
+response body recorded up to 4KB; an upload and a compressed response are recorded as omitted.
 
 ### Logs
 
@@ -312,3 +327,4 @@ scan, while Go's pruning keeps every one of them out of the binary.
 | `XBeego.Port` ignored, the service listens on beego's `httpport` | `web.Run` is still being called somewhere. `xone.MustRun(xbeego.New())` replaces it |
 | `cannot reach ...` lines still plain text on stderr | `BeegoLogs: false`, or the application calls `logs.SetLogger(...)` after `xone.Run` has assembled |
 | `xbeego: listen on 0.0.0.0:8080 failed: address already in use` | Another process has the port, or `web.Run` is still running beside this server |
+| `XBeego.MetricPath="/metrics" is already registered as a route by the application` | The application registers a beego route on the path the framework serves the metrics endpoint on. The endpoint is answered in front of beego's router, so that route would never be reached; it fails startup instead of being shadowed without a word. Move one of the two, or set `Metric: false`. A pattern that merely happens to match (`/:page`) is left alone |

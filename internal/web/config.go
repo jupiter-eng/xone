@@ -89,6 +89,24 @@ func (c ServerConfig) ValidateTimeouts() error {
 	return nil
 }
 
+// MetricPathTaken is the error an integration reports when the application's own routes already
+// hold MetricPath. key is the module's config key (XGin / XEcho / XBeego), so the message names the
+// field that has to change.
+//
+// The framework serves the metrics endpoint on that path itself, and the three frameworks each
+// resolve the collision differently -- none of them in a way worth inheriting: gin panics, from
+// inside the caller's own routing code and with nothing pointing at this field; echo lets the later
+// registration win without a word, so the metrics endpoint disappears while the path keeps being
+// left out of the access log and the tracing (both go by MetricPath); beego never sees the request
+// at all, because the endpoint is answered in front of its router. Two of those are silent, and
+// which one a service gets would depend on the framework it happens to run. So all three report
+// this instead, at startup, with the same sentence.
+func MetricPathTaken(key, path string) error {
+	return fmt.Errorf("%s.MetricPath=%q is already registered as a route by the application; "+
+		"the framework serves the metrics endpoint on that path and the two cannot share it: "+
+		"give one of them another path, or turn the endpoint off with %s.Metric: false", key, path, key)
+}
+
 // tlsEnabled reports whether TLS is configured
 func (c ServerConfig) tlsEnabled() bool { return c.CertFile != "" && c.KeyFile != "" }
 

@@ -47,6 +47,12 @@ mutate("only the status that went out is recorded", "xbeego/internal/reqstate/re
        swap('\tif r.started {\n\t\t// net/http logs a "superfluous WriteHeader" line for the second call and ignores it; beego\'s\n\t\t// own context.Response guards the same way. Recording the second code would have the access\n\t\t// log disagree with what the client received.\n\t\treturn\n\t}\n', ''))
 mutate("the bytes written are counted", "xbeego/internal/reqstate/reqstate.go", "./xbeego", "TestRecorder_CountsStatusAndBytes|TestLog_Fields",
        swap('\tr.bytes += n\n\treturn n, err\n', '\treturn n, err\n'))
+# xbeego does not set Access.Ctx -- the request it hands in is the one this layer was entered with,
+# which a handler cannot swap out from under it -- so the access log has to fall back to the
+# request's own ctx, where trace_id and the xlog.AddKV fields live. (xgin's own Request field is
+# shared with the handler, so it sets Ctx explicitly instead.)
+mutate("the access log falls back to the request's own ctx", "internal/web/accesslog.go", "./xbeego", "TestLogScope",
+       swap('\tctx := a.Ctx\n\tif ctx == nil {', '\tctx := a.Ctx\n\tif false {'))
 # Keeping the whole of a response in memory to write a log is not worth it, and a cap that does not
 # hold is exactly that
 mutate("the captured response body is capped", "xbeego/internal/reqstate/reqstate.go", "./xbeego", "TestLog_ResponseBodyIsCappedAndRedacted",
@@ -183,7 +189,11 @@ mutate("beego's filter chains are folded in", "xbeego/xbeego.go", "./xbeego", "T
 section("the metrics endpoint")
 # Answered before beego's router, so the endpoint exists whatever the application's routes are
 mutate("the metrics endpoint is served", "xbeego/xbeego.go", "./xbeego", "TestMetrics_EndpointIsServedWithoutARoute",
-       swap('\t\t\th = serveMetrics(c.MetricPath, h)\n', ''))
+       swap('\t\t\t\th = serveMetrics(c.MetricPath, h)\n', ''))
+# The endpoint is answered in front of beego's router, so an application route on the same path is
+# never reached and nothing says so.
+mutate("a route of the application's own on MetricPath fails startup", "xbeego/xbeego.go", "./xbeego", "TestMetrics_PathTakenByTheApplicationFailsStartup",
+       swap('if metricPathTaken(c.MetricPath) {', 'if false {'))
 # An endpoint a caller believes to be behind their shared authentication must not be the one
 # exception
 mutate("the metrics endpoint goes through the caller's middleware", "xbeego/xbeego.go", "./xbeego", "TestWithMiddleware_RunsOutsideBeegoAndCoversMetrics",

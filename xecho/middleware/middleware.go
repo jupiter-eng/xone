@@ -95,6 +95,12 @@ func withContext(c echo.Context, ctx context.Context) {
 // Recording the 405 and the fallback as templates would make the same request look like two
 // different things on a dashboard depending on whether the service runs xgin or xecho — and that
 // route does not exist for that method in the first place.
+//
+// The table is taken from the echo the first request arrived on and kept, so one of these serves
+// one *echo.Echo: xecho builds a middleware of its own per XEcho, and a caller mounting the same
+// value on a second echo would have its requests labelled by the first one's routes. Taking it per
+// request instead would walk every route on every request, which is what the table is there to
+// avoid.
 type routes struct {
 	once sync.Once
 	// fallback maps a template that has a fallback registered to the methods actually registered

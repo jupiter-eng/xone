@@ -2,6 +2,7 @@ package xbeego
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -248,9 +249,19 @@ func (x *XBeego) build() {
 		// Assembled inside out, so the slice below reads in the order a request travels.
 		h := http.Handler(beeweb.BeeApp.Handlers)
 		if c.Metric {
-			// Answered before beego's router sees it: the endpoint then exists whatever the
-			// application's routes are, and no beego controller has to be written for it.
-			h = serveMetrics(c.MetricPath, h)
+			// A route of the application's own on the same path is reported rather than shadowed:
+			// the endpoint is answered in front of beego's router, so beego would never see that
+			// request and nothing would say so. It becomes a config error naming the field, the
+			// same one xgin and xecho report (web.MetricPathTaken).
+			if metricPathTaken(c.MetricPath) {
+				x.confErr = errors.Join(x.confErr, web.MetricPathTaken(ConfigKey, c.MetricPath))
+				slog.Warn("xbeego the application already has a route on MetricPath, the metrics endpoint was not installed; Start will return the error",
+					"path", c.MetricPath)
+			} else {
+				// Answered before beego's router sees it: the endpoint then exists whatever the
+				// application's routes are, and no beego controller has to be written for it.
+				h = serveMetrics(c.MetricPath, h)
+			}
 		}
 		chain := []func(http.Handler) http.Handler{middleware.Capture(x.trusted)}
 		if c.Log {
@@ -317,6 +328,20 @@ func captureRoute(ctx *beectx.Context) {
 	if pattern, ok := ctx.Input.GetData("RouterPattern").(string); ok {
 		s.Route = pattern
 	}
+}
+
+// metricPathTaken reports whether the application's own routes already hold path.
+//
+// It is asked of beego's global web.BeeApp rather than of anything this instance owns: that is
+// where an application registers from its own init, and where this module's routes live too (see
+// this package's doc comment).
+//
+// What is compared is the route template, not whether a request for path would match one: a
+// pattern such as /:page does match MetricPath, and failing startup for it would be failing for a
+// route that was never meant to be this endpoint. Such a route stays shadowed, as it was before.
+func metricPathTaken(path string) bool {
+	return slices.ContainsFunc(beeweb.BeeApp.Handlers.GetAllControllerInfo(),
+		func(i *beeweb.ControllerInfo) bool { return i.GetPattern() == path })
 }
 
 // serveMetrics answers MetricPath and hands everything else to next.

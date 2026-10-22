@@ -10,6 +10,49 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
 
 ## [Unreleased]
 
+### Changed
+
+- **A route of the application's own on `MetricPath` now fails startup** in xgin, xecho and xbeego,
+  with one sentence naming the field:
+  `XGin.MetricPath="/metrics" is already registered as a route by the application` (incompatible — a
+  service that had such a route and relied on whatever its framework did with it will not start
+  until one of the two moves). The three frameworks each resolved that collision differently, two of
+  them silently: gin panicked on the duplicate, out of the caller's own routing code and with
+  nothing in the message pointing at the field; echo let the later registration win, so the metrics
+  endpoint disappeared while the path kept being left out of the access log and the tracing (both go
+  by `MetricPath`); beego never saw the request at all, the endpoint being answered in front of its
+  router. To keep a route of your own there, give the endpoint another path or turn it off with
+  `Metric: false`.
+  - In xgin and xecho the endpoint is now registered **after** the `WithRoutes` callbacks, which is
+    what makes the collision visible rather than something to run into. The caller's middleware
+    still covers it, which was why it is registered after `WithMiddleware` in the first place.
+  - In xbeego the route template is compared, not the request: a pattern that merely happens to
+    match `MetricPath` (`/:page`) is left alone, since it was never meant to be this endpoint.
+- **An error, a panic or a JSON string value is no longer masked whole because it holds a sensitive
+  word.** What is masked is now the value under a sensitive **name**: `password=hunter2` and
+  `Authorization: Bearer ...` lose everything from the separator to the end of that line, while the
+  sentence in front of it is kept. This affects the access log's `errors` field, the span's
+  `gin.errors` / `echo.errors` / `beego.errors`, the `error` field of the panic log line, and the
+  string values inside a logged JSON body.
+  - What it buys: `token expired`, `session not found`, `invalid signature`, `failed to parse cookie
+    header` and `Key: 'Req.Password' Error:Field validation ...` reached the logs as `***REDACTED***`
+    before, taking the messages wanted most during an authentication incident with them.
+  - What it costs: a credential written into a sentence with no name in front of it (`bad token
+    abc123`) now reaches the log. A name is what makes a value locatable, and there is none there.
+  - **Request and response bodies are unchanged**: an unstructured body still goes whole on a
+    sensitive word, and a JSON or form key containing one still masks its value at any depth. The
+    rules are in [xgin "Access log"](../xgin/README.md#access-log).
+
+### Fixed
+
+- **xgin's access log is written with the ctx its logging layer was entered with**, as xecho's and
+  xbeego's already were. gin's `c.Request` is one field every layer shares, so a handler putting
+  another ctx on it decided what the access log saw: the fields of a scope derived with
+  `xlog.CtxWithKV` reached the line, although `CtxWithKV` documents that they stay inside their own
+  stretch of calls and never reach the access log at the entry point; and a ctx not derived from the
+  request's took `trace_id` and every `xlog.AddKV` field off that line altogether. Fields written
+  into the request's own scope are unaffected.
+
 ## [v1.2.0] - 2026-10-22
 
 ### Changed

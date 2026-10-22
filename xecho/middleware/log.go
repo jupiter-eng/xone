@@ -97,6 +97,9 @@ func (w *captureWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 //
 // An error returned by the handler is rendered into a response in this layer (see finish), so the
 // status code and byte count recorded are the ones actually sent.
+//
+// One value serves one *echo.Echo: the route table behind the route label is taken from the first
+// request's c.Echo() and kept (see routes). Call Log again for a second echo.
 func Log(opts ...LogOption) echo.MiddlewareFunc {
 	o := &logOptions{}
 	for _, opt := range opts {

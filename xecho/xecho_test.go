@@ -349,6 +349,50 @@ func TestBuild_NoMetricsEndpointWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestBuild_MetricPathTakenByTheApplicationFailsStartup(t *testing.T) {
+	// Echo replaces a route registered earlier without an error or a panic, so the framework's
+	// endpoint simply disappeared: the scraper got the application's answer, and that endpoint was
+	// left out of the access log and the tracing besides, both of which go by MetricPath. It is a
+	// startup error now, the sentence xgin and xbeego report too.
+	buf := captureLog(t)
+	x := New().WithConfig(configWith(func(c *Config) { c.Log = false })).
+		WithRoutes(func(e *echo.Echo) {
+			e.GET("/metrics", func(c echo.Context) error { return c.String(200, "mine") })
+		})
+
+	if w := doRequest(t, x.Engine(), "GET", "/metrics"); w.Body.String() != "mine" {
+		t.Errorf("the caller's own route should be the one left standing, got=%q", w.Body.String())
+	}
+	err := startErr(t, x)
+	if !xerror.Is(err, "xecho") || !strings.Contains(err.Error(), "MetricPath") {
+		t.Fatalf("Start should report the collision and name MetricPath, got=%v", err)
+	}
+	// A caller who only ever uses Engine() never sees that error, so the warning has to stand on
+	// its own.
+	if !strings.Contains(buf.String(), "MetricPath") {
+		t.Errorf("assembly should warn about the collision, got=%s", buf.String())
+	}
+}
+
+func TestBuild_MetricPathUnderAGroupIsNotACollision(t *testing.T) {
+	// e.Group(prefix, mw...) registers a RouteNotFound at the bare prefix so that group middleware
+	// reaches 404s under it. That is echo's own bookkeeping, not a route of the caller's: a real
+	// GET on the same template still wins over it, so the endpoint has to keep working.
+	_ = captureLog(t)
+	x := New().WithConfig(configWith(func(c *Config) { c.Log = false })).
+		WithRoutes(func(e *echo.Echo) {
+			g := e.Group("/metrics", func(next echo.HandlerFunc) echo.HandlerFunc { return next })
+			g.GET("/detail", func(c echo.Context) error { return c.String(200, "detail") })
+		})
+
+	if w := doRequest(t, x.Engine(), "GET", "/metrics"); w.Code != 200 || !strings.Contains(w.Body.String(), "http_requests_total") {
+		t.Errorf("the metrics endpoint should still answer, got=%d %q", w.Code, w.Body.String())
+	}
+	if x.confErr != nil {
+		t.Errorf("a group named after MetricPath is not a collision, got=%v", x.confErr)
+	}
+}
+
 func TestEcho_MetricPathWithoutSlashIsRewritten(t *testing.T) {
 	// Pins the premise of the MetricPath validation (echo v4.16.0): a path without a leading / is
 	// silently rewritten, and an empty one registers on the root path and is silently replaced by a

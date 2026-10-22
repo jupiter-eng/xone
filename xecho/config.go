@@ -195,6 +195,13 @@ type Config struct {
 	// leaving it empty registers on the root path /, and when the business later registers a home
 	// page one of the two silently replaces the other — either the home page is gone or the
 	// metrics are. Both spellings are therefore rejected at startup.
+	//
+	// The framework serves this path itself, so the application must not register a route on it,
+	// whatever method: that collision fails startup with an error naming this field. Without the
+	// check echo would let the later registration replace the earlier one with no error and no
+	// panic — the metrics endpoint would be gone while the path kept being left out of the access
+	// log and the tracing, which both go by this field. To keep a route of your own there, move
+	// the endpoint with this field or turn it off with Metric: false.
 	MetricPath string `yaml:"MetricPath"`
 }
 

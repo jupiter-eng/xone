@@ -213,9 +213,10 @@ type Config struct {
 	// Metric enables the metrics middleware. On by default.
 	//
 	// When on, MetricPath (/metrics by default) is served by the framework and needs no route of
-	// your own. It is answered before the request reaches beego, so beego's router never sees it
-	// and an application that already registers a /metrics route of its own has to drop it or
-	// move this one -- the framework's answer wins.
+	// your own. It is answered before the request reaches beego, so beego's router never sees it:
+	// an application that registers a route on that path has to drop it or move this one, and
+	// until it does, startup fails with an error naming MetricPath rather than the route being
+	// shadowed without a word.
 	Metric bool `yaml:"Metric"`
 
 	// MetricPath is the path of the metrics endpoint. Defaults to /metrics, and must start with /
@@ -224,6 +225,11 @@ type Config struct {
 	// It is matched on URL.Path exactly, as the access log's SkipPaths does, so a spelling without
 	// the leading / would match nothing and leave the endpoint unreachable without a word. That is
 	// why it is rejected at startup instead.
+	//
+	// The framework answers this path in front of beego's router, so a beego route registered on
+	// exactly this template fails startup with an error naming this field rather than never being
+	// reached, see Metric. A pattern that merely happens to match it (/:page) is left alone: it
+	// was never meant to be this endpoint.
 	MetricPath string `yaml:"MetricPath"`
 
 	// RecoverPanic takes beego's panic recovery over (web.BConfig.RecoverPanic). On by default.

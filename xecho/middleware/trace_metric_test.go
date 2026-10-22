@@ -130,8 +130,8 @@ func TestTrace_OnlyServerErrorsMarkedAsError(t *testing.T) {
 
 func TestTrace_ReturnedErrorRecordedOnSpanAndResponseKeepsTraceID(t *testing.T) {
 	// An error returned by the handler goes into the span's echo.errors (this one carries
-	// password=, so the whole thing is masked); the error response echo renders still carries
-	// X-Trace-Id.
+	// password=, so that value is masked and the sentence around it stays); the error response
+	// echo renders still carries X-Trace-Id.
 	spans := recording(t)
 	w := httptest.NewRecorder()
 	errorEcho(Trace()).ServeHTTP(w, httptest.NewRequest("GET", "/plain", nil))
@@ -140,7 +140,7 @@ func TestTrace_ReturnedErrorRecordedOnSpanAndResponseKeepsTraceID(t *testing.T) 
 		t.Fatalf("exactly one span should be produced, got=%d", len(got))
 	}
 	a := attrsOf(got[0])
-	if a["echo.errors"] != Redacted || a["http.response.status_code"] != "500" || got[0].Status.Code != codes.Error {
+	if a["echo.errors"] != "db down: password="+Redacted || a["http.response.status_code"] != "500" || got[0].Status.Code != codes.Error {
 		t.Errorf("the span should record the error and a 500 and be marked as an error, got=%v %v", a, got[0].Status)
 	}
 	if w.Code != 500 || w.Header().Get(TraceIDHeader) == "" {
@@ -424,8 +424,8 @@ func TestTrace_ErrorTextIsRedactedOnSpan(t *testing.T) {
 	serve(t, get("/hello"), []echo.MiddlewareFunc{Trace()}, func(c echo.Context) error {
 		return errors.New("login failed password=hunter2")
 	})
-	if got := attrsOf(spans()[0])["echo.errors"]; got != Redacted {
-		t.Errorf("echo.errors on the span should be masked, got=%q", got)
+	if got, want := attrsOf(spans()[0])["echo.errors"], "login failed password="+Redacted; got != want {
+		t.Errorf("echo.errors on the span should have the value masked and the sentence kept, got=%q want=%q", got, want)
 	}
 }
 

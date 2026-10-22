@@ -31,6 +31,9 @@ const (
 // and xecho decides that from the directly connected peer against XEcho.TrustedProxies. Used on
 // its own, without xecho's assembly, nobody makes that decision and every peer counts as
 // untrusted. Trace identifiers (traceparent and friends) are unaffected.
+//
+// One value serves one *echo.Echo: the route table behind the span name is taken from the first
+// request's c.Echo() and kept (see routes). Call Trace again for a second echo.
 func Trace() echo.MiddlewareFunc {
 	var rs routes
 	return func(next echo.HandlerFunc) echo.HandlerFunc {

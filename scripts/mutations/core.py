@@ -846,8 +846,29 @@ mutate("a MySQL DSN password inside an error text is masked", "internal/web/reda
 # An unescaped @ inside a password: cutting at the first @ leaves the half behind it in the log
 mutate("a password inside a URL goes by the last @", "internal/web/redact.go", ".", "TestRedactText_MasksPasswordInURLUserinfo",
        swap('`(://[^:/?#@\\s]*):[^/\\s]+@`', '`(://[^:/?#@\\s]*):[^@/\\s]+@`'))
-mutate("an error text holding a sensitive word is still masked whole", "internal/web/redact.go", ".", "TestRedactText_SensitiveWordRedactsWholeText",
-       swap('\tif sensitive(s, words()) {\n\t\treturn Redacted\n\t}\n\treturn textNewlines', '\treturn textNewlines'))
+# A sensitive name followed by = or : is a credential that can be located, so the value goes
+mutate("the value under a sensitive name in an error text is masked", "internal/web/redact.go", ".", "TestRedactText_MasksTheValueUnderASensitiveName",
+       swap('\tif ws := words(); sensitive(s, ws) {\n\t\ts = redactAssignments(s, ws)\n\t}\n', ''))
+# The other half: masking the whole text on a sensitive word alone takes "token expired",
+# "session not found" and "invalid signature" out of the logs, which are the messages wanted most
+# while tracking an authentication failure down and carry no credential at all
+mutate("a message that only names a credential is kept", "internal/web/redact.go", ".", "TestRedactText_KeepsAMessageThatOnlyNamesACredential",
+       swap('\tif ws := words(); sensitive(s, ws) {\n\t\ts = redactAssignments(s, ws)\n\t}\n', '\tif sensitive(s, words()) {\n\t\treturn Redacted\n\t}\n'))
+# Stopping at the first name that is not sensitive leaves every pair behind it in the clear:
+# "retry: user=app password=..." begins with a name nobody masks
+mutate("the scan carries on past a name that is not sensitive", "internal/web/redact.go", ".", "TestRedactText_MasksEveryPairOnTheLine",
+       swap('\t\tif m[0] < last || !sensitive(s[m[2]:m[3]], ws) {\n\t\t\tcontinue\n\t\t}\n',
+            '\t\tif m[0] < last {\n\t\t\tcontinue\n\t\t}\n\t\tif !sensitive(s[m[2]:m[3]], ws) {\n\t\t\tbreak\n\t\t}\n'))
+# A value running past the line break swallows every error after this one, since gin's
+# c.Errors.String() puts one error per line
+mutate("a masked value stops at the end of its line", "internal/web/redact.go", ".", "TestRedactText_MasksOnlyToTheEndOfTheLine",
+       swap('\t\tend := strings.IndexAny(s[m[1]:], "\\r\\n")\n\t\tif end < 0 {\n\t\t\tend = len(s)\n\t\t} else {\n\t\t\tend += m[1]\n\t\t}\n',
+            '\t\tend := len(s)\n'))
+# A body is data somebody sent, whose shape nobody here knows: the relaxation above is for the
+# sentences this codebase writes, and must not reach a body
+mutate("a body holding a sensitive word is still masked whole", "internal/web/redact.go", ".", "TestRedactOpaque_StillMasksAWholeBody",
+       swap('func redactOpaque(body []byte) string {\n\ts := string(body)\n\tif sensitive(s, words()) {\n\t\treturn Redacted\n\t}\n',
+            'func redactOpaque(body []byte) string {\n\ts := string(body)\n\tif ws := words(); sensitive(s, ws) {\n\t\ts = redactAssignments(s, ws)\n\t}\n'))
 # gin's c.Errors.String() puts one error per line: removing the newlines as a body does would glue
 # two errors into one sentence
 mutate("the lines of an error text are separated by semicolons", "internal/web/redact.go", ".", "TestRedactText_KeepsLinesSeparated",
@@ -874,10 +895,13 @@ mutate("a URL header has its userinfo removed", "internal/web/redact.go", ".", "
 # value
 mutate("a request header value has the DSN password masked", "internal/web/redact.go", ".", "TestRedactHeaders_DSNInValue|TestRedactHeaders_ValuesNaming",
        swap('attrs = append(attrs, slog.String(k, redactCredentials(v)))', 'attrs = append(attrs, slog.String(k, v))'))
-# A Cookie or Authorization inside a value is a header name, not a credential: applying
-# RedactText's sensitive-word rule would mask the Vary and CORS headers whole
+# A Cookie or Authorization inside a value is a header name, not a credential: a word-list rule over
+# the value would mask the Vary and CORS headers whole. The mutation writes that rule out rather
+# than reaching for RedactText, which locates a value by the name in front of it and would leave
+# these three untouched anyway -- it is the whole-value rule that has to stay away from here
 mutate("a request header value is not masked whole by a sensitive word", "internal/web/redact.go", ".", "TestRedactHeaders_ValuesNaming",
-       swap('attrs = append(attrs, slog.String(k, redactCredentials(v)))', 'attrs = append(attrs, slog.String(k, RedactText(v)))'))
+       swap('attrs = append(attrs, slog.String(k, redactCredentials(v)))',
+            'if sensitive(v, ws) {\n\t\t\tattrs = append(attrs, slog.String(k, Redacted))\n\t\t\tcontinue\n\t\t}\n\t\tattrs = append(attrs, slog.String(k, redactCredentials(v)))'))
 # gin's ShouldBindJSON ignores Content-Type: JSON sent as text/plain takes the plain-text branch
 # and an escaped key name is not recognized
 mutate("a JSON body without a JSON content type is masked as JSON", "internal/web/redact.go", ".", "TestRedactBody_JSONWithoutJSONContentType",

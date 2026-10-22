@@ -183,6 +183,12 @@ type Config struct {
 	// leaving it empty registers on the root path /, and when the business later registers a home
 	// page gin panics inside the business's own routing code, where nothing points at this field.
 	// Both spellings are therefore rejected at startup.
+	//
+	// The framework serves this path itself, so the application must not register a route on it,
+	// whatever method: that collision fails startup with an error naming this field. Without the
+	// check gin would panic on the duplicate, again from inside the business's own routing code.
+	// To keep a route of your own there, move the endpoint with this field or turn it off with
+	// Metric: false.
 	MetricPath string `yaml:"MetricPath"`
 
 	// ZHTranslations translates validator's errors into Chinese. Off by default.

@@ -342,6 +342,44 @@ func TestBuild_NoMetricsEndpointWhenDisabled(t *testing.T) {
 	}
 }
 
+func TestBuild_MetricPathTakenByTheApplicationFailsStartup(t *testing.T) {
+	// Registered before the caller's routes, the framework's endpoint made gin panic on the
+	// duplicate path -- out of the caller's own routing code, with nothing in the message pointing
+	// at MetricPath. It is a startup error now, the sentence xecho and xbeego report too.
+	buf := captureLog(t)
+	g := New().WithConfig(configWith(func(c *Config) { c.Log = false })).
+		WithRoutes(func(e *gin.Engine) {
+			e.GET("/metrics", func(c *gin.Context) { c.String(200, "mine") })
+		})
+
+	if w := doRequest(t, g.Engine(), "GET", "/metrics"); w.Body.String() != "mine" {
+		t.Errorf("the caller's own route should be the one left standing, got=%q", w.Body.String())
+	}
+	err := startErr(t, g)
+	if !xerror.Is(err, "xgin") || !strings.Contains(err.Error(), "MetricPath") {
+		t.Fatalf("Start should report the collision and name MetricPath, got=%v", err)
+	}
+	// A caller who only ever uses Engine() never sees that error, so the warning has to stand on
+	// its own.
+	if !strings.Contains(buf.String(), "MetricPath") {
+		t.Errorf("assembly should warn about the collision, got=%s", buf.String())
+	}
+}
+
+func TestBuild_MetricPathTakenCountsAnyMethod(t *testing.T) {
+	// The access log and the tracing leave MetricPath out by path alone, so a caller's POST on it
+	// is just as invisible as a GET -- and the scraper's GET would answer 405 besides.
+	_ = captureLog(t)
+	g := New().WithConfig(configWith(func(c *Config) { c.Log = false })).
+		WithRoutes(func(e *gin.Engine) {
+			e.POST("/metrics", func(c *gin.Context) { c.Status(204) })
+		})
+	g.Engine()
+	if g.confErr == nil || !strings.Contains(g.confErr.Error(), "MetricPath") {
+		t.Fatalf("a route on MetricPath under another method is a collision too, got=%v", g.confErr)
+	}
+}
+
 func TestBuild_405InsteadOf404(t *testing.T) {
 	// Without HandleMethodNotAllowed, a wrong method yields a 404 and the caller believes the path
 	// was misspelled.
@@ -1184,6 +1222,31 @@ func TestBuild_MetricsEndpointRunsUserMiddleware(t *testing.T) {
 		e.ServeHTTP(w, httptest.NewRequest("GET", path, nil))
 		if w.Code != http.StatusUnauthorized {
 			t.Errorf("%s should be stopped by the auth middleware, got=%d", path, w.Code)
+		}
+	}
+}
+
+func TestBuild_NotFoundRunsUserMiddleware(t *testing.T) {
+	// The framework's 404 and 405 handlers are registered like any other route, and gin fixes a
+	// route's chain when it goes on: mounted after e.Use(g.extra...), they are covered by the
+	// shared auth a caller mounted with WithMiddleware. The other way round, an unmatched path
+	// would walk past the auth every real route sits behind.
+	auth := func(c *gin.Context) { c.AbortWithStatus(http.StatusUnauthorized) }
+
+	e := New().WithConfig(configWith(func(c *Config) { c.Log, c.Metric = false, false })).
+		WithMiddleware(auth).
+		WithRoutes(func(e *gin.Engine) {
+			e.GET("/biz", func(c *gin.Context) { c.Status(200) })
+		}).Engine()
+
+	for _, r := range []struct{ method, path string }{
+		{"GET", "/nope"}, // NoRoute
+		{"POST", "/biz"}, // NoMethod
+	} {
+		w := httptest.NewRecorder()
+		e.ServeHTTP(w, httptest.NewRequest(r.method, r.path, nil))
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s should be stopped by the auth middleware, got=%d", r.method, r.path, w.Code)
 		}
 	}
 }

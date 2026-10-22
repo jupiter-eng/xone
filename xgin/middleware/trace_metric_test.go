@@ -359,8 +359,8 @@ func TestTrace_ErrorTextIsRedactedOnSpan(t *testing.T) {
 			got = a.Value.AsString()
 		}
 	}
-	if got != Redacted {
-		t.Errorf("gin.errors on the span should be masked, got=%q", got)
+	if want := "Error #01: login failed password=" + Redacted; got != want {
+		t.Errorf("gin.errors on the span should have the value masked and the sentence kept, got=%q want=%q", got, want)
 	}
 }
 

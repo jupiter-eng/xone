@@ -24,9 +24,12 @@ mutate("XGin.Stop forwards to web.Server", "xgin/xgin.go", "./xgin", "TestStop",
 # the handlers that are finishing up.
 mutate("Shutdown leaves part of the budget for waiting on handlers", "internal/web/server.go", "./xgin", "TestStop_WaitsForHandlersAfterForceClose",
        swap('shutCtx, cancel := shutdownCtx(ctx)', 'shutCtx, cancel := context.WithCancel(ctx)'))
-mutate("built-in routes go through the user middleware too", "xgin/xgin.go", "./xgin", "TestBuild",
-       swap('\t\te.Use(middleware.Recover(g.recover))\n\t\te.Use(g.extra...)\n', '\t\te.Use(middleware.Recover(g.recover))\n'),
-       swap('\t\tfor _, f := range g.routes {', '\t\te.Use(g.extra...)\n\t\tfor _, f := range g.routes {'))
+# Gin fixes a route's handler chain when the route goes on, so an endpoint registered before
+# e.Use(g.extra...) walks past the shared auth every business route sits behind. (The 404 / 405
+# handlers need no mutation of their own: engine.Use rebuilds them, which the test pins.)
+mutate("the metrics endpoint goes through the user middleware too", "xgin/xgin.go", "./xgin", "TestBuild_MetricsEndpointRunsUserMiddleware",
+       swap('\t\t\t} else {\n\t\t\t\te.GET(c.MetricPath, serveMetrics)\n\t\t\t}\n', '\t\t\t}\n'),
+       swap('\t\te.Use(g.extra...)\n', '\t\tif c.Metric {\n\t\t\te.GET(c.MetricPath, serveMetrics)\n\t\t}\n\t\te.Use(g.extra...)\n'))
 mutate("a public peer's X-Forwarded-For is not believed", "xgin/xgin.go", "./xgin", "TestBuild|TestLog",
        cut('\tif err := e.SetTrustedProxies(web.ExpandProxies(c.TrustedProxies)); err != nil {',
     '_ = e.SetTrustedProxies([]string{})\n\t}\n'))
@@ -116,9 +119,15 @@ mutate("the tracing switch reads the config", "xgin/xgin.go", "./xgin", "TestTra
 mutate("no metrics middleware is mounted with metrics off", "xgin/xgin.go", "./xgin", "TestMetric_",
        swap('\t\tif c.Metric {\n\t\t\te.Use(middleware.Metric())', '\t\tif true {\n\t\t\te.Use(middleware.Metric())'))
 mutate("no endpoint is registered with metrics off", "xgin/xgin.go", "./xgin", "TestBuild_NoMetricsEndpointWhenDisabled",
-       swap('\t\tif c.Metric {\n\t\t\te.GET(c.MetricPath, serveMetrics)', '\t\tif true {\n\t\t\te.GET(c.MetricPath, serveMetrics)'))
+       swap('\t\tif c.Metric {\n\t\t\tif metricPathTaken(', '\t\tif true {\n\t\t\tif metricPathTaken('))
 mutate("the metrics endpoint uses the configured path", "xgin/xgin.go", "./xgin", "TestBuild_MetricsPathConfigurable",
        swap('e.GET(c.MetricPath, serveMetrics)', 'e.GET("/metrics", serveMetrics)'))
+# Registered on a path the application already uses, gin panics on the duplicate -- out of the
+# caller's own routing code, with nothing pointing at MetricPath.
+mutate("a route of the application's own on MetricPath fails startup", "xgin/xgin.go", "./xgin", "TestBuild_MetricPathTaken",
+       swap('if metricPathTaken(e, c.MetricPath) {', 'if false {'))
+mutate("MetricPath is taken whatever method the route was registered for", "xgin/xgin.go", "./xgin", "TestBuild_MetricPathTakenCountsAnyMethod",
+       swap('func(r gin.RouteInfo) bool { return r.Path == path }', 'func(r gin.RouteInfo) bool { return r.Path == path && r.Method == http.MethodGet }'))
 mutate("the skipped log paths read the config", "xgin/xgin.go", "./xgin", "TestLogSkipPaths",
        swap('skip := slices.Clone(c.LogSkipPaths)', 'skip := slices.Clone([]string{})'))
 # Crossed, the response body (which may carry a token) reaches the log of someone who enabled the
@@ -186,10 +195,12 @@ mutate("the span of a client that left is not marked as an error", "xgin/middlew
 # used to reach response_body as garbage.
 mutate("a compressed response body records no content", "internal/web/accesslog.go", "./xgin", "TestLog_EncodedResponseBodyOmitted",
        swap('\t\t\tbody := encodedOmitted(a.RespHeader)\n', '\t\t\tbody := ""\n'))
-# xgin does not set Access.Ctx: the access log has to fall back to the request's own ctx, where
-# trace_id and the xlog.AddKV fields live.
-mutate("the access log falls back to the request's own ctx", "internal/web/accesslog.go", "./xgin", "TestLogScope",
-       swap('\tctx := a.Ctx\n\tif ctx == nil {', '\tctx := a.Ctx\n\tif false {'))
+# The access log is written with the ctx this layer was entered with, not with whatever the handler
+# left on c.Request: gin's c.Request is one field every layer shares, so a handler swapping in a ctx
+# of its own used to carry a derived xlog.CtxWithKV scope into the access log -- and take trace_id
+# and the whole scope away when what it swapped in was not derived from the request's ctx at all.
+mutate("the access log is written with the ctx from the way in", "xgin/middleware/log.go", "./xgin", "TestLogScope_CtxSwappedByTheHandler",
+       swap('\t\t\t\tCtx:      ctx,\n', ''))
 mutate("the tracing method is folded", "xgin/middleware/trace.go", "./xgin", "TestTrace",
        swap('method := web.NormalizeMethod(c.Request.Method)', 'method := c.Request.Method'),
        swap('\t\troute := routeOf(c)\n', '\t\troute := routeOf(c)\n\t\t_ = web.NormalizeMethod\n'))
