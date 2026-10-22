@@ -66,13 +66,19 @@ XApp:
 
 ## Notes
 
-- **Nothing is guessed when neither is given**: an invented name would be worse than none -- the dashboards would fill
-  up with identically named unknowns. Each reader decides for itself what to do without one, and says so in its own
-  documentation: the log fields are left out ([xlog](../xlog/README.md#the-fields-every-log-line-carries)), tracing
-  keeps OTel's `unknown_service:<executable name>` ([xtrace](../xtrace/README.md#behavior-measured)), the API docs keep
-  what the annotations say ([xginswagger](../xginswagger/README.md)), and Kafka's `client.id` falls back to the
-  executable's name ([xkafka](../xkafka/README.md)).
+- **Nothing is guessed when neither is given**, and nothing is written either: no `service_name` log field, no
+  constant label on the metrics and no `service.name` on the spans -- not even OTel's own
+  `unknown_service:<executable name>`, which the SDK would otherwise invent. An invented name would be worse than
+  none: the dashboards would fill up with identically named unknowns, which hides who is who instead of showing it.
+  The full table is in
+  [observability.md "One application, three signals"](../docs/observability.md#one-application-three-signals).
+- **Two readers cannot write nothing**, and say so in their own documentation: the API docs keep what the annotations
+  say ([xginswagger](../xginswagger/README.md)), and Kafka's `client.id` is sent on every request, so franz-go's own
+  `kgo` goes out when nobody configured a name -- xkafka invents none either and writes one WARN at startup
+  ([xkafka](../xkafka/README.md)).
 - **`Profiles` and `Import` are read by the configuration loader itself** and taken out of `XApp` once read, so what xapp sees is only `Name` and `Version`.
-- **Metrics do not read this block**: to tell applications apart in metrics, use `XMetric.ConstLabels` (such as `app: shop.order.api`).
+- **The metrics read it too**: `Name` and `Version` become the constant labels `service_name` and `service_version`
+  on every metric, and an `XMetric.ConstLabels` entry of the same name overrides them. They are not called
+  `name` / `version` because both are reserved ([xmetric](../xmetric/README.md#notes)).
 - **Environment variables win over this block**: `OTEL_RESOURCE_ATTRIBUTES` / `OTEL_SERVICE_NAME` override `Name` / `Version`. The precedence is in
   [xtrace "Behavior (measured)"](../xtrace/README.md#behavior-measured).

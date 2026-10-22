@@ -16,18 +16,14 @@ mutate("Linger is handed to franz-go explicitly (0 means no wait)", "xkafka/xkaf
        swap('\t\tkgo.ProducerLinger(cfg.Producer.Linger),\n', ''))
 mutate("DialTimeout is handed to franz-go", "xkafka/xkafka.go", "./xkafka", "TestNew_AppliesProducerSettings",
        swap('\t\tkgo.DialTimeout(cfg.DialTimeout),\n', ''))
-mutate("an unset ClientID uses XApp.Name", "xkafka/xkafka.go", "./xkafka", "TestBuild_ClientIDDefaultsToAppName",
-       swap('if name := xapp.Name(); name != "" {', 'if name := xapp.Version(); name != "" {'))
-# XApp is optional, so the brokers must get a name even when nobody configured one -- without this the
-# whole cluster is franz-go's shared kgo again
-# The import goes with it, or the mutant fails to compile and the round says nothing about behavior
-mutate("an unset ClientID with no XApp falls back to the executable", "xkafka/xkafka.go", "./xkafka", "TestBuild_ClientIDFallsBackToTheExecutableWithoutXApp",
-       swap('\treturn xutil.ExecutableName()\n', '\treturn ""\n'),
-       swap('\t"github.com/jupiter-eng/xone/xutil"\n', ''))
 # Aimed at the call site: the consumers are built from the ClientConfig build keeps, so an id settled
 # anywhere else would not reach them
-mutate("the framework fills in an unset ClientID", "xkafka/xkafka.go", "./xkafka", "TestBuild_ClientIDDefaultsToAppName|TestBuild_ClientIDFallsBackToTheExecutableWithoutXApp",
-       swap('\t\tc.ClientID = defaultClientID()\n', ''))
+mutate("an unset ClientID uses XApp.Name", "xkafka/xkafka.go", "./xkafka", "TestBuild_ClientIDDefaultsToAppName",
+       swap('c.ClientID = xapp.Name()', 'c.ClientID = xapp.Version()'))
+# Nothing is invented for a name nobody configured, so saying the consequence out loud once is the
+# whole promise: without it the brokers quietly see franz-go's kgo and nobody is told
+mutate("a client id nobody configured is one WARN at startup", "xkafka/xkafka.go", "./xkafka", "TestBuild_NoClientIDAnywhereWarnsAndInventsNothing",
+       swap('slog.WarnContext(ctx, "xkafka no client id configured', 'slog.DebugContext(ctx, "xkafka no client id configured'))
 mutate("the SASL password does not reach the validation error", "xkafka/config.go", "./xkafka", "TestConfig_Validate",
        swap('if s.Username == "" || s.Password == "" {', 'if s.Username == "" {'))
 

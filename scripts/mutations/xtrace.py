@@ -33,8 +33,12 @@ mutate("a resource attribute collection error keeps whatever was collected", "xt
 # fallback name and OTEL_SERVICE_NAME
 mutate("no empty service.name is written when the application name is unset", "xtrace/xtrace.go", "./xtrace", "TestNew_",
        swap('if name := xapp.Name(); name != "" {', 'if name := xapp.Name(); true {'))
-mutate("an unset application name falls back to OTel's fallback name", "xtrace/xtrace.go", "./xtrace", "TestNew_",
-       swap('\t\tresource.WithService(),\n', ''))
+# The mutant is the old behavior itself: resource.WithService brings back the SDK's invented
+# unknown_service:<executable name>, which is exactly the regression to catch
+mutate("an unset application name writes no service.name at all", "xtrace/xtrace.go", "./xtrace", "TestNew_Resource_NoServiceNameWithoutAppName",
+       swap('resource.WithAttributes(semconv.ServiceInstanceID(instanceID())),', 'resource.WithService(),'))
+mutate("every process is given a service.instance.id", "xtrace/xtrace.go", "./xtrace", "TestNew_Resource_NoServiceNameWithoutAppName",
+       swap('\t\tresource.WithAttributes(semconv.ServiceInstanceID(instanceID())),\n', ''))
 # In resource.New a later option overrides an earlier one: with the configuration after the
 # environment variables, whoever deploys cannot change the service name
 mutate("the OTel environment variables override the XApp configuration", "xtrace/xtrace.go", "./xtrace", "TestNew_",

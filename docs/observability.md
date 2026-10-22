@@ -8,18 +8,54 @@ README (the index is in [`config.md`](config.md#config-blocks--module-documentat
 
 | What you want | Where it is |
 |---|---|
+| Which application a log line, a metric or a span came from | [One application, three signals](#one-application-three-signals) |
 | Business logs carrying `trace_id` and per-request fields | [Logs](#logs): use `slog.InfoContext(ctx, …)` and `xlog.AddKV(ctx, k, v)` |
 | The access log fields and the masking rules | [xgin "Access log"](../xgin/README.md#access-log) (xecho's and xbeego's fields and rules are identical, see [xecho](../xecho/README.md#access-log) and [xbeego](../xbeego/README.md#access-log)) |
 | Building a dashboard: which metrics the framework ships | [Metrics](#metrics) |
 | How tracing propagates and whose headers are accepted | [Propagation and the trust boundary](#propagation-and-the-trust-boundary) |
 | Exporting spans | [xtrace "Quick start"](../xtrace/README.md#quick-start): `xtrace.AddSpanProcessor(...)` |
 
+- [One application, three signals](#one-application-three-signals)
 - [Logs](#logs)
   - [The framework's own logs](#the-frameworks-own-logs)
 - [Metrics](#metrics)
 - [Tracing](#tracing)
   - [Span names and attributes](#span-names-and-attributes)
   - [Propagation and the trust boundary](#propagation-and-the-trust-boundary)
+
+## One application, three signals
+
+The application's identity is configured once, in [`XApp`](../xapp/README.md), and reaches the logs,
+the metrics and the spans under one rule: **OTel's semantic conventions, with the dots written as
+underscores wherever a dot cannot go** (a Prometheus label name cannot hold one, and in several log
+backends a dot means a nested path).
+
+| | Logs | Metrics | Spans |
+|---|---|---|---|
+| `XApp.Name` | `service_name` | `service_name` (constant label) | `service.name` |
+| `XApp.Version` | `service_version` | `service_version` (constant label) | `service.version` |
+| The machine | `host_name` | — | `host.name` |
+| The process | `process_pid` | — | `process.pid` |
+| The replica | — | — | `service.instance.id` (a UUID per process) |
+
+- **Configuring nothing writes nothing.** No `service_name=""` is written, no label is attached and no
+  attribute is set -- not even OTel's own `unknown_service:<executable name>`, which the SDK would
+  otherwise invent. A gap on the dashboard is a gap to fix; a guessed name looks like a real service
+  and hides who is who. `XApp.Name` can also be supplied in code with
+  [`xapp.SetDefault`](../xapp/README.md#api), which is where a version stamped in at build time already is.
+- **The machine and the process are not metric labels.** They would multiply the time series of every
+  metric by the number of instances; Prometheus already tells instances apart by its own `instance`
+  label, from the scrape target.
+- **The deployment's own facts** (the Pod, the node, the namespace, the data centre) are injected from
+  the environment through [`XLog.Fields`](../xlog/README.md#the-fields-every-log-line-carries) and
+  [`XMetric.ConstLabels`](../xmetric/README.md#configuration); the framework does not guess them either.
+- **A label configured by hand wins**: an `XMetric.ConstLabels` entry named `service_name` overrides what
+  `XApp` says, and a field of the same name in `XLog.Fields` does the same for the logs.
+- **Kafka cannot write nothing, so it says so**: `client.id` goes into every request header, and
+  franz-go sends its own `kgo` when none is set -- every service on the cluster under one name, which
+  the brokers' request logs and quotas then cannot tell apart. No name is invented for it either;
+  startup writes one WARN naming the consequence and what to set. See
+  [xkafka](../xkafka/README.md#configuration).
 
 ## Logs
 

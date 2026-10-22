@@ -89,14 +89,13 @@ func TestCoverage_NamespaceOrConstLabelsTypoFailsStartup(t *testing.T) {
 	}
 }
 
-// xapp/README.md, App: "the metrics do not read this block, and /metrics carries no application
-// name and no version: to tell applications apart in the metrics, use XMetric.ConstLabels".
-// The documentation used to say "a metric's default title comes from App", which is not the case
-// for the metrics at all (xmetric does not import xapp), and the documentation was what changed.
+// observability.md, "One application, three signals": XApp.Name reaches the logs as service_name, the
+// metrics as the constant label service_name and the spans as service.name -- one identity under one
+// rule, semconv with underscores for the dots.
 // The tracing half is TestCoverage_service_NameFromAppOverriddenByOTELEnv and the API
 // documentation half is in swagger_ui_test.go; ConstLabels being added to every metric is
 // TestCoverage_NamespaceAndConstLabelsOnRealMetrics
-func TestCoverage_MetricsCarryNoAppName(t *testing.T) {
+func TestCoverage_MetricsCarryTheAppIdentity(t *testing.T) {
 	harness.Require(t)
 	t.Parallel()
 
@@ -105,7 +104,10 @@ func TestCoverage_MetricsCarryNoAppName(t *testing.T) {
 	waitMetrics(t, p, "the request metric for /ping turning up in /metrics", func(m harness.Metrics) bool {
 		return m.Sum("e2e_http_requests_total", "route", "/ping") >= 1
 	})
-	if body := string(p.Get(t, "/metrics").Body); strings.Contains(body, "xone.e2e.service") {
-		t.Errorf("the documentation says the metrics do not read App, and /metrics holds App.Name (xone.e2e.service): a change in behavior has to go into the App section of xapp/README.md")
+	body := string(p.Get(t, "/metrics").Body)
+	for _, want := range []string{`service_name="xone.e2e.service"`, `service_version="e2e"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("/metrics must carry the XApp identity as %s, named as the log fields are: a change in behavior has to go into observability.md \"One application, three signals\"\ngot=\n%s", want, body)
+		}
 	}
 }

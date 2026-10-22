@@ -66,15 +66,17 @@ XLog:
 
 ## The fields every log line carries
 
-The framework adds "who logged this" to every line by default, matching `service.name`, `host.name` and `process.pid`
-on xtrace's Spans:
+The framework adds "who logged this" to every line by default. The names are OTel's semantic conventions with the
+dots written as underscores, which is the one rule the three signals share -- the same application is `service_name`
+here and on the metrics, and `service.name` on the spans (see
+[observability.md "One application, three signals"](../docs/observability.md#one-application-three-signals)):
 
 | Field | Source | Description |
 |---|---|---|
-| `service` | `XApp.Name` | Not written when unconfigured |
-| `version` | `XApp.Version` | Not written when unconfigured |
-| `hostname` | `os.Hostname()` | The machine name on a VM, the Pod name in K8s. It is not called `host`: in xgin's access log, `host` is the request's Host header |
-| `pid` | `os.Getpid()` | Tells several instances on one machine, and the runs before and after a restart, apart |
+| `service_name` | `XApp.Name` | Not written when unconfigured. `service.name` on the spans, `service_name` on the metrics |
+| `service_version` | `XApp.Version` | Not written when unconfigured. `service.version` on the spans, `service_version` on the metrics |
+| `host_name` | `os.Hostname()` | The machine name on a VM, the Pod name in K8s. `host.name` on the spans. It is not a bare `host`: in xgin's access log, `host` is the request's Host header |
+| `process_pid` | `os.Getpid()` | Tells several instances on one machine, and the runs before and after a restart, apart. `process.pid` on the spans |
 
 Anything only the deployment environment knows (the Pod, the node, the namespace, the data center, the Pod IP) is
 injected from the environment through `XLog.Fields`. The framework does not guess: a machine often has several network
@@ -86,7 +88,7 @@ XLog:
     pod_ip: ${POD_IP:}          # ${VAR:} is an empty string when unset, and a field with an empty string is not written
     node: ${NODE_NAME:}
     namespace: ${POD_NAMESPACE:}
-    hostname: ""                # a name of the same name wins, and an empty string drops that default field
+    host_name: ""               # a name of the same name wins, and an empty string drops that default field
 ```
 
 ```yaml
@@ -172,6 +174,6 @@ governs the timestamps inside the logs).
 own `main` package is needed (about 400KB). The framework does not compile it in: anyone not using this setting should
 not carry those 400KB.
 
-**What the default fields cost**: measured, the default 4 (with a hostname as long as a Pod name) add 88 bytes per line,
+**What the default fields cost**: measured, the default 4 (with a host name as long as a Pod name) add 88 bytes per line,
 and neither time nor allocations are measurably different (`BenchmarkHandle_WithIdentityFields` against
 `BenchmarkHandle_Bare`).

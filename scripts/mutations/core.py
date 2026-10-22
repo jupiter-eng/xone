@@ -66,10 +66,6 @@ mutate("CtxWithKV carries the fields the parent ctx already has", "internal/loge
 mutate("an imported fragment has profile variants too", "internal/config/source.go", ".", "TestLoad",
        swap('nested, err := fileSet(target, d, false, profiles, seen, depth+1)',
      'nested, err := withImports(target, d, profiles, seen, depth+1)'))
-# A path would be useless as the client id or service name a component falls back on
-mutate("the executable fallback is a name, not a path", "xutil/proc.go", ".", "TestExecutableName",
-       swap('return filepath.Base(path)', 'return path'),
-       swap('\t"path/filepath"\n', ''))
 mutate("the wait between retries doubles each time", "xutil/retry.go", ".", "TestRetry", swap('\t\t\tbackoff = nextBackoff(backoff)\n', ''))
 mutate("the budget is computed from the backoff ceiling", "xutil/retry.go", ".", "TestRetryBudget",
        swap('''\tbudget := timeout * time.Duration(attempts)

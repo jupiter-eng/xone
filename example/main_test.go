@@ -154,10 +154,11 @@ XMetric:
 		}
 	})
 
-	t.Run("metrics carry the prefix and the constant labels", func(t *testing.T) {
+	t.Run("metrics carry the prefix, the constant labels and the application identity", func(t *testing.T) {
+		// service_name / service_version come from the XApp block by themselves, named as the log fields are
 		out := scrape(t)
-		if !strings.Contains(out, `demo_jobs{env="dev",result="ok"} 1`) {
-			t.Errorf("the prefix, the constant labels and the environment variable default must all take effect\ngot=\n%s", out)
+		if !strings.Contains(out, `demo_jobs{env="dev",result="ok",service_name="xone.demo.app",service_version="v0.1.0"} 1`) {
+			t.Errorf("the prefix, the constant labels, the environment variable default and the XApp identity must all take effect\ngot=\n%s", out)
 		}
 	})
 
@@ -167,7 +168,7 @@ XMetric:
 		if !strings.Contains(out, `demo_log_errors_total{`) {
 			t.Fatalf("log_errors_total must be there (the business wrote no instrumentation at all)\ngot=\n%s", out)
 		}
-		if !strings.Contains(out, `level="ERROR"} 1`) {
+		if !strings.Contains(out, `level="ERROR",service_name="xone.demo.app",service_version="v0.1.0"} 1`) {
 			t.Errorf("that one Error must have been counted\ngot=\n%s", out)
 		}
 		// The trace identifiers serve as an exemplar, so a dashboard can jump from this point back to
@@ -347,12 +348,12 @@ XGin:
 	})
 
 	t.Run("request metrics are collected by themselves", func(t *testing.T) {
-		if !strings.Contains(metrics, `demo_http_requests_total{method="GET",route="/hello",status="200"} 1`) {
+		if !strings.Contains(metrics, `demo_http_requests_total{method="GET",route="/hello",service_name="xone.demo.app",status="200"} 1`) {
 			t.Errorf("request metrics must be collected by themselves\ngot=\n%s", metrics)
 		}
 		// The route is the template rather than the real path, or the time series would grow without
 		// bound with the ids in the URLs
-		if !strings.Contains(metrics, `route="/boom",status="500"`) {
+		if !strings.Contains(metrics, `demo_http_requests_total{method="GET",route="/boom",service_name="xone.demo.app",status="500"}`) {
 			t.Errorf("a request that panicked must be counted as a 500 too\ngot=\n%s", metrics)
 		}
 	})

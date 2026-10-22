@@ -73,16 +73,22 @@ func build(cfg Config, base []slog.Attr) (*slog.Logger, io.Closer, error) {
 	return withStatic(slog.New(newCtxHandler(newHandler(out, opts))), base, cfg.Fields), multiCloser(closers), nil
 }
 
-// identity are the framework's default per-line fields, matching service.name, host.name and process.pid on xtrace's Spans.
+// identity are the framework's default per-line fields: which application and which process the line came from.
 //
-// The machine name is called hostname rather than host: in xgin's access log, host is the request's Host header, and the same name would mean two hosts in one line.
+// The names are OTel's semantic conventions with the dots written as underscores -- service.name becomes
+// service_name. Tracing is held to those conventions anyway, and a dot is not allowed in a Prometheus label name
+// and means a nested path in several log backends, so one rule ("semconv, underscores where a dot cannot go")
+// gives the same name in all three signals: xmetric attaches service_name / service_version as constant labels.
+//
+// A side benefit of host_name over a bare host: in xgin's access log, host is the request's Host header, and the
+// same name would mean two hosts in one line.
 func identity() []slog.Attr {
 	hostname, _ := os.Hostname()
 	return []slog.Attr{
-		slog.String("service", xapp.Name()),
-		slog.String("version", xapp.Version()),
-		slog.String("hostname", hostname),
-		slog.Int("pid", os.Getpid()),
+		slog.String("service_name", xapp.Name()),
+		slog.String("service_version", xapp.Version()),
+		slog.String("host_name", hostname),
+		slog.Int("process_pid", os.Getpid()),
 	}
 }
 

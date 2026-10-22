@@ -244,7 +244,7 @@ echo "✓ every error goes through xerror (%w keeps the error chain)"
 # there, which means naming it -- every entry of the table appears there sooner or later, and that is
 # not a leftover.
 # Every other document is checked as usual
-gone='xutil\.(GetOrDefault|ToPtr)\b|xredis\.TLSConfig|Component\.Init|registry\.(Declare|Provide|Register)|ProvideEach|xconfig\.(HasKey|DecodeClients)\b|\.OnInit\(|xgin\.With(Config|Log|Trace|Metric|MetricPath|SkipPaths|RequestBodyLog|ResponseBodyLog|ZHTranslations)\('
+gone='xutil\.(GetOrDefault|ToPtr|ExecutableName)\b|xredis\.TLSConfig|Component\.Init|registry\.(Declare|Provide|Register)|ProvideEach|xconfig\.(HasKey|DecodeClients)\b|\.OnInit\(|xgin\.With(Config|Log|Trace|Metric|MetricPath|SkipPaths|RequestBodyLog|ResponseBodyLog|ZHTranslations)\('
 hits=$(files '*.go' '*.md' '*.yml' ':(exclude)docs/CHANGELOG.md' | xargs grep -nE "$gone" || true)
 [ -z "$hits" ] || fail "a name that was removed is still mentioned (fix the documentation, or confirm it really is still there):
 $hits"

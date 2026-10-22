@@ -111,9 +111,14 @@ OTel SDK v1.46.0, otelhttp v0.71.0.
 `ParentBased(TraceIDRatioBased(SampleRatio))` is always used here: only root Spans are sampled by ratio, and with an
 upstream its sampled bit decides.
 
-**`service.name`'s precedence**, each overriding the one before: OTel's own fallback name
-`unknown_service:<executable name>` → `XApp.Name` / `XApp.Version` → `OTEL_RESOURCE_ATTRIBUTES` → `OTEL_SERVICE_NAME`.
-Whichever is not configured is not written, so no empty `service.name=""` is written to cover the fallback name.
+**`service.name`'s precedence**, each overriding the one before: `XApp.Name` / `XApp.Version` →
+`OTEL_RESOURCE_ATTRIBUTES` → `OTEL_SERVICE_NAME`. **Configured nowhere, the attribute is not written at all** --
+not even OTel's own `unknown_service:<executable name>`: the SDK's `resource.WithService` is deliberately not used,
+since a guessed name looks like a real service on a dashboard without being one. `service.name` is a required
+attribute in the semantic conventions, so a backend receiving spans without one falls back to whatever it shows for
+unnamed services; that is the intended trade, a visible gap over a plausible-looking guess. The identity can also be
+supplied in code with [`xapp.SetDefault`](../xapp/README.md#api). `service.instance.id` (a UUID per process) is the
+half of `WithService` kept, and is written whether or not an identity is configured.
 
 **A resource collection error is one warning and startup continues with whatever was collected**: one wrong entry in
 `OTEL_RESOURCE_ATTRIBUTES`, or a container running under a random UID where the current user cannot be found, does not

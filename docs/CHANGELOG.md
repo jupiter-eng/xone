@@ -10,6 +10,36 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
 
 ## [Unreleased]
 
+### Changed
+
+- **One name for the application across all three signals** (incompatible). The identity configured in
+  `XApp` now reaches the logs, the metrics and the spans under one rule: OTel's semantic conventions
+  with the dots written as underscores wherever a dot cannot go. The table is in
+  [observability.md "One application, three signals"](observability.md#one-application-three-signals).
+  - The default log fields are renamed: `service` → `service_name`, `version` → `service_version`,
+    `hostname` → `host_name`, `pid` → `process_pid`. **Log queries, dashboards and alerts built on the
+    old names have to be updated**, as does an `XLog.Fields` entry that overrode or dropped one of them
+    by name (`hostname: ""` becomes `host_name: ""`).
+  - xmetric attaches `service_name` and `service_version` as constant labels on every metric, the
+    `go_*` / `process_*` ones included. An `XMetric.ConstLabels` entry of the same name still wins.
+    They are not called `name` / `version` because both are reserved (`name` by the instance metrics,
+    `version` by `go_info`).
+- **An identity nobody configured is no longer guessed on the spans** (incompatible). OTel's
+  `resource.WithService` is no longer used, so without `XApp.Name` (and without `OTEL_SERVICE_NAME` or
+  `OTEL_RESOURCE_ATTRIBUTES`) no `service.name` attribute is written at all, where the SDK used to
+  invent `unknown_service:<executable name>`. A guessed name looks like a real service on a dashboard
+  without being one; `service.name` being a required attribute, a backend will fall back to whatever it
+  shows for unnamed services, which is the intended visible gap. `service.instance.id` (a UUID per
+  process) is kept and is written either way.
+- **Kafka's `client.id` is no longer given an invented name either.** With neither `XKafka.ClientID` nor
+  `XApp.Name` configured, franz-go sends its own `kgo` and **startup writes one WARN** naming the
+  consequence (the brokers' request logs and quotas cannot tell the services apart) and what to set. The
+  v1.1.0 fallback to the executable's name is gone, so no signal invents a name any more.
+
+### Removed
+
+- `xutil.ExecutableName()` (added in v1.1.0), which existed only for that Kafka fallback.
+
 ## [v1.1.0] - 2026-10-22
 
 ### Added

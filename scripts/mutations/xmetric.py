@@ -37,3 +37,14 @@ mutate("the process metrics carry the constant labels too", "xmetric/xmetric.go"
 # client_golang's wrapping error, which disappears again with GoMetrics off
 mutate("a constant label name cannot be go_info's version", "xmetric/config.go", "./xmetric", "TestNew",
        swap('\t"version": "go_info in the Go runtime metrics",\n', ''))
+
+section("The application identity")
+# One name per signal: without this the logs and the spans say which application they came from and
+# the metrics do not, so a dashboard cannot tell two services apart at all
+mutate("the application identity reaches the constant labels", "xmetric/xmetric.go", "./xmetric", "TestInitXMetric_CarriesTheAppIdentityAsConstLabels",
+       swap('return install(withIdentity(c))', 'return install(c)'))
+mutate("a configured label wins over the application identity", "xmetric/xmetric.go", "./xmetric", "TestInitXMetric_AConfiguredLabelWinsOverTheAppIdentity",
+       swap('\t\tif _, ok := labels[l.key]; ok {\n\t\t\tcontinue\n\t\t}\n', ''))
+# A constant service_name="" would be attached to every metric, go_* and process_* included
+mutate("an identity nobody configured attaches no empty label", "xmetric/xmetric.go", "./xmetric", "TestInitXMetric_NoIdentityAddsNoEmptyLabel",
+       swap('\t\tif l.value == "" {\n\t\t\tcontinue\n\t\t}\n', ''))
