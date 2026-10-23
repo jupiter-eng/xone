@@ -144,6 +144,20 @@ func TestKafka_FailureRetriesThenDeadLetter_PermanentSkipsRetries(t *testing.T) 
 	if string(first.Key) != "k-fail" || !strings.Contains(string(first.Value), `"always"`) || harness.KafkaHeader(first, "traceparent") == "" {
 		t.Errorf("a dead letter carries the original key and value, and its trace headers continue the consuming span: key=%s value=%s headers=%v", first.Key, first.Value, first.Headers)
 	}
+	// Everything below counts lines, and a dead letter is readable from Kafka before the lines
+	// about it have reached this side: they go to the process's stdout, which the harness collects
+	// on its own. So wait for the last of them first -- the dead letter of the second message, the
+	// permanent one -- and then count. Everything this case counts is written before that line by
+	// the same process, and one stdout is in order, so once it is here they all are.
+	//
+	// Measured on a nightly round where only the second message was affected: its dead letter was
+	// readable, its handler had demonstrably run, and the handle line was not here yet, which came
+	// out as "xutil.Permanent is not retried, and it was called 0 times"
+	// (https://github.com/jupiter-eng/xone/actions/runs/39854239684)
+	p.WaitLog(t, 5*time.Second, func(l harness.Log) bool {
+		return l.Msg() == "kafka message dead-lettered" && l.Str("offset") == "1"
+	})
+
 	if n := len(handled(p, "always")); n != 3 {
 		t.Errorf("WithRetry(2) means 3 calls at most, got %d", n)
 	}
@@ -153,10 +167,6 @@ func TestKafka_FailureRetriesThenDeadLetter_PermanentSkipsRetries(t *testing.T) 
 	if got := harness.KafkaHeader(dlq[1], "xkafka-dlq-error"); got != "e2e permanent failure" {
 		t.Errorf("the error header of the permanent one: %q", got)
 	}
-	// The log line is recorded after the dead letter has been written: the moment the dead letter is read, the second line may not be out yet
-	p.WaitLog(t, 5*time.Second, func(l harness.Log) bool {
-		return l.Msg() == "kafka message dead-lettered" && l.Str("offset") == "1"
-	})
 	w := p.FindLogs(func(l harness.Log) bool { return l.Msg() == "kafka message dead-lettered" })
 	if len(w) != 2 || w[0].Level() != "WARN" || w[0].Str("dlq_topic") != topic+".dlq" {
 		t.Errorf("the documentation says a dead letter records one WARN kafka message dead-lettered: %v", w)
