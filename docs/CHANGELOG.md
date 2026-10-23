@@ -12,6 +12,20 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
 
 ### Fixed
 
+- **A JSON body the access log had to cut is recorded as far as it was read, instead of as
+  `***REDACTED***`.** The log records a response up to 4KB and a request up to 256KB, so anything
+  larger arrives at the masking cut in the middle of a field; a body that did not parse was then
+  masked whole. The literal pre-check hands anything holding a backslash to the parser, and `\"`
+  and `\n` are everywhere in JSON, so in practice every large JSON body was logged as
+  `***REDACTED***` — the switch was on, nothing of the body was visible, and the line read as
+  though a credential had been found. It is now decoded as far as the decoder gets, member by
+  member and into nested values (`{"page":1,"items":[…]}` cut inside the list keeps the envelope
+  and the elements that were read), masked by the usual rules, and followed by
+  `[truncated, the rest was not recorded]`. Everything from the cut onwards is dropped rather than
+  printed, so a key whose letters were written as `\uXXXX` escapes is still masked: the decoder
+  turns those back before the word list sees it. A body nothing could be read out of records
+  `[unparseable content omitted]`, and `***REDACTED***` goes back to meaning only "a sensitive
+  field was found and masked".
 - **A Kafka handler returning an error type that cannot be compared no longer takes the process
   down.** Deciding whether a message had been interrupted compared the error `xutil.Retry` handed
   back against the last one the handler returned, and comparing two interface values panics outright

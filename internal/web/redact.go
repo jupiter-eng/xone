@@ -403,6 +403,9 @@ func redactOpaque(body []byte) string {
 // a float64 and writes 12345678901234567890 back out as 12345678901234567000, while the default
 // encoder writes < > & as backslash-u escape sequences. Either one puts the value in the log out of
 // step with the one in the request.
+//
+// A body that does not parse to the end is recorded as far as it was read, with truncatedSuffix
+// after it; the reasoning is in decodeJSON.
 func redactJSON(body []byte) string {
 	ws := words()
 	s := string(body)
@@ -412,24 +415,132 @@ func redactJSON(body []byte) string {
 		return newlines.Replace(s)
 	}
 
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	var data any
-	if err := dec.Decode(&data); err != nil || dec.Decode(new(any)) != io.EOF {
-		// What cannot be parsed (or is followed by something else) is masked whole. It must not be
-		// returned as it is: reaching this point means the literal scan believes a sensitive field
-		// name is in there and we were simply unable to locate it
-		return Redacted
+	data, whole := decodeJSON(body)
+	if data == nil {
+		// Not one value came out, so there is nothing to mask field by field and nothing worth
+		// printing either. It is not Redacted: that marker means "a sensitive field was found and
+		// masked", and reading it here would send somebody looking for a credential that was never
+		// located
+		return unparseableOmitted
 	}
 
-	data = redactValue(data, ws)
 	var out bytes.Buffer
 	enc := json.NewEncoder(&out)
 	enc.SetEscapeHTML(false)
-	if err := enc.Encode(data); err != nil {
+	if err := enc.Encode(redactValue(data, ws)); err != nil {
 		return Redacted
 	}
-	return strings.TrimSuffix(out.String(), "\n") // Encode always adds a line break at the end
+	redacted := strings.TrimSuffix(out.String(), "\n") // Encode always adds a line break at the end
+	if whole {
+		return redacted
+	}
+	return redacted + truncatedSuffix
+}
+
+// What a body that could not be read to the end is marked with. The vocabulary is the one the
+// access log already uses for "this was deliberately not recorded" ([binary content omitted] and
+// the rest), rather than Redacted, which everywhere else means a sensitive field was masked.
+const (
+	truncatedSuffix    = " [truncated, the rest was not recorded]"
+	unparseableOmitted = "[unparseable content omitted]"
+)
+
+// decodeJSON decodes body and says whether that was the whole of it. A nil value means not one
+// value could be read.
+//
+// A body the access log records is usually not the whole body: the response is captured up to
+// MaxResponseBody and the request up to maxRequestBody, so a JSON object larger than that arrives
+// here cut in the middle of whatever field happened to be there. Handing the whole of it to Decode
+// and masking everything on failure made that case indistinguishable from a credential being found
+// -- and since the cut is the framework's own doing, every large JSON body read as one. So as much
+// as the decoder can read is read, member by member.
+//
+// What this must never do is let an unread byte through. Everything returned came out of the
+// decoder as a resolved token, so a key whose letters were written as \uXXXX escapes is the plain
+// string by the time redactValue compares it against the word list, exactly as in a body that
+// parsed whole; everything from the first error onwards is dropped rather than printed. That is
+// what keeps the backslash rule in mayContainField meaningful (see there).
+func decodeJSON(body []byte) (any, bool) {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+
+	var v any
+	if err := dec.Decode(&v); err == nil {
+		// Trailing content counts as "not the whole of it" as well: a complete value followed by
+		// something else (a raw dump appended to a response) keeps the value and drops the rest
+		return v, dec.Decode(new(any)) == io.EOF
+	}
+
+	dec = json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	return partialValue(dec)
+}
+
+// partialValue reads one value and says whether it was read whole.
+//
+// It goes down rather than stopping at the top level: the common shape of a response is an envelope
+// around a list ({"page":1,"items":[...]}), where the cut falls inside the list and taking that
+// member as unreadable would leave the whole body unreadable with it.
+//
+// How deep it may recurse is encoding/json's business, whose decoder gives up past its own nesting
+// limit; measured, 20000 levels of [ come back as "nothing could be read" rather than running out of
+// stack.
+func partialValue(dec *json.Decoder) (any, bool) {
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, false
+	}
+	switch tok {
+	case json.Delim('{'):
+		out := map[string]any{}
+		for dec.More() {
+			key, err := dec.Token()
+			if err != nil {
+				return nonEmpty(out), false
+			}
+			v, whole := partialValue(dec)
+			// whole rather than v != nil alone: a value that really is null comes back as a nil
+			// any, and going by nil would drop the field out of the log altogether -- while a nil
+			// with whole false is a container cut before a single member came out, which there is
+			// nothing to record for
+			if whole || v != nil {
+				out[key.(string)] = v // an object key is always a string token
+			}
+			if !whole {
+				return nonEmpty(out), false
+			}
+		}
+		if _, err := dec.Token(); err != nil { // the closing brace
+			return nonEmpty(out), false
+		}
+		return out, true
+	case json.Delim('['):
+		out := []any{}
+		for dec.More() {
+			v, whole := partialValue(dec)
+			if whole || v != nil { // a null element, see the object branch above
+				out = append(out, v)
+			}
+			if !whole {
+				return nonEmpty(out), false
+			}
+		}
+		if _, err := dec.Token(); err != nil { // the closing bracket
+			return nonEmpty(out), false
+		}
+		return out, true
+	}
+	return tok, true // a scalar, which Token hands over only once it is complete
+}
+
+// nonEmpty is v, or nil when nothing came out of it: a container cut before a single member was
+// read holds nothing worth printing, and an empty {} in the log would read as a response that
+// really was empty.
+func nonEmpty[T map[string]any | []any](v T) any {
+	if len(v) == 0 {
+		return nil
+	}
+	return v
 }
 
 // mayContainField reports whether a sensitive field name may appear inside a body.
