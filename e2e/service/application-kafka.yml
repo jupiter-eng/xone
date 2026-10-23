@@ -10,6 +10,12 @@
 
 XKafka:
   Brokers: ["${E2E_KAFKA_ADDR}"]
+  Consumer:
+    # How long a kill -9ed member's partitions wait before they go to someone else. franz-go's own
+    # default is 45s, which TestKafka_SIGKILLMidProcessing_Redelivered would have to sit out; 6s is
+    # as low as this broker allows (group.min.session.timeout.ms). kafka_test.go's
+    # kafkaSessionTimeout is the same number and the case goes by it
+    SessionTimeout: 6s
 
 Service:
   KafkaTopic: "${E2E_KAFKA_TOPIC:}"

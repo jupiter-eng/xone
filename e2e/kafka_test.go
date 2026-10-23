@@ -31,8 +31,17 @@ import (
 // The default, latest, is pinned by xkafka's unit tests
 const kafkaEarliest = "XKafka:\n  Consumer:\n    ResetOffset: earliest\n"
 
-// kafkaSessionTimeout is the SessionTimeout default of franz-go v1.21.7: how long the partitions of a member that was kill -9ed wait before they go to someone else
-const kafkaSessionTimeout = 45 * time.Second
+// kafkaSessionTimeout is how long the partitions of a member that was kill -9ed wait before they go
+// to someone else. It is what service/application-kafka.yml writes into XKafka.Consumer.SessionTimeout,
+// and the two have to stay the same number.
+//
+// Six seconds and not franz-go's own 45s, which this case used to wait out: 6s is as low as this
+// broker allows (group.min.session.timeout.ms, Kafka 3.9.1's default, with nothing overriding it in
+// compose.yml). What is being tested is that a kill -9ed member's partitions are taken over and its
+// unmarked message delivered again, which does not depend on how long the wait is; that the default
+// is 45s when nobody writes the field is xkafka's own TestFranzDefault_Values and
+// TestSessionTimeout_ReachesTheClientAndZeroKeepsFranzsDefault.
+const kafkaSessionTimeout = 6 * time.Second
 
 // kafkaMsg is one message's value, whose fields are in service/kafka.go
 func kafkaMsg(t *testing.T, fields map[string]any) string {
@@ -213,7 +222,6 @@ func TestKafka_SIGTERMWhileInFlight_FinishesCommitsNotRedelivered(t *testing.T) 
 // A member that was killed does not leave the consumer group of its own accord: the new process
 // waits out its session timeout (45s by default in franz-go) before it is assigned partitions
 func TestKafka_SIGKILLMidProcessing_Redelivered(t *testing.T) {
-	requireSlow(t, "franz-go's session timeout, "+kafkaSessionTimeout.String())
 	harness.RequireKafka(t)
 	t.Parallel()
 	topic := harness.KafkaTopic(t, 1)

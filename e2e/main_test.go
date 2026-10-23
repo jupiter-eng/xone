@@ -22,15 +22,20 @@ func knownBug(t *testing.T, msg string) {
 // clock boundary, or a timeout a dependency's protocol fixes. XONE_E2E_SLOW=1 runs them
 // (scripts/e2e.sh --slow), and the nightly e2e workflow sets it.
 //
-// Why they are not simply slow cases among the rest: these two alone decide how long the whole
-// package takes. Measured, the package runs 119.8s with -parallel=16 while the top-level cases add
-// up to 206.3s, so the wall time is the longest case and not the sum -- and the two longest are
-// TestKafka_SIGKILLMidProcessing_Redelivered at 45.6s (it waits out franz-go's 45s session timeout
-// before a dead member's partitions move, and xkafka exposes no setting for it) and
-// TestCoverage_LogRotatesByRotateTime_MaxAgePrunesOwnFiles_PermApplied at 15 to 50s (it waits for a
-// real minute boundary, XLog.File.RotateTime being 1m at the least because the file names are only
-// precise to the minute). Neither is slow for a reason this repository can fix, and together they
-// are more than half the package's wall time.
+// Why such a case is not simply a slow one among the rest: the package's wall time is its longest
+// case and not the sum of them. Measured, it ran 119.8s with -parallel=16 while the top-level cases
+// added up to 206.3s, and two cases alone set that 119.8s.
+//
+// One of the two has since been taken off this gate rather than left behind it:
+// TestKafka_SIGKILLMidProcessing_Redelivered waited out franz-go's 45s session timeout because
+// xkafka exposed no setting for it, and now that XKafka.Consumer.SessionTimeout exists
+// service/application-kafka.yml writes 6s -- as low as the broker allows -- and the case is 17s and
+// runs by default. A wait that can be configured away is not a slow case, it is a missing setting.
+//
+// What is left here is TestCoverage_LogRotatesByRotateTime_MaxAgePrunesOwnFiles_PermApplied, 15 to
+// 50s depending on where in the minute it starts: it waits for a real minute boundary, and
+// XLog.File.RotateTime is 1m at the least because the file names are only precise to the minute.
+// Nothing here can shorten that one without changing what the file names mean.
 //
 // The reason goes into the skip so that a reader of the output knows which wait was skipped.
 func requireSlow(t *testing.T, waitsFor string) {
