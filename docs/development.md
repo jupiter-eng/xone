@@ -220,6 +220,11 @@ go test -run=NONE -bench=. -benchtime=100000x ./xlog/ ./xflow/ ./xgin/middleware
 MySQL, Redis, ClickHouse and Kafka, sends requests and signals, and then reads its logs, spans,
 `/metrics` and `/proc`.
 
+The other two web integrations have a small service each — `e2e/service-beego` and
+`e2e/service-echo`, connecting to nothing — for what no unit test of theirs reaches: a real binary,
+a real signal, and the globals and loggers each framework brings along (`beego_test.go`,
+`echo_test.go`).
+
 - The service's XGorm is multi-instance: `default` connects to PostgreSQL and `mysql` to MySQL;
   `ch` connects to ClickHouse and is written in the profile `e2e/service/application-ch.yml`,
   activated only by the processes `TestClickHouse_*` starts (`harness.Options.ClickHouse`);
@@ -274,7 +279,7 @@ green.
 
 **The harness's rules:**
 
-- The three binaries (`service`, `baseline`, `covapp`) are built in one `go build -race` (the load
+- The five binaries (`service`, `service-beego`, `service-echo`, `baseline`, `covapp`) are built in one `go build -race` (the load
   tests aside). When a process under test exits, the harness inspects its output (`checkOutput` in
   `harness/output.go`) and fails that test on a problem: `WARNING: DATA RACE` on stderr, or a line
   on stdout / stderr that is not JSON — a caller's logging platform parses JSON line by line, and a
