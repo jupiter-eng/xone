@@ -852,7 +852,7 @@ mutate("a cut inside a nested value keeps what was read around it", "internal/we
 # and going by the nil alone drops the field out of the log -- which reads as a response that never
 # held it
 mutate("a null value survives a cut", "internal/web/redact.go", ".", "TestRedactBody_JSONCutKeepsANullValue",
-       swap('if whole || v != nil {\n\t\t\t\tout[key.(string)] = v', 'if v != nil {\n\t\t\t\tout[key.(string)] = v'))
+       swap('if whole || v != nil {\n\t\t\t\tout[name] = v', 'if v != nil {\n\t\t\t\tout[name] = v'))
 # Nothing after the first decoding error was ever resolved into a token, so printing it would be
 # printing raw bytes -- which is exactly what the backslash rule in mayContainField guards against
 mutate("nothing after the cut is recorded", "internal/web/redact.go", ".", "TestRedactBody_JSONCutDropsEverythingAfterTheCut",
@@ -972,13 +972,21 @@ mutate("a request header value is not masked whole by a sensitive word", "intern
 # gin's ShouldBindJSON ignores Content-Type: JSON sent as text/plain takes the plain-text branch
 # and an escaped key name is not recognized
 mutate("a JSON body without a JSON content type is masked as JSON", "internal/web/redact.go", ".", "TestRedactBody_JSONWithoutJSONContentType",
-       swap('\tcase isJSON(body):\n\t\treturn redactJSON(body)\n', ''))
+       swap('\tcase isJSON(body):\n\t\treturn redactJSON(body, cut)\n', ''))
 mutate("a JSON string value goes through RedactText", "internal/web/redact.go", ".", "TestRedactBody_JSONStringValueDSN",
        swap('\tcase string:\n\t\treturn RedactText(t)\n', ''))
 # With the fast path going by sensitive words alone, {"dsn":"postgres://u:p@h"} is never even
 # parsed
 mutate("JSON with an @ in a value does not take the fast path", "internal/web/redact.go", ".", "TestRedactBody_JSONStringValueDSN",
-       swap("if !mayContainField(s, ws) && strings.IndexByte(s, '@') < 0 {", "if !mayContainField(s, ws) {"))
+       swap("if !cut && !mayContainField(s, ws) && strings.IndexByte(s, '@') < 0 {", "if !cut && !mayContainField(s, ws) {"))
+# The cut can take the very character the fast path goes by: a DSN cut before its @ holds no
+# sensitive word and no @ either, and used to be written into the log exactly as it arrived
+mutate("a body that may have been cut does not take the fast path", "internal/web/redact.go", ".", "TestRedactBody_CutDSNDoesNotTakeTheFastPath|TestRedactBody_NoSecretLeaksAtAnyCutPoint",
+       swap("if !cut && !mayContainField(s, ws)", "if !mayContainField(s, ws)"))
+# Aimed at the call sites: the flag is only ever true where the access log knows it had to stop at
+# the cap, and computing it wrong is the same as not having it
+mutate("the access log says which bodies it had to cut", "internal/web/accesslog.go", ".", "TestAccessLog_ABodyAsLongAsTheCapIsNotFastPathed",
+       swap('len(a.ReqBody) >= maxRequestBody', 'false'), swap('len(a.RespBody) >= MaxResponseBody', 'false'))
 mutate("the DSN regexp is skipped only when there is no @", "internal/web/redact.go", ".", "TestRedactText_MasksPassword",
        swap("\tif strings.IndexByte(s, '@') < 0 {\n\t\treturn s\n", "\tif strings.IndexByte(s, '@') >= 0 {\n\t\treturn s\n"))
 # Leaving it empty has to mean 1.2 explicitly; falling through to tls.Config's zero value means

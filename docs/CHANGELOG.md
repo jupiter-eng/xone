@@ -25,6 +25,16 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
 
 ### Fixed
 
+- **A DSN password no longer reaches the access log in the clear when the body was cut right
+  before the `@`.** The fast path that skips the masking for a body holding nothing sensitive goes
+  by three tests, all of which assume a complete body — and the cut can take away the very
+  character one of them looks for. Measured, `{"dsn":"postgres://app:pw@db:5432/prod"}` cut before
+  the `@` holds no sensitive word, no backslash and no `@` any more, so it took that path and the
+  password was written out as it arrived; the parsing branch would not have masked it either, since
+  the expressions that recognize a DSN need that `@` as well. A body as long as the cap is now
+  treated as one that may have been cut and never takes the fast path. A complete body is
+  unaffected, which is every ordinary request. **This applies to the JSON branch only** — the same
+  cut leaks through a form, plain text or XML body, which is tracked separately.
 - **A JSON body the access log had to cut is recorded as far as it was read, instead of as
   `***REDACTED***`.** The log records a response up to 4KB and a request up to 256KB, so anything
   larger arrives at the masking cut in the middle of a field; a body that did not parse was then
