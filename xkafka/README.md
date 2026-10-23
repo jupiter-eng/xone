@@ -80,6 +80,7 @@ only built on StageClient while `Consume` may be registered at any time.
 |---|---|
 | `Brokers` / `SASL` / `TLS` / `DialTimeout` / `ClientID` | How it connects, exactly as for producing |
 | `Consumer.ResetOffset` | Whether a new consumer group starts at latest or earliest |
+| `Consumer.SessionTimeout` | How long the broker waits for a heartbeat before it hands this consumer's partitions to another member |
 | `Trace` / `Metric` / `Log` | The per-message Span, the processing duration metric, the per-message logs |
 | `Producer.*` | Used when writing a dead letter (which this consumer's own client writes) |
 
@@ -120,6 +121,7 @@ XKafka:
     Compression: snappy         # none / gzip / snappy / lz4 / zstd
   Consumer:
     ResetOffset: latest         # where a new consumer group starts: latest / earliest
+    SessionTimeout: 0s          # how long a killed consumer's partitions wait before they move; 0 keeps franz-go's 45s, 3s at the least
   Trace: true                   # one Span each for producing and consuming; with it off the trace context is still written into and read from the message headers
   Metric: true                  # kafka_consume_duration_seconds
   Log: true                     # per-message logs: a failed produce and each failed processing attempt (WARN), a successful one (DEBUG)
@@ -392,7 +394,7 @@ upgrade is a number here that has to be measured again.
 | `RequestTimeoutOverhead` | 10s | Unchanged |
 | Automatic commit | every 5s, committing "whatever the last poll returned" | `AutoCommitMarks`: only what is done is committed, still every 5s |
 | `ConsumeResetOffset` | earliest (AtStart) | `latest` (`Consumer.ResetOffset`) |
-| `SessionTimeout` / `RebalanceTimeout` / `HeartbeatInterval` | 45s / 60s / 3s | Unchanged |
+| `SessionTimeout` / `RebalanceTimeout` / `HeartbeatInterval` | 45s / 60s / 3s | 45s unless `Consumer.SessionTimeout` says otherwise; the other two unchanged |
 | Assignment strategy | cooperative-sticky | Unchanged |
 | Logging | none (nopLogger) | Routed into slog, WARN and above |
 

@@ -10,6 +10,19 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
 
 ## [Unreleased]
 
+### Added
+
+- **`XKafka.Consumer.SessionTimeout`**: how long the broker waits for a heartbeat before it takes a
+  consumer for gone and hands its partitions to another member of the group. It is the time a
+  partition stops being consumed after a process is killed outright -- one that exits through its
+  stop hooks leaves the group on its way out and its partitions move at once, while one that was
+  SIGKILLed, fenced or lost with its host is only noticed when this runs out. Lower it for a faster
+  take-over, at the price of a rebalance whenever a pause (a long GC, a stalled network) outlasts
+  it. Left unset it keeps franz-go's own default of 45s, so nothing changes for a service that does
+  not write it. The floor is 3s, franz-go's heartbeat interval, and the broker's
+  `group.min.session.timeout.ms` (6s by default) and `group.max.session.timeout.ms` apply on top;
+  a value outside those is refused when the consumer joins the group rather than at startup.
+
 ### Fixed
 
 - **`XONE_DEBUG` masks a value under an `Authorization` or `Signature` key.** The word list it goes
