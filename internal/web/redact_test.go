@@ -55,13 +55,102 @@ func TestRedactBody_JSONEscapedFieldNames(t *testing.T) {
 	}
 }
 
-func TestRedactBody_JSONParseFailureMasksAll(t *testing.T) {
-	// The literal scan believes a sensitive field name is in there while it cannot be parsed --
-	// what cannot be located cannot be let through
+func TestRedactBody_JSONCutInsideAValueKeepsWhatWasRead(t *testing.T) {
+	// A body the access log records is usually cut by the framework itself (MaxResponseBody,
+	// maxRequestBody), so what arrives here ends in the middle of whatever field happened to be
+	// there. What was read is recorded, what follows the cut is dropped, and the line says so
+	got := RedactBody([]byte(`{"user":"alice","password":"`+secret), "application/json")
+	mustNotLeak(t, got)
+	if !strings.Contains(got, `"user":"alice"`) {
+		t.Errorf("the members read before the cut must be kept, got=%s", got)
+	}
+	if !strings.HasSuffix(got, truncatedSuffix) {
+		t.Errorf("a body that was not read to the end has to say so, got=%s", got)
+	}
+}
+
+func TestRedactBody_JSONCutWithNothingReadableOmitsIt(t *testing.T) {
+	// Not one member came out, so there is nothing to mask field by field. It must not read as
+	// Redacted: that marker means a sensitive field was found, and nothing was located here
 	got := RedactBody([]byte(`{"password": "`+secret), "application/json")
 	mustNotLeak(t, got)
-	if got != Redacted {
-		t.Errorf("a failed parse must mask the whole of it, got=%s", got)
+	if got != unparseableOmitted {
+		t.Errorf("got=%s, want %s", got, unparseableOmitted)
+	}
+}
+
+func TestRedactBody_JSONCutAfterAnEscapedFieldNameStillMasksIt(t *testing.T) {
+	// The reason the cut body goes through the decoder at all rather than being printed as text:
+	// a key written as password is the string password by the time the word list sees it,
+	// exactly as in a body that parsed whole. A literal scan over the raw bytes would miss it
+	body := `{"` + esc('p') + `assword":"` + secret + `","next":"cut here`
+	if strings.Contains(strings.ToLower(body), "password") {
+		t.Fatalf("the case no longer hides the field name, so it tests nothing: %s", body)
+	}
+	got := RedactBody([]byte(body), "application/json")
+	mustNotLeak(t, got)
+	if !strings.Contains(got, Redacted) {
+		t.Errorf("the escaped field name must still be masked, got=%s", got)
+	}
+}
+
+func TestRedactBody_JSONCutDropsEverythingAfterTheCut(t *testing.T) {
+	// Whatever follows the first decoding error never reaches the log, whether or not the word list
+	// would have recognized it: it was never resolved into a token. Here b's string is never closed,
+	// so everything written after it is inside a value the decoder could not read
+	got := RedactBody([]byte(`{"a":1,"b":"never closed, so this password=`+secret), "application/json")
+	mustNotLeak(t, got)
+	if got != `{"a":1}`+truncatedSuffix {
+		t.Errorf("got=%s, want only the members read before the cut", got)
+	}
+}
+
+func TestRedactBody_JSONCutInsideANestedListKeepsTheElementsRead(t *testing.T) {
+	// The shape this is all for: an envelope around a list, cut inside the list. Stopping at the
+	// top level would take items as unreadable and leave the whole body unreadable with it, which
+	// is every paged response there is
+	got := RedactBody([]byte(`{"page":1,"items":[{"id":0,"token":"`+secret+`"},{"id":1},{"id`), "application/json")
+	mustNotLeak(t, got)
+	for _, want := range []string{`"page":1`, `"id":0`, `"id":1`, `"token":"` + Redacted + `"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %s, got=%s", want, got)
+		}
+	}
+	if !strings.HasSuffix(got, truncatedSuffix) {
+		t.Errorf("missing the truncation marker, got=%s", got)
+	}
+}
+
+func TestRedactBody_JSONCutKeepsANullValue(t *testing.T) {
+	// A null value is a value: the decoder hands it over as a nil any, which is also what a
+	// container cut before its first member comes back as. Telling the two apart by the nil alone
+	// would make the field disappear from the log, which reads as a response that never held it
+	got := RedactBody([]byte(`{"deleted_at":null,"token":"`+secret), "application/json")
+	mustNotLeak(t, got)
+	if !strings.Contains(got, `"deleted_at":null`) {
+		t.Errorf("a null value was dropped, got=%s", got)
+	}
+}
+
+func TestRedactBody_ResponseCutAtTheCapIsStillReadable(t *testing.T) {
+	// The case this all exists for. The capture writer stops at MaxResponseBody, and mayContainField
+	// hands anything holding a backslash to the parser -- which \" and \n in ordinary JSON always do.
+	// Such a body used to be masked whole: the switch was on, the log said REDACTED, and nothing of
+	// the response was visible, with no way to tell that from a credential having been found
+	var b strings.Builder
+	b.WriteString(`{"items":[`)
+	for i := 0; b.Len() < MaxResponseBody; i++ {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, `{"id":%d,"note":"a \"quoted\" line"}`, i)
+	}
+	got := RedactBody([]byte(b.String()[:MaxResponseBody]), "application/json")
+	if !strings.Contains(got, `"note":"a \"quoted\" line"`) {
+		t.Errorf("a response cut at the cap records nothing readable: %.100s", got)
+	}
+	if !strings.HasSuffix(got, truncatedSuffix) {
+		t.Errorf("missing the truncation marker: %.100s", got)
 	}
 }
 
@@ -135,12 +224,14 @@ func TestRedactBody_ReserializeKeepsOtherValues(t *testing.T) {
 	}
 }
 
-func TestRedactBody_JSONWithTrailingDataMasksAll(t *testing.T) {
-	// Decoding value by value parses the first one and treats what follows as though it were not
-	// there -- while that may be exactly the part holding the credential
+func TestRedactBody_JSONWithTrailingDataDropsTheTrailer(t *testing.T) {
+	// A complete value followed by something else counts as "not read to the end": the value is
+	// kept and the trailer is dropped rather than quietly treated as though it were not there --
+	// it may be exactly the part holding the credential
 	got := RedactBody([]byte(`{"a":1} {"password":"`+secret+`"}`), "application/json")
-	if got != Redacted {
-		t.Errorf("what cannot be parsed in full must be masked whole, got=%s", got)
+	mustNotLeak(t, got)
+	if got != `{"a":1}`+truncatedSuffix {
+		t.Errorf("got=%s", got)
 	}
 }
 

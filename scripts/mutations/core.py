@@ -825,11 +825,49 @@ mutate("a request header name containing a sensitive word is masked too", "inter
 mutate("the sensitive-word pre-check ignores separators", "internal/web/redact.go", ".", "TestRedactBody",
        swap('sensitive(s, words()) {\n\t\treturn Redacted\n\t}\n\t// No sensitive field name, while it may still carry a URL / DSN credential\n\t// (postgres://u:p@h), as RedactText does\n\treturn newlines', 'func(ws []string) bool { return slices.ContainsFunc(ws, func(w string) bool { return strings.Contains(strings.Map(foldRune, s), w) }) }(words()) {\n\t\treturn Redacted\n\t}\n\t// No sensitive field name, while it may still carry a URL / DSN credential\n\t// (postgres://u:p@h), as RedactText does\n\treturn newlines'),
        swap('|| sensitive(body, ws)', '|| slices.ContainsFunc(ws, func(w string) bool { return strings.Contains(strings.Map(foldRune, body), w) })'))
-mutate("redaction loses no precision on a large integer", "internal/web/redact.go", ".", "TestRedactBody", swap('\tdec.UseNumber()\n', ''))
+# decodeJSON opens a decoder twice (the whole body, then member by member), so both are turned off
+mutate("redaction loses no precision on a large integer", "internal/web/redact.go", ".", "TestRedactBody",
+       swap('\tdec.UseNumber()\n', '', 2))
 mutate("redaction does not escape HTML characters", "internal/web/redact.go", ".", "TestRedactBody",
        swap('\tenc.SetEscapeHTML(false)\n', ''))
-mutate("JSON followed by anything else is masked whole", "internal/web/redact.go", ".", "TestRedactBody",
-       swap('dec.Decode(new(any)) != io.EOF', '(dec.Decode(new(any)) != io.EOF && false)'))
+# A complete value followed by a raw dump: taking the value and saying nothing would treat the
+# trailer as though it were not there, while it may be the part holding the credential
+# io.EOF stays in the replacement: it is redact.go's only use of io, and dropping it would leave
+# the mutant failing to compile rather than failing a test
+mutate("JSON followed by anything else says it was not read to the end", "internal/web/redact.go", ".", "TestRedactBody_JSONWithTrailingDataDropsTheTrailer",
+       swap('return v, dec.Decode(new(any)) == io.EOF', 'return v, dec.Decode(new(any)) != io.EOF || true'))
+
+# A body the access log records is usually one the framework itself cut (MaxResponseBody,
+# maxRequestBody), and mayContainField hands anything holding a backslash to the parser -- which the
+# \" and \n of ordinary JSON always do. Masking all of it on a failed parse made every large JSON
+# body read as "a credential was found here", with nothing of the response visible
+mutate("a body that was cut is recorded as far as it was read", "internal/web/redact.go", ".", "TestRedactBody_ResponseCutAtTheCapIsStillReadable|TestRedactBody_JSONCutInsideAValueKeepsWhatWasRead",
+       swap('\treturn partialValue(dec)\n', '\treturn nil, false\n'))
+# Stopping at the top level leaves {"page":1,"items":[…]} -- every paged response there is --
+# unreadable as soon as the cut falls inside the list
+mutate("a cut inside a nested value keeps what was read around it", "internal/web/redact.go", ".", "TestRedactBody_JSONCutInsideANestedListKeepsTheElementsRead",
+       swap('\t\t\t\treturn nonEmpty(out), false\n\t\t\t}\n\t\t\tv, whole := partialValue(dec)\n',
+            '\t\t\t\treturn nonEmpty(out), false\n\t\t\t}\n\t\t\tvar v any\n\t\t\twhole := dec.Decode(&v) == nil\n'))
+# A null value and a container that was cut before its first member both come back as a nil any,
+# and going by the nil alone drops the field out of the log -- which reads as a response that never
+# held it
+mutate("a null value survives a cut", "internal/web/redact.go", ".", "TestRedactBody_JSONCutKeepsANullValue",
+       swap('if whole || v != nil {\n\t\t\t\tout[key.(string)] = v', 'if v != nil {\n\t\t\t\tout[key.(string)] = v'))
+# Nothing after the first decoding error was ever resolved into a token, so printing it would be
+# printing raw bytes -- which is exactly what the backslash rule in mayContainField guards against
+mutate("nothing after the cut is recorded", "internal/web/redact.go", ".", "TestRedactBody_JSONCutDropsEverythingAfterTheCut",
+       swap('\t\t\tif !whole {\n\t\t\t\treturn nonEmpty(out), false\n\t\t\t}\n\t\t}\n\t\tif _, err := dec.Token(); err != nil { // the closing brace',
+            '\t\t\tif !whole {\n\t\t\t\tout["rest"] = string(remaining(dec))\n\t\t\t\treturn nonEmpty(out), false\n\t\t\t}\n\t\t}\n\t\tif _, err := dec.Token(); err != nil { // the closing brace'),
+       swap('// nonEmpty is v,', 'func remaining(dec *json.Decoder) []byte { b, _ := io.ReadAll(dec.Buffered()); return b }\n\n// nonEmpty is v,'))
+mutate("a body that was not read to the end says so", "internal/web/redact.go", ".", "TestRedactBody_JSONCutInsideAValueKeepsWhatWasRead",
+       swap('\treturn redacted + truncatedSuffix\n', '\treturn redacted\n'))
+# Redacted means "a sensitive field was found and masked"; reading it for a body nothing could be
+# read out of sends somebody looking for a credential that was never located
+mutate("a body nothing could be read out of is marked as unparseable, not as masked", "internal/web/redact.go", ".", "TestRedactBody_JSONCutWithNothingReadableOmitsIt",
+       swap('\t\treturn unparseableOmitted\n', '\t\treturn Redacted\n'))
+# An empty {} in the log reads as a response that really was empty
+mutate("a container cut before its first member is not recorded as empty", "internal/web/redact.go", ".", "TestRedactBody_JSONCutWithNothingReadableOmitsIt",
+       swap('func nonEmpty[T map[string]any | []any](v T) any {\n\tif len(v) == 0 {\n\t\treturn nil\n\t}\n', 'func nonEmpty[T map[string]any | []any](v T) any {\n'))
 
 section("Shared by the web integrations: client_ip and bounding the labels")
 # xecho computes client_ip by the rules here (xgin uses gin's own, and xgin's
