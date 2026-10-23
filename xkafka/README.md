@@ -309,6 +309,7 @@ naming which one. The rules are the same as in
 | `kafka message dead-lettered` | WARN | The message fields, `dlq_topic`, `attempts`, `error` |
 | `kafka message skipped, retries exhausted and dead lettering is off` | ERROR | The message fields, `attempts`, `error` |
 | `kafka handler panicked` | ERROR | The message fields, `error`, `stack` |
+| `kafka partition worker panicked, this partition stops until the next rebalance` | ERROR | `topic`, `partition`, `group`, `error`, `stack`. This module's own code blew up rather than the handler's (that one is the line above and counts as one failed attempt). The partition is given up instead of taking the process down; nothing was marked, so its records come back after the next rebalance. It means a bug in the framework — report it |
 | `kafka dead letter produce failed, retrying` | WARN | The message fields, `dlq_topic`, `error` |
 | `kafka fetch failed` | WARN | `topic`, `partition`, `group`, `error` |
 | `kafka commit on partition revoke failed, processed messages may be redelivered` | WARN | `topic`, `group`, `error` |
@@ -486,3 +487,6 @@ or leaving the group: the coordinator is unreachable.
 - One partition is stuck on `kafka dead letter produce failed, retrying`: the dead-letter topic does not exist or there
   is no write permission, and that partition is stalled on that message. See
   ["Retries and dead letters"](#retries-and-dead-letters).
+- One partition logged `kafka partition worker panicked`: a bug in this module gave that partition up. It is picked up
+  again at the next rebalance (a member joining or leaving, or a restart) and nothing was committed, so no message is
+  lost. Report it with the `stack` from that line.

@@ -2,7 +2,6 @@ package xkafka
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
@@ -71,11 +70,21 @@ func newWorker(c *consumer, partition int32) *worker {
 	return w
 }
 
+// run is this partition's goroutine. It exits when the partition is revoked, when the consumer is stopping,
+// or -- the case the recover below is for -- when this module's own code blows up.
 func (w *worker) run() {
 	defer func() {
-		w.c.mu.Lock()
-		delete(w.c.live, w)
-		w.c.mu.Unlock()
+		// A panic here is this module's code, not the handler's: that one is caught by call and counted as one
+		// failed attempt. Uncontained, a panic in a goroutine takes the whole process down, which is exactly
+		// what the framework's other lifecycle entry points (xone's safeHook, xclient's safeNew, xflow's
+		// safeProcess) exist to prevent -- one partition must not be able to kill the service.
+		// Nothing was marked, so this partition's records come back after the next rebalance.
+		if p := recover(); p != nil {
+			slog.ErrorContext(w.c.base, "kafka partition worker panicked, this partition stops until the next rebalance",
+				"topic", w.c.topic, "partition", w.partition, "group", w.c.group,
+				"error", panicked(p), "stack", string(debug.Stack()))
+		}
+		w.c.retire(w)
 		close(w.done)
 	}()
 	for {
@@ -154,11 +163,10 @@ func (w *worker) process(r *kgo.Record) bool {
 func (w *worker) handle(ctx, hctx context.Context, r *kgo.Record, fields []any) outcome {
 	c := w.c
 	attempts := 0
-	var last error // the error the handler returned last, as it is (possibly wrapped in xutil.Permanent)
 	err := xutil.Retry(w.stopping, c.o.retries+1, c.o.timeout, retryInterval, func(attempt context.Context) error {
 		attempts++
 		start := time.Now()
-		last = c.call(hctx, attempt, r, fields)
+		last := c.call(hctx, attempt, r, fields) // as the handler returned it, possibly wrapped in xutil.Permanent
 		if last != nil && c.log {
 			slog.WarnContext(ctx, "kafka message failed", append(slices.Clone(fields),
 				"attempt", attempts, "elapsed_ms", ms(time.Since(start)), "error", last)...)
@@ -168,7 +176,17 @@ func (w *worker) handle(ctx, hctx context.Context, r *kgo.Record, fields []any) 
 	switch {
 	case err == nil:
 		return outcomeOK
-	case attempts == 0 || interrupted(err, last):
+	// Shutting down, or this partition revoked: the record is left unmarked and comes back later.
+	// attempts == 0 is the same thing one step earlier -- xutil.Retry makes no attempt at all on a ctx that
+	// was already cancelled when it was entered, so there is no failure of the handler's to report.
+	//
+	// It is asked of stopping rather than worked out from the error xutil.Retry handed back. Working it out
+	// meant comparing that error against the one the handler returned last, and comparing two interface
+	// values panics outright when their dynamic type is not comparable -- an error type such as
+	// validator.ValidationErrors ([]FieldError) or mongo's WriteException took the whole process down from
+	// inside this goroutine as soon as a message used up its retries. Whether this message was interrupted
+	// is what stopping says, and nothing has to be inferred from an error value.
+	case attempts == 0 || w.stopping.Err() != nil:
 		return outcomeAborted
 	}
 
@@ -183,12 +201,6 @@ func (w *worker) handle(ctx, hctx context.Context, r *kgo.Record, fields []any) 
 	slog.WarnContext(ctx, "kafka message dead-lettered",
 		append(fields, "dlq_topic", c.o.dlq, "attempts", attempts, "error", err)...)
 	return outcomeDeadLetter
-}
-
-// interrupted reports whether xutil.Retry was stopped by stopping: in that case what it returns is neither the last
-// error nor the one wrapped inside that error's Permanent (xutil.Retry strips the Permanent layer).
-func interrupted(err, last error) bool {
-	return err != last && !errors.Is(last, err)
 }
 
 // call makes one call to the handler.

@@ -25,6 +25,26 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
 
 ### Fixed
 
+- **A Kafka handler returning an error type that cannot be compared no longer takes the process
+  down.** Deciding whether a message had been interrupted compared the error `xutil.Retry` handed
+  back against the last one the handler returned, and comparing two interface values panics outright
+  when their dynamic type is not comparable — `validator.ValidationErrors` (`[]FieldError`) and
+  mongo-driver's `WriteException` are two in common use. The panic came from inside the partition's
+  goroutine, where nothing caught it, so the first message to use up its retries killed the service.
+  The outcome now goes by the stopping context, which is what "interrupted" means, and nothing is
+  inferred from an error value. The same comparison also took an `xutil.Permanent(err)` carrying such
+  a type for a shutdown, so that message was neither dead-lettered nor committed.
+- **One partition giving up no longer silently stops every partition of that consumer.** A
+  partition's goroutine used to exit while still listed in the consumer's partition table, and the
+  poll loop kept dispatching to it: it filled that queue and then blocked for good, so no further
+  fetch and no rebalance happened for any partition, while the member went on heartbeating and
+  logged nothing. A goroutine that exits now leaves the table, and a batch with nowhere to go is
+  dropped — none of it was marked, so it comes back after the next rebalance.
+- **A panic in this module's own consuming code is contained.** Only the handler call was protected
+  before; everything the framework does around it (marking, metrics, dead-lettering) could take the
+  whole process down. It is now recorded as `kafka partition worker panicked, this partition stops
+  until the next rebalance` (ERROR, with the stack) and costs that one partition until the next
+  rebalance, as every other lifecycle entry point in the framework already behaved.
 - **`XONE_DEBUG` masks a value under an `Authorization` or `Signature` key.** The word list it goes
   by was missing both, so a credential under either was printed in the clear while `Password` and
   `ApiKey` beside it were masked. It stays shorter than the access log's list by `cookie` and
@@ -43,26 +63,25 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
   `NumField of non-struct type int`, which names neither the field nor the tag; yaml's own sentence
   was never reached. It now raises the same one yaml does,
   `option ,inline may only be used on a struct or map field`.
-
-### Fixed
-
-- **The global logger is no longer replaced on shutdown when nothing it writes to was closed.** xlog is closed last
-  while logs keep coming after it (the stop hooks abandoned at the deadline, the requests still in flight), and the
-  replacement exists so those lines do not disappear into a closed file. It used to happen whatever was configured:
-  with `XLog.Console: true` — the default, and with no file at all — those last lines lost their `trace_id`, their
-  `xlog.AddKV` fields and the configured `Level` / `Format` / `Timezone`, and moved from stdout to stderr, which a
-  collector reading only stdout does not see. With no output configured at all, "I want no logs" turned into logs on
-  stderr the moment the service stopped. File output alone is unchanged: there the replacement is what keeps those
-  lines at all.
-- **`xmetric.CounterAdd` with a negative value no longer panics inside the caller.** client_golang panics on it
-  (`counter cannot decrease in value`); it is now one `ERROR` log line and nothing recorded, as every other
-  unrecordable metric in that package already was.
-- **The warning `Install` writes when metrics were recorded on a previous registry says which case it is.** A second
-  `Install` in the process (another `xone.Run`, or a caller installing by hand) was reported as
-  `metrics were recorded before xmetric was initialized`, sending whoever read it looking for a startup problem that
-  was not there.
-- **`xlog.Observer` documents that the record must not be modified.** Copies of a `slog.Record` share state, and the
-  fields the context carries are appended to that same record right after the observers have run.
+- **The global logger is no longer replaced on shutdown when nothing it writes to was closed.** xlog
+  is closed last while logs keep coming after it (the stop hooks abandoned at the deadline, the
+  requests still in flight), and the replacement exists so those lines do not disappear into a
+  closed file. It used to happen whatever was configured: with `XLog.Console: true` — the default,
+  and with no file at all — those last lines lost their `trace_id`, their `xlog.AddKV` fields and
+  the configured `Level` / `Format` / `Timezone`, and moved from stdout to stderr, which a collector
+  reading only stdout does not see. With no output configured at all, "I want no logs" turned into
+  logs on stderr the moment the service stopped. File output alone is unchanged: there the
+  replacement is what keeps those lines at all.
+- **`xmetric.CounterAdd` with a negative value no longer panics inside the caller.** client_golang
+  panics on it (`counter cannot decrease in value`); it is now one `ERROR` log line and nothing
+  recorded, as every other unrecordable metric in that package already was.
+- **The warning `Install` writes when metrics were recorded on a previous registry says which case
+  it is.** A second `Install` in the process (another `xone.Run`, or a caller installing by hand)
+  was reported as `metrics were recorded before xmetric was initialized`, sending whoever read it
+  looking for a startup problem that was not there.
+- **`xlog.Observer` documents that the record must not be modified.** Copies of a `slog.Record`
+  share state, and the fields the context carries are appended to that same record right after the
+  observers have run.
 
 ## [v1.3.0] - 2026-10-22
 
