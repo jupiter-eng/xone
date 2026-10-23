@@ -11,6 +11,7 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -321,5 +322,30 @@ func TestResetPeakRSS_PeakRestartsFromCurrentRSS(t *testing.T) {
 	}
 	if s.PeakRSS > high.PeakRSS-128<<20 {
 		t.Errorf("after the reset the peak should start from the current RSS: peak before %dMB, peak after %dMB (current RSS %dMB)", high.PeakRSS>>20, s.PeakRSS>>20, s.RSS>>20)
+	}
+}
+
+func TestFreePort_OutOfTheBandAndNeverTwice(t *testing.T) {
+	// Out of the band is the whole point: a port from the ephemeral range is one the kernel may
+	// hand to an outgoing connection of this run's own during the second between this returning and
+	// the service binding, which is how a case came back with "bind: address already in use". The
+	// numbers here must therefore be ones the kernel never assigns by itself.
+	Require(t)
+	seen := map[int]bool{}
+	for range 200 {
+		p := FreePort(t)
+		if p < portBandLow || p >= portBandHigh {
+			t.Fatalf("port %d is outside %d-%d, so the kernel can hand it to an outgoing connection", p, portBandLow, portBandHigh)
+		}
+		if seen[p] {
+			t.Fatalf("port %d was handed out twice", p)
+		}
+		seen[p] = true
+		// And it is really free: what is handed out has to be bindable right now
+		ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(p)))
+		if err != nil {
+			t.Fatalf("port %d was handed out and cannot be listened on: %v", p, err)
+		}
+		ln.Close()
 	}
 }
