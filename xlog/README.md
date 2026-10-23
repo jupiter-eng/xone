@@ -159,6 +159,10 @@ func main() {
   scratch / distroless image needs `import _ "time/tzdata"`, see ["Behavior (measured)"](#behavior-measured).
 - **A file that is not a symbolic link already sitting at `Name`'s position** fails startup rather than overwriting the
   old logs.
+- **Logging is closed last, and logs keep coming after it** — the stop hooks abandoned at the deadline, the requests
+  still in flight. With `Console: true` they still reach stdout and nothing changes. With **file output alone** the
+  file is gone, so the global logger is replaced by a plain JSON one on stderr: those last lines carry no `trace_id`,
+  no `AddKV` fields and none of `Level` / `Format` / `Timezone`. Turning `Console` on as well is what keeps them whole.
 
 ## Behavior (measured)
 

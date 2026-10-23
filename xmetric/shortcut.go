@@ -37,7 +37,16 @@ func CounterInc(name string, tags ...Tag) {
 }
 
 // CounterAdd adds v to a counter (v must be >= 0).
+//
+// A negative v is recorded as an error and nothing else: client_golang panics on it (counter cannot decrease in
+// value), and that panic would come out of whichever business call happened to make the mistake. A metric that
+// cannot be recorded is an observability problem and not a reason to take the request down with it, which is how
+// every other failure in this package is treated.
 func CounterAdd(name string, v float64, tags ...Tag) {
+	if v < 0 {
+		slog.Error("xmetric CounterAdd ignored a negative value, a counter only goes up", "metric", name, "value", v)
+		return
+	}
 	names, values := parseTags(tags)
 	active().counterOf(name, names).WithLabelValues(values...).Add(v)
 }

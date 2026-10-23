@@ -26,6 +26,14 @@ mutate("a constant label name cannot be a reserved label name", "xmetric/config.
 # Config{}'s buckets are nil, and handing them to Prometheus as they are means its DefBuckets
 # rather than this package's defaults
 mutate("this package's defaults are used when no buckets are given", "xmetric/xmetric.go", "./xmetric", "TestNew", swap('\tcfg = cfg.withDefaults()\n', ''))
+# client_golang panics on a negative Add, out of whichever business call made the mistake, while
+# everything else here only logs and carries on
+mutate("a negative CounterAdd is reported rather than panicking", "xmetric/shortcut.go", "./xmetric", "TestShortcut_CounterAddIgnoresANegativeValue",
+       swap('\tif v < 0 {\n', '\tif false {\n'))
+# The previous instance is not always the fallback: "before xmetric was initialized" then sends
+# whoever reads it looking for a startup problem that is not there
+mutate("a second Install is not reported as a startup problem", "xmetric/xmetric.go", "./xmetric", "TestInstall_ASecondInstallIsNotReportedAsAStartupProblem",
+       swap('n > 0 && prev == fallback', 'n > 0'))
 # client_golang's ready-made collectors have no Opts to fill in, and registered on the Registry
 # directly they carry not one constant label: a dashboard filtering by env finds nothing for
 # go_goroutines{env="prod"}

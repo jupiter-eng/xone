@@ -608,34 +608,47 @@ func TestAddObserver_PanicDoesNotInterruptLogging(t *testing.T) {
 }
 
 func TestNew_RendersTimeInConfiguredTimezone(t *testing.T) {
-	c := DefaultConfig()
-	c.Console, c.Format, c.Timezone = false, FormatJSON, "Asia/Shanghai"
+	// Two zones, and what is asserted is each one's own offset rather than a number written here.
+	// One zone alone proves nothing on a machine whose local zone happens to match it: without the
+	// configuration taking effect the timestamp is rendered in local time, which is the same offset,
+	// and the test passes while the setting does nothing. These two can never both be local.
+	for _, tz := range []string{"Asia/Shanghai", "America/New_York"} {
+		c := DefaultConfig()
+		c.Console, c.Format, c.Timezone = false, FormatJSON, tz
 
-	dir := t.TempDir()
-	c.File.Enable, c.File.Path, c.File.Name = true, dir, "tz"
+		dir := t.TempDir()
+		c.File.Enable, c.File.Path, c.File.Name = true, dir, "tz"
 
-	l, closer, err := New(c)
-	if err != nil {
-		t.Fatal(err)
-	}
-	l.Info("hello")
-	if err := closer.Close(); err != nil {
-		t.Fatal(err)
-	}
+		l, closer, err := New(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		l.Info("hello")
+		if err := closer.Close(); err != nil {
+			t.Fatal(err)
+		}
 
-	line := readFile(t, filepath.Join(dir, "tz"))
-	var rec struct {
-		Time string `json:"time"`
-	}
-	if err := json.Unmarshal([]byte(line), &rec); err != nil {
-		t.Fatalf("the log line could not be parsed: %v, raw=%s", err, line)
-	}
-	got, err := time.Parse(time.RFC3339Nano, rec.Time)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, offset := got.Zone(); offset != 8*3600 {
-		t.Errorf("it must be rendered in Asia/Shanghai (+08:00), got=%s offset=%d", rec.Time, offset)
+		line := readFile(t, filepath.Join(dir, "tz"))
+		var rec struct {
+			Time string `json:"time"`
+		}
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("the log line could not be parsed: %v, raw=%s", err, line)
+		}
+		got, err := time.Parse(time.RFC3339Nano, rec.Time)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		loc, err := time.LoadLocation(tz)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Taken at the record's own moment, so a daylight saving change does not move the number.
+		_, want := got.In(loc).Zone()
+		if _, offset := got.Zone(); offset != want {
+			t.Errorf("it must be rendered in %s (offset %d), got=%s offset=%d", tz, want, rec.Time, offset)
+		}
 	}
 }
 
@@ -674,13 +687,14 @@ func TestLocation_LocalTimezoneWhenUnset(t *testing.T) {
 // keepGlobals records the globals install will change and restores them when the test ends.
 func keepGlobals(t *testing.T) {
 	t.Helper()
-	oldLogger, oldCloser, oldLoc := slog.Default(), closer, location.Load()
+	oldLogger, oldCloser, oldLoc, oldSwap := slog.Default(), closer, location.Load(), swapOnClose
 	t.Cleanup(func() {
 		slog.SetDefault(oldLogger)
 		closer = oldCloser
 		custom.Store(nil)
 		installed.Store(false)
 		location.Store(oldLoc)
+		swapOnClose = oldSwap
 	})
 }
 
@@ -836,6 +850,69 @@ func TestCloseXLog_LogsGoToStderrAfterFileClosed(t *testing.T) {
 	}
 	if !strings.Contains(string(b), "shutdown failed") {
 		t.Errorf("logs after the file is closed must go to stderr, got=%q", b)
+	}
+}
+
+func TestCloseXLog_LeavesTheLoggerAloneWhenTheConsoleIsStillWriting(t *testing.T) {
+	// The replacement above is for a file-only setup, where those logs would be written into a closed file. With the
+	// console on they reach stdout either way, and replacing takes their trace_id, their AddKV fields, the configured
+	// level and the configured format with them -- in the default configuration (console on, no file), where nothing
+	// was closed at all.
+	for _, c := range []struct {
+		name string
+		yaml func(dir string) string
+	}{
+		{"the default: console on, no file", func(string) string { return "XLog:\n  Console: true\n" }},
+		{"no output configured at all", func(string) string { return "XLog:\n  Console: false\n" }},
+		{"console on and a file too", func(dir string) string {
+			return "XLog:\n  Console: true\n  File:\n    Enable: true\n    Path: \"" + dir + "\"\n    Name: app.log\n"
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			keepGlobals(t)
+			xonetest.UseConfigYAML(t, c.yaml(t.TempDir()))
+			if err := initXLog(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			before := slog.Default()
+			if err := closeXLog(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if slog.Default() != before {
+				t.Error("the logger must be left alone: nothing was closed that it was writing to")
+			}
+		})
+	}
+}
+
+func TestCloseXLog_NoOutputConfiguredStaysSilentAfterwards(t *testing.T) {
+	// "I want no logs" must not turn into logs on stderr the moment the service stops.
+	keepGlobals(t)
+	xonetest.UseConfigYAML(t, "XLog:\n  Console: false\n")
+	if err := initXLog(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	stderr, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stderr.Close()
+	old := os.Stderr
+	os.Stderr = stderr
+	t.Cleanup(func() { os.Stderr = old })
+
+	if err := closeXLog(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	slog.Error("shutdown failed")
+
+	b, err := os.ReadFile(stderr.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b) != 0 {
+		t.Errorf("with no output configured nothing should be written, got=%q", b)
 	}
 }
 
