@@ -3,9 +3,9 @@ module github.com/jupiter-eng/xone/xredis
 go 1.25.0
 
 require (
-	github.com/jupiter-eng/xone v1.3.0
-	github.com/jupiter-eng/xone/xmetric v1.3.0
-	github.com/jupiter-eng/xone/xtrace v1.3.0
+	github.com/jupiter-eng/xone v1.4.0
+	github.com/jupiter-eng/xone/xmetric v1.4.0
+	github.com/jupiter-eng/xone/xtrace v1.4.0
 	github.com/prometheus/client_golang v1.24.1
 	github.com/redis/go-redis/extra/redisotel/v9 v9.22.0
 	github.com/redis/go-redis/v9 v9.22.0
