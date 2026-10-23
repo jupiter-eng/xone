@@ -153,6 +153,31 @@ func redactedYAML(t *testing.T, src string) string {
 	return string(out)
 }
 
+func TestRedacted_AuthorizationAndSignatureAreMasked(t *testing.T) {
+	// They carry a credential as surely as Password does, and neither has an everyday spelling that
+	// does not. cookie and session are the two words the access log masks and this does not: they
+	// would take CookieDomain, CookieSameSite, SessionTimeout and beego's SessionOn with them, and
+	// what is hidden here is what somebody turned XONE_DEBUG on to read.
+	got := redactedYAML(t, `
+Demo:
+  Authorization: "Bearer a-token"
+  Webhook_Signature: sig-123
+  CookieDomain: example.com
+  SessionTimeout: 30m
+  SessionOn: true
+`)
+	for _, secret := range []string{"Bearer a-token", "sig-123"} {
+		if strings.Contains(got, secret) {
+			t.Errorf("%q must be masked, got=\n%s", secret, got)
+		}
+	}
+	for _, keep := range []string{"example.com", "30m", "true"} {
+		if !strings.Contains(got, keep) {
+			t.Errorf("%q is not a credential and must stay readable, got=\n%s", keep, got)
+		}
+	}
+}
+
 func TestRedacted_MasksWholeValueOfAnyShapeUnderSensitiveKey(t *testing.T) {
 	// Only scalars used to be masked: a credential written as a list or a map was printed as it
 	// was

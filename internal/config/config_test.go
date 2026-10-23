@@ -1013,6 +1013,51 @@ func TestDecodeStrict_FieldRulesMatchYAML(t *testing.T) {
 	}
 }
 
+func TestDecodeStrict_InlineOnANonStructSaysSo(t *testing.T) {
+	// yaml.v3 raises exactly this, and the check here reaches the field first: without saying it
+	// itself, what comes out is reflect's "NumField of non-struct type int", which names neither
+	// the field nor the tag behind it, and yaml's own sentence is never reached because nothing is
+	// decoded any more
+	for name, probe := range map[string]func(){
+		"a scalar": func() {
+			var c struct {
+				N int `yaml:",inline"`
+			}
+			_ = DecodeStrict(scalarMapping(t, "n", "1"), &c)
+		},
+		"a slice": func() {
+			var c struct {
+				L []string `yaml:",inline"`
+			}
+			_ = DecodeStrict(scalarMapping(t, "l", "a"), &c)
+		},
+	} {
+		func() {
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Errorf("%s: ,inline on it must be reported", name)
+					return
+				}
+				if got := fmt.Sprint(r); !strings.Contains(got, "may only be used on a struct or map field") {
+					t.Errorf("%s: the panic must name the tag, got=%v", name, got)
+				}
+			}()
+			probe()
+		}()
+	}
+}
+
+// scalarMapping is a one-key mapping node, for the cases above
+func scalarMapping(t *testing.T, key, value string) *yaml.Node {
+	t.Helper()
+	var n yaml.Node
+	if err := yaml.Unmarshal([]byte(key+": "+value+"\n"), &n); err != nil {
+		t.Fatal(err)
+	}
+	return n.Content[0]
+}
+
 func TestLoad_MultipleDocumentsIsError(t *testing.T) {
 	// Only the first document used to be read, with everything after the --- dropped quietly and
 	// invisible even to Unclaimed
