@@ -391,6 +391,22 @@ func TestLog_UnmatchedRouteIsUnmatched(t *testing.T) {
 	}
 }
 
+func TestLog_GroupedRouteIsTheWholeTemplate(t *testing.T) {
+	// A version prefix is how an API is usually laid out, and the label has to be the whole
+	// template: with the part registered inside the group alone, /api/v1/users/:id and
+	// /api/v2/users/:id would share one label in the log, the metrics and the span names alike.
+	lines := capture(t)
+	e := echo.New()
+	e.Use(Log())
+	e.Group("/api/v1").GET("/users/:id", statusOnly(200))
+	e.ServeHTTP(httptest.NewRecorder(), get("/api/v1/users/42"))
+
+	l := accessLogs(lines())[0]
+	if l["route"] != "/api/v1/users/:id" || l["path"] != "/api/v1/users/42" {
+		t.Errorf("route should be the whole template, the group prefix included, got=%v", l)
+	}
+}
+
 // errorCases covers requests where the handler returns an error or the router itself fails,
 // together with the status the client actually receives and the route label.
 var errorCases = []struct {

@@ -77,6 +77,13 @@ func TestMain(m *testing.M) {
 	beeweb.Get("/users/:id", func(ctx *beectx.Context) {
 		_ = ctx.Output.Body([]byte("user " + ctx.Input.Param(":id")))
 	})
+	// A namespace is how a beego application lays a version prefix out, which the route template
+	// has to come out of whole.
+	beeweb.AddNamespace(beeweb.NewNamespace("/api/v1",
+		beeweb.NSGet("/users/:id", func(ctx *beectx.Context) {
+			_ = ctx.Output.Body([]byte("v1 user " + ctx.Input.Param(":id")))
+		}),
+	))
 	beeweb.Post("/login", func(ctx *beectx.Context) {
 		body, _ := io.ReadAll(ctx.Request.Body)
 		ctx.Output.SetStatus(http.StatusCreated)
@@ -574,6 +581,20 @@ func TestAccessLog_RouteIsTheTemplate(t *testing.T) {
 	}
 	if _, ok := a["elapsed_ms"]; !ok {
 		t.Errorf("elapsed_ms should be recorded, got=%v", a)
+	}
+}
+
+func TestAccessLog_NamespacedRouteIsTheWholeTemplate(t *testing.T) {
+	// A version prefix is how an API is usually laid out, and the label has to be the whole
+	// template: with the part registered inside the namespace alone, /api/v1/users/:id and
+	// /api/v2/users/:id would share one label in the log, the metrics and the span names alike.
+	lines := captureLog(t)
+	x := New().WithConfig(configWith(func(c *Config) { c.Metric, c.Trace = false, false }))
+	do(t, x, "GET", "/api/v1/users/42", nil)
+
+	a := access(t, lines())
+	if a["route"] != "/api/v1/users/:id" || a["path"] != "/api/v1/users/42" {
+		t.Errorf("route should be the whole template, the namespace prefix included, got=%v", a)
 	}
 }
 
