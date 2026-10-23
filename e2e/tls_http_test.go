@@ -78,7 +78,9 @@ func TestTLS_XHttp(t *testing.T) {
 		{"a client certificate is wanted and none is presented", xtls.Config{Enable: true, CAFile: certs.CAFile}, ""},
 		// The server lists the CAs it accepts in the handshake, and Go's client does not present a certificate that none of them signed
 		{"a client certificate signed by a CA the server does not accept", xtls.Config{Enable: true, CAFile: certs.CAFile, CertFile: certs.StrangerCert, KeyFile: certs.StrangerKey}, ""},
-		{"no TLS block", xtls.Config{}, "certificate signed by unknown authority"},
+		// No CAFile at all, so the roots are the system's: on macOS the platform verifier answers and
+		// words it its own way, see untrustedCA
+		{"no TLS block", xtls.Config{}, untrustedCA},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			cfg := xhttp.DefaultConfig()

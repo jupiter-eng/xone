@@ -59,17 +59,47 @@ func noSecret(t *testing.T, err error) {
 
 // rejected asserts that err is non-nil, says every sentence in want and holds no password; it
 // returns how long it took, to record
+// untrustedCA is what a client reports when the server's certificate is signed by no CA it trusts,
+// written as the two wordings that mean it (rejected takes a want holding wantEither that way).
+//
+// There is no single string for it. Go's own verifier says "certificate signed by unknown
+// authority" (crypto/x509/verify.go). Where the roots are the system's and the platform brings a
+// verifier of its own, crypto/x509 hands the check over instead -- "Use platform verifiers, where
+// available, if Roots is from SystemCertPool", verify.go -- and macOS then words it
+// `x509: "<name>" certificate is not trusted`; crypto/x509/platform_test.go pins that wording,
+// with Windows wording it as Go does.
+//
+// Which of the two a case meets depends on how its client built the tls.Config as much as on the
+// platform, so guessing by GOOS is wrong: measured on macOS, xhttp with no TLS block gets the
+// platform's wording while the ClickHouse driver with no CAFile gets Go's. The cases that give no
+// CA assert the pair. The ones that give a wrong CAFile have roots of their own, always reach Go's
+// verifier, and go on saying so literally.
+const untrustedCA = "certificate signed by unknown authority" + wantEither + "certificate is not trusted"
+
+// wantEither separates the alternatives inside one want, see rejected
+const wantEither = " -or- "
+
 func rejected(t *testing.T, what string, err error, want ...string) {
 	t.Helper()
 	if err == nil {
 		t.Fatalf("%s: it should be refused, and it connected", what)
 	}
 	for _, w := range want {
-		if !strings.Contains(err.Error(), w) {
+		if !holdsAny(err.Error(), strings.Split(w, wantEither)) {
 			t.Errorf("%s: the error should hold %q, got=%v", what, w, err)
 		}
 	}
 	noSecret(t, err)
+}
+
+// holdsAny reports whether s holds any one of the alternatives
+func holdsAny(s string, alternatives []string) bool {
+	for _, a := range alternatives {
+		if strings.Contains(s, a) {
+			return true
+		}
+	}
+	return false
 }
 
 // ---- PostgreSQL ----
@@ -130,7 +160,7 @@ func TestTLS_PostgreSQL(t *testing.T) {
 		{"a wrong CA", pgTLSConfig(pg.DSN("postgres"), xtls.Config{Enable: true, CAFile: certs.OtherCAFile}),
 			[]string{"cannot reach", "certificate signed by unknown authority"}},
 		{"no CA given, the system roots", pgTLSConfig(pg.DSN("postgres"), xtls.Config{Enable: true}),
-			[]string{"certificate signed by unknown authority"}},
+			[]string{untrustedCA}},
 		{"a ServerName mismatch", pgTLSConfig(pg.DSN("postgres"), xtls.Config{Enable: true, CAFile: certs.CAFile, ServerName: "wrong.e2e.internal"}),
 			[]string{"certificate is valid for", "wrong.e2e.internal"}},
 		// The server wants a client certificate (clientcert=verify-full): it answers 28000, which is handled as an authentication failure

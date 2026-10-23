@@ -106,7 +106,7 @@ and a consumer module outside the repository.
 | `scripts/check.sh` | Architecture constraints + dependency boundaries + documentation + gofmt / vet | Every time (ci.yml) |
 | `scripts/test.sh [go test flags]` | `GOWORK=off go test -race ./...` per module, several at a time (the CPU count by default, changed with `XONE_TEST_JOBS`), printed in module order; one failing module does not stop the others and everything is reported together at the end. Locally, leave out `-count=1` and unchanged modules come from the cache | Every time (with `-count=1`) |
 | `scripts/mutate.py [-j N] [--only X] [-k X] [--dry-run]` | Mutation testing, run in parallel, leaving the worktree untouched | The full run nightly and on demand (e2e.yml); `--dry-run` inside check.sh |
-| `scripts/e2e.sh [--load] [-run X]` | Tests against a real web server, needing PG / MySQL / Redis (ClickHouse and Kafka optional); without `-parallel` it uses 16 (the tests spend most of their time waiting; go test defaults to GOMAXPROCS, which is 103s on a 4-core machine against 60s at 16) | PRs that changed `go.mod` / `go.sum`, nightly, on demand (e2e.yml, without the load tests) |
+| `scripts/e2e.sh [--slow] [--load] [-run X]` | Tests against a real web server, needing PG / MySQL / Redis (ClickHouse and Kafka optional); without `-parallel` it uses 16 (the tests spend most of their time waiting; go test defaults to GOMAXPROCS, which is 103s on a 4-core machine against 60s at 16) | PRs that changed `go.mod` / `go.sum`, nightly, on demand (e2e.yml, without the load tests; `--slow` except on a PR) |
 | `scripts/release.sh vX.Y.Z (--bump \| --tag [--e2e-passed] \| --smoke \| --verify)` | Releasing: pin the version / tag / smoke before pushing / verify after pushing | No (tagging is done by the release button) |
 
 ### check.sh
@@ -220,6 +220,11 @@ go test -run=NONE -bench=. -benchtime=100000x ./xlog/ ./xflow/ ./xgin/middleware
 MySQL, Redis, ClickHouse and Kafka, sends requests and signals, and then reads its logs, spans,
 `/metrics` and `/proc`.
 
+The other two web integrations have a small service each — `e2e/service-beego` and
+`e2e/service-echo`, connecting to nothing — for what no unit test of theirs reaches: a real binary,
+a real signal, and the globals and loggers each framework brings along (`beego_test.go`,
+`echo_test.go`).
+
 - The service's XGorm is multi-instance: `default` connects to PostgreSQL and `mysql` to MySQL;
   `ch` connects to ClickHouse and is written in the profile `e2e/service/application-ch.yml`,
   activated only by the processes `TestClickHouse_*` starts (`harness.Options.ClickHouse`);
@@ -274,7 +279,7 @@ green.
 
 **The harness's rules:**
 
-- The three binaries (`service`, `baseline`, `covapp`) are built in one `go build -race` (the load
+- The five binaries (`service`, `service-beego`, `service-echo`, `baseline`, `covapp`) are built in one `go build -race` (the load
   tests aside). When a process under test exits, the harness inspects its output (`checkOutput` in
   `harness/output.go`) and fails that test on a problem: `WARNING: DATA RACE` on stderr, or a line
   on stdout / stderr that is not JSON — a caller's logging platform parses JSON line by line, and a

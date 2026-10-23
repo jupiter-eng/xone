@@ -83,12 +83,32 @@ func TestConfig_Validate(t *testing.T) {
 		{"sasl no password", func(c *ClientConfig) { c.SASL = SASLConfig{Mechanism: "PLAIN", Username: "u"} }, "required"},
 		{"sasl without mechanism", func(c *ClientConfig) { c.SASL = SASLConfig{Username: "u", Password: "p"} }, "SASL.Mechanism is empty"},
 		{"tls fields without enable", func(c *ClientConfig) { c.TLS.CAFile = "/x" }, "TLS.Enable"},
+		// franz-go refuses a session timeout under the interval it heartbeats at, with a message
+		// naming neither this field nor where the interval comes from
+		{"session timeout under the heartbeat interval",
+			func(c *ClientConfig) { c.Consumer.SessionTimeout = time.Second }, "Consumer.SessionTimeout"},
+		{"negative session timeout",
+			func(c *ClientConfig) { c.Consumer.SessionTimeout = -time.Second }, "Consumer.SessionTimeout"},
 	} {
 		cfg := ok
 		c.mut(&cfg)
 		err := cfg.Validate()
 		if err == nil || !strings.Contains(err.Error(), c.want) {
 			t.Errorf("%s: %v", c.name, err)
+		}
+	}
+}
+
+func TestConfig_SessionTimeoutZeroAndTheFloorAreAccepted(t *testing.T) {
+	// Zero is "keep franz-go's own default" and has to stay valid, and the floor itself is a value
+	// somebody may well write
+	ok := DefaultClientConfig()
+	ok.Brokers = []string{"a:9092"}
+	for _, d := range []time.Duration{0, minSessionTimeout, time.Minute} {
+		cfg := ok
+		cfg.Consumer.SessionTimeout = d
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("Consumer.SessionTimeout=%v should be accepted, got %v", d, err)
 		}
 	}
 }

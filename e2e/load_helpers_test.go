@@ -24,9 +24,13 @@ import (
 // framework's absolute performance on a machine of its own.
 
 // requireLoad: the load tests are slow and do not run by default; XONE_E2E_LOAD=1 runs them (scripts/e2e.sh --load)
+//
+// RequireProc rather than Require: every load case reads the process's RSS, threads and CPU out of
+// /proc, so on a system without one there is no measurement to make and the case would only fail
+// somewhere in the middle of its run.
 func requireLoad(t *testing.T) {
 	t.Helper()
-	harness.Require(t)
+	harness.RequireProc(t)
 	if os.Getenv("XONE_E2E_LOAD") != "1" {
 		t.Skip("load tests are slow and off by default: run scripts/e2e.sh --load, or set XONE_E2E_LOAD=1")
 	}

@@ -56,6 +56,10 @@ func TestMySQL_SIGTERMFinishesInFlightQueriesBeforeClosingPool(t *testing.T) {
 			mu.Unlock()
 		}()
 	}
+	// When the sleeping started, which is what the assertions below go by: the SELECT SLEEPs begin
+	// here and not at the signal, and what is between the two -- waiting for the gauges, reading the
+	// processlist -- is time they have already slept through by then
+	firedAt := time.Now()
 	for range sleeps {
 		fire(fmt.Sprintf("/mysql/sleep?ms=%d", sleep.Milliseconds()))
 	}
@@ -88,10 +92,6 @@ func TestMySQL_SIGTERMFinishesInFlightQueriesBeforeClosingPool(t *testing.T) {
 			t.Errorf("%s was in flight at the signal and should finish with a 200, got err=%v %v", s.path, s.err, s.r)
 		}
 	}
-	if exit.SinceSignal < sleep-200*time.Millisecond {
-		t.Errorf("the queries in flight sleep %v and the process should wait for them, but it exited %v after the signal", sleep, exit.SinceSignal)
-	}
-
 	stops := p.FindLogs(func(l harness.Log) bool { return l.Msg() == "stopping" && l.Str("hook") == "xgorm.closeXGorm" })
 	if len(stops) != 1 {
 		t.Fatalf("there should be one xgorm.closeXGorm stopping line, got %d", len(stops))
@@ -113,6 +113,20 @@ func TestMySQL_SIGTERMFinishesInFlightQueriesBeforeClosingPool(t *testing.T) {
 	if !closeAt.After(last) {
 		t.Errorf("xgorm's pool should close only once every MySQL query in flight has finished: the last one finished %s after the signal and the pool closed %s after it",
 			fmtMS(last.Sub(sigAt)), fmtMS(closeAt.Sub(sigAt)))
+	}
+	// That the queries were not cut short, and that the process stayed for them. Both go by when
+	// the sleeping began rather than by the signal: it used to assert that the process outlived the
+	// signal by the whole sleep, which only holds when the signal arrives the moment the queries
+	// start. It does not -- waiting for the gauges and reading the processlist come in between --
+	// so on a slow machine the queries had already slept most of it and the process rightly exited
+	// sooner. Measured on a CI runner: the last query finished 1019ms after the signal rather than
+	// the 1500ms the assertion wanted, with nothing wrong (https://github.com/jupiter-eng/xone/actions/runs/39854239684)
+	if ran := last.Sub(firedAt); ran < sleep {
+		t.Errorf("the queries in flight should run their whole %v rather than be cut short, and the last finished %s after it was sent", sleep, fmtMS(ran))
+	}
+	if exitAt := sigAt.Add(exit.SinceSignal); !exitAt.After(last) {
+		t.Errorf("the process should outlive the queries in flight: the last finished %s after the signal and it exited %s after it",
+			fmtMS(last.Sub(sigAt)), fmtMS(exit.SinceSignal))
 	}
 	t.Logf("numbers: the last MySQL query in flight finished %s after the signal, xgorm's pool closed %s after it, and the process exited after %v",
 		fmtMS(last.Sub(sigAt)), fmtMS(closeAt.Sub(sigAt)), exit.SinceSignal.Round(time.Millisecond))

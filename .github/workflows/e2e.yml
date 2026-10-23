@@ -115,9 +115,16 @@ jobs:
       # cases run here as usual.
       # pipefail comes only with shell: bash spelled out: the default bash -e goes by tee's exit code
       # alone, so this step stays green even when the tests go red
+      # --slow except on a pull request: the two cases behind it wait out a clock boundary and a
+      # broker's session timeout and are more than half this package's wall time, while what they
+      # cover changes only when the dependency does (see requireSlow in e2e/main_test.go). The
+      # nightly round and a run started by hand take them; a PR gets the answer sooner without them
       - name: scripts/e2e.sh
         shell: bash
-        run: scripts/e2e.sh -skip 'TestTLS_(PostgreSQL|MySQL|Redis)$' 2>&1 | tee e2e.log
+        run: |
+          slow=--slow
+          [ "${{ github.event_name }}" != pull_request ] || slow=
+          scripts/e2e.sh $slow -skip 'TestTLS_(PostgreSQL|MySQL|Redis)$' 2>&1 | tee e2e.log
 
       # KNOWN BUG: a framework bug the tests revealed and nobody has fixed yet, printed with its
       # reason and skipped (see e2e/doc.go). A skip does not turn the job red, so the count goes into

@@ -2,8 +2,9 @@
 # Runs the tests against real services under e2e/: a real PostgreSQL, MySQL, Redis, ClickHouse and
 # Kafka, with real processes and real signals.
 #
-#   scripts/e2e.sh                 # everything (the load tests aside)
+#   scripts/e2e.sh                 # everything (the load tests and the slow ones aside)
 #   scripts/e2e.sh -run Smoke      # the arguments after it go to go test as they are
+#   scripts/e2e.sh --slow          # the slow cases as well (XONE_E2E_SLOW=1), see requireSlow
 #   scripts/e2e.sh --load -run Load  # the load tests as well (XONE_E2E_LOAD=1); one load round takes
 #                                    # a dozen minutes
 #
@@ -59,6 +60,10 @@ for a; do
   --load)
     export XONE_E2E_LOAD=1
     timeout=60m
+    continue
+    ;;
+  --slow)
+    export XONE_E2E_SLOW=1
     continue
     ;;
   -parallel|-parallel=*|-test.parallel|-test.parallel=*) parallel= ;;

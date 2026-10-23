@@ -287,7 +287,7 @@ e2e_order_flow_seconds_count 2
 }
 
 func TestReadProc_ReadsOwnCPUAndMemory(t *testing.T) {
-	Require(t)
+	RequireProc(t)
 	s, err := ReadProc(os.Getpid())
 	if err != nil {
 		t.Fatal(err)
@@ -298,7 +298,7 @@ func TestReadProc_ReadsOwnCPUAndMemory(t *testing.T) {
 }
 
 func TestResetPeakRSS_PeakRestartsFromCurrentRSS(t *testing.T) {
-	Require(t)
+	RequireProc(t)
 	// Push the peak up by 256MB first and then give that memory back to the operating system: before the reset the peak still holds it, and after the reset it should not
 	buf := make([]byte, 256<<20)
 	for i := 0; i < len(buf); i += 4096 {

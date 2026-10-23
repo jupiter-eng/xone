@@ -73,6 +73,20 @@ func RequireCH(t testing.TB) {
 	c.Close()
 }
 
+// RequireProc is the first line of a case that reads a process's CPU and memory: it skips when e2e
+// is off or this is not Linux.
+//
+// ProcStat and ResetPeakRSS read /proc directly (proc.go), and no other system has it. Without this
+// the cases fail with "open /proc/<pid>/stat: no such file or directory", which says where it broke
+// and not that the measurement has no meaning here at all.
+func RequireProc(t testing.TB) {
+	t.Helper()
+	Require(t)
+	if runtime.GOOS != "linux" {
+		t.Skipf("reading /proc is Linux-only and this is %s: the cases measuring CPU and memory are skipped", runtime.GOOS)
+	}
+}
+
 // KnownBug marks a bug in the framework that a test uncovered: it prints KNOWN BUG and skips.
 //
 // The assertions follow the documented behavior, and a failing one is not bent to go green: the

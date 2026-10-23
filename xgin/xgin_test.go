@@ -732,7 +732,7 @@ func TestStartStop_GracefulShutdown(t *testing.T) {
 	url := fmt.Sprintf("http://127.0.0.1:%d/ping", port)
 	waitServing(t, url)
 
-	resp, err := http.Get(url)
+	resp, err := oneShot.Get(url)
 	if err != nil {
 		t.Fatalf("the request failed: %v", err)
 	}
@@ -1144,10 +1144,21 @@ func doRequest(t *testing.T, e *gin.Engine, method, path string) *httptest.Respo
 }
 
 // waitServing waits until the server really listens.
+// oneShot keeps no connection alive, so a request through it leaves nothing pooled.
+//
+// Sharing http.DefaultTransport's pool makes a request race the pooled connection against a fresh
+// dial (queueForIdleConn against queueForDial) and both can win: the dial that lost leaves a
+// connection the server has accepted and will never read a request header from. net/http counts
+// such a StateNew connection as idle only once it is five seconds old (closeIdleConns, go#22682,
+// and the comparison is in whole seconds so it is up to six), and every Shutdown in the meantime
+// waits it out. Measured on TestStartStop_GracefulShutdown, whose Stop has no deadline of its own:
+// 6.27s on the rounds where the race happened, 0.00s on the rest.
+var oneShot = &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+
 func waitServing(t *testing.T, url string) {
 	t.Helper()
 	for i := 0; i < 100; i++ {
-		resp, err := http.Get(url)
+		resp, err := oneShot.Get(url)
 		if err == nil {
 			resp.Body.Close()
 			return

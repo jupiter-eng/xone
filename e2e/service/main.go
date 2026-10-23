@@ -31,6 +31,10 @@
 //
 //	POST /kafka/produce         writes one record through xkafka.C() (Kafka optional), see kafka.go
 //
+//	GET  /api/v1/users/:id      a version prefix behind an authentication middleware: 200 with
+//	                            Authorization: Bearer e2e-token, 401 without one, 403 with another, see v1.go
+//	GET  /ws                    hijacks and answers 101, then ticks until the ctx is cancelled, see ws.go
+//
 // With Service.CronEvery above 0 there is a scheduled job e2e-tick as well, see cron.go.
 // With Service.KafkaTopic non-empty it is consumed, see kafka.go; with Service.NoHTTP no xgin is
 // started and it only consumes (xone.UntilSignal).
@@ -104,7 +108,7 @@ func main() {
 		return
 	}
 
-	g := xgin.New().WithRoutes(routes, probeRoutes) // probeRoutes is in probe.go
+	g := xgin.New().WithRoutes(routes, probeRoutes, v1Routes, wsRoutes) // probeRoutes is in probe.go, v1Routes in v1.go, wsRoutes in ws.go
 	var r xone.Runnable = g
 	if c.Drain > 0 {
 		r = drainer{XGin: g, d: c.Drain} // wind down once more after the service has stopped, see drain.go

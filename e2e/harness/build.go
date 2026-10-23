@@ -8,10 +8,11 @@ import (
 	"testing"
 )
 
-// build compiles the four binaries e2e uses in one go build, once per test process:
+// build compiles the five binaries e2e uses in one go build, once per test process:
 //
 //	service       the service under test
 //	service-beego the beego application served by xbeego, see service-beego/main.go
+//	service-echo  the echo application served by xecho, see service-echo/main.go
 //	baseline      the bare gin service to compare against (for the load tests)
 //	covapp        a minimal program shaped like a one-off job (for when the configuration is read, see covapp/main.go)
 var build struct {
@@ -26,6 +27,9 @@ func ServiceBinary(t testing.TB) string { return binary(t, "service") }
 
 // BeegoBinary is the executable built from e2e/service-beego
 func BeegoBinary(t testing.TB) string { return binary(t, "service-beego") }
+
+// EchoBinary is the executable built from e2e/service-echo
+func EchoBinary(t testing.TB) string { return binary(t, "service-echo") }
 
 // BaselineBinary is the executable built from e2e/baseline
 func BaselineBinary(t testing.TB) string { return binary(t, "baseline") }
@@ -55,7 +59,7 @@ func binary(t testing.TB, name string) string {
 		if RaceBuild() {
 			args = append(args, "-race")
 		}
-		args = append(args, "-o", build.dir+string(filepath.Separator), "./service", "./service-beego", "./baseline", "./covapp")
+		args = append(args, "-o", build.dir+string(filepath.Separator), "./service", "./service-beego", "./service-echo", "./baseline", "./covapp")
 		cmd := exec.Command("go", args...)
 		cmd.Dir = ModuleDir()
 		cmd.Env = append(os.Environ(), "GOWORK=off")

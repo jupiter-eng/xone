@@ -30,7 +30,7 @@ func covLogLine(t *testing.T, p *harness.Process, level, msg string) {
 // RotateTime is set to its lower bound of 1m and a real rotation across a minute is waited for, so
 // this case takes a minute and more
 func TestCoverage_LogRotatesByRotateTime_MaxAgePrunesOwnFiles_PermApplied(t *testing.T) {
-	harness.Require(t)
+	requireSlow(t, "the next minute boundary, RotateTime being 1m at the least")
 	t.Parallel()
 
 	dir := t.TempDir()

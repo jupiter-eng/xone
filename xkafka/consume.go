@@ -234,6 +234,12 @@ func (c *consumer) prepare(ctx context.Context, lookup func(string) (instance, b
 		kgo.OnPartitionsRevoked(c.revokedFn),
 		kgo.OnPartitionsLost(c.lostFn),
 	)
+	// Zero keeps franz-go's own default rather than passing a zero on, which franz-go would refuse
+	// (it checks the session timeout against its heartbeat interval). The reasoning is under
+	// ConsumerConfig.SessionTimeout
+	if d := inst.cfg.Consumer.SessionTimeout; d != 0 {
+		opts = append(opts, kgo.SessionTimeout(d))
+	}
 	// These have to be filled in before NewClient: it starts joining the group as soon as it is built, and the partition assignment callback (assignedFn) may arrive before it returns.
 	c.log, c.trace, c.metric = inst.cfg.Log, inst.cfg.Trace, inst.cfg.Metric
 	c.base = context.WithoutCancel(ctx)

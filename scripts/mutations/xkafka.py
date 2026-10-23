@@ -27,6 +27,11 @@ mutate("a client id nobody configured is one WARN at startup", "xkafka/xkafka.go
 mutate("the SASL password does not reach the validation error", "xkafka/config.go", "./xkafka", "TestConfig_Validate",
        swap('if s.Username == "" || s.Password == "" {', 'if s.Username == "" {'))
 
+# How long a partition stops being consumed after a process is killed outright. Left out of the
+# client options, a caller lowering it for a faster take-over silently keeps franz-go's 45s
+mutate("the session timeout reaches franz-go", "xkafka/consume.go", "./xkafka", "TestSessionTimeout_ReachesTheClient",
+       cut("\tif d := inst.cfg.Consumer.SessionTimeout; d != 0 {", "\t}\n"))
+
 section("Startup and shutdown")
 mutate("an unconfigured xkafka still tells the registry it started", "xkafka/xkafka.go", "./xkafka", "TestInitXKafka_CSaysUnconfiguredNotTooEarly",
        swap('\t\treturn xclient.Build(ctx, reg, nil, build)\n', '\t\treturn nil\n'))

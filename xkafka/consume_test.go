@@ -537,6 +537,32 @@ func TestRebalance_WaitsForInFlightBeforeRevoke(t *testing.T) {
 	}
 }
 
+func TestSessionTimeout_ReachesTheClientAndZeroKeepsFranzsDefault(t *testing.T) {
+	// How long a partition stops being consumed after a process is killed outright, so what
+	// matters is that the number a caller wrote is the number franz-go holds -- and that leaving
+	// the field out keeps franz-go's own, rather than passing a zero on, which franz-go refuses.
+	for _, c := range []struct {
+		name string
+		set  time.Duration
+		want time.Duration
+	}{
+		{"unset keeps franz-go's default", 0, 45 * time.Second},
+		{"set reaches the client", 10 * time.Second, 10 * time.Second},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, cfg := cluster(t, 1, "orders")
+			cfg.Consumer.SessionTimeout = c.set
+			m := testManager(t, cfg)
+			con := register(t, m, "orders", "g1", ok(nil))
+			start(t, m)
+			waitAssigned(t, con, 1)
+			if got := con.cl.OptValue(kgo.SessionTimeout); got != c.want {
+				t.Errorf("SessionTimeout reaching franz-go = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 func TestResetOffset_LatestSkipsOldRecords(t *testing.T) {
 	_, cfg := cluster(t, 1, "orders")
 	cfg.Consumer.ResetOffset = "latest"

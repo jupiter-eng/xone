@@ -9,6 +9,7 @@ replace (
 	github.com/jupiter-eng/xone/xbeego => ../xbeego
 	github.com/jupiter-eng/xone/xcache => ../xcache
 	github.com/jupiter-eng/xone/xcron => ../xcron
+	github.com/jupiter-eng/xone/xecho => ../xecho
 	github.com/jupiter-eng/xone/xgin => ../xgin
 	github.com/jupiter-eng/xone/xginswagger => ../xginswagger
 	github.com/jupiter-eng/xone/xgorm => ../xgorm
@@ -60,10 +61,14 @@ require (
 	github.com/go-faster/errors v0.7.1 // indirect
 	github.com/hashicorp/go-version v1.9.0 // indirect
 	github.com/klauspost/compress v1.19.2 // indirect
+	github.com/labstack/gommon v0.5.0 // indirect
+	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/paulmach/orb v0.13.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.27 // indirect
 	github.com/segmentio/asm v1.2.1 // indirect
 	github.com/shopspring/decimal v1.4.0 // indirect
+	github.com/valyala/bytebufferpool v1.0.0 // indirect
+	github.com/valyala/fasttemplate v1.2.2 // indirect
 )
 
 require (
@@ -104,10 +109,12 @@ require (
 	github.com/jinzhu/now v1.1.5 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
+	github.com/jupiter-eng/xone/xecho v1.3.0
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
+	github.com/labstack/echo/v4 v4.16.0
 	github.com/leodido/go-urn v1.5.0 // indirect
 	github.com/mailru/easyjson v0.7.6 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect

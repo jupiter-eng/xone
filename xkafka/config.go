@@ -127,6 +127,25 @@ type ConsumerConfig struct {
 	// still retained in the topic. This module defaults to latest, at the cost of a new group, or a group starting just after the topic was created,
 	// never processing what was written before -- configure earliest when those are wanted.
 	ResetOffset string `yaml:"ResetOffset"`
+
+	// SessionTimeout is how long the broker waits for a heartbeat before it takes this consumer
+	// for gone and hands its partitions to another member of the group. Zero keeps franz-go's
+	// default, which is 45s (measured on v1.21.7: cfg.sessionTimeout in pkg/kgo/config.go).
+	//
+	// It is the time a partition stops being consumed after a process is killed outright, and
+	// nothing shortens it: a process that exits through its stop hooks leaves the group on its way
+	// out and its partitions move at once, while one that was SIGKILLed, fenced or had its host
+	// disappear is only noticed when this runs out. Lower it for a faster take-over, at the price
+	// of a rebalance whenever a pause outlasts it -- a long GC or a stalled network then costs the
+	// whole group a rebalance rather than one slow consumer.
+	//
+	// The floor is 3s, which is franz-go's heartbeat interval: it refuses to start with a session
+	// timeout under the interval it heartbeats at ("heartbeat interval %v is erroneously larger
+	// than the session timeout %v", pkg/kgo/config.go), and that interval is not configurable here.
+	// The broker has limits of its own that this cannot see: group.min.session.timeout.ms (6s by
+	// default) and group.max.session.timeout.ms (30 minutes), and a value outside them is refused
+	// when the consumer joins the group rather than here.
+	SessionTimeout time.Duration `yaml:"SessionTimeout"`
 }
 
 // DefaultClientConfig holds every default of a single cluster in one place.
@@ -162,6 +181,11 @@ var (
 	resetOffsets   = []string{"latest", "earliest"}
 )
 
+// minSessionTimeout is franz-go's heartbeat interval (cfg.heartbeatInterval, 3s on v1.21.7), which
+// is the floor for Consumer.SessionTimeout: franz-go refuses to start with a session timeout under
+// the interval it heartbeats at, and that interval is not exposed here.
+const minSessionTimeout = 3 * time.Second
+
 // Validate checks what does not make sense in the configuration itself and fails before anything is connected to.
 //
 // xconfig.UnmarshalClients calls it once per decoded cluster; a direct call to New calls it once as well.
@@ -183,6 +207,14 @@ func (c ClientConfig) Validate() error {
 	}
 	if c.Producer.Linger < 0 {
 		errs = append(errs, fmt.Errorf("Producer.Linger must not be negative, got=%v", c.Producer.Linger))
+	}
+	// Zero is "franz-go's own default" and anything under its heartbeat interval is refused by
+	// franz-go itself, with a message naming neither this field nor the interval's source. Caught
+	// here instead, where the field can be named and the floor said out loud
+	if c.Consumer.SessionTimeout != 0 && c.Consumer.SessionTimeout < minSessionTimeout {
+		errs = append(errs, fmt.Errorf("Consumer.SessionTimeout must be 0 (franz-go's default, 45s) or at least %v, "+
+			"which is the interval franz-go heartbeats at and does not let the session timeout fall under, got=%v",
+			minSessionTimeout, c.Consumer.SessionTimeout))
 	}
 	errs = append(errs,
 		oneOf("Producer.Acks", c.Producer.Acks, acksValues),

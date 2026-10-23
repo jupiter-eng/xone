@@ -275,6 +275,44 @@ func StartBeego(t testing.TB, o Options) *Process {
 	return launch(t, "service-beego", BeegoBinary(t), args, dir, o)
 }
 
+// StartEcho starts the echo application from e2e/service-echo, whose configuration file is
+// e2e/service-echo/application.yml unless Options.Config says otherwise.
+//
+// It takes the same Options as Start; the data ones (PGAddr, ClickHouse, Kafka and the rest) mean
+// nothing to it, since that service connects to nothing -- what it is there for is in
+// service-echo/main.go.
+//
+// Unlike StartBeego there is nothing to prepare in the working directory: echo reads no file of its
+// own on the way up, so the configuration file and the profile are all this takes.
+func StartEcho(t testing.TB, o Options) *Process {
+	t.Helper()
+	cfg := o.Config
+	if cfg == "" {
+		cfg = filepath.Join(ModuleDir(), "service-echo", "application.yml")
+	}
+	// The child process's working directory is dir, so a relative path would point elsewhere over there
+	cfg, err := filepath.Abs(cfg)
+	if err != nil {
+		t.Fatalf("resolve config path: %v", err)
+	}
+	dir := t.TempDir()
+
+	args := []string{"--config=" + cfg}
+	if o.Overlay != "" {
+		// The profile file names follow from base, so base moves into the temporary directory as well
+		base, err := os.ReadFile(cfg)
+		if err != nil {
+			t.Fatalf("read config: %v", err)
+		}
+		cfg = filepath.Join(dir, "application.yml")
+		writeFile(t, cfg, base)
+		writeFile(t, filepath.Join(dir, "application-e2e.yml"), []byte(o.Overlay))
+		args = []string{"--config=" + cfg, "--profile=e2e"}
+	}
+	args = append(args, o.Args...)
+	return launch(t, "service-echo", EchoBinary(t), args, dir, o)
+}
+
 // StartCovApp starts covapp, hands it the arguments as they are and waits for no readiness (it
 // listens on nothing). Of Options only Env means anything to it
 func StartCovApp(t testing.TB, o Options, args ...string) *Process {
