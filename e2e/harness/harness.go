@@ -41,6 +41,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -191,28 +192,62 @@ func NewID() string {
 var ports struct {
 	mu   sync.Mutex
 	used map[int]bool
+	next int
 }
 
-// FreePort finds a free port on this host. One test process never hands out the same port twice
+// The band FreePort hands out of. It is below the ephemeral range on both systems this runs on --
+// Linux starts it at 32768 (net.ipv4.ip_local_port_range) and macOS at 49152
+// (net.inet.ip.portrange.first) -- so no outgoing connection is ever given one of these by the
+// kernel. Nothing in the registered-port range is used either.
+const (
+	portBandLow  = 20000
+	portBandHigh = 32000
+)
+
+// FreePort finds a free port on this host. One test process never hands out the same port twice.
+//
+// It goes by the band above rather than by listening on :0. A port is only really reserved while a
+// listener holds it, and what this hands it to binds about a second later: the service's own xgin
+// hook runs after xgorm, xredis and the rest have connected, which was measured at 950ms. :0
+// answers out of the ephemeral range, which is exactly where the kernel draws the source port of
+// every outgoing connection -- and a run makes thousands of those, to PG, MySQL, Redis, ClickHouse,
+// Kafka, the proxies and the stubs. So for that second the number is up for grabs by this run's own
+// traffic, and it was taken: "listen on 127.0.0.1:41027 failed: bind: address already in use" on a
+// CI round, 41027 being inside Linux's default range
+// (https://github.com/jupiter-eng/xone/actions/runs/39905217286).
+//
+// Out of the band the window is still there, but nothing the kernel assigns by itself can land in
+// it, so what is left to collide with is another program on this machine holding a fixed port there
+// -- which the listen below finds, and the next number is tried.
+//
+// The scan starts at a different place per process so that two test binaries running at once do not
+// walk the same numbers in the same order.
 func FreePort(t testing.TB) int {
 	t.Helper()
 	ports.mu.Lock()
 	defer ports.mu.Unlock()
 	if ports.used == nil {
 		ports.used = map[int]bool{}
+		ports.next = portBandLow + os.Getpid()%(portBandHigh-portBandLow)
 	}
-	for range 100 {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
+	for range portBandHigh - portBandLow {
+		port := ports.next
+		ports.next++
+		if ports.next >= portBandHigh {
+			ports.next = portBandLow
+		}
+		if ports.used[port] {
+			continue
+		}
+		// Taken by something else on this machine: the error says so, and the next one is tried
+		ln, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
 		if err != nil {
-			t.Fatalf("find a free port: %v", err)
+			continue
 		}
-		port := ln.Addr().(*net.TCPAddr).Port
 		ln.Close()
-		if !ports.used[port] {
-			ports.used[port] = true
-			return port
-		}
+		ports.used[port] = true
+		return port
 	}
-	t.Fatal("find a free port: every port the kernel offered was already handed out")
+	t.Fatalf("find a free port: every port in %d-%d is taken or already handed out", portBandLow, portBandHigh)
 	return 0
 }
