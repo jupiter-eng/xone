@@ -103,9 +103,17 @@ func (m *Metrics) Install() {
 	// What was recorded before the instance was swapped is on the previous Registry and does not appear in /metrics.
 	// The cache already follows the instance, so nothing has to be cleared -- but this still has to be said out loud,
 	// or it is a completely silent loss of data.
+	//
+	// Which previous instance it was decides the wording: the fallback means "recorded before initialization", while a
+	// real one means this is the second Install in the process (another Run, or a caller installing by hand). Saying
+	// "before xmetric was initialized" for the second case sends whoever reads it looking for a startup problem that
+	// is not there.
 	if prev != m {
-		if n := prev.cachedCount(); n > 0 {
+		if n := prev.cachedCount(); n > 0 && prev == fallback {
 			slog.Warn("metrics were recorded before xmetric was initialized; those values went to a temporary registry and will not be exported",
+				"metrics", n)
+		} else if n > 0 {
+			slog.Warn("xmetric was installed again; the values recorded on the previous registry will not be exported",
 				"metrics", n)
 		}
 	}

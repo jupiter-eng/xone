@@ -10,6 +10,26 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
 
 ## [Unreleased]
 
+### Fixed
+
+- **The global logger is no longer replaced on shutdown when nothing it writes to was closed.** xlog is closed last
+  while logs keep coming after it (the stop hooks abandoned at the deadline, the requests still in flight), and the
+  replacement exists so those lines do not disappear into a closed file. It used to happen whatever was configured:
+  with `XLog.Console: true` — the default, and with no file at all — those last lines lost their `trace_id`, their
+  `xlog.AddKV` fields and the configured `Level` / `Format` / `Timezone`, and moved from stdout to stderr, which a
+  collector reading only stdout does not see. With no output configured at all, "I want no logs" turned into logs on
+  stderr the moment the service stopped. File output alone is unchanged: there the replacement is what keeps those
+  lines at all.
+- **`xmetric.CounterAdd` with a negative value no longer panics inside the caller.** client_golang panics on it
+  (`counter cannot decrease in value`); it is now one `ERROR` log line and nothing recorded, as every other
+  unrecordable metric in that package already was.
+- **The warning `Install` writes when metrics were recorded on a previous registry says which case it is.** A second
+  `Install` in the process (another `xone.Run`, or a caller installing by hand) was reported as
+  `metrics were recorded before xmetric was initialized`, sending whoever read it looking for a startup problem that
+  was not there.
+- **`xlog.Observer` documents that the record must not be modified.** Copies of a `slog.Record` share state, and the
+  fields the context carries are appended to that same record right after the observers have run.
+
 ## [v1.3.0] - 2026-10-22
 
 ### Changed

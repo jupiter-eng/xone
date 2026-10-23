@@ -23,8 +23,14 @@ func SetTraceExtractor(f TraceExtractor) { logext.SetTraceExtractor(f) }
 
 // Observer observes every log line actually written. It is injected by packages such as xmetric.
 //
-// It is called only when the log passes the level filter and is really going to be written, and the record it
-// receives is the one that goes into the output. A panic inside an observer is isolated: a problem in observation must not interrupt the logging itself.
+// It is called only when the log passes the level filter and is really going to be written. A panic inside an
+// observer is isolated: a problem in observation must not interrupt the logging itself.
+//
+// **An observer must not modify the record it is given.** Copies of a slog.Record share state (see slog.Record), and
+// the fields the context carries -- trace_id and whatever AddKV wrote -- are appended to this very record right after
+// the observers have run, so an AddAttrs on their copy and the one here would write into the same slot. An observer
+// that needs to keep the record calls Clone on it first. For the same reason, the record an observer sees does not
+// carry those context fields yet; they are reachable through the ctx, which is what xmetric reads them from.
 //
 // The list is append-only -- an observer lives as long as the process and there is no unregistering.
 type Observer = logext.Observer

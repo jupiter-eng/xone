@@ -70,6 +70,28 @@ func TestShortcut_Counter(t *testing.T) {
 	}
 }
 
+func TestShortcut_CounterAddIgnoresANegativeValue(t *testing.T) {
+	// client_golang panics on it (counter cannot decrease in value), and that panic would come out of whichever
+	// business call made the mistake. Everything else here treats a metric that cannot be recorded as an
+	// observability problem rather than a reason to take the request down.
+	m := newMetrics(t, nil)
+
+	var buf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { slog.SetDefault(oldLogger) })
+
+	CounterAdd("refunds", 2)
+	CounterAdd("refunds", -1)
+
+	if !strings.Contains(buf.String(), "negative") {
+		t.Errorf("a negative value must be reported, got log=%q", buf.String())
+	}
+	if out := dump(t, m); !strings.Contains(out, "refunds 2") {
+		t.Errorf("the counter must keep the value it legitimately had\ngot=\n%s", out)
+	}
+}
+
 func TestShortcut_Gauge(t *testing.T) {
 	m := newMetrics(t, nil)
 	GaugeSet("queue_depth", 10)
@@ -569,11 +591,43 @@ func TestInstall_PreInitPointsAreReported(t *testing.T) {
 	t.Cleanup(func() { _ = closer.Close() })
 	m.Install()
 
-	if !strings.Contains(buf.String(), "will not be exported") {
-		t.Errorf("something was recorded before initialization and Install must report it, got log=%q", buf.String())
+	if !strings.Contains(buf.String(), "before xmetric was initialized") {
+		t.Errorf("something was recorded before initialization and Install must say so, got log=%q", buf.String())
 	}
 	if !strings.Contains(buf.String(), "metrics=2") {
 		t.Errorf("it must report how many metrics there were, got log=%q", buf.String())
+	}
+}
+
+func TestInstall_ASecondInstallIsNotReportedAsAStartupProblem(t *testing.T) {
+	// The previous instance is not always the fallback: another Run in the same process, or a caller installing by
+	// hand, swaps one real instance for another. "before xmetric was initialized" then sends whoever reads it looking
+	// for a startup problem that is not there.
+	keepGlobals(t)
+
+	first, closer1, err := New(DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = closer1.Close() })
+	first.Install()
+	CounterInc("recorded_on_the_first")
+
+	var buf bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+
+	second, closer2, err := New(DefaultConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = closer2.Close() })
+	second.Install()
+
+	if !strings.Contains(buf.String(), "installed again") {
+		t.Errorf("a second Install must be reported as such, got log=%q", buf.String())
+	}
+	if strings.Contains(buf.String(), "before xmetric was initialized") {
+		t.Errorf("this is not a startup problem and must not be worded as one, got log=%q", buf.String())
 	}
 }
 

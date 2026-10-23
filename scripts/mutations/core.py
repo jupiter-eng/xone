@@ -31,10 +31,17 @@ mutate("a misspelled log level reports config", "xlog/xlog.go", ".", "TestNew_Fa
 mutate("a misspelled log format reports config", "xlog/xlog.go", ".", "TestNew_FailsFastOnFormatTypo",
        swap('xerror.Newf("xlog", "config",\n\t\t\t"unknown log format', 'xerror.Newf("xlog", "new",\n\t\t\t"unknown log format'))
 mutate("Perm accepts the 0o644 spelling", "xlog/xlog.go", ".", "TestParsePerm", swap('strings.TrimPrefix(s, "0o")', 's'))
-# With slog.Default() still pointing at the file after it is closed, the error Run returns and the
-# logs of the stop hooks left behind are all lost
+# With slog.Default() still pointing at the file after it is closed, the logs of the stop hooks left
+# behind and of the requests in flight are all lost
 mutate("closing the log file switches back to stderr", "xlog/xlog.go", ".", "TestCloseXLog",
-       swap('\tslog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))\n\treturn closer.Close()', '\treturn closer.Close()'))
+       swap('\tif swapOnClose {\n\t\tslog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))\n\t}\n', ''))
+# The other side of it. Swapping when nothing that was being written to was closed takes the
+# trace_id, the AddKV fields and the configured level and format off those last lines -- and with no
+# output configured at all it turns "I want no logs" into logs on stderr the moment the service stops
+mutate("the logger is left alone when nothing it writes to was closed", "xlog/xlog.go", ".", "TestCloseXLog",
+       swap('\tif swapOnClose {\n', '\tif true {\n'))
+mutate("what decides the swap is the console, not the file alone", "xlog/xlog.go", ".", "TestCloseXLog",
+       swap('swapOnClose = !c.Console && c.File.Enable', 'swapOnClose = c.File.Enable'))
 # With an ordinary file already at {Name}, Rename atomically replaces it with the symlink and the
 # old logs are gone without a word
 mutate("an ordinary file of the same name is not overwritten by the symlink", "xlog/rotate.go", ".", "TestRotateWriter",

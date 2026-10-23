@@ -250,8 +250,12 @@ func init() {
 	xhook.BeforeStop(closeXLog) // the stage follows the start hook above
 }
 
-// closer is filled in by initXLog and used by closeXLog to close the writer.
-var closer io.Closer
+// closer is filled in by initXLog and used by closeXLog to close the writer, and swapOnClose says whether the
+// global logger has to be replaced once that writer is gone, see closeXLog.
+var (
+	closer      io.Closer
+	swapOnClose bool
+)
 
 // custom is the backend UseHandler was given, nil meaning build from the XLog configuration; installed means logging is already set up.
 var (
@@ -299,6 +303,7 @@ func initXLog(context.Context) error {
 				ConfigKey, ConfigKey)
 		}
 		closer = nil
+		swapOnClose = false // the handler is the caller's: xlog neither closes it nor replaces it
 		location.Store(nil) // the timestamps are decided by that handler, so xlog has no time zone
 		slog.SetDefault(withStatic(slog.New(newCtxHandler(*h)), identity(), c.Fields))
 		installed.Store(true)
@@ -314,6 +319,7 @@ func install(c Config) error {
 		return err
 	}
 	closer = cl
+	swapOnClose = !c.Console && c.File.Enable
 	// New has already validated, so this cannot fail again. Storing nil (follow the local time zone) when nothing is
 	// configured matters too: with a time zone configured by a previous Run in the same process, not storing would leave that one in place.
 	loc, _ := parseLocation(c.Timezone)
@@ -330,15 +336,22 @@ func install(c Config) error {
 // Writing is unbuffered (every log line is written straight to the file), so there is nothing to flush here;
 // it only hands the fd back.
 //
-// The global logger is swapped for one writing to stderr first: logging is closed last, but there are still logs
-// after it closes -- the error xone.Run returns, the stop hooks abandoned after the timeout, the requests still in
-// flight. slog.Default() used to still point at the closed file, so with Console off those logs vanished without a
-// word -- and they are exactly the ones that matter most for investigating "why did it not exit cleanly".
+// Logging is closed last while logs keep coming after it -- the stop hooks abandoned after the timeout, the requests
+// still in flight -- and they are exactly the ones that matter most for investigating "why did it not exit cleanly".
+// Where they go from here depends on what was configured, which is what swapOnClose records:
+//
+//   - file output alone: they would be written into a closed file and vanish without a word, so the global logger is
+//     replaced by one writing to stderr;
+//   - the console on: they still reach stdout, and replacing would only take their trace_id, their per-request
+//     fields and the configured level and format with them;
+//   - no output configured at all: "I want no logs" must not turn into logs on stderr the moment the service stops.
 func closeXLog(context.Context) error {
 	installed.Store(false) // so UseHandler still works on another Run in the same process (common in tests)
+	if swapOnClose {
+		slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
+	}
 	if closer == nil {
 		return nil
 	}
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
 	return closer.Close()
 }
