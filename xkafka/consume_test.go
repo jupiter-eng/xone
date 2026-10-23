@@ -878,13 +878,116 @@ func TestDLQRecord_TruncatesErrorAndKeepsHeaders(t *testing.T) {
 	}
 }
 
-func TestInterrupted(t *testing.T) {
-	last := errors.New("boom")
-	if interrupted(last, last) || interrupted(last, xutil.Permanent(last)) {
-		t.Fatal("the last error (or its Permanent payload) is not an interruption")
+// uncomparableError is an error type whose dynamic type cannot be compared with == , as
+// validator.ValidationErrors ([]FieldError) and mongo's WriteException (a value with slice fields) are.
+// Handing two of them to == panics, which is why the outcome of a message is decided by the stopping ctx
+// and never by comparing error values.
+type uncomparableError []string
+
+func (e uncomparableError) Error() string { return "invalid: " + strings.Join([]string(e), ", ") }
+
+// An error type that cannot be compared used to take the whole process down the moment a message ran out of
+// retries: deciding "was this interrupted" compared the error xutil.Retry returned against the last one the
+// handler gave, and that comparison panics on such a type.
+func TestConsume_UncomparableHandlerErrorStillDeadLetters(t *testing.T) {
+	_, cfg := cluster(t, 1, "orders", "orders.dlq")
+	produce(t, rawClient(t, cfg), "orders", 0, "bad", "good")
+
+	m := testManager(t, cfg)
+	rec := &recorder{}
+	register(t, m, "orders", "g1", func(_ context.Context, r *kgo.Record) error {
+		if string(r.Value) == "bad" {
+			return uncomparableError{"amount", "currency"}
+		}
+		rec.add(r)
+		return nil
+	}, WithRetry(1))
+	start(t, m)
+
+	dl := readAll(t, cfg, "orders.dlq", 1)[0]
+	if string(dl.Value) != "bad" {
+		t.Fatalf("dead letter carries %q", dl.Value)
 	}
-	if !interrupted(fmt.Errorf("%w, last attempt failed: %w", context.Canceled, last), last) {
-		t.Fatal("xutil.Retry's cancellation error is an interruption")
+	if got := header(dl, HeaderDLQError); got != "invalid: amount, currency" {
+		t.Errorf("error header = %q", got)
+	}
+	// The partition has to keep going: the goroutine behind it used to die with the process.
+	eventually(t, func() bool { return rec.count() == 1 }, "the record after the failed one was handled")
+}
+
+// The same type behind xutil.Permanent: it must reach the dead letter rather than be taken for a shutdown,
+// which would leave it unmarked and the partition's goroutine gone.
+func TestConsume_UncomparablePermanentErrorDeadLetters(t *testing.T) {
+	_, cfg := cluster(t, 1, "orders", "orders.dlq")
+	produce(t, rawClient(t, cfg), "orders", 0, "bad")
+
+	m := testManager(t, cfg)
+	var calls atomic.Int32
+	c := register(t, m, "orders", "g1", func(context.Context, *kgo.Record) error {
+		calls.Add(1)
+		return xutil.Permanent(uncomparableError{"payload"})
+	})
+	start(t, m)
+
+	dl := readAll(t, cfg, "orders.dlq", 1)[0]
+	if calls.Load() != 1 {
+		t.Fatalf("permanent error retried: %d calls", calls.Load())
+	}
+	if got := header(dl, HeaderDLQError); got != "invalid: payload" {
+		t.Errorf("error header = %q", got)
+	}
+	if err := m.stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := committed(t, cfg, "g1", "orders", 0); got != 1 {
+		t.Fatalf("dead-lettered record not committed: %d, it would be redelivered forever", got)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.live) != 0 {
+		t.Fatalf("%d partition goroutine(s) left behind", len(c.live))
+	}
+}
+
+// A panic in this module's own consuming code (not the handler's -- call catches that one) must not take the
+// process down, and the partition it was on has to leave the table: poll dispatches by that table, and a
+// goroutine nobody reads would take workerQueue batches and then block poll for good, stopping every
+// partition of this consumer.
+//
+// The panic is provoked with a nil client, which MarkCommitRecords dereferences. Any crash in this module's
+// code between the handler and the mark would do; this one needs no hook into the production path.
+func TestConsume_PanicInConsumingCodeReleasesThePartition(t *testing.T) {
+	logs := captureLogs(t)
+	c := &consumer{topic: "orders", group: "g1", o: buildOptions("orders", nil),
+		fn: func(context.Context, *kgo.Record) error { return nil }}
+	c.base = context.Background()
+	c.hard, c.hardCancel = context.WithCancel(c.base)
+	c.assigned, c.live = map[int32]*worker{}, map[*worker]string{}
+	t.Cleanup(c.hardCancel)
+
+	w := newWorker(c, 7)
+	c.assigned[7] = w
+	c.live[w] = partitionStr(c.topic, 7)
+	go w.run()
+	w.recs <- []*kgo.Record{{Topic: "orders", Partition: 7, Offset: 1}}
+
+	select {
+	case <-w.done:
+	case <-time.After(wait):
+		t.Fatal("the partition goroutine did not exit")
+	}
+	c.mu.Lock()
+	left, live := c.assigned[7], len(c.live)
+	c.mu.Unlock()
+	if left != nil {
+		t.Error("the partition is still in the table, so poll would fill its queue and then block for good")
+	}
+	if live != 0 {
+		t.Errorf("%d goroutine(s) still counted as live", live)
+	}
+	e := withMsg(logs(), "kafka partition worker panicked, this partition stops until the next rebalance")
+	if len(e) != 1 || e[0]["level"] != "ERROR" || e[0]["partition"] != float64(7) || e[0]["stack"] == nil {
+		t.Fatalf("panic log: %v", e)
 	}
 }
 

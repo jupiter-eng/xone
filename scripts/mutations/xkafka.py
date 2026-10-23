@@ -101,12 +101,20 @@ mutate("a dead letter's error header is truncated", "xkafka/worker.go", "./xkafk
        swap('truncate(strings.ToValidUTF8(cause.Error(), "?"), maxDLQError)', 'strings.ToValidUTF8(cause.Error(), "?")'))
 mutate("with dead lettering off it is skipped with an ERROR", "xkafka/worker.go", "./xkafka", "TestConsume_DeadLetterDisabledSkipsWithError",
        swap('\t\tslog.ErrorContext(ctx, "kafka message skipped, retries exhausted and dead lettering is off",', '\t\tslog.DebugContext(ctx, "kafka message skipped, retries exhausted and dead lettering is off",'))
+# worker.go recovers in two places (here and in run), so the next line is part of the pattern
 mutate("a panic in the handler is caught", "xkafka/worker.go", "./xkafka", "TestConsume_PanicIsRecoveredAndRetried",
-       swap('if p := recover(); p != nil {', 'if p := any(nil); p != nil {'))
+       swap('if p := recover(); p != nil {\n\t\t\terr = panicked(p)', 'if p := any(nil); p != nil {\n\t\t\terr = panicked(p)'))
 mutate("WithTimeout bounds every single call", "xkafka/worker.go", "./xkafka", "TestConsume_TimeoutCancelsHandlerCtx",
        swap('ctx, cancel = context.WithDeadline(hctx, dl)', 'ctx, cancel = context.WithDeadline(hctx, dl.Add(time.Hour))'))
+# The Permanent layer is stripped rather than errors.Unwrap'd: worker.go does not import errors any more
 mutate("a Permanent error is not retried", "xkafka/worker.go", "./xkafka", "TestConsume_PermanentErrorSkipsRetries",
-       swap('\t\treturn last\n\t})', '\t\tif errors.Unwrap(last) != nil {\n\t\t\treturn errors.Unwrap(last)\n\t\t}\n\t\treturn last\n\t})'))
+       swap('\t\treturn last\n\t})', '\t\tif u, ok := last.(interface{ Unwrap() error }); ok {\n\t\t\treturn u.Unwrap()\n\t\t}\n\t\treturn last\n\t})'))
+# The outcome of a message goes by the stopping ctx and never by comparing error values: comparing two
+# interface values panics when their dynamic type is not comparable (validator.ValidationErrors, mongo's
+# WriteException), which used to kill the process from inside the partition goroutine
+mutate("a message is only left unhandled once stopping has been cancelled", "xkafka/worker.go", "./xkafka", "TestConsume_UncomparableHandlerErrorStillDeadLetters|TestConsume_UncomparablePermanentErrorDeadLetters",
+       swap('case attempts == 0 || w.stopping.Err() != nil:', 'case attempts == 0 || err != errorValue(w, r):'),
+       swap('// call makes one call to the handler.', 'func errorValue(w *worker, r *kgo.Record) error { return nil }\n\n// call makes one call to the handler.'))
 
 section("Consuming: shutdown and rebalancing")
 # Cancelling the ctx of a handler in flight on exit: every write to the database and every call
@@ -128,6 +136,13 @@ mutate("revoking a partition waits for the record in flight", "xkafka/consume.go
 # entry (cancelled, it does not make a single attempt); the stopping check in the run loop only
 # saves opening a Span and recording an aborted, so breaking it is an equivalent mutation and is not
 # listed here
+
+# A goroutine that exits while still in the partition table leaves poll dispatching into a channel nobody
+# reads: it takes workerQueue batches and then blocks for good, which stops every partition of this consumer
+mutate("a partition goroutine that has exited leaves the partition table", "xkafka/consume.go", "./xkafka", "TestConsume_PanicInConsumingCodeReleasesThePartition",
+       swap('\tif c.assigned[w.partition] == w {\n\t\tdelete(c.assigned, w.partition)\n\t}\n', ''))
+mutate("a panic in the consuming code does not take the process down", "xkafka/worker.go", "./xkafka", "TestConsume_PanicInConsumingCodeReleasesThePartition",
+       swap('if p := recover(); p != nil {\n\t\t\tslog.ErrorContext(w.c.base,', 'if p := any(nil); p != nil {\n\t\t\tslog.ErrorContext(w.c.base,'))
 
 section("Consuming: registration")
 mutate("Consume requires a group", "xkafka/consume.go", "./xkafka", "TestConsume_ValidationErrors",
