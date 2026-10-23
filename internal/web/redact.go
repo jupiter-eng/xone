@@ -214,17 +214,33 @@ var newlines = strings.NewReplacer("\r", "", "\n", "")
 // same. On the plain-text branch only a literal scan happens, a key name written as a \u escape is
 // not recognized as password, and the password reaches the log as it is
 func RedactBody(body []byte, contentType string) string {
+	return redactBody(body, contentType, false)
+}
+
+// redactBody is RedactBody, with cut saying the access log had to cut this body short at
+// maxRequestBody / MaxResponseBody. Such a body never takes redactJSON's fast path.
+//
+// Every test that path makes assumes a complete body, and the cut can take away the very character
+// one of them goes by. Measured: {"dsn":"postgres://app:pw@db:5432/prod"} cut before the @ holds no
+// sensitive word and no @ any more, so it took the fast path and the password was written into the
+// log in the clear -- and the parsing branch would not have masked it either, since the regexps
+// that find a DSN need that @ as well. Sent to the parser instead, the cut leaves the string value
+// unterminated, so it is dropped rather than recorded (see decodeJSON).
+//
+// What this costs a complete body is nothing: cut is false for every one of them, and the fast path
+// is reached exactly as before.
+func redactBody(body []byte, contentType string, cut bool) string {
 	if len(body) == 0 {
 		return ""
 	}
 	ct := strings.ToLower(contentType)
 	switch {
 	case strings.Contains(ct, "json"):
-		return redactJSON(body)
+		return redactJSON(body, cut)
 	case strings.Contains(ct, "x-www-form-urlencoded"):
 		return redactForm(string(body))
 	case isJSON(body):
-		return redactJSON(body)
+		return redactJSON(body, cut)
 	default:
 		return redactOpaque(body)
 	}
@@ -406,12 +422,12 @@ func redactOpaque(body []byte) string {
 //
 // A body that does not parse to the end is recorded as far as it was read, with truncatedSuffix
 // after it; the reasoning is in decodeJSON.
-func redactJSON(body []byte) string {
+func redactJSON(body []byte, cut bool) string {
 	ws := words()
 	s := string(body)
 	// An @ means it has to be parsed too: a value may hold a DSN (postgres://u:p@h, u:p@tcp(h)),
-	// see RedactText
-	if !mayContainField(s, ws) && strings.IndexByte(s, '@') < 0 {
+	// see RedactText. A body that may have been cut short skips all of this, see redactBody
+	if !cut && !mayContainField(s, ws) && strings.IndexByte(s, '@') < 0 {
 		return newlines.Replace(s)
 	}
 
@@ -495,7 +511,11 @@ func partialValue(dec *json.Decoder) (any, bool) {
 		out := map[string]any{}
 		for dec.More() {
 			key, err := dec.Token()
-			if err != nil {
+			// An object key is always a string token, and the assertion is checked all the same:
+			// this runs in the access log's defer, which sits outside the Recover middleware, so a
+			// panic here would drop the connection and write no log at all
+			name, ok := key.(string)
+			if err != nil || !ok {
 				return nonEmpty(out), false
 			}
 			v, whole := partialValue(dec)
@@ -504,7 +524,7 @@ func partialValue(dec *json.Decoder) (any, bool) {
 			// with whole false is a container cut before a single member came out, which there is
 			// nothing to record for
 			if whole || v != nil {
-				out[key.(string)] = v // an object key is always a string token
+				out[name] = v
 			}
 			if !whole {
 				return nonEmpty(out), false

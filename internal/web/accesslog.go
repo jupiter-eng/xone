@@ -10,6 +10,10 @@ import (
 	"time"
 )
 
+// A body that came back exactly this long is taken as one that was cut: the reader and the writer
+// both stop at the cap, so "as long as the cap" means "there may have been more". A body that was
+// exactly that long to begin with is treated as cut too, which costs it the fast path and nothing
+// else.
 const (
 	// maxRequestBody is the upper bound on how much of a request body is recorded
 	maxRequestBody = 256 * 1024
@@ -143,14 +147,15 @@ func (l *AccessLog) Log(a *Access) {
 		attrs = append(attrs, slog.Attr{Key: "response_headers", Value: RedactHeaders(a.RespHeader)})
 	}
 	if l.ReqBody {
-		attrs = append(attrs, slog.String("request_body", RedactBody(a.ReqBody, r.Header.Get("Content-Type"))))
+		attrs = append(attrs, slog.String("request_body",
+			redactBody(a.ReqBody, r.Header.Get("Content-Type"), len(a.ReqBody) >= maxRequestBody)))
 	}
 	if l.RespBody {
 		ct := a.RespHeader.Get("Content-Type")
 		if isText(ct) && len(a.RespBody) > 0 {
 			body := encodedOmitted(a.RespHeader)
 			if body == "" {
-				body = RedactBody(a.RespBody, ct)
+				body = redactBody(a.RespBody, ct, len(a.RespBody) >= MaxResponseBody)
 			}
 			attrs = append(attrs, slog.String("response_body", body))
 		}

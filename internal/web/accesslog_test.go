@@ -172,6 +172,59 @@ func TestAccessLog_ErrorsFieldIsRedacted(t *testing.T) {
 	}
 }
 
+// A body as long as the cap is one the access log had to stop at, and the masking has to be told
+// so: redactJSON's fast path assumes a complete body, and the cut can take the very character it
+// goes by -- a DSN cut before its @ holds no sensitive word and no @ either. See redactBody.
+func TestAccessLog_ABodyAsLongAsTheCapIsNotFastPathed(t *testing.T) {
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(old) })
+
+	// A DSN cut before its @, with the padding worked out so the body is exactly as long as the
+	// cap: that is what tells the access log it had to stop here. Nothing in it is a sensitive
+	// word and the @ is gone, so the fast path would write it out as it is
+	cutDSN := func(cap int) []byte {
+		head, tail := `{"pad":"`, `","dsn":"postgres://app:hunter2`
+		b := head + strings.Repeat("x", cap-len(head)-len(tail)) + tail
+		if len(b) != cap || !strings.HasSuffix(b, "hunter2") {
+			t.Fatalf("the case builds a %d-byte body for a cap of %d", len(b), cap)
+		}
+		return []byte(b)
+	}
+
+	t.Run("request", func(t *testing.T) {
+		buf.Reset()
+		l := AccessLog{ReqBody: true}
+		r := httptest.NewRequest("POST", "/x", nil)
+		r.Header.Set("Content-Type", "application/json")
+		l.Log(&Access{Request: r, ReqBody: cutDSN(maxRequestBody)})
+		if strings.Contains(buf.String(), "hunter2") {
+			t.Errorf("the password reached the log: %.200s", buf.String())
+		}
+	})
+
+	t.Run("response", func(t *testing.T) {
+		buf.Reset()
+		l := AccessLog{RespBody: true}
+		h := http.Header{"Content-Type": {"application/json"}}
+		l.Log(&Access{Request: httptest.NewRequest("GET", "/x", nil), RespHeader: h, RespBody: cutDSN(MaxResponseBody)})
+		if strings.Contains(buf.String(), "hunter2") {
+			t.Errorf("the password reached the log: %.200s", buf.String())
+		}
+	})
+
+	t.Run("a shorter body still takes the fast path", func(t *testing.T) {
+		buf.Reset()
+		l := AccessLog{RespBody: true}
+		h := http.Header{"Content-Type": {"application/json"}}
+		l.Log(&Access{Request: httptest.NewRequest("GET", "/x", nil), RespHeader: h, RespBody: []byte(`{"id":1}`)})
+		if !strings.Contains(buf.String(), `"response_body":"{\"id\":1}"`) {
+			t.Errorf("a complete body must be recorded as it is, got=%s", buf.String())
+		}
+	})
+}
+
 func TestAccessLog_EncodedResponseBodyOmitted(t *testing.T) {
 	// Compressed bytes in a log are a run of garbage; identity means no compression
 	var buf bytes.Buffer

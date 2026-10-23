@@ -121,6 +121,64 @@ func TestRedactBody_JSONCutInsideANestedListKeepsTheElementsRead(t *testing.T) {
 	}
 }
 
+// The cut lands wherever the body happened to reach the cap, which is to say anywhere. This walks
+// every single cut point of each body and asserts the credential never comes out -- a key read but
+// not yet masked, a value read in halves, an escaped name cut mid-escape, all of them.
+func TestRedactBody_NoSecretLeaksAtAnyCutPoint(t *testing.T) {
+	bodies := []string{
+		`{"user":"alice","password":"` + secret + `","next":"x"}`,
+		`{"` + esc('p') + `assword":"` + secret + `","next":"x"}`, // the name only exists after decoding
+		`{"a":{"b":{"token":"` + secret + `"}},"c":1}`,            // nested
+		`[{"id":1},{"secret":"` + secret + `"},{"id":2}]`,         // inside an array
+		`{"page":1,"items":[{"apikey":"` + secret + `"}],"n":2}`,  // envelope around a list
+		`{"ſecret":"` + secret + `"}`,                             // Unicode folding, not a literal match
+		`{"dsn":"postgres://app:` + secret + `@db:5432/prod"}`,    // no sensitive key, a DSN in the value
+		`{"note":"login failed password=` + secret + `","id":7}`,  // a name inside a string value
+		`{"a":[[[{"session":"` + secret + `"}]]],"b":"tail"}`,     // deep inside arrays
+		`{"x":1,"CREDENTIAL":"` + secret + `","y":{"api_key":"` + secret + `"},"w":2}`,
+	}
+	for _, body := range bodies {
+		for cut := 0; cut <= len(body); cut++ {
+			// cut is true for every one of these: a body the access log shortened is what this is
+			// about, and the fast path's tests all assume a complete body (see redactBody)
+			got := redactBody([]byte(body[:cut]), "application/json", true)
+			if strings.Contains(got, secret) {
+				t.Fatalf("cut at %d of %d leaked the password\n body=%s\n  got=%s", cut, len(body), body[:cut], got)
+			}
+		}
+	}
+}
+
+func TestRedactBody_CutDSNDoesNotTakeTheFastPath(t *testing.T) {
+	// The cut took the @ the DSN regexps go by, and with it the last reason the fast path had to
+	// hand this body to the parser: no sensitive word, no backslash, no @. It used to be written
+	// into the log exactly as it arrived
+	body := []byte(`{"dsn":"postgres://app:` + secret)
+	if got := redactBody(body, "application/json", true); strings.Contains(got, secret) {
+		t.Fatalf("the password reached the log: %s", got)
+	}
+	// Whereas a complete body still takes it, unchanged: that is every ordinary request
+	whole := []byte(`{"id":1,"name":"a"}`)
+	if got, want := redactBody(whole, "application/json", false), `{"id":1,"name":"a"}`; got != want {
+		t.Fatalf("the fast path changed for a complete body: got=%s want=%s", got, want)
+	}
+}
+
+// The last member read before the cut is where a key has been seen and its value has not: a bug
+// there would be invisible in the cases above, which only assert that nothing leaked.
+func TestRedactBody_CutRightAfterASensitiveKeyRecordsNothingForIt(t *testing.T) {
+	body := `{"user":"alice","password":"` + secret + `"}`
+	cut := strings.Index(body, `:"`+secret) + 1 // just past the colon after "password"
+	got := RedactBody([]byte(body[:cut]), "application/json")
+	mustNotLeak(t, got)
+	if !strings.Contains(got, `"user":"alice"`) {
+		t.Errorf("the member before it was lost, got=%s", got)
+	}
+	if strings.Contains(got, "password") {
+		t.Errorf("a key whose value was never read must not be recorded at all, got=%s", got)
+	}
+}
+
 func TestRedactBody_JSONCutKeepsANullValue(t *testing.T) {
 	// A null value is a value: the decoder hands it over as a nil any, which is also what a
 	// container cut before its first member comes back as. Telling the two apart by the nil alone
