@@ -334,6 +334,11 @@ visible under a local `go run`, and not one character inside a container, redire
 behind a log collector. The version comes from the binary's build info; with a `replace` pointing
 at a local directory it reads `(devel)`.
 
+`XONE_BANNER=off` turns it off for somebody who would rather not have it in their own terminal
+(`0`, `false`, `no` and `off` all do, in any case, and anything else leaves it on). It cannot turn
+the banner *on*: where multi-line ASCII art does not belong stays the framework's judgement, so
+setting it inside a container still prints nothing.
+
 ### The environment variables the framework reads
 
 | Variable | What it does | The equivalent flag |
@@ -341,6 +346,7 @@ at a local directory it reads `(devel)`.
 | `XONE_CONFIG` | The config file path | `--config=<path>` |
 | `XONE_PROFILE` | The active profiles, comma-separated | `--profile=prod,eu` |
 | `XONE_DEBUG` | Prints how loading went and the effective configuration, see above | — |
+| `XONE_BANNER` | `off` leaves the startup banner unprinted; it cannot turn it on, see above | — |
 
 ## Placeholders
 

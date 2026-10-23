@@ -175,7 +175,7 @@ func Run(r Runnable, opts ...Option) error {
 	// lock are left for the other side to expire.
 	ctx, stopSignals := notifyShutdown(o)
 	defer stopSignals()
-	printBanner(stderr, isTerminal(stderr))
+	printBanner(stderr, bannerWanted(stderr))
 
 	// If somebody read the configuration earlier, that one is reused. The configuration belongs to
 	// this Run and is handed back however it ends -- a failed load included: otherwise that failure
