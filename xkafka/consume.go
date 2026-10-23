@@ -310,7 +310,11 @@ func (c *consumer) poll(ctx context.Context) {
 			w := c.assigned[p.Partition]
 			c.mu.Unlock()
 			if w == nil {
-				return // cannot happen under BlockRebalanceOnPoll: revoking partitions waits for the AllowRebalance here
+				// Not a revoked partition: that waits for the AllowRebalance below under BlockRebalanceOnPoll.
+				// What reaches here is a goroutine that exited on its own and took itself out of the table
+				// (see retire), so this batch has nowhere to go. Dropping it loses nothing -- none of it was
+				// marked, and it comes back after the next rebalance
+				return
 			}
 			select {
 			case w.recs <- p.Records:
@@ -390,6 +394,25 @@ func (c *consumer) revokedFn(ctx context.Context, cl *kgo.Client, revoked map[st
 // lostFn runs when partitions are lost (a session timeout and the like): they are no longer this member's and a commit would be rejected by the broker. It only waits for the messages in flight.
 func (c *consumer) lostFn(_ context.Context, _ *kgo.Client, lost map[string][]int32) {
 	c.kill(lost[c.topic])
+}
+
+// retire takes a goroutine that has exited out of both tables, and is the last thing run does.
+//
+// Clearing the partition table is what keeps one partition's exit from stopping the whole consumer: poll
+// dispatches by that table, and a goroutine nobody is reading any more would take workerQueue batches and
+// then leave poll blocked on the channel for good -- no AllowRebalance, no further PollRecords, so every
+// partition of this consumer stops with it. Out of the table, poll finds nothing for that partition and
+// drops the batch instead; nothing was marked, so those records come back after the next rebalance.
+//
+// kill took a revoked partition out already, and a rebalance may have put a new goroutine there since, so
+// only this very one is removed.
+func (c *consumer) retire(w *worker) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.live, w)
+	if c.assigned[w.partition] == w {
+		delete(c.assigned, w.partition)
+	}
 }
 
 // kill makes these partitions' goroutines finish the message in hand and exit, and waits for them to exit.
