@@ -10,6 +10,8 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
 
 ## [Unreleased]
 
+## [v1.4.0] - 2026-10-23
+
 ### Added
 
 - **`XONE_BANNER=off` leaves the startup banner unprinted.** The banner has always been limited to

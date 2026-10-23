@@ -5,9 +5,9 @@ go 1.25.0
 require (
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/jupiter-eng/xone v1.3.0
-	github.com/jupiter-eng/xone/xmetric v1.3.0
-	github.com/jupiter-eng/xone/xtrace v1.3.0
+	github.com/jupiter-eng/xone v1.4.0
+	github.com/jupiter-eng/xone/xmetric v1.4.0
+	github.com/jupiter-eng/xone/xtrace v1.4.0
 	github.com/prometheus/client_golang v1.24.1
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/sdk v1.46.0
