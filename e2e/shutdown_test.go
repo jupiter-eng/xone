@@ -1,9 +1,12 @@
 package e2e
 
 import (
+	"bufio"
 	"cmp"
 	"context"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"slices"
 	"strings"
@@ -781,5 +784,63 @@ func TestShutdown_AfterDisconnect_PGCallWithCtxStops_RedisWaitsForPoolClose(t *t
 				t.Errorf("requests still running at the deadline should be force closed and reported, got stderr:\n%s", lastLines(stderr, 5))
 			}
 		})
+	}
+}
+
+func TestShutdown_HijackedConnectionIsEndedByTheCancelledCtx(t *testing.T) {
+	// A WebSocket is a connection net/http has handed over: Shutdown does not wait for it and
+	// Close cannot break it either, so the one thing that ends the handler is the request ctx the
+	// framework cancels once Shutdown has returned (internal/web.Server.Stop). xgin and xecho each
+	// have a unit test for that; what no unit test reaches is a real process answering a real
+	// signal with such a connection open, which is what a rolling restart does to every long-lived
+	// connection a service holds.
+	//
+	// Exiting 0 is the assertion that carries it: with the ctx left uncancelled the handler never
+	// returns, Stop reports "1 handler(s) still running" and MustRun exits 1.
+	harness.Require(t)
+	const budget = 5 * time.Second
+	p := harness.Start(t, harness.Options{Overlay: stopTimeout(budget)})
+
+	conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", p.Port))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	if _, err := io.WriteString(conn, "GET /ws HTTP/1.1\r\nHost: ws\r\n\r\n"); err != nil {
+		t.Fatalf("send the upgrade: %v", err)
+	}
+	br := bufio.NewReader(conn)
+	line, err := br.ReadString('\n')
+	if err != nil || !strings.HasPrefix(line, "HTTP/1.1 101 ") {
+		t.Fatalf("the handler should hijack and answer 101, got %q err=%v", line, err)
+	}
+	// Read on to the first tick: the handler is then demonstrably inside its loop, and a signal
+	// arriving before it got there would test nothing.
+	for {
+		if line, err = br.ReadString('\n'); err != nil {
+			t.Fatalf("reading up to the first tick: %v\n%s", err, p.Output())
+		}
+		if strings.TrimSpace(line) == "tick" {
+			break
+		}
+	}
+
+	start := time.Now()
+	p.Signal(syscall.SIGTERM)
+	l := p.WaitLog(t, budget+5*time.Second, func(l harness.Log) bool { return l.Msg() == "ws handler left" })
+	if got := l.Str("reason"); got != "context canceled" {
+		t.Errorf("the handler should leave because the framework cancelled the request ctx, got reason=%q", got)
+	}
+	e, exited := p.Wait(budget + 10*time.Second)
+	took := time.Since(start)
+	if !exited {
+		t.Fatalf("it never exited after the SIGTERM with a hijacked connection open\n%s", p.Output())
+	}
+	if e.Code != 0 || e.Signal != nil {
+		t.Fatalf("a hijacked connection should not keep it from exiting 0, got %v\n%s", e, p.Output())
+	}
+	t.Logf("numbers: SIGTERM -> exit with a hijacked connection open took %s", fmtMS(took))
+	if took > budget {
+		t.Errorf("the ctx is cancelled as soon as Shutdown returns, so it should not sit the %v budget out, took %v", budget, took)
 	}
 }
