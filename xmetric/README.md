@@ -58,7 +58,7 @@ XMetric:
 
 | Function | Description |
 |---|---|
-| `CounterInc(name, tags...)` / `CounterAdd(name, v, tags...)` | Increments a counter by 1 / by v (v must be >= 0) |
+| `CounterInc(name, tags...)` / `CounterAdd(name, v, tags...)` | Increments a counter by 1 / by v (v must be >= 0; a negative value is written to the log as an `ERROR` and recorded nowhere) |
 | `GaugeSet(name, v, tags...)` / `GaugeInc` / `GaugeDec` | Gauges |
 | `HistogramObserve(name, v, tags...)` | A histogram observation in seconds, with the buckets from `XMetric.HistogramBuckets` |
 | `ObserveDuration(name, d, tags...)` | Records one duration; the `time.Duration` is converted to seconds and the name gets `_seconds` |
