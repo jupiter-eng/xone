@@ -673,9 +673,24 @@ section("Startup output")
 # The banner is printed in a terminal alone: in a container, redirected or behind a log collector,
 # multi-line ASCII art is unparsable garbage in the logging platform
 mutate("the banner is printed in a terminal alone", "banner.go", ".", "TestPrintBanner",
-       swap('\tif !terminal {\n\t\treturn\n\t}\n', ''))
-mutate("Run decides by stderr whether this is a terminal", "xone.go", ".", "TestRun_StderrNotTerminal_NoBanner",
-       swap('printBanner(stderr, isTerminal(stderr))', 'printBanner(stderr, true)'))
+       swap('\tif !want {\n\t\treturn\n\t}\n', ''))
+mutate("Run asks before printing the banner", "xone.go", ".", "TestRun_StderrNotTerminal_NoBanner",
+       swap('printBanner(stderr, bannerWanted(stderr))', 'printBanner(stderr, true)'))
+# Both halves of that question. Dropping either one leaves something that still prints a banner in a
+# terminal, which is the case somebody runs by hand and declares fine
+mutate("XONE_BANNER=off reaches the decision", "banner.go", ".", "TestBannerWanted",
+       swap('return bannerEnabled() && isTerminal(f)', 'return isTerminal(f)'))
+mutate("XONE_BANNER cannot force the banner into a non-terminal", "banner.go", ".", "TestBannerWanted",
+       swap('return bannerEnabled() && isTerminal(f)', 'return bannerEnabled()'))
+# The default is on, the other way round from XONE_DEBUG: reading it the same way would leave the
+# banner off for everybody who never set the variable
+mutate("the banner is on unless the environment turns it off", "banner.go", ".", "TestBannerEnabled",
+       swap('\tcase "0", "false", "no", "off":\n\t\treturn false\n\t}\n\treturn true',
+            '\tcase "1", "true", "yes", "on":\n\t\treturn true\n\t}\n\treturn false'))
+# A misspelling must not quietly turn it off: XONE_BANNER=offf leaves the banner there, which is
+# what tells somebody they got the spelling wrong
+mutate("only the spellings that mean off turn it off", "banner.go", ".", "TestBannerEnabled",
+       swap('\tcase "0", "false", "no", "off":', '\tcase "0", "false", "no", "off", "offf":'))
 mutate("a pipe and a file are not terminals", "banner.go", ".", "TestIsTerminal",
        swap('st.Mode()&os.ModeCharDevice != 0', 'st.Mode() == st.Mode()'))
 mutate("a local replace shows the version as (devel)", "banner.go", ".", "TestModuleVersion",

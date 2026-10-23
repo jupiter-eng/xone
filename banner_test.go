@@ -79,6 +79,65 @@ func TestRun_StderrNotTerminal_NoBanner(t *testing.T) {
 	}
 }
 
+func TestBannerEnabled_OnUnlessTheEnvironmentSaysOtherwise(t *testing.T) {
+	// The default is on, which is the other way round from XONE_DEBUG, so the spellings that mean
+	// something here are the ones that turn it off. A misspelling leaves it on and announces itself:
+	// the banner is still there. Failing startup over six lines of ASCII art would be out of
+	// proportion
+	for value, want := range map[string]bool{
+		"0": false, "false": false, "no": false, "off": false,
+		"OFF": false, "  Off  ": false, // the case and the whitespace are taken off first
+		"":     true, // unset
+		"1":    true,
+		"true": true,
+		"offf": true, // a misspelling does not quietly turn it off
+		"yes":  true,
+	} {
+		t.Setenv(bannerEnvKey, value)
+		if got := bannerEnabled(); got != want {
+			t.Errorf("%s=%q: got=%v want=%v", bannerEnvKey, value, got, want)
+		}
+	}
+}
+
+func TestBannerWanted_NeedsBothATerminalAndTheEnvironment(t *testing.T) {
+	// The whole decision Run makes, in the one place a test can reach it. os.DevNull stands in for
+	// the terminal: being a character device is all isTerminal asks about, so it answers yes without
+	// a pseudo-terminal having to be opened
+	devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer devNull.Close()
+	if !isTerminal(devNull) {
+		t.Fatalf("%s has to pass for a terminal here, or the cases below ask nothing", os.DevNull)
+	}
+	file, err := os.CreateTemp(t.TempDir(), "out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+
+	for name, c := range map[string]struct {
+		env  string
+		f    *os.File
+		want bool
+	}{
+		"a terminal, nothing said": {"", devNull, true},
+		"a terminal, turned off":   {"off", devNull, false},
+		"not a terminal":           {"", file, false},
+		// Whether this is a place for ASCII art at all stays the framework's judgement: among the
+		// JSON of a log collector it is six lines nothing can parse, and no environment variable may
+		// put it there. The variable says whether it is wanted, not where it is allowed
+		"not a terminal, and asked for": {"1", file, false},
+	} {
+		t.Setenv(bannerEnvKey, c.env)
+		if got := bannerWanted(c.f); got != c.want {
+			t.Errorf("%s: %s=%q got=%v want=%v", name, bannerEnvKey, c.env, got, c.want)
+		}
+	}
+}
+
 func TestModuleVersion_ComesFromBuildInfo(t *testing.T) {
 	for name, c := range map[string]struct {
 		bi   debug.BuildInfo

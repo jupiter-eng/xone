@@ -12,6 +12,15 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
 
 ### Added
 
+- **`XONE_BANNER=off` leaves the startup banner unprinted.** The banner has always been limited to
+  a terminal, which is the judgement that matters in a container or behind a log collector; what it
+  had no answer for was somebody who sees it and does not want it. `0`, `false`, `no` and `off`
+  turn it off, in any case and with surrounding whitespace ignored, and anything else -- a
+  misspelling included -- leaves it on, which is what tells somebody their spelling was wrong.
+  It is read the same way as `XONE_CONFIG`, `XONE_PROFILE` and `XONE_DEBUG`, so the knob sits where
+  somebody already looks, and no code change or rebuild is needed to quieten one's own shell. It
+  cannot turn the banner **on**: whether this is a place for multi-line ASCII art at all stays the
+  framework's decision, and setting it inside a container still prints nothing.
 - **`XKafka.Consumer.SessionTimeout`**: how long the broker waits for a heartbeat before it takes a
   consumer for gone and hands its partitions to another member of the group. It is the time a
   partition stops being consumed after a process is killed outright -- one that exits through its
