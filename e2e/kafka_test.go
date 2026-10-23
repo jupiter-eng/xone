@@ -213,6 +213,7 @@ func TestKafka_SIGTERMWhileInFlight_FinishesCommitsNotRedelivered(t *testing.T) 
 // A member that was killed does not leave the consumer group of its own accord: the new process
 // waits out its session timeout (45s by default in franz-go) before it is assigned partitions
 func TestKafka_SIGKILLMidProcessing_Redelivered(t *testing.T) {
+	requireSlow(t, "franz-go's session timeout, "+kafkaSessionTimeout.String())
 	harness.RequireKafka(t)
 	t.Parallel()
 	topic := harness.KafkaTopic(t, 1)

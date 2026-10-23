@@ -79,10 +79,10 @@ staged initialization, reverse-order shutdown, and the caller gets the **native 
 ## Common commands
 
 ```bash
-scripts/test.sh                      # full test run (per module, GOWORK=off, with -race)
+scripts/test.sh                      # full test run (per module, GOWORK=off, with -race; XONE_TEST_RACE=0 drops it for a quick loop)
 scripts/check.sh                     # architecture + dependency boundaries + docs + gofmt/vet (includes mutate.py --dry-run)
 scripts/mutate.py [--only X] [-k X] [-j N] [--dry-run]   # mutation testing, runs through an overlay, no clean worktree required
-scripts/e2e.sh [--load] [-run X]     # tests against real services: brings up PG / MySQL / Redis / ClickHouse; in CI it is .github/workflows/e2e.yml
+scripts/e2e.sh [--slow] [--load] [-run X]  # tests against real services (--slow adds the cases that wait out a clock boundary or a broker timeout): brings up PG / MySQL / Redis / ClickHouse; in CI it is .github/workflows/e2e.yml
 docker compose -f e2e/compose.yml up -d --wait   # when those services are not installed locally
 scripts/release.sh vX.Y.Z --bump     # release step 1: pin the version, update CHANGELOG and the install version in README, merge into main via PR (follow .claude/skills/release)
 scripts/release.sh vX.Y.Z --tag      # step 2: tag on main (no push); day to day, use the release button in GitHub Actions
