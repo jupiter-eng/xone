@@ -46,9 +46,11 @@ Highest first, and the first one given wins:
 
 The first three name a file explicitly, and a missing file fails startup
 (`config file does not exist: <path>`); when none of the conventional paths exists, one warning is
-logged and everything keeps its defaults. A `--config` or `--profile` written last without a value
-(`./app --config`) also fails startup (`--config needs a value`) rather than being treated as
-absent and falling through to the next option.
+logged and everything keeps its defaults. A `--config` or `--profile` with no value after it fails
+startup (`--config needs a value`) rather than being treated as absent and falling through to the
+next option — written last (`./app --config`), and written with the next flag behind it
+(`./app --config --profile=dev`, where taking `--profile=dev` as the path would report a file
+nobody named). A value that really does begin with a `-` is written as `--config=-weird.yml`.
 
 The configuration is loaded **the first time anybody reads it**, which may be before `xone.Run`
 (when `main` itself calls `xconfig.Unmarshal`, say). `WithConfigPath` has not taken effect by then,
@@ -309,9 +311,12 @@ A few extra sections go to stderr at startup, written for a person to read:
   configuration** (`Webhook: ${ORDER_WEBHOOK}`) rather than expanded — credentials usually arrive
   that way, and they do not necessarily sit under a key called password.
 - **Credentials are masked** and shown as `***`:
-  - a key whose name contains password, passwd, secret, token, credential, apikey, accesskey or
-    privatekey (lowercased with `_ - .` and spaces removed before comparing) has its value masked
-    whole, whether it is a scalar, a list or a map;
+  - a key whose name contains password, passwd, secret, token, credential, apikey, accesskey,
+    privatekey, authorization or signature (lowercased with `_ - .` and spaces removed before
+    comparing) has its value masked whole, whether it is a scalar, a list or a map. The list is
+    shorter than the access log's by cookie and session: there a word is matched against a request
+    field, here against a configuration key, and those two would hide `CookieDomain`,
+    `SessionTimeout` and beego's `SessionOn` — which is what this output is read for;
   - a password embedded in a value: `postgres://app:***@db`,
     `report:***@tcp(db:3306)/report`. When the password itself contains `@` or `/`, masking runs to
     the last `@` (so a later `@` in the same segment masks the host along with it — better to mask

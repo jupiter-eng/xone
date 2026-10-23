@@ -12,6 +12,27 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
 
 ### Fixed
 
+- **`XONE_DEBUG` masks a value under an `Authorization` or `Signature` key.** The word list it goes
+  by was missing both, so a credential under either was printed in the clear while `Password` and
+  `ApiKey` beside it were masked. It stays shorter than the access log's list by `cookie` and
+  `session` on purpose: there a word is matched against a request field, here against a
+  configuration key, and those two would hide `CookieDomain`, `SessionTimeout` and beego's
+  `SessionOn`.
+- **A command-line flag followed by another flag is reported instead of swallowing it.**
+  `./app --config --profile=dev` read `--profile=dev` as the configuration path and failed with
+  `config file does not exist: --profile=dev`, pointing at a file nobody named;
+  `./app --profile --config=/etc/a.yml` went looking for
+  `application---config=/etc/a.yml.yml`. Both now report `--config needs a value`, which was
+  already what a flag written last reported. A value that really begins with a `-` is written as
+  `--config=-weird.yml`.
+- **`yaml:",inline"` on a field that is neither a struct nor a map says so.** The strict decoding
+  reaches the field before yaml does, and what came out was reflect's
+  `NumField of non-struct type int`, which names neither the field nor the tag; yaml's own sentence
+  was never reached. It now raises the same one yaml does,
+  `option ,inline may only be used on a struct or map field`.
+
+### Fixed
+
 - **The global logger is no longer replaced on shutdown when nothing it writes to was closed.** xlog is closed last
   while logs keep coming after it (the stop hooks abandoned at the deadline, the requests still in flight), and the
   replacement exists so those lines do not disappear into a closed file. It used to happen whatever was configured:

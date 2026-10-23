@@ -161,6 +161,11 @@ mutate("an ,inline struct is flattened for the lookup", "internal/config/strict.
        swap('\t\t\t\ts.add(ft) //', '\t\t\t\t_ = ft //'))
 mutate("an ,inline map takes the keys that are not recognized", "internal/config/strict.go", ".", "TestDecodeStrict_FieldRulesMatchYAML",
        swap('\t\t\t\ts.inline = ft.Elem()', '\t\t\t\t_ = ft'))
+# ,inline on anything else is a mistake in the struct, and this check reaches the field before yaml
+# does: without it what comes out is reflect's NumField of non-struct type, which names neither the
+# field nor the tag
+mutate(",inline on a non-struct says what is wrong", "internal/config/strict.go", ".", "TestDecodeStrict_InlineOnANonStruct",
+       swap('\t\t\tcase ft.Kind() != reflect.Struct:', '\t\t\tcase false:'))
 # An element that decodes itself has to be tried during the checking pass: decoded only at the end,
 # one mistake outside hides the problems inside the elements until it is fixed and the process
 # restarted
@@ -633,6 +638,15 @@ mutate("unset variables are sorted and each reported once", "internal/config/con
 # came up
 mutate("a command-line flag with no value is an error", "internal/config/config.go", ".", "TestEnsure_FlagWithoutValueIsError",
        swap('\tif failed = danglingArg(); failed != nil {', '\tif failed = nil; failed != nil {'))
+# What follows a flag and starts with a - is the next flag: taken as the value, --config
+# --profile=dev read --profile=dev as the path and reported a file nobody named
+mutate("the next flag is not taken as a value", "internal/config/locate.go", ".", "TestEnsure_FlagFollowedByAnotherFlagIsError",
+       swap('return i+1 < len(args) && !strings.HasPrefix(args[i+1], "-")', 'return i+1 < len(args)'))
+# Looking at the last argument alone leaves --config --profile=dev reported by nobody: fromArgs
+# finds no value, and the conventional paths quietly bring up another configuration
+mutate("every flag is checked for its value, not only the last", "internal/config/locate.go", ".", "TestEnsure_FlagFollowedByAnotherFlagIsError",
+       swap('\tfor i, a := range args {\n\t\tif !strings.HasPrefix(a, "-") {\n\t\t\tcontinue\n\t\t}\n\t\tname := strings.TrimLeft(a, "-")\n\t\tfor _, key := range []string{ArgKey, ProfileArgKey} {',
+            '\tfor i, a := range args[max(len(args)-1, 0):] {\n\t\tif !strings.HasPrefix(a, "-") {\n\t\t\tcontinue\n\t\t}\n\t\tname := strings.TrimLeft(a, "-")\n\t\tfor _, key := range []string{ArgKey, ProfileArgKey} {'))
 # Passing a value or nil used to panic on the spot; Unmarshal checks before looking for the block,
 # so it still reports when the block is not configured
 mutate("an Unmarshal target that is not a pointer is an error", "internal/config/config.go", ".", "TestUnmarshalAndDecodeStrict_BadTargetIsErrorNotPanic",
@@ -686,6 +700,14 @@ mutate("a password written as password= is masked", "internal/config/debug.go", 
 # password / passwd / pwd were recognized
 mutate("a query string is masked by the credential word list", "internal/config/debug.go", ".", "TestRedacted_SensitiveQueryParamsMasked",
        swap('if sensitiveKey(name) || strings.EqualFold(name, "pwd") {', 'if strings.EqualFold(name, "password") || strings.EqualFold(name, "pwd") {'))
+# Authorization and Signature carry a credential as surely as Password does
+mutate("an Authorization or Signature key is masked too", "internal/config/debug.go", ".", "TestRedacted_AuthorizationAndSignature",
+       swap('"apikey", "accesskey", "privatekey", "authorization", "signature",', '"apikey", "accesskey", "privatekey",'))
+# The other side of the same line. The word list is matched against a configuration key here, not a
+# request field, so cookie and session cannot come along: they would hide CookieDomain,
+# SessionTimeout and beego's SessionOn, which is what somebody turned XONE_DEBUG on to read
+mutate("the word list does not hide ordinary configuration", "internal/config/debug.go", ".", "TestRedacted_AuthorizationAndSignature",
+       swap('"apikey", "accesskey", "privatekey", "authorization", "signature",', '"apikey", "accesskey", "privatekey", "authorization", "signature", "cookie", "session",'))
 # A password holding @ or / used to be masked up to the first @ only, printing the rest along with
 # the host as it was
 mutate("a URL password is masked up to the last @", "internal/config/debug.go", ".", "TestRedacted_DSNPasswordMaskedUpToLastAt",

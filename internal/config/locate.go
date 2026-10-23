@@ -90,27 +90,42 @@ func fromArgs(key string) string {
 		if after, ok := strings.CutPrefix(name, key+"="); ok {
 			return after
 		}
-		if name == key && i+1 < len(args) {
+		if name == key && hasValue(args, i) {
 			return args[i+1]
 		}
 	}
 	return ""
 }
 
-// danglingArg is an error when one of the framework's flags is written last with no value.
+// hasValue reports whether the argument after args[i] is this flag's value.
 //
-// fromArgs finds no value in that spelling and treats it as not written: `./app --config` goes on
+// What follows and starts with a - is the next flag, not a value: taken as one, `--config
+// --profile=dev` would read --profile=dev as the path and report "config file does not exist:
+// --profile=dev", pointing at a file nobody named, and `--profile --config=/etc/a.yml` would go
+// looking for application---config=/etc/a.yml.yml. Left as "not written" instead, danglingArg says
+// what really happened.
+// A value that really does begin with a - is written with the other spelling, --key=-value
+func hasValue(args []string, i int) bool {
+	return i+1 < len(args) && !strings.HasPrefix(args[i+1], "-")
+}
+
+// danglingArg is an error when one of the framework's flags is written with no value after it --
+// written last, or followed by the next flag.
+//
+// fromArgs finds no value in those spellings and treats it as not written: `./app --config` goes on
 // to XONE_CONFIG and the conventional paths, and what comes up is another configuration, or one of
 // nothing but defaults -- while whoever wrote it believes they named a file.
 func danglingArg() error {
 	args := os.Args[1:]
-	if len(args) == 0 {
-		return nil
-	}
-	last := args[len(args)-1]
-	for _, key := range []string{ArgKey, ProfileArgKey} {
-		if strings.HasPrefix(last, "-") && strings.TrimLeft(last, "-") == key {
-			return xerror.Newf("xconfig", "config", "--%s needs a value: write --%s=<value> or --%s <value>", key, key, key)
+	for i, a := range args {
+		if !strings.HasPrefix(a, "-") {
+			continue
+		}
+		name := strings.TrimLeft(a, "-")
+		for _, key := range []string{ArgKey, ProfileArgKey} {
+			if name == key && !hasValue(args, i) {
+				return xerror.Newf("xconfig", "config", "--%s needs a value: write --%s=<value> or --%s <value>", key, key, key)
+			}
 		}
 	}
 	return nil
