@@ -36,8 +36,8 @@ const (
 	TLSCHDB   = "xone_tls"
 )
 
-// TLSClickHouse is a ClickHouse container with its TLS ports open (host networking, listening on
-// 127.0.0.1 alone)
+// TLSClickHouse is a ClickHouse container with its TLS ports open, each published to 127.0.0.1 on
+// this host under the same number it listens on inside
 //
 // The account xone logs in with the password TLSPassword; the account xone_mtls has no password and
 // logs in by presenting a client certificate with CN=xone_mtls signed by the right CA
@@ -88,10 +88,11 @@ func StartTLSClickHouse(t testing.TB, certs *TLSCerts) *TLSClickHouse {
 	addr := func(p int) string { return net.JoinHostPort("127.0.0.1", strconv.Itoa(p)) }
 	c.NativeTLS, c.HTTPS, c.Native, c.HTTP = addr(nativeTLS), addr(https), addr(native), addr(http)
 
-	// Override the docker_related_config.xml the image carries (which listens on 0.0.0.0 / ::): listen
-	// on 127.0.0.1 alone and move every port to a free one, so that under host networking none of
-	// xone-ch's 9000 / 8123 / 9004 / 9005 / 9009 is hit
-	listen := `<clickhouse><listen_host>127.0.0.1</listen_host></clickhouse>`
+	// Override the docker_related_config.xml the image carries (which listens on 0.0.0.0 and on ::):
+	// IPv4 alone, since the ports below are published over IPv4 and an unreachable :: only fills the
+	// server log. The container has a network namespace of its own, so 0.0.0.0 here is reachable
+	// through the published ports and nowhere else.
+	listen := `<clickhouse><listen_host>0.0.0.0</listen_host></clickhouse>`
 	conf := fmt.Sprintf(`<clickhouse>
   <tcp_port>%d</tcp_port>
   <http_port>%d</http_port>
@@ -127,13 +128,23 @@ func StartTLSClickHouse(t testing.TB, certs *TLSCerts) *TLSClickHouse {
 	if err := os.WriteFile(envFile, []byte(envText), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	args := []string{"run", "-d", "--name", c.Name, "--network", "host", "--env-file", envFile,
+	// The ports are published rather than shared through --network host. Host networking is a Linux
+	// feature: on Docker Desktop (macOS, Windows) the containers run inside a Linux VM, so "host" is
+	// that VM's network namespace and nothing the container listens on is reachable at 127.0.0.1
+	// here -- measured, the container comes up and every dial from the test is refused, which this
+	// case used to sit out for the whole 60s. Publishing works the same everywhere.
+	// Each port is published to the same number it listens on, so the numbers FreePort handed out
+	// stay the ones in c.NativeTLS and friends, and to 127.0.0.1 alone so nothing is exposed.
+	args := []string{"run", "-d", "--name", c.Name, "--env-file", envFile,
 		"--tmpfs", "/var/lib/clickhouse",
 		"-v", dir + "/listen.xml:/etc/clickhouse-server/config.d/docker_related_config.xml:ro",
 		"-v", dir + "/xone-tls.xml:/etc/clickhouse-server/config.d/xone-tls.xml:ro",
 		"-v", dir + "/mtls-user.xml:/etc/clickhouse-server/users.d/xone-mtls.xml:ro",
-		"-v", dir + ":/xone-tls:ro",
-		TLSCHImage()}
+		"-v", dir + ":/xone-tls:ro"}
+	for _, p := range []int{nativeTLS, https, native, http} {
+		args = append(args, "-p", fmt.Sprintf("127.0.0.1:%d:%d", p, p))
+	}
+	args = append(args, TLSCHImage())
 	if out, err := docker(2*time.Minute, args...); err != nil {
 		t.Fatalf("docker run the TLS ClickHouse: %v\n%s", err, out)
 	}
@@ -159,10 +170,10 @@ func StartTLSClickHouse(t testing.TB, certs *TLSCerts) *TLSClickHouse {
 		}
 	}
 	// The database is created here rather than through CLICKHOUSE_DB: the clickhouse-client the entry
-	// point script calls to create it carries no --port, so under host networking it reaches the
-	// xone-ch on 127.0.0.1:9000 (measured: it reports 516 and the container exits right after).
-	// This goes through the container's own clickhouse-client to this container's plaintext port,
-	// with the password in the environment rather than on the command line
+	// point script calls to create it carries no --port and so goes to 9000, while every port of this
+	// server is one FreePort handed out. This goes through the container's own clickhouse-client to
+	// this container's plaintext port, with the password in the environment rather than on the
+	// command line
 	for {
 		out, err := dockerEnv(30*time.Second, []string{"CLICKHOUSE_PASSWORD=" + TLSPassword},
 			"exec", "-e", "CLICKHOUSE_PASSWORD", c.Name, "clickhouse-client", "--port", strconv.Itoa(native),

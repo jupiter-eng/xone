@@ -117,7 +117,7 @@ func TestTLS_ClickHouse(t *testing.T) {
 		{"https_wrong_CA", chTLSConfig(ch.DSN("https", ch.HTTPS), xtls.Config{Enable: true, CAFile: certs.OtherCAFile}),
 			[]string{"cannot reach", "certificate signed by unknown authority"}},
 		{"native_no_CA_system_roots", chTLSConfig(ch.DSN("clickhouse", ch.NativeTLS), xtls.Config{Enable: true}),
-			[]string{"certificate signed by unknown authority"}},
+			[]string{untrustedCA}},
 		{"native_ServerName_mismatch", chTLSConfig(ch.DSN("clickhouse", ch.NativeTLS),
 			xtls.Config{Enable: true, CAFile: certs.CAFile, ServerName: "wrong.e2e.internal"}),
 			[]string{"certificate is valid for", "wrong.e2e.internal"}},
@@ -166,7 +166,7 @@ func TestTLS_ClickHouse(t *testing.T) {
 		// The driver's own way: with secure=true and no skip_verify it verifies against the system roots, which a self-signed certificate does not pass;
 		// either turn the TLS block on and give CAFile, or write skip_verify=true (no certificate verification)
 		_, _, err := xgorm.New(context.Background(), chTLSConfig(ch.DSN("clickhouse", ch.NativeTLS)+"?secure=true", xtls.Config{}))
-		rejected(t, "secure=true", err, "certificate signed by unknown authority")
+		rejected(t, "secure=true", err, untrustedCA)
 		db, closer, err := xgorm.New(context.Background(), chTLSConfig(ch.DSN("clickhouse", ch.NativeTLS)+"?secure=true&skip_verify=true", xtls.Config{}))
 		if err != nil {
 			t.Fatalf("secure=true&skip_verify=true should connect (the certificate is not verified): %v", err)
