@@ -269,6 +269,13 @@ func (s *structFields) add(t reflect.Type) {
 			switch {
 			case ft.Kind() == reflect.Map:
 				s.inline = ft.Elem()
+			case ft.Kind() != reflect.Struct:
+				// The same panic, word for word, yaml.v3 raises for this (getStructInfo returns the
+				// error and the decoder panics with it). Without it this walk reaches the field first
+				// and dies on "reflect: NumField of non-struct type int", which names neither the
+				// field nor the tag that caused it -- and the caller never gets to see yaml's own
+				// sentence, because nothing of theirs is decoded any more
+				panic("option ,inline may only be used on a struct or map field")
 			case !reflect.PointerTo(ft).Implements(unmarshalerType):
 				s.add(ft) // yaml does not flatten an embedded struct that decodes itself, so its fields are not recognized here either
 			}

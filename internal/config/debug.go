@@ -88,7 +88,18 @@ const redactedValue = "***"
 // spaces removed before the comparison) is masked whole.
 // key is not among them: KeyPrefix and KeyFile are not credentials, and masking them only hides
 // what was configured
-var sensitiveKeys = []string{"password", "passwd", "secret", "token", "credential", "apikey", "accesskey", "privatekey"}
+//
+// It is deliberately shorter than the access log's word list (internal/web's defaultWords), and the
+// difference is what the two are matching against. There a word is matched against a request field
+// or a header name, where masking one too many costs a little context; here it is matched against a
+// configuration key, and what is hidden is what somebody turned XONE_DEBUG on to read. cookie and
+// session are the two that cannot come along for that reason: they would take CookieDomain,
+// CookieSameSite, SessionTimeout and beego's SessionOn with them, none of which is a credential.
+// authorization and signature have no such everyday spelling and are in.
+var sensitiveKeys = []string{
+	"password", "passwd", "secret", "token", "credential",
+	"apikey", "accesskey", "privatekey", "authorization", "signature",
+}
 
 func sensitiveKey(k string) bool {
 	k = strings.NewReplacer("_", "", "-", "", ".", "", " ", "").Replace(strings.ToLower(k))

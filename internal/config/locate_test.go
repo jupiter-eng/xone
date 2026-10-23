@@ -122,3 +122,29 @@ func TestEnsure_FlagWithoutValueIsError(t *testing.T) {
 		}
 	}
 }
+
+func TestEnsure_FlagFollowedByAnotherFlagIsError(t *testing.T) {
+	// The value is missing just as much when the next flag follows it, and taking that flag as the
+	// value points the error at a file nobody named: "config file does not exist: --profile=dev".
+	// A value that really begins with a - is written as --config=-weird
+	for _, args := range [][]string{
+		{"serve", "--" + ArgKey, "--" + ProfileArgKey + "=dev"},
+		{"serve", "--" + ArgKey, "-v"},
+		{"serve", "--" + ProfileArgKey, "--" + ArgKey + "=/etc/a.yml"},
+	} {
+		fresh(t)
+		withArgs(t, args...)
+		err := Ensure("", quiet())
+		if err == nil || !strings.Contains(err.Error(), "needs a value") {
+			t.Errorf("%v: a flag with the next flag behind it must be an error, got=%v", args[1:], err)
+		}
+	}
+}
+
+func TestLocate_ValueStartingWithDashIsWrittenWithEquals(t *testing.T) {
+	// The escape hatch for the spelling above: the = form takes whatever follows it
+	withArgs(t, "serve", "--"+ArgKey+"=-weird.yml")
+	if got, _ := locate(); got != "-weird.yml" {
+		t.Errorf("--%s=-weird.yml should give -weird.yml, got=%q", ArgKey, got)
+	}
+}
