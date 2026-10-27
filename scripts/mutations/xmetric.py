@@ -63,3 +63,8 @@ mutate("an identity nobody configured attaches no empty label", "xmetric/xmetric
 mutate("two label sets never share a cache entry", "xmetric/shortcut.go", "./xmetric", "TestShortcut_LabelNamesHolding",
        swap('\twriteSized(&b, name)\n\tfor _, l := range labelNames {\n\t\twriteSized(&b, l)\n\t}\n',
      '\tb.WriteString(name)\n\tb.WriteByte(\':\')\n\tfor i, l := range labelNames {\n\t\tif i > 0 {\n\t\t\tb.WriteByte(\',\')\n\t\t}\n\t\tb.WriteString(l)\n\t}\n'))
+# The test logs an Info and a Warn under "this one does not count" while asserting the ERROR series
+# alone, so counting every record at any level kept it green -- those two landed in series of their
+# own and log_errors_total, which an error-rate alert is built on, became a count of all logging.
+mutate("only Error and above are counted", "xmetric/log_counter.go", "./xmetric", "TestLogCounter_CountsErrorLogs",
+       swap('\tif r.Level < slog.LevelError {\n\t\treturn\n\t}\n', ''))
