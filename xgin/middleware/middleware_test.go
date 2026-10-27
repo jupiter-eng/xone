@@ -683,6 +683,12 @@ func TestLog_ResponseCaptureKeepsResponseControllerFeatures(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
+	// Read what the handler left behind only after Close: it waits on the WaitGroup every
+	// connection is counted in (httptest's own server.go), which is the one edge between the
+	// goroutine the handler ran on and this one -- the response arriving is not one, and neither
+	// is the access log line being written. Close is idempotent, so the defer above still stands.
+	srv.Close()
+
 	if werr != nil || rerr != nil || ferr != nil {
 		t.Errorf("all three should reach the real connection, got write=%v read=%v full duplex=%v", werr, rerr, ferr)
 	}

@@ -124,6 +124,11 @@ func (g *XGin) WithMiddleware(m ...gin.HandlerFunc) *XGin {
 }
 
 // WithRecoverFunc customizes the response after a panic. The default is a 500.
+//
+// Whatever f answers with, the rest of the handler chain is abandoned, so it does not have to call
+// c.Abort itself: gin's Next goes on with the handler after the one that panicked, and the
+// framework stops it. Middleware that panicked while turning a request away is not followed by the
+// handler it stands in front of.
 func (g *XGin) WithRecoverFunc(f gin.RecoveryFunc) *XGin {
 	g.recover = f
 	return g

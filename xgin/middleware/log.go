@@ -85,9 +85,11 @@ func (w *captureWriter) WriteString(s string) (int, error) {
 // http.ErrNotSupported (measured), so turning the response body on in the access log would take
 // those three away from every handler -- SSE and long polling set deadlines per chunk.
 //
-// The rest of gin.ResponseWriter needs nothing here: Flush, Hijack, CloseNotify and Pusher are
-// promoted from the embedded interface, so both a direct type assertion and ResponseController
-// reach gin's own writer, which answers each of them.
+// The rest of gin.ResponseWriter needs nothing here: Flush, Hijack and CloseNotify are promoted
+// from the embedded interface, so both a direct type assertion and ResponseController reach gin's
+// own writer, which answers each of them. HTTP/2 push is reached the way gin itself offers it,
+// c.Writer.Pusher(), promoted along with them: measured, neither this writer nor gin's own
+// implements http.Pusher, so asserting to that interface fails on plain gin too.
 func (w *captureWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // Log writes the access log.
