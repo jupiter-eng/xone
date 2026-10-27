@@ -78,7 +78,10 @@ func newHeaderPropagator(globalHeaders []string, rules []ForwardHeaderRule) (*He
 		}
 	}
 
-	global := canonicalHeaders(globalHeaders)
+	global, err := canonicalHeaders(globalHeaders)
+	if err != nil {
+		return nil, fmt.Errorf("invalid ForwardHeaders: %w", err)
+	}
 	var conflicts []string
 	for _, h := range global {
 		if _, limited := restricted[h]; limited {
@@ -107,7 +110,10 @@ func normalizeRules(rules []ForwardHeaderRule) ([]headerRule, error) {
 		if err != nil {
 			return nil, err
 		}
-		headers := canonicalHeaders(r.Headers)
+		headers, err := canonicalHeaders(r.Headers)
+		if err != nil {
+			return nil, err
+		}
 		if len(domains) == 0 || len(headers) == 0 {
 			continue
 		}
@@ -142,14 +148,41 @@ func mergeHeaders(global []string, rules []headerRule) []string {
 //
 // It does not TrimSpace: a header name may not contain spaces anyway, and CanonicalHeaderKey returns a name with
 // illegal characters unchanged, so trimming would quietly fix an obvious configuration error instead.
-func canonicalHeaders(headers []string) []string {
+//
+// A name that is not a field name is refused outright, as a malformed domain is in checkDomain and for the same
+// reason: this configuration decides who internal identifiers are sent to, and getting no error for it is worse
+// than it looks. Such a name can never match anything an inbound request carries -- net/http hands over canonical
+// names and nothing else -- so it forwards nothing, in silence, while the configuration reads as if it did.
+func canonicalHeaders(headers []string) ([]string, error) {
 	out := make([]string, 0, len(headers))
 	for _, h := range headers {
-		if h != "" {
-			out = append(out, http.CanonicalHeaderKey(h))
+		if h == "" {
+			continue
+		}
+		if !validHeaderName(h) {
+			return nil, fmt.Errorf("header name %q is not a valid HTTP field name, so nothing would ever be forwarded under it", h)
+		}
+		out = append(out, http.CanonicalHeaderKey(h))
+	}
+	return out, nil
+}
+
+// validHeaderName reports whether h is an HTTP field name, that is RFC 9110's token. An empty name is
+// not one; the caller above drops those before asking, since an empty entry in a list is a gap, not a mistake.
+func validHeaderName(h string) bool {
+	if h == "" {
+		return false
+	}
+	for i := 0; i < len(h); i++ {
+		c := h[i]
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		case strings.IndexByte("!#$%&'*+-.^_`|~", c) >= 0:
+		default:
+			return false
 		}
 	}
-	return out
+	return true
 }
 
 func normalizeDomains(domains []string) ([]string, error) {

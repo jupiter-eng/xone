@@ -1551,7 +1551,7 @@
             },
             "Name": {
               "type": "string",
-              "description": "is the log file name. The actual file is {Name}.{time suffix}, with a symbolic link of the same name pointing at the current file, so tail can follow it."
+              "description": "is the log file name, and must not be empty. The actual file is {Name}.{time suffix}, with a symbolic link of the same name pointing at the current file, so tail can follow it. Empty is the one value that does not fail on its own: the writer takes the directory itself for the symbolic link, and with Path empty as well it writes a hidden file named after nothing but the time suffix into the working directory. So it fails startup instead."
             },
             "Path": {
               "type": "string",

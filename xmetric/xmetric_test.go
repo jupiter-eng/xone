@@ -130,6 +130,39 @@ func TestShortcut_LabelOrderDoesNotAffectReuse(t *testing.T) {
 	}
 }
 
+func TestShortcut_LabelNamesHoldingTheKeySeparatorDoNotShareACollector(t *testing.T) {
+	// Nothing here checks what a label name holds, and the cache key has to survive that: with the names
+	// joined by a separator, one label called "method,path" and the two labels "method" and "path" land on
+	// the same entry, and whichever call comes second reaches a collector built for a different number of
+	// labels -- a WithLabelValues with the wrong count, which panics inside the business call that made it.
+	// A refactor splitting one tag into two and missing a call site is all it takes.
+	m := newMetrics(t, nil)
+
+	var buf bytes.Buffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})))
+	t.Cleanup(func() { slog.SetDefault(oldLogger) })
+
+	if one, two := cacheKey(kindCounter, "api_calls", []string{"method,path"}),
+		cacheKey(kindCounter, "api_calls", []string{"method", "path"}); one == two {
+		t.Fatalf("one label and two labels must not share a cache key, both are %q", one)
+	}
+
+	// Neither call takes the request down. What the second one gets is this package's answer to every
+	// other malformed input: client_golang refuses the second api_calls (the first registered one label
+	// literally named "method,path", which it exports escaped), so one ERROR line is written and those
+	// values go nowhere.
+	CounterInc("api_calls", T("method,path", "GET,/orders"))
+	CounterInc("api_calls", T("method", "GET"), T("path", "/orders"))
+
+	if !strings.Contains(buf.String(), "api_calls") {
+		t.Errorf("the second registration conflicting should be reported, got log=%q", buf.String())
+	}
+	if out := dump(t, m); !strings.Contains(out, `api_calls{method_path="GET,/orders"} 1`) {
+		t.Errorf("the first recording must still be exported\ngot=\n%s", out)
+	}
+}
+
 func TestShortcut_SortingLeavesCallerSliceIntact(t *testing.T) {
 	// A caller may expand the same slice repeatedly, so sorting it would change somebody else's data.
 	newMetrics(t, nil)

@@ -51,7 +51,7 @@ XLog:
   File:
     Enable: false          # off by default
     Path: ""               # the directory, empty by default = the process's working directory; created when it does not exist
-    Name: app.log          # app.log by default; the actual file carries a time suffix, with a symbolic link of the same name pointing at the current file
+    Name: app.log          # app.log by default and must not be empty; the actual file carries a time suffix, with a symbolic link of the same name pointing at the current file
     RotateTime: 24h        # the rotation period, aligned to the local time zone, one day by default, at least 1m
     MaxAge: 168h           # the retention of historical files, 7 days by default; 0 = no cleanup, a negative value fails startup
     Perm: "0644"           # a string parsed as octal, "0644" by default; 644 and 0o644 are accepted too
@@ -159,6 +159,11 @@ func main() {
   scratch / distroless image needs `import _ "time/tzdata"`, see ["Behavior (measured)"](#behavior-measured).
 - **A file that is not a symbolic link already sitting at `Name`'s position** fails startup rather than overwriting the
   old logs.
+- **A log line that could not be written is warned about on stderr** (`xlog: write: a log line could not be
+  written, err=[...]`, at most once a minute): slog discards what a handler returns, so a full disk, an fd that
+  went away or a log file somebody removed would otherwise look exactly like a service with nothing to say. An
+  output that fails does not stop the others either — with `Console` and `File` both on, a console whose reader
+  has gone does not take the log file with it.
 - **Logging is closed last, and logs keep coming after it** — the stop hooks abandoned at the deadline, the requests
   still in flight. With `Console: true` they still reach stdout and nothing changes. With **file output alone** the
   file is gone, so the global logger is replaced by a plain JSON one on stderr: those last lines carry no `trace_id`,

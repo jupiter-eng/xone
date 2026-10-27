@@ -66,8 +66,12 @@ type FileConfig struct {
 	// Path is the log directory.
 	Path string `yaml:"Path"`
 
-	// Name is the log file name. The actual file is {Name}.{time suffix},
+	// Name is the log file name, and must not be empty. The actual file is {Name}.{time suffix},
 	// with a symbolic link of the same name pointing at the current file, so tail can follow it.
+	//
+	// Empty is the one value that does not fail on its own: the writer takes the directory itself for the
+	// symbolic link, and with Path empty as well it writes a hidden file named after nothing but the time
+	// suffix into the working directory. So it fails startup instead.
 	Name string `yaml:"Name"`
 
 	// RotateTime is the rotation period. It defaults to one day, aligned to the local time zone. The minimum is 1 minute.
@@ -97,6 +101,12 @@ type FileConfig struct {
 // It ignores Enable: the defaults are valid anyway, so the only way to get an error here is an explicitly wrong value,
 // and wrong is wrong -- it should not be let through just because file output happens to be off today.
 func (c FileConfig) validate() error {
+	// An empty Name is the one value that does not fail on its own: the writer would take the directory
+	// itself for the log file, and with Path empty too it would write a hidden file named after nothing but
+	// the time suffix into whatever the working directory happens to be, with no symlink and no word said.
+	if c.Name == "" {
+		return fmt.Errorf("File.Name must not be empty: it is the log file's name, with the time suffix appended to it (app.log gives app.log.20260918)")
+	}
 	if c.RotateTime < time.Minute {
 		return fmt.Errorf("File.RotateTime=[%v] must be >= 1m: log file names are only precise to the minute", c.RotateTime)
 	}
