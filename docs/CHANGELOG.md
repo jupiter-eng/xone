@@ -10,6 +10,36 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
 
 ## [Unreleased]
 
+### Fixed
+
+- **xbeego: an error handler registered under a name is no longer reported as a crash.**
+  `web.ErrorController` registers every method it finds under a name rather than a status code --
+  `ErrorDb` becomes `"Db"` -- and `c.Abort("Db")` then panics with that name. The handler cannot be
+  rendered from outside beego, since `web.Exception` takes a numeric code and `errorInfo`'s fields
+  are unexported, so the response keeps the status beego sets and loses its body. What changes is
+  what it is called: it is beego control flow, and used to be written as `panic while handling
+  request` at `ERROR` with a stack. That line said a request had failed while everything else said
+  it had succeeded -- a name is not a code, so `c.Abort("Db")` leaves the status at **200**, and the
+  access log, the metrics and the span all recorded a success. It is now one `WARN` naming the code
+  and the path, and the advice stays the same: register the handler under its status code.
+- **xbeego: `RecoverPanic` and `BeegoLogs` are settled by the first assembly, which removes a data
+  race.** Both land on beego globals that are read while requests are being served: beego reads
+  `BConfig.RecoverFunc` on every request, and its `logs` package walks its adapter list without
+  holding a lock. Writing them from a second server assembling while the first was already
+  answering was a data race, which the race detector reports. They are now written once, by the
+  first assembly, and an instance assembling later with a different value gets a `WARN` saying its
+  own values were ignored instead of having them taken under the first server's feet. **Behavior
+  change**: it used to be whichever instance assembled with the switch on. Two servers in one
+  process built the documented way -- the second from `CurrentConfig()` -- agree on both and are
+  unaffected.
+- **xbeego: the access log's `response_body` no longer comes up empty for a response written
+  through `io.Copy`.** The recorder's `ReadFrom` handed the bytes straight to the writer underneath,
+  which counts them but never sees them, so with `LogResponseBody` on the field was empty beside a
+  correct `bytes_out`. While the body is being captured the bytes now travel through `Write`; the
+  sendfile path is still taken for every request whose body is not recorded. It is reachable from
+  middleware mounted with `WithMiddleware`, not from a beego controller, whose `context.Response`
+  implements neither `io.ReaderFrom` nor `Unwrap`.
+
 ## [v1.4.0] - 2026-10-23
 
 ### Added

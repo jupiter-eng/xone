@@ -207,7 +207,6 @@ func (x *XBeego) build() {
 		x.conf, x.confErr = c, err
 		x.trusted = web.ParseProxies(c.TrustedProxies)
 
-		applyConfig(c)
 		bindOnce.Do(func() {
 			registerBeeLogAdapter()
 			// The route template is written during routing and read outside beego, so it travels
@@ -225,9 +224,7 @@ func (x *XBeego) build() {
 			// may well have done.
 			beeweb.InsertFilter("/*", beeweb.BeforeExec, captureRoute, beeweb.WithReturnOnOutput(false))
 		})
-		if c.BeegoLogs {
-			useBeeLogAdapter()
-		}
+		settleBeegoGlobals(c)
 
 		for _, f := range x.routes {
 			f(beeweb.BeeApp)
@@ -303,6 +300,48 @@ func (x *XBeego) build() {
 
 // initOnce guards beego's Handlers.Init, see build.
 var initOnce sync.Once
+
+// applyOnce guards the two beego globals this module's configuration writes, see
+// settleBeegoGlobals. It is kept apart from bindOnce because the reasons differ: what bindOnce
+// holds cannot be done twice at all (logs.Register panics on a repeated name), while these two are
+// simply settled by whichever assembly gets there first.
+var applyOnce sync.Once
+
+// beegoGlobals is the pair of switches that land on beego's process-wide globals.
+type beegoGlobals struct {
+	recoverPanic bool
+	beegoLogs    bool
+}
+
+// settled is what the first assembly wrote onto beego's globals, for a later one to compare
+// against. It is written inside applyOnce and read after it, so the Once orders the two.
+var settled beegoGlobals
+
+// settleBeegoGlobals lands RecoverPanic and BeegoLogs on beego's process-wide globals, once per
+// process.
+//
+// Once rather than per instance because both are read while requests are being served: beego reads
+// BConfig.RecoverFunc on every request (p.cfg.RecoverFunc in server/web/router.go) and its logs
+// package walks its adapter list without holding a lock (BeeLogger.writeToLoggers against
+// BeeLogger.Reset, core/logs/log.go). A second instance assembling while the first one already
+// serves would write both from another goroutine, which the race detector reports as what it is.
+//
+// So the first assembly settles them, and a later instance that disagrees is told its own values
+// were ignored rather than having them taken silently. In practice the two agree: the recipe for a
+// second server starts from CurrentConfig(), which is a copy of the same block.
+func settleBeegoGlobals(c Config) {
+	applyOnce.Do(func() {
+		applyConfig(c)
+		if c.BeegoLogs {
+			useBeeLogAdapter()
+		}
+		settled = beegoGlobals{recoverPanic: c.RecoverPanic, beegoLogs: c.BeegoLogs}
+	})
+	if settled.recoverPanic != c.RecoverPanic || settled.beegoLogs != c.BeegoLogs {
+		slog.Warn("xbeego RecoverPanic and BeegoLogs are process-wide and were settled by the first assembly; this instance's own values are ignored",
+			"recover_panic", settled.recoverPanic, "beego_logs", settled.beegoLogs)
+	}
+}
 
 // captureRoute is the filter at web.BeforeExec: it copies the route template beego matched onto
 // the request state, where the middleware outside beego reads it.
@@ -417,17 +456,29 @@ func applyConfig(c Config) {
 		// recovery to render that handler. c.Abort("404") is how a beego application answers a 404.
 		// Treated as a crash it would answer 500 and write an ERROR line per request.
 		//
-		// web.Exception is the exported door to that rendering and takes a numeric code only;
-		// beego's own recovery passes the string through, so an error handler registered under a
-		// name rather than a number cannot be rendered from out here and falls through below. It
-		// is then answered with the status beego would and logged, which is the part of this that
-		// is not identical to beego.
+		// web.Exception is the exported door to that rendering and takes a numeric code only, so
+		// a handler registered under a name rather than a number is handled right below instead.
 		if s, ok := recovered.(string); ok && cfg.EnableErrorsShow {
 			if _, registered := beeweb.ErrorMaps[s]; registered {
 				if code, err := strconv.ParseUint(s, 10, 64); err == nil {
 					beeweb.Exception(code, ctx)
 					return
 				}
+				// Registered under a name, which is what web.ErrorController produces for every
+				// method it finds (ErrorDb becomes "Db"). The handler cannot be reached from out
+				// here -- web.Exception takes a numeric code and errorInfo's fields are
+				// unexported -- so the status beego would answer goes out without its body.
+				//
+				// It is beego control flow all the same, not a crash, so it is written as one
+				// WARN naming the code. An ERROR with a stack would say a request had failed
+				// while everything else said it had succeeded: a name is not a code, so
+				// c.Abort("Db") leaves the status at 200 and the access log, the metrics and the
+				// span all record a success.
+				slog.WarnContext(ctx.Request.Context(),
+					"xbeego an error handler registered under a name cannot be rendered from outside beego, so the response carries no body; register it under its status code instead",
+					"code", s, "path", ctx.Request.URL.Path)
+				middleware.OnAbort(ctx.ResponseWriter, ctx.Request, recovered, recoverResponse(ctx))
+				return
 			}
 		}
 		middleware.OnPanic(ctx.ResponseWriter, ctx.Request, recovered, recoverResponse(ctx))

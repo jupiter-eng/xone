@@ -50,6 +50,13 @@ type teapotController struct{ beeweb.Controller }
 
 func (c *teapotController) Get() { c.Abort("418") }
 
+// namedAbortController aborts onto an error handler registered under a name rather than a status
+// code, which is what web.ErrorController produces for every method it finds (ErrorDb becomes
+// "Db"). Beego renders it; from outside beego it cannot be reached at all.
+type namedAbortController struct{ beeweb.Controller }
+
+func (c *namedAbortController) Get() { c.Abort("Db") }
+
 // userController is a beego controller written the ordinary way: it logs with the request's ctx
 // and adds a per-request field from deep inside business code.
 type userController struct{ beeweb.Controller }
@@ -112,6 +119,13 @@ func TestMain(m *testing.M) {
 		_, _ = w.Write([]byte("i am a teapot"))
 	})
 	beeweb.Router("/teapot", &teapotController{})
+
+	// An error handler registered under a name rather than a status code, the shape
+	// web.ErrorController registers every one of its methods under.
+	beeweb.ErrorHandler("Db", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("database is down"))
+	})
+	beeweb.Router("/named-abort", &namedAbortController{})
 
 	// Context.Abort always panics with the body, registered or not, having set the status first.
 	beeweb.Get("/ctx-abort", func(ctx *beectx.Context) { ctx.Abort(http.StatusForbidden, "nope") })
@@ -281,6 +295,22 @@ func only(t *testing.T, lines []map[string]any, msg string) map[string]any {
 func access(t *testing.T, lines []map[string]any) map[string]any {
 	t.Helper()
 	return only(t, lines, "request completed")
+}
+
+// resetBeegoGlobals puts beego's process-wide globals back into the state a fresh process is in,
+// for a test that has to watch the first assembly settle them. bindOnce is left alone: what it
+// holds cannot be done twice at all, logs.Register panicking on a repeated name.
+func resetBeegoGlobals(t *testing.T) {
+	t.Helper()
+	applyOnce, settled = sync.Once{}, beegoGlobals{}
+	t.Cleanup(func() {
+		// Settle them again from the defaults rather than putting back whatever stood here
+		// before. What stood here depends on which tests ran first, which -run makes vary, and
+		// the rest of the suite is written against an assembled process: the framework's recovery
+		// installed and both switches settled.
+		applyOnce = sync.Once{}
+		settleBeegoGlobals(DefaultConfig())
+	})
 }
 
 // withMetrics installs a metrics setup of its own.
@@ -1050,11 +1080,12 @@ func TestWithRecoverFunc(t *testing.T) {
 }
 
 func TestRecoverPanic_OffLeavesBeegosOwnRecovery(t *testing.T) {
-	// The slot is beego's one global and an earlier assembly in this process has taken it over, so
-	// the real thing goes back first -- which is also the state a fresh process is in.
-	installed := beeweb.BConfig.RecoverFunc
+	// The slot is beego's one global, settled by an earlier assembly in this process, so the real
+	// thing goes back first -- which is also the state a fresh process is in. Without the reset
+	// the assembly below would write nothing whatever this config said, and the test would pass
+	// for the wrong reason.
+	resetBeegoGlobals(t)
 	beeweb.BConfig.RecoverFunc = beegoOwnRecover
-	t.Cleanup(func() { beeweb.BConfig.RecoverFunc = installed })
 
 	testkit.QuietSlog(t)
 	x := New().WithConfig(configWith(func(c *Config) {
@@ -1070,6 +1101,69 @@ func TestRecoverPanic_OffLeavesBeegosOwnRecovery(t *testing.T) {
 	if w := do(t, x, "GET", "/boom", nil); w.Code != http.StatusInternalServerError {
 		t.Errorf("beego's own recovery should still answer 500, got=%d", w.Code)
 	}
+}
+
+func TestBeegoGlobals_SettledByTheFirstAssembly(t *testing.T) {
+	// Beego reads BConfig.RecoverFunc on every request and its logs package walks its adapter list
+	// without holding a lock, so a second instance must not write either one while the first is
+	// serving. The first assembly settles them; a later one that disagrees is told so.
+	resetBeegoGlobals(t)
+	lines := captureLog(t)
+
+	New().WithConfig(configWith(quiet)).Handler() // RecoverPanic and BeegoLogs both on
+	installed := beeweb.BConfig.RecoverFunc
+
+	// One that wants both off: it is told, and neither global moves.
+	New().WithConfig(configWith(quiet, func(c *Config) {
+		c.RecoverPanic, c.BeegoLogs = false, false
+	})).Handler()
+	var warned bool
+	for _, l := range lines() {
+		if l["level"] == "WARN" && l["recover_panic"] == true && l["beego_logs"] == true {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("an instance whose values were ignored has to be told, with what was settled: %v", lines())
+	}
+
+	// And one that wants the recovery its own way: installing it would hand beego a slot it reads
+	// on every request, written from a goroutine of this instance's own.
+	New().WithConfig(configWith(quiet, func(c *Config) { c.BeegoLogs = false })).Handler()
+	if got := reflect.ValueOf(beeweb.BConfig.RecoverFunc).Pointer(); got != reflect.ValueOf(installed).Pointer() {
+		t.Error("a later assembly must not write beego's recovery slot")
+	}
+}
+
+func TestBeegoGlobals_SecondAssemblyWhileTheFirstServes(t *testing.T) {
+	// The race detector is the assertion here: this is the shape that reported one, the second
+	// server of the README's admin-port recipe assembling after the first was already answering.
+	resetBeegoGlobals(t)
+	testkit.QuietSlog(t)
+
+	h := New().WithConfig(configWith(quiet)).Handler()
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/ping", nil))
+			}
+		}()
+	}
+
+	// The same switches as the first, which is what the admin-port recipe produces: it is the
+	// write itself that races, not a disagreement about what to write.
+	New().WithConfig(configWith(quiet)).Handler()
+	close(stop)
+	wg.Wait()
 }
 
 func TestWithRecoverFunc_IsPerInstance(t *testing.T) {
@@ -1579,6 +1673,48 @@ func TestRecover_RegisteredErrorHandlerIsRendered(t *testing.T) {
 	}
 	if a := access(t, lines()); a["status"] != float64(http.StatusTeapot) {
 		t.Errorf("the access log should record what went out, got=%v", a["status"])
+	}
+}
+
+func TestRecover_ErrorHandlerUnderANameIsNotACrash(t *testing.T) {
+	// web.ErrorController registers every method it finds under a name rather than a status code
+	// (ErrorDb becomes "Db"), and c.Abort("Db") then panics with that name. It cannot be rendered
+	// from out here -- web.Exception takes a numeric code and errorInfo's fields are unexported --
+	// and the missing body is the lesser half of it: the name is not a code, so beego leaves the
+	// status at 200, and reporting a crash would write an ERROR line with a stack for a request
+	// the access log, the metrics and the span all record as a success.
+	lines := captureLog(t)
+	x := New().WithConfig(configWith(func(c *Config) { c.Metric, c.Trace = false, false }))
+	w := do(t, x, "GET", "/named-abort", nil)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("the status beego sets for this abort should go out, got=%d", w.Code)
+	}
+	// The body is the part that is lost, and pinning it is what says so: should it ever become
+	// reachable, this test is where the documentation has to be corrected with it.
+	if w.Body.String() != "" {
+		t.Errorf("the handler's body cannot be reached from outside beego, got=%q", w.Body.String())
+	}
+	for _, l := range lines() {
+		if l["msg"] == "panic while handling request" {
+			t.Errorf("an abort onto a registered error handler is control flow, not a crash: %v", l)
+		}
+	}
+	var warned bool
+	for _, l := range lines() {
+		if l["level"] == "WARN" && l["code"] == "Db" {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Errorf("a response losing its body has to be reported, with the code on the line: %v", lines())
+	}
+	a := access(t, lines())
+	if a["status"] != float64(http.StatusOK) {
+		t.Errorf("the access log should record what went out, got=%v", a["status"])
+	}
+	if _, recorded := a["errors"]; recorded {
+		t.Errorf("nothing failed, so there is no errors field to write: %v", a["errors"])
 	}
 }
 
