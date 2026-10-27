@@ -10,6 +10,8 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
 
 ## [Unreleased]
 
+## [v1.4.1] - 2026-10-27
+
 ### Fixed
 
 - **xbeego: an error handler registered under a name is rendered again, instead of being reported

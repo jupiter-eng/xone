@@ -2,7 +2,7 @@ module github.com/jupiter-eng/xone/xmetric
 
 go 1.25.0
 
-require github.com/jupiter-eng/xone v1.4.0
+require github.com/jupiter-eng/xone v1.4.1
 
 require go.yaml.in/yaml/v3 v3.0.4 // indirect
 

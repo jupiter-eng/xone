@@ -6,8 +6,8 @@ require (
 	github.com/ClickHouse/ch-go v0.74.0
 	github.com/ClickHouse/clickhouse-go/v2 v2.48.0
 	github.com/hashicorp/go-version v1.9.0
-	github.com/jupiter-eng/xone v1.4.0
-	github.com/jupiter-eng/xone/xgorm v1.4.0
+	github.com/jupiter-eng/xone v1.4.1
+	github.com/jupiter-eng/xone/xgorm v1.4.1
 	gorm.io/driver/clickhouse v0.7.0
 	gorm.io/gorm v1.31.2
 )
@@ -29,8 +29,8 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jinzhu/inflection v1.0.0 // indirect
 	github.com/jinzhu/now v1.1.5 // indirect
-	github.com/jupiter-eng/xone/xmetric v1.4.0 // indirect
-	github.com/jupiter-eng/xone/xtrace v1.4.0 // indirect
+	github.com/jupiter-eng/xone/xmetric v1.4.1 // indirect
+	github.com/jupiter-eng/xone/xtrace v1.4.1 // indirect
 	github.com/klauspost/compress v1.19.1 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/paulmach/orb v0.13.0 // indirect
