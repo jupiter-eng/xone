@@ -56,3 +56,10 @@ mutate("a configured label wins over the application identity", "xmetric/xmetric
 # A constant service_name="" would be attached to every metric, go_* and process_* included
 mutate("an identity nobody configured attaches no empty label", "xmetric/xmetric.go", "./xmetric", "TestInitXMetric_NoIdentityAddsNoEmptyLabel",
        swap('\t\tif l.value == "" {\n\t\t\tcontinue\n\t\t}\n', ''))
+# Nothing here checks what a label name holds, so the cache key has to survive one: with the names
+# joined by a separator, one label called "method,path" and the two labels "method" and "path" land
+# on the same entry, and the second recording reaches a collector built for a different number of
+# labels -- a WithLabelValues with the wrong count, which panics inside the business call.
+mutate("two label sets never share a cache entry", "xmetric/shortcut.go", "./xmetric", "TestShortcut_LabelNamesHolding",
+       swap('\twriteSized(&b, name)\n\tfor _, l := range labelNames {\n\t\twriteSized(&b, l)\n\t}\n',
+     '\tb.WriteString(name)\n\tb.WriteByte(\':\')\n\tfor i, l := range labelNames {\n\t\tif i > 0 {\n\t\t\tb.WriteByte(\',\')\n\t\t}\n\t\tb.WriteString(l)\n\t}\n'))

@@ -139,6 +139,102 @@ func TestNew_FailsFastOnRotationPeriodUnderOneMinute(t *testing.T) {
 	}
 }
 
+func TestNew_FailsFastOnEmptyFileName(t *testing.T) {
+	// It is the one file setting that does not fail on its own. With a Path, the writer takes the directory
+	// itself for the symlink and the error talks about symlinks; with Path empty as well it starts cleanly
+	// and writes a hidden file named after nothing but the time suffix into the working directory.
+	c, _ := fileCfg(t)
+	c.File.Name = ""
+	if _, _, err := New(c); err == nil || !strings.Contains(err.Error(), "File.Name") {
+		t.Errorf("an empty File.Name must be an error naming the field, got=%v", err)
+	}
+
+	// With Path empty as well there is nothing to refuse to overwrite, and the working directory is where
+	// the hidden file would land -- so the run happens inside one of its own, which is also what keeps a
+	// mutation round from leaving that file in the package directory.
+	dir, cwd := t.TempDir(), mustGetwd(t)
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(cwd) })
+	c2 := DefaultConfig()
+	c2.Console, c2.File = false, FileConfig{Enable: true, RotateTime: time.Hour, Perm: "0644"}
+	if _, _, err := New(c2); err == nil || !strings.Contains(err.Error(), "File.Name") {
+		t.Errorf("with Path empty too it must still be that error, got=%v", err)
+	}
+	if entries, err := os.ReadDir(dir); err != nil || len(entries) > 0 {
+		t.Errorf("nothing may be written into the working directory, got=%v err=%v", entries, err)
+	}
+}
+
+// mustGetwd is the working directory, for a test that changes it and has to put it back.
+func mustGetwd(t *testing.T) string {
+	t.Helper()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cwd
+}
+
+// failWriter fails every write, the way a full disk or an fd that went away does.
+type failWriter struct{ err error }
+
+func (w failWriter) Write([]byte) (int, error) { return 0, w.err }
+
+// stderrInto redirects os.Stderr into a file for the rest of the test and returns what has been
+// written to it so far.
+func stderrInto(t *testing.T) func() string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "stderr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	os.Stderr = f
+	t.Cleanup(func() { os.Stderr = old; f.Close() })
+	return func() string { return readFile(t, f.Name()) }
+}
+
+func TestFanout_AFailingOutputStopsNeitherTheOthersNorGoesUnseen(t *testing.T) {
+	// Two halves of one promise. io.MultiWriter returns at the first writer that fails, so a console whose
+	// reader has gone would take a perfectly writable log file with it; and slog discards what a handler
+	// returns (Logger.log in log/slog), so the failure itself would be reported nowhere at all.
+	stderr := stderrInto(t)
+	var good bytes.Buffer
+	f := &fanout{writers: []io.Writer{failWriter{err: errors.New("disk full")}, &good}, clock: time.Now}
+
+	if _, err := f.Write([]byte("one line\n")); err == nil {
+		t.Error("the failure should come back to the caller as well")
+	}
+	if good.String() != "one line\n" {
+		t.Errorf("the output behind the failing one should still get the line, got=%q", good.String())
+	}
+	if got := stderr(); !strings.Contains(got, "disk full") {
+		t.Errorf("the failure should be warned about on stderr, got=%q", got)
+	}
+}
+
+func TestFanout_WriteFailureWarningIsRateLimited(t *testing.T) {
+	// An output that fails fails for every line, and one warning per line is a flood of its own.
+	stderr := stderrInto(t)
+	now := time.Now()
+	f := &fanout{writers: []io.Writer{failWriter{err: errors.New("disk full")}}, clock: func() time.Time { return now }}
+
+	for range 3 {
+		_, _ = f.Write([]byte("x\n"))
+	}
+	if got := strings.Count(stderr(), "disk full"); got != 1 {
+		t.Errorf("three failures within the interval should warn once, got=%d", got)
+	}
+
+	now = now.Add(writeErrInterval)
+	_, _ = f.Write([]byte("x\n"))
+	if got := strings.Count(stderr(), "disk full"); got != 2 {
+		t.Errorf("once the interval has passed it should warn again, got=%d", got)
+	}
+}
+
 func TestNew_MaxAgeNegativeFailsFast(t *testing.T) {
 	// 0 means no cleanup; a negative value is most likely a mistake, and treating it as "no cleanup" would slowly fill the disk.
 	c, _ := fileCfg(t)

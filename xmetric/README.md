@@ -91,6 +91,10 @@ XMetric:
   out.
 - **`Register` returns an error for a same name with a different type or different labels**: the one passed in is not in
   the registry and the values recorded through it cannot be exported.
+- **A label name the shortcuts are given is not checked**, unlike `ConstLabels`: client_golang takes it and exports a
+  non-conforming one escaped (`T("method,path", ...)` comes out as `method_path`). What it does not do is take the
+  recording down with it — one spelling never lands on another's collector, and a second spelling of the same metric
+  that disagrees about the labels is one `ERROR` line and values that go nowhere, as everywhere else here.
 - The framework's own metrics are in [observability.md "Metrics"](../docs/observability.md#metrics).
 
 ## Observability

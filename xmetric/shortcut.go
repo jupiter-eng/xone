@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -97,28 +98,47 @@ func parseTags(tags []Tag) (names, values []string) {
 }
 
 // cacheKey builds the collector cache key in a single allocation.
+//
+// Every piece carries its own length, which makes the key one canonical spelling of
+// (kind, name, label names): two different triples cannot produce the same one. Joining the names
+// with a separator instead leaves that open, because nothing here checks what a name holds -- a
+// label name with a comma in it (a tag spelled "method,path" rather than two tags) would land on
+// the entry of the two-label metric, and the recording would reach a collector built for a
+// different number of labels. That is a WithLabelValues with the wrong count, which panics inside
+// whichever business call made it, while every other malformed input in this package is one ERROR
+// line and a recording that goes nowhere (see CounterAdd and collectorOf).
 func cacheKey(kind, name string, labelNames []string) string {
-	size := len(kind) + 1 + len(name) + 1
-	for i, l := range labelNames {
-		if i > 0 {
-			size++
-		}
-		size += len(l)
+	size := len(kind) + 1 + decLen(len(name)) + 1 + len(name)
+	for _, l := range labelNames {
+		size += decLen(len(l)) + 1 + len(l)
 	}
 
 	var b strings.Builder
 	b.Grow(size)
 	b.WriteString(kind)
 	b.WriteByte(':')
-	b.WriteString(name)
-	b.WriteByte(':')
-	for i, l := range labelNames {
-		if i > 0 {
-			b.WriteByte(',')
-		}
-		b.WriteString(l)
+	writeSized(&b, name)
+	for _, l := range labelNames {
+		writeSized(&b, l)
 	}
 	return b.String()
+}
+
+// writeSized writes s preceded by its length, so that whatever follows cannot be read as part of it.
+func writeSized(b *strings.Builder, s string) {
+	b.WriteString(strconv.Itoa(len(s)))
+	b.WriteByte(':')
+	b.WriteString(s)
+}
+
+// decLen is how many characters the decimal spelling of n takes, for sizing the key exactly.
+func decLen(n int) int {
+	d := 1
+	for n >= 10 {
+		n /= 10
+		d++
+	}
+	return d
 }
 
 // collectorOf reuses a collector by key, and on a miss build creates and registers one.

@@ -82,3 +82,8 @@ mutate("the forwarding warning does not name XGin alone", "xtrace/propagator.go"
        swap("forward headers from an untrusted peer, only peers in the web server's TrustedProxies (XGin / XEcho) are trusted", "forward headers from an untrusted peer, only peers in XGin.TrustedProxies are trusted"))
 mutate("the baggage warning does not name XGin alone", "xtrace/propagator.go", "./xtrace", "TestTrustedBaggage_WarnsOnceForUntrustedPeerBaggage",
        swap("baggage from an untrusted peer, only peers in the web server's TrustedProxies (XGin / XEcho) are trusted", "baggage from an untrusted peer, only peers in XGin.TrustedProxies are trusted"))
+# A name that is not an HTTP field name matches nothing an inbound request carries, so it forwards
+# nothing while the configuration reads as if it did -- the same silence a malformed domain used to
+# have before checkDomain.
+mutate("a malformed forward header name fails startup", "xtrace/propagator.go", "./xtrace", "TestNewHeaderPropagator_MalformedHeaderNameFails",
+       swap('\t\tif !validHeaderName(h) {', '\t\tif false {'))

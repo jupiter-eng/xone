@@ -57,6 +57,34 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
   `Engine` panics -- during assembly, where it took the whole server down over a translation that
   could not have been used anyway. It is now the same `xgin` / `register` error the other failures
   there are, which assembly logs as a WARN.
+- **xmetric: a label name holding a comma no longer panics inside a business call.** The collector
+  cache was keyed on the label names joined by a separator, and nothing checks what a name holds:
+  one label called `method,path` and the two labels `method` and `path` produced the same key, so
+  whichever call came second reached a collector built for the other number of labels. That is a
+  `WithLabelValues` with the wrong count, which panics out of whichever business call made it --
+  while a negative `CounterAdd`, an unregistrable metric and a name already taken by another type
+  are all one `ERROR` line and a recording that goes nowhere. A refactor splitting one tag into two
+  and missing a call site was enough. The key now carries each piece's length and cannot be read
+  two ways; the two spellings get their own collectors, and the second one to register is refused
+  with that same `ERROR` line.
+- **xlog: a log line that could not be written is reported, and one failing output no longer takes
+  the others with it.** `slog` discards what a handler returns (`Logger.log` in `log/slog`), so a
+  full disk, an fd that went away or a log file somebody removed looked exactly like a service with
+  nothing to say -- the failure rotation warns about one file over, for the same reason. It is now
+  one stderr line through the same rate-limited path, at most once a minute. The outputs were also
+  assembled with `io.MultiWriter`, which returns at the first writer that fails, and the console
+  comes first: with `Console` and `File` both on, a console whose reader had gone (the collector
+  closing the pipe) silenced a perfectly writable log file. Every output now gets the line.
+- **xlog: an empty `File.Name` fails startup.** It was the one file setting that did not fail on its
+  own: with a `Path` the writer took the directory itself for the symlink and the error talked about
+  symlinks, and with `Path` empty as well it started cleanly and wrote a hidden file named after
+  nothing but the time suffix into the working directory.
+- **xtrace: a header name in `ForwardHeaders` / `ForwardHeaderRules` that is not an HTTP field name
+  fails startup.** `X-Tenant-Id:` with a stray colon, or a name with a space in it, passed the
+  configuration and then matched nothing an inbound request carries -- net/http hands over canonical
+  names and nothing else -- so it forwarded nothing, in silence, while the configuration read as if
+  it did. `Domains` has been held to that standard for the same reason: this configuration decides
+  who internal identifiers are sent to.
 
 ## [v1.4.0] - 2026-10-23
 

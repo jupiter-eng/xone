@@ -42,6 +42,23 @@ mutate("the logger is left alone when nothing it writes to was closed", "xlog/xl
        swap('\tif swapOnClose {\n', '\tif true {\n'))
 mutate("what decides the swap is the console, not the file alone", "xlog/xlog.go", ".", "TestCloseXLog",
        swap('swapOnClose = !c.Console && c.File.Enable', 'swapOnClose = c.File.Enable'))
+# slog discards what a handler returns (Logger.log in log/slog), so a full disk, an fd that went
+# away or a file somebody removed is the logs stopping with nothing said anywhere -- the same
+# failure the rotation path one file over warns about.
+mutate("a log line that could not be written is reported", "xlog/xlog.go", ".", "TestFanout_",
+       swap('\tif err != nil {\n\t\tf.report(err)\n\t}\n', ''))
+# io.MultiWriter returns at the first writer that fails: a console whose reader has gone would take
+# a perfectly writable log file down with it.
+mutate("an output that fails does not stop the ones behind it", "xlog/xlog.go", ".", "TestFanout_",
+       swap('\t\twn, werr := w.Write(p)\n\t\tif werr != nil && err == nil {\n\t\t\tn, err = wn, werr\n\t\t}\n',
+     '\t\twn, werr := w.Write(p)\n\t\tif werr != nil {\n\t\t\treturn wn, werr\n\t\t}\n'))
+# An output that fails fails for every line, so one warning per line is a flood of its own.
+mutate("the write failure warning is rate-limited", "xlog/xlog.go", ".", "TestFanout_",
+       swap('\tif f.lastErrAt.IsZero() || now.Sub(f.lastErrAt) >= writeErrInterval {', '\tif true {'))
+# An empty Name has the writer take the directory itself for the log file, and with Path empty too
+# it writes a hidden file named after nothing but the time suffix into the working directory.
+mutate("an empty log file name fails startup", "xlog/config.go", ".", "TestNew_FailsFastOnEmptyFileName",
+       swap('\tif c.Name == "" {', '\tif false {'))
 # With an ordinary file already at {Name}, Rename atomically replaces it with the symlink and the
 # old logs are gone without a word
 mutate("an ordinary file of the same name is not overwritten by the symlink", "xlog/rotate.go", ".", "TestRotateWriter",

@@ -59,6 +59,10 @@ XTrace:
 - `Domains` accepts only the two spellings `api.internal.com` and `*.trusted.com`; `*.trusted.com` matches a subdomain
   at any depth and **does not match the bare domain**. Every other spelling with a `*`, and the same header appearing in
   both `ForwardHeaders` and `ForwardHeaderRules`, fails while the configuration is read.
+- Header names are held to the same standard: anything that is not an HTTP field name (`X-Tenant-Id:` with a stray
+  colon, a name with a space in it) fails startup too. Such a name matches nothing an inbound request carries —
+  net/http hands over canonical names and nothing else — so it would forward nothing while the configuration read as
+  if it did. Case and spelling are otherwise free: `x-request-id` and `X-REQUEST-ID` are the same header.
 - `XGin.Trace` / `XHttp.Trace` only decide whether Spans are opened; forwarding keeps working with them off.
 - Processors registered with `AddSpanProcessor` receive no Span while `Enable: false`, and are Shut down on exit all the same.
 

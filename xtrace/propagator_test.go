@@ -168,6 +168,25 @@ func TestNewHeaderPropagator_OnlyLeadingStarDotWildcard(t *testing.T) {
 	}
 }
 
+func TestNewHeaderPropagator_MalformedHeaderNameFails(t *testing.T) {
+	// A name that is not an HTTP field name can never match anything an inbound request carries -- net/http
+	// hands over canonical names and nothing else -- so it forwards nothing while the configuration reads as
+	// if it did. Domains are held to the same standard one function over, and for the same reason: this is
+	// configuration deciding who internal identifiers are sent to.
+	for _, h := range []string{"X-Tenant-Id:", "X Request Id", "X-Tenant-Id\n", "X/Y", "a=b", "\u4f7f\u7528"} {
+		if _, err := NewHeaderPropagator([]string{h}, nil); err == nil {
+			t.Errorf("ForwardHeaders=%q must be an error", h)
+		}
+		if _, err := NewHeaderPropagator(nil, []ForwardHeaderRule{{Domains: []string{"a.com"}, Headers: []string{h}}}); err == nil {
+			t.Errorf("a rule header %q must be an error too", h)
+		}
+	}
+	// The punctuation RFC 9110's token does allow has to keep working.
+	if _, err := NewHeaderPropagator([]string{"X-Request-Id", "x_trace.tag"}, nil); err != nil {
+		t.Errorf("a valid field name must not be an error: %v", err)
+	}
+}
+
 func TestNewHeaderPropagator_ContradictoryConfigFails(t *testing.T) {
 	// One side says send it to everyone, the other says send it only to these. Guessing either way could send an internal identifier to a third party.
 	_, err := NewHeaderPropagator(

@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -65,12 +66,69 @@ func build(cfg Config, base []slog.Attr) (*slog.Logger, io.Closer, error) {
 		closers = append(closers, w)
 	}
 
-	// With no output at all, MultiWriter writes nothing (the same as io.Discard) rather than reporting an error:
+	// With no output at all nothing is written (the same as io.Discard) rather than an error being reported:
 	// "I simply do not want logs" is a reasonable choice and must not keep the service from starting.
-	out := io.MultiWriter(writers...)
+	out := &fanout{writers: writers, clock: time.Now}
 
 	opts := &slog.HandlerOptions{Level: level, AddSource: cfg.AddSource, ReplaceAttr: inLocation(loc)}
 	return withStatic(slog.New(newCtxHandler(newHandler(out, opts))), base, cfg.Fields), multiCloser(closers), nil
+}
+
+// writeErrInterval is the minimum interval between warnings about a log line that could not be written.
+const writeErrInterval = time.Minute
+
+// fanout hands every log line to each configured output.
+//
+// It is not io.MultiWriter, for two reasons that are both "the logs stop and nobody is told":
+//
+//   - MultiWriter returns at the first writer that fails (multiWriter.Write in io/multi.go), so a console
+//     whose reader has gone -- the collector closing the pipe -- would take the log file with it, while
+//     that file is perfectly writable;
+//   - a failed write has nowhere to go: slog discards what a handler returns (_ = l.Handler().Handle(ctx, r)
+//     in log/slog's Logger.log), so a full disk, an fd that went away or a file somebody removed looks
+//     exactly like a service that had nothing to say. Rotation says this about itself one file over and
+//     warns for it; this is the other half of the same promise.
+//
+// The warning goes to stderr through warnf and is rate-limited: an output that fails usually fails for
+// every line, and one warning per line is a flood of its own.
+type fanout struct {
+	writers []io.Writer
+
+	// clock is an injectable time source, which makes the rate limiting testable
+	clock func() time.Time
+
+	mu        sync.Mutex
+	lastErrAt time.Time
+}
+
+// Write hands p to every output, including the ones after a failure, and reports the first failure.
+//
+// What it returns is the failing writer's own count and error, which keeps io.Writer's contract even
+// though slog discards it.
+func (f *fanout) Write(p []byte) (int, error) {
+	n, err := len(p), error(nil)
+	for _, w := range f.writers {
+		wn, werr := w.Write(p)
+		if werr != nil && err == nil {
+			n, err = wn, werr
+		}
+	}
+	if err != nil {
+		f.report(err)
+	}
+	return n, err
+}
+
+// report warns about a failed write, at most once per writeErrInterval.
+func (f *fanout) report(err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	now := f.clock()
+	if f.lastErrAt.IsZero() || now.Sub(f.lastErrAt) >= writeErrInterval {
+		f.lastErrAt = now
+		warnf("write: a log line could not be written, err=[%v]", err)
+	}
 }
 
 // identity are the framework's default per-line fields: which application and which process the line came from.
