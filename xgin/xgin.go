@@ -182,8 +182,7 @@ func (g *XGin) build() {
 		// left cannot cancel anything. With it, all of those go to c.Request.Context(), exactly as
 		// passing c.Request.Context() would.
 		e.ContextWithFallback = true
-		applyConfig(e, c)
-		g.trusted = web.ParseProxies(c.TrustedProxies)
+		g.trusted = applyConfig(e, c)
 
 		// The onion, outermost first:
 		//   LogScope -> Trace -> Log -> Metric -> Recover -> the caller's middleware -> handler
@@ -300,8 +299,14 @@ func skipMetrics(c Config, h gin.HandlerFunc) gin.HandlerFunc {
 	}
 }
 
-// applyConfig lands the config fields that govern the engine onto e.
-func applyConfig(e *gin.Engine, c Config) {
+// applyConfig lands the config fields that govern the engine onto e, and returns the proxies that
+// ended up trusted.
+//
+// The return value is what decides whether forwarded headers are accepted (see markTrustedPeer),
+// and it comes from here rather than from the config a second time so that both sides of "who
+// counts as one of us" -- gin's client_ip and the framework's forwarded headers -- fall back
+// together when the list cannot be installed.
+func applyConfig(e *gin.Engine, c Config) web.Proxies {
 	e.MaxMultipartMemory = c.MaxMultipartMemory
 
 	// Gin enables RedirectTrailingSlash by default: when /users/ does not match /users it answers
@@ -319,7 +324,9 @@ func applyConfig(e *gin.Engine, c Config) {
 	if err := e.SetTrustedProxies(web.ExpandProxies(c.TrustedProxies)); err != nil {
 		slog.Warn("xgin invalid TrustedProxies, trusting none", "error", err)
 		_ = e.SetTrustedProxies([]string{})
+		return nil
 	}
+	return web.ParseProxies(c.TrustedProxies)
 }
 
 // markTrustedPeer leaves a mark for the tracing middleware when the directly connected peer is in

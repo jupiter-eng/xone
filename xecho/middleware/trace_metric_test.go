@@ -148,6 +148,34 @@ func TestTrace_ReturnedErrorRecordedOnSpanAndResponseKeepsTraceID(t *testing.T) 
 	}
 }
 
+func TestTrace_ErrorTheHandlerRendersItselfIsNotOnTheSpan(t *testing.T) {
+	// The span and the access log read the same recorded error (errorOf), so one the handler
+	// rendered itself with c.Error is missing from both. The status code that went out is still
+	// recorded, and still marks the span as an error. See the access log's half of this in
+	// TestLog_ErrorTheHandlerRendersItselfIsNotInTheErrorsField.
+	spans := recording(t)
+	e := echo.New()
+	e.Use(Trace())
+	e.GET("/self-rendered", func(c echo.Context) error {
+		c.Error(errors.New("db is down"))
+		return nil
+	})
+	w := httptest.NewRecorder()
+	e.ServeHTTP(w, httptest.NewRequest("GET", "/self-rendered", nil))
+
+	got := spans()
+	if len(got) != 1 {
+		t.Fatalf("exactly one span should be produced, got=%d", len(got))
+	}
+	a := attrsOf(got[0])
+	if w.Code != 500 || a["http.response.status_code"] != "500" || got[0].Status.Code != codes.Error {
+		t.Errorf("the status code that went out should be recorded and marked as an error, got=%d %v %v", w.Code, a, got[0].Status)
+	}
+	if text, ok := a["echo.errors"]; ok {
+		t.Errorf("an error that reached no outer layer leaves the attribute absent, got=%v", text)
+	}
+}
+
 func TestTrace_UnmatchedRouteUsesFixedValue(t *testing.T) {
 	// With real paths, a scanner hitting a few URLs blows up the cardinality of both traces and
 	// metrics. A wrong method (405) is recorded as unmatched too: echo hands out that route's

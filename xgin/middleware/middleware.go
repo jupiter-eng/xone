@@ -52,8 +52,9 @@ func routeOf(c *gin.Context) string {
 
 // Recover catches a panic and turns it into an error log line and a 500.
 //
-// When handle is nil, a 500 is returned. http.ErrAbortHandler is not caught and is re-panicked for
-// net/http to break the connection.
+// When handle is nil, a 500 is returned. Whatever handle answers with, the rest of the handler
+// chain is abandoned. http.ErrAbortHandler is not caught and is re-panicked for net/http to break
+// the connection.
 func Recover(handle gin.RecoveryFunc) gin.HandlerFunc {
 	if handle == nil {
 		handle = func(c *gin.Context, _ any) { c.AbortWithStatus(http.StatusInternalServerError) }
@@ -109,6 +110,14 @@ func Recover(handle gin.RecoveryFunc) gin.HandlerFunc {
 				return
 			}
 			handle(c, err)
+			// Whatever handle left of the chain is abandoned. The panic unwound the handler that
+			// threw it, but gin's Next() goes on with the one after it (the loop over c.handlers
+			// in context.go), so without this a handle that only writes a response -- one a caller
+			// passed to WithRecoverFunc -- lets the request carry on past the layer that panicked:
+			// middleware that panicked while turning a request away is followed by the handler it
+			// was meant to protect, which then appends its own body to the response. The default
+			// handle goes through AbortWithStatus and already stops the chain itself.
+			c.Abort()
 		}()
 		c.Next()
 	}

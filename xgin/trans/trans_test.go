@@ -127,6 +127,30 @@ func TestRegisterZH_FailureReportsXginRegister(t *testing.T) {
 	}
 }
 
+func TestRegisterZH_DisabledValidatorIsReportedNotPanicked(t *testing.T) {
+	// gin.DisableBindValidation sets binding.Validator to nil, and asking a nil interface for its
+	// Engine panics. This runs during assembly, where that panic takes the whole server down over
+	// a translation that could never have been used.
+	mu.Lock()
+	old := translator
+	translator = nil
+	mu.Unlock()
+	oldV := binding.Validator
+	binding.Validator = nil
+	t.Cleanup(func() {
+		binding.Validator = oldV
+		mu.Lock()
+		translator = old
+		mu.Unlock()
+	})
+
+	err := RegisterZH()
+	var xe *xerror.Error
+	if !errors.As(err, &xe) || xe.Module != "xgin" || xe.Op != "register" {
+		t.Fatalf("this should be an xgin register xerror, got=%#v", err)
+	}
+}
+
 func TestRegisterZH_RepeatedRegisterIsNoOp(t *testing.T) {
 	if err := RegisterZH(); err != nil {
 		t.Fatal(err)

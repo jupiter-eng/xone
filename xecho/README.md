@@ -147,9 +147,12 @@ admin := xecho.New().WithConfig(c).WithRoutes(adminRoutes)
   always a 500 and no text); to change the format, set `e.HTTPErrorHandler` inside `WithRoutes`.
   The error text goes into the access log's `errors` and the span's `echo.errors`, and a sensitive
   word (password, token, ...) masks the whole thing, while a password inside a URL or MySQL DSN
-  becomes `***REDACTED***`. A custom error handler is called exactly once; when the response has
-  already gone out (`c.Response().Committed`) and an error is returned, echo's default error
-  handler does nothing.
+  becomes `***REDACTED***`. **Return the error rather than rendering it yourself** with
+  `c.Error(err)`: the client receives the same response either way and the status code and
+  `bytes_out` recorded are the same, but the text reaches neither `errors` nor `echo.errors`, see
+  [Behavior (measured)](#behavior-measured). A custom error handler is called exactly once; when
+  the response has already gone out (`c.Response().Committed`) and an error is returned, echo's
+  default error handler does nothing.
 - **The request body has no limit**: the framework does not set one for the business. To limit it,
   use echo's own middleware, for instance `e.Use(echomw.BodyLimit("10M"))` (`echomw` being
   `github.com/labstack/echo/v4/middleware`). The multipart spill threshold is fixed at 32MB, see
@@ -240,7 +243,7 @@ description is in [xgin "Access log"](../xgin/README.md#access-log):
 | `bytes_in` | The `Content-Length` of the request; a chunked upload records `-1` |
 | `bytes_out` | The response body bytes written (`c.Response().Size`), headers excluded; error responses count too. With `echomw.Gzip` installed this is the byte count **before** compression (xgin with gin-contrib/gzip records the compressed one), see [Behavior (measured)](#behavior-measured) |
 | `query` / `request_headers` / `request_body` / `response_headers` / `response_body` | Each when its own switch is on, masked by the same rules as xgin; when the response carries `Content-Encoding` (compressed by `echomw.Gzip`), `response_body` records only `[gzip-encoded content omitted]` |
-| `errors` | The error returned by the handler (`err.Error()`, such as `code=404, message=Not Found`), or the reason for an abort or a broken connection; absent when there is none; a sensitive **name** followed by `=` or `:` has its value masked to the end of that line (`login failed password=***REDACTED***`), and the password inside `postgres://app:pw@db` or `app:pw@tcp(db:3306)` becomes `***REDACTED***` (the span's `echo.errors` works the same way) |
+| `errors` | The error **returned** by the handler (`err.Error()`, such as `code=404, message=Not Found`), or the reason for an abort or a broken connection; absent when there is none, and absent for an error the handler rendered itself with `c.Error(err)` (the status code and `bytes_out` are still the ones sent, see [Behavior (measured)](#behavior-measured)); a sensitive **name** followed by `=` or `:` has its value masked to the end of that line (`login failed password=***REDACTED***`), and the password inside `postgres://app:pw@db` or `app:pw@tcp(db:3306)` becomes `***REDACTED***` (the span's `echo.errors` works the same way) |
 | `trace_id` / `span_id` | When tracing is on |
 
 `middleware.AddSensitiveFields(...)` / `AddSensitiveHeaders(...)` write to the same table as
@@ -343,6 +346,26 @@ the access log records. `HTTPErrorHandler` runs exactly once; returning the erro
 echo call it again, and a custom error handler that does not check `Committed` writes the error
 response twice. When a handler writes a 200 and then returns an error, echo's default error
 handler sees `Committed` and does nothing, the client receives that 200, and the log records 200.
+
+**An error the handler renders itself** with `c.Error(err)` instead of returning it goes to the
+same `e.HTTPErrorHandler`, so the client gets the same response and the access log, the metrics and
+the span all record the status code and the byte count that went out. What they do not get is the
+text: the built-in middleware records what travels through it (`finish`), and this one never does.
+Measured, a handler calling `c.Error(echo.NewHTTPError(500, "db is down"))` and returning nil
+against one returning that error:
+
+| | returned | rendered with `c.Error` |
+|---|---|---|
+| response | 500 `{"message":"db is down"}` | identical |
+| access log `status` / `bytes_out` | 500 / 25 | 500 / 25 |
+| access log `errors` | `code=500, message=db is down` | **absent** |
+| span `http.response.status_code`, error mark | 500, marked | 500, marked |
+| span `echo.errors` | `code=500, message=db is down` | **absent** |
+
+So a 500 produced that way is the one failure whose reason is in no log at all: a panic still
+leaves its own `panic while handling request` line. Returning the error is echo's own spelling and
+the one to use. The framework does not wrap `e.HTTPErrorHandler` to catch the difference, because
+a caller replacing it in `WithRoutes` would silently take that wrapper away again.
 
 **`e.Debug`** (`XEcho.Debug`, false by default) is read in exactly three places in echo v4.16.0's
 source, two of which affect what the caller sees:

@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"bytes"
+	"net/http"
 	"sync"
 	"time"
 
@@ -77,6 +78,17 @@ func (w *captureWriter) WriteString(s string) (int, error) {
 	}
 	return w.ResponseWriter.WriteString(s)
 }
+
+// Unwrap hands back the writer below, which is how http.ResponseController walks down to the real
+// connection: it looks for the method it needs and asks Unwrap for the next layer when it finds
+// none. Without it, SetReadDeadline, SetWriteDeadline and EnableFullDuplex all answer
+// http.ErrNotSupported (measured), so turning the response body on in the access log would take
+// those three away from every handler -- SSE and long polling set deadlines per chunk.
+//
+// The rest of gin.ResponseWriter needs nothing here: Flush, Hijack, CloseNotify and Pusher are
+// promoted from the embedded interface, so both a direct type assertion and ResponseController
+// reach gin's own writer, which answers each of them.
+func (w *captureWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 
 // Log writes the access log.
 func Log(opts ...LogOption) gin.HandlerFunc {

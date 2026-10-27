@@ -57,6 +57,13 @@ func RegisterZH() error {
 		return xerror.Newf("xgin", "register", "zh translator not found")
 	}
 
+	// binding.Validator is an interface, and gin.DisableBindValidation sets it to nil: asking a nil
+	// interface for its Engine panics, and this runs during assembly, where a panic takes the
+	// server down over a translation nobody could have used anyway.
+	if binding.Validator == nil {
+		return xerror.Newf("xgin", "register", "gin validator is disabled (gin.DisableBindValidation), there is nothing to translate")
+	}
+
 	v, ok := binding.Validator.Engine().(*validator.Validate)
 	if !ok {
 		return xerror.Newf("xgin", "register", "gin validator is %T, not *validator.Validate", binding.Validator.Engine())

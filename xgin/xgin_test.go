@@ -1276,7 +1276,13 @@ func TestApplyConfig_FallsBackToTrustNoneOnProxyError(t *testing.T) {
 
 	c := DefaultConfig()
 	c.TrustedProxies = []string{"10.0.0.0/8", "not-an-ip"} // Validate would reject this, so it is bypassed here
-	applyConfig(e, c)
+	trusted := applyConfig(e, c)
+
+	// Both sides of "who counts as one of us" fall back together: gin's client_ip below, and the
+	// ranges the forwarded headers are judged against, which are what applyConfig hands back.
+	if trusted.Trusts("10.0.0.1") {
+		t.Error("when the setup fails, the forwarded headers of that first range must not be believed either")
+	}
 
 	req := httptest.NewRequest("GET", "/", nil)
 	req.RemoteAddr = "10.0.0.1:1234" // inside that first range
