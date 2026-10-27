@@ -423,6 +423,15 @@ func TestLogCounter_CountsErrorLogs(t *testing.T) {
 	if !strings.Contains(out, `level="ERROR"} 2`) {
 		t.Errorf("two Errors logged in the same place must become one series with a count of 2\ngot=\n%s", out)
 	}
+	// The Info and the Warn above have to be absent, and that has to be asserted rather than implied by the
+	// ERROR series alone: counting every record puts them in series of their own and leaves the check above
+	// untouched, while log_errors_total -- what an error-rate alert is built on -- has quietly become a count
+	// of all logging.
+	for _, level := range []string{`level="INFO"`, `level="WARN"`} {
+		if strings.Contains(out, level) {
+			t.Errorf("only Error and above are counted, but %s produced a series\ngot=\n%s", level, out)
+		}
+	}
 }
 
 func TestInstall_NoDataRaceWithConcurrentLogging(t *testing.T) {
