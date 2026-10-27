@@ -190,12 +190,6 @@ func Recover(handle RecoverFunc) func(http.Handler) http.Handler {
 // with the response its own caller asked for.
 func OnPanic(w http.ResponseWriter, r *http.Request, recovered any, handle RecoverFunc) {
 	st, ctx := reqstate.From(r.Context()), r.Context()
-	if handle == nil && st != nil {
-		handle = st.Recover
-	}
-	if handle == nil {
-		handle = defaultRecover
-	}
 
 	// http.ErrAbortHandler is the agreed way for a handler to ask for this connection to be
 	// dropped (httputil.ReverseProxy does it when the upstream goes away). net/http receives it,
@@ -234,6 +228,34 @@ func OnPanic(w http.ResponseWriter, r *http.Request, recovered any, handle Recov
 		"path", r.URL.Path,
 		"method", r.Method)
 	note(st, recovered)
+
+	answer(w, r, recovered, handle)
+}
+
+// OnAbort answers a request a beego handler ended through beego's own control flow -- a panic
+// carrying a registered error code rather than a failure. It writes the response and nothing else:
+// no stack, no ERROR line, and no entry in the access log's errors field, because nothing failed.
+//
+// It is exported for the reason OnPanic is: xbeego calls it from the slot it installs in beego's
+// router, which is the only place such a panic can be seen. Call it from a deferred function, with
+// the value recover() returned.
+func OnAbort(w http.ResponseWriter, r *http.Request, recovered any, handle RecoverFunc) {
+	answer(w, r, recovered, handle)
+}
+
+// answer writes the response after a recovered panic: what handle says, what the request carries
+// (XBeego.WithRecoverFunc, see State.Recover), or a bare 500.
+//
+// It writes nothing at all once the response has started going out, which is why both callers go
+// through it rather than calling handle themselves.
+func answer(w http.ResponseWriter, r *http.Request, recovered any, handle RecoverFunc) {
+	st := reqstate.From(r.Context())
+	if handle == nil && st != nil {
+		handle = st.Recover
+	}
+	if handle == nil {
+		handle = defaultRecover
+	}
 
 	if st != nil && st.Rec != nil && st.Rec.Started() {
 		// The response has started going out; changing the status code now only yields a truncated

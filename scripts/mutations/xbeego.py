@@ -63,6 +63,10 @@ mutate("the captured response body is capped", "xbeego/internal/reqstate/reqstat
 mutate("Hijack reaches the writer underneath", "xbeego/internal/reqstate/reqstate.go", "./xbeego", "TestRecorder_ForwardsHijack",
        swap('\thj, ok := r.ResponseWriter.(http.Hijacker)\n\tif !ok {\n\t\treturn nil, nil, http.ErrNotSupported\n\t}\n',
             '\treturn nil, nil, http.ErrNotSupported\n\thj, ok := r.ResponseWriter.(http.Hijacker)\n\tif !ok {\n\t\treturn nil, nil, http.ErrNotSupported\n\t}\n'))
+# ReadFrom hands the bytes straight to the writer underneath, which counts them but never sees
+# them: the access log would record an empty response_body beside a correct bytes_out
+mutate("the captured response body survives ReadFrom", "xbeego/internal/reqstate/reqstate.go", "./xbeego", "TestRecorder_ReadFromKeepsCapturing",
+       swap('\tif !ok || r.max-len(r.buf) > 0 {\n', '\tif !ok {\n'))
 # io.Copy finds ReadFrom on the recorder and would call it again without the guard, recursing until
 # the stack runs out
 mutate("ReadFrom without one underneath does not recurse", "xbeego/internal/reqstate/reqstate.go", "./xbeego", "TestRecorder_ReadFromWithoutOneUnderneath",
@@ -91,6 +95,13 @@ mutate("beego's own abort is not reported as a panic", "xbeego/xbeego.go", "./xb
 # answers 500 and writes an ERROR line per request
 mutate("a registered error handler is rendered rather than crashed on", "xbeego/xbeego.go", "./xbeego", "TestRecover_RegisteredErrorHandlerIsRendered",
        swap('\t\t\t\t\tbeeweb.Exception(code, ctx)\n\t\t\t\t\treturn\n', '\t\t\t\t\t_ = code\n'))
+# web.ErrorController registers every method it finds under a name rather than a status code
+# (ErrorDb becomes "Db"), and that name cannot be rendered from outside beego. Reported as a crash
+# it writes an ERROR line with a stack for a request the status, the metrics and the span all
+# record as a success
+mutate("an error code registered under a name is not a crash", "xbeego/xbeego.go", "./xbeego", "TestRecover_ErrorHandlerUnderANameIsNotACrash",
+       swap('\t\t\t\tmiddleware.OnAbort(ctx.ResponseWriter, ctx.Request, recovered, recoverResponse(ctx))\n',
+            '\t\t\t\tmiddleware.OnPanic(ctx.ResponseWriter, ctx.Request, recovered, recoverResponse(ctx))\n'))
 # Context.Abort sets ctx.Output.Status and then panics with the body: a bare 500 would turn every
 # such abort into a 500
 mutate("an aborted request keeps the status the handler set", "xbeego/xbeego.go", "./xbeego", "TestRecover_ContextAbortKeepsItsStatus",
@@ -181,6 +192,11 @@ mutate("the config given to WithConfig is validated too", "xbeego/xbeego.go", ".
 # Assembling twice mounts the middleware twice: two access log lines and doubled metrics per request
 mutate("assembly happens once", "xbeego/xbeego.go", "./xbeego", "TestHandler_AssemblesOnce",
        swap('\tx.buildOnce.Do(func() {\n', '\tfunc(f func()) { f(); f() }(func() {\n'))
+# Beego reads BConfig.RecoverFunc on every request and its logs package walks its adapter list
+# without a lock, so a second instance writing either one while the first is already serving is a
+# data race -- which is what the race detector reported
+mutate("beego's process-wide globals are settled once", "xbeego/xbeego.go", "./xbeego", "TestBeegoGlobals_SettledByTheFirstAssembly",
+       swap('\tapplyOnce.Do(func() {\n\t\tapplyConfig(c)\n', '\tfunc(f func()) { f() }(func() {\n\t\tapplyConfig(c)\n'))
 # web.Run calls Handlers.Init right before it listens; a filter chain registered with
 # InsertFilterChain is silently never run without it
 mutate("beego's filter chains are folded in", "xbeego/xbeego.go", "./xbeego", "TestHandler_FilterChainsAreFoldedIn",

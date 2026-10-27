@@ -227,7 +227,12 @@ func (r *Recorder) Push(target string, opts *http.PushOptions) error {
 // what http.ServeContent and http.ServeFile do) falls back to a 32KB buffer loop.
 func (r *Recorder) ReadFrom(src io.Reader) (int64, error) {
 	rf, ok := r.ResponseWriter.(io.ReaderFrom)
-	if !ok {
+	// While the body is still being captured, the bytes have to travel through Write: ReadFrom
+	// hands them straight to the writer underneath, which counts them but never sees them, and the
+	// access log's response_body would be empty while bytes_out was right. Capturing is off for
+	// every request the access log does not record a body for, so the fast path below is the
+	// ordinary one.
+	if !ok || r.max-len(r.buf) > 0 {
 		// io.Copy would find ReadFrom on the Recorder and call it again; copying through a plain
 		// Write avoids that and still counts the bytes.
 		return io.Copy(writeOnly{r}, src)

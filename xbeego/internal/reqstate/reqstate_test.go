@@ -244,6 +244,29 @@ func TestRecorder_ReadFrom(t *testing.T) {
 	}
 }
 
+func TestRecorder_ReadFromKeepsCapturing(t *testing.T) {
+	// The access log reads the captured copy, not the writer. Handed to the sendfile path
+	// underneath, the bytes are counted but never seen, and response_body would be empty while
+	// bytes_out was right.
+	inner := &readerFromRecorder{ResponseWriter: httptest.NewRecorder()}
+	rec := NewRecorder(inner)
+	rec.Capture(4)
+
+	n, err := io.Copy(rec, plainReader{strings.NewReader("hello")})
+	if err != nil || n != 5 {
+		t.Fatalf("the copy should succeed, got=%d %v", n, err)
+	}
+	if string(rec.Body()) != "hell" {
+		t.Errorf("the capture should hold the body up to its cap, got=%q", rec.Body())
+	}
+	if rec.Bytes() != 5 {
+		t.Errorf("the bytes should still be counted, got=%d", rec.Bytes())
+	}
+	if inner.used {
+		t.Error("while capturing, the bytes have to travel through Write rather than the sendfile path")
+	}
+}
+
 func TestRecorder_ReadFromWithoutOneUnderneath(t *testing.T) {
 	// io.Copy would find ReadFrom on the recorder itself and recurse without the guard.
 	inner := httptest.NewRecorder()

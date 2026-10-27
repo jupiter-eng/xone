@@ -106,8 +106,8 @@ XBeego:
   Trace: true              # a server span per request, with X-Trace-Id echoed back
   Metric: true             # request metrics, with MetricPath served automatically
   MetricPath: /metrics     # must start with /; with Metric on it is added to LogSkipPaths automatically
-  RecoverPanic: true       # take beego's panic recovery over (process-wide, as beego's own setting is)
-  BeegoLogs: true          # route beego's own logs package into slog (process-wide)
+  RecoverPanic: true       # take beego's recovery slot over (process-wide, settled by the first assembly)
+  BeegoLogs: true          # route beego's own logs package into slog (process-wide, settled by the first assembly)
 ```
 
 **A second server in the same process** (an internal admin port, say) reads no config file: hand
@@ -133,8 +133,15 @@ and therefore runs once per process, during the first assembly -- so register fi
 - `TLS.ClientCAFile` governs the whole port: `/metrics` requires a client certificate too. Inside
   a controller, `c.Ctx.Request.TLS.PeerCertificates` says who it is.
 - `RecoverPanic` and `BeegoLogs` are process-wide because the things they take over are
-  (`web.BConfig.RecoverFunc` and beego's one logger). With two instances disagreeing, whichever
-  assembles with the switch on decides.
+  (`web.BConfig.RecoverFunc` and beego's one logger). **The first assembly settles both**, and an
+  instance assembling later with a different value gets a `WARN` saying its own values were
+  ignored. They are settled once rather than per instance because beego reads both while requests
+  are being served -- `BConfig.RecoverFunc` on every request, and its logger's adapter list without
+  holding a lock -- so a second server writing them while the first is already answering is a data
+  race. Starting the second server from `CurrentConfig()`, as above, keeps them identical anyway.
+- `RecoverPanic` replaces the slot beego calls, not its switch: `recoverpanic` in `conf/app.conf`
+  decides nothing while this is on. A panic is caught either way, since what escapes beego is
+  caught outside it.
 - **`conf/app.conf` is still beego's.** xone reads `conf/application.yml`, beego reads
   `conf/app.conf`, and the two do not overlap except on the listen address, where `XBeego.Port`
   wins because `web.Run` is never called.
@@ -261,6 +268,8 @@ response body recorded up to 4KB; an upload and a compressed response are record
 - `xbeego listening` at startup, with `addr`, `tls`, `mtls` and `h2c`
 - `panic while handling request` (ERROR) with `error`, `stack`, `path` and `method`
 - `connection broken` (WARN) -- a client's flaky network, not the service's fault
+- `xbeego an error handler registered under a name cannot be rendered from outside beego ...`
+  (WARN) with `code` and `path` -- see [Troubleshooting](#troubleshooting)
 - `xbeego http server error` (WARN) -- `error`: the line net/http reported through
   `http.Server.ErrorLog`, such as `http: TLS handshake error from 203.0.113.9:1234: EOF`
 - `beego internal log` -- beego's own `logs` package, with its text under `message`, its level
@@ -295,6 +304,7 @@ Measured on beego v2.3.8, Go 1.25.
 |---|---|---|
 | `web.BConfig.RecoverPanic` | `true`, recovering with `logs.Critical` -- plain text, no `trace_id`, no masking | `RecoverFunc` replaced (`RecoverPanic: true`), so the stack is still the controller's |
 | `c.Abort("404")` / `c.CustomAbort` / `ctx.Abort` | Stop a handler by panicking: with `web.ErrAbort` once the response is written, or with the code as a string when an error handler is registered for it | Both kept: `ErrAbort` is swallowed, and a registered **numeric** code is rendered through `web.Exception`. Neither is logged as a crash |
+| `c.Abort("<name>")` onto a handler registered under a **name** (`web.ErrorController` turns `ErrorDb` into `"Db"`) | Renders the handler; the status is `ctx.Output.Status`, which `c.Abort` leaves at **200** because a name is not a code | The status is the same, the **body is lost** (`web.Exception` takes a numeric code, `errorInfo`'s fields are unexported). Control flow, not a crash: one `WARN` naming the code, rather than an `ERROR` with a stack for a request everything else records as a success |
 | `web.BConfig.EnableErrorsShow` | `true` | Read, and what makes the branch above live |
 | `ctx.Output.Status` after an abort | Beego's recovery answers with it, falling back to 500 | The same. A bare 500 would turn every `ctx.Abort(403, …)` into a 500 |
 | `web.BConfig.Log.AccessLogs` | `false`, so beego writes no access log of its own | Nothing to switch off; the framework's is the only one |
@@ -321,7 +331,8 @@ scan, while Go's pruning keeps every one of them out of the binary.
 | `init global config instance failed. If you do not use this, just ignore it. open conf/app.conf: no such file or directory` | Beego's `core/config` package `init` writing to **stderr** when there is no `conf/app.conf` (`core/config/ini.go`). Harmless -- xone reads `conf/application.yml`, not this file -- but it is one plain-text line that no logging configuration can intercept, so a collector expecting JSON will flag it. A beego application has an `app.conf`; adding one, even two lines of it, silences the message |
 | Every request logged twice, with two different sets of field names | The application's own access-log filters are still registered. Remove them, or set `Log: false` |
 | Every request logged twice, the second line in beego's own format | `accesslogs = true` in `conf/app.conf`: beego writes its own line as well. Turn it off there, since `XBeego.Log` does not govern it |
-| `c.Abort("my-error")` answers 500 and writes a panic line | An error handler registered under a **name** rather than a number cannot be rendered from outside beego (`web.Exception` takes a numeric code, and `errorInfo`'s fields are unexported). Register it under its status code, or answer it in the controller |
+| `xbeego an error handler registered under a name cannot be rendered ...`, and the response has the right status but no body | An error handler registered under a **name** rather than a status code cannot be rendered from outside beego (`web.Exception` takes a numeric code, and `errorInfo`'s fields are unexported). `web.ErrorController` registers every method it finds this way, turning `ErrorDb` into `"Db"`. Register it under its status code, or answer it in the controller. Note the status: `c.Abort("Db")` leaves it at **200**, since a name is not a code |
+| `xbeego RecoverPanic and BeegoLogs are process-wide and were settled by the first assembly` | A second server assembled with a different `RecoverPanic` / `BeegoLogs`. Both are beego globals read while requests are served, so the first assembly settles them, see [Notes](#notes). Give both instances the same values -- starting the second from `CurrentConfig()` does that |
 | `route="unmatched"` on requests that clearly matched | A filter registered at `web.BeforeExec` **before** xbeego's answered the request on the spot, so the template was never copied. Filters that answer requests belong at `web.BeforeRouter` |
 | `c.GetSession` returns nothing / `c.TplName` renders nothing | `web.Run` is not called, so beego's session manager and template engine were never set up, see [Notes](#notes) |
 | `XBeego.Port` ignored, the service listens on beego's `httpport` | `web.Run` is still being called somewhere. `xone.MustRun(xbeego.New())` replaces it |

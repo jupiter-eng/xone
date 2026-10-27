@@ -232,7 +232,7 @@ type Config struct {
 	// was never meant to be this endpoint.
 	MetricPath string `yaml:"MetricPath"`
 
-	// RecoverPanic takes beego's panic recovery over (web.BConfig.RecoverPanic). On by default.
+	// RecoverPanic takes beego's panic recovery over (web.BConfig.RecoverFunc). On by default.
 	//
 	// Beego recovers panics inside its own router and writes them with its logs package: plain
 	// text on stderr, no trace_id, no masking, and the whole thing invisible to the access log and
@@ -245,8 +245,14 @@ type Config struct {
 	// escapes beego (a panic in middleware mounted with WithMiddleware, for one), since a panic
 	// reaching net/http kills the connection with no log at all.
 	//
+	// What is replaced is the slot beego calls (web.BConfig.RecoverFunc), not its switch, so
+	// beego's own web.BConfig.RecoverPanic -- recoverpanic in conf/app.conf -- decides nothing
+	// while this is on. A panic is caught either way: with this off, what beego's recovery lets
+	// through is still caught outside beego.
+	//
 	// This is a process-wide setting of beego's, not a per-instance one: two XBeego instances in
-	// one process share it, as they share the router.
+	// one process share it, as they share the router, and the first assembly settles it for the
+	// process. An instance assembling later with a different value is told that value was ignored.
 	RecoverPanic bool `yaml:"RecoverPanic"`
 
 	// BeegoLogs routes beego's own logs package into slog. On by default.
@@ -259,7 +265,8 @@ type Config struct {
 	//
 	// It replaces whatever the application configured on beego's logger, so turn it off to keep a
 	// setup of your own -- a file adapter with rotation, say. beego's logger is process-wide, as
-	// its router is.
+	// its router is, and the first assembly settles this for the process; an instance assembling
+	// later with a different value is told that value was ignored.
 	//
 	// These lines carry no trace_id: beego's logs API has no ctx to take one from. A handler that
 	// wants one writes through slog with the request's ctx (c.Ctx.Request.Context()).
