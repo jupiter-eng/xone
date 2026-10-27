@@ -367,8 +367,10 @@ and a client that left cannot cancel anything downstream. Here it is on and all 
 `http.ResponseController` walks down to the connection: `SetReadDeadline`, `SetWriteDeadline` and
 `EnableFullDuplex` all reach it, and SSE and long polling keep the deadlines they set per chunk
 (measured: with the response body recorded and that method gone, all three answer `feature not
-supported`). `Flush`, `Hijack`, `CloseNotify` and `Pusher` come from gin's own writer underneath and
-answer a direct type assertion as well.
+supported`). `Flush`, `Hijack` and `CloseNotify` come from gin's own writer underneath and answer a
+direct type assertion as well. HTTP/2 push is reached through gin's own `c.Writer.Pusher()`:
+measured, neither that writer nor gin's implements `http.Pusher` itself, so asserting to that
+interface fails on plain gin too.
 
 **`MetricPath`**: gin does not reject a path without a leading `/`, it quietly rewrites it:
 `metrics` is registered as `/metrics` while the access log fails to skip it, and an empty one is

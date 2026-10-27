@@ -209,9 +209,16 @@ func (w *worker) handle(ctx, hctx context.Context, r *kgo.Record, fields []any) 
 // which is cancelled on shutdown and on revocation, while the work in flight has to finish. Only the stop budget running out (hard) cancels it.
 // A panic is caught and counted as one failure, with the stack recorded at ERROR.
 func (c *consumer) call(hctx, attempt context.Context, r *kgo.Record, fields []any) (err error) {
-	ctx, cancel := context.WithCancel(hctx)
+	// Either way the ctx is cancellable, which is what lets the stop budget running out cut a handler short
+	// through the AfterFunc below. Written as one WithCancel with a WithDeadline laid over it, the first
+	// cancel would be overwritten before it was ever called -- harmless here, since hctx descends from a
+	// context.WithoutCancel and nothing is registered on it, and exactly the shape of a context leak.
+	var ctx context.Context
+	var cancel context.CancelFunc
 	if dl, ok := attempt.Deadline(); ok {
 		ctx, cancel = context.WithDeadline(hctx, dl)
+	} else {
+		ctx, cancel = context.WithCancel(hctx)
 	}
 	defer cancel()
 	defer context.AfterFunc(c.hard, cancel)()

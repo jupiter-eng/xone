@@ -42,6 +42,14 @@ mutate("the logger is left alone when nothing it writes to was closed", "xlog/xl
        swap('\tif swapOnClose {\n', '\tif true {\n'))
 mutate("what decides the swap is the console, not the file alone", "xlog/xlog.go", ".", "TestCloseXLog",
        swap('swapOnClose = !c.Console && c.File.Enable', 'swapOnClose = c.File.Enable'))
+# Taken as a number, a timeout of 0 made the round budget the backoffs alone and handed every attempt
+# a ctx that had already expired -- anything honouring its ctx then failed the instant it started.
+mutate("no timeout means no round budget either", "xutil/retry.go", ".", "TestRetry_NoTimeout",
+       swap('\tvar ctx context.Context\n\tvar cancel context.CancelFunc\n\tif timeout > 0 {\n\t\tctx, cancel = context.WithTimeout(parent, retryBudget(attempts, timeout, interval))\n\t} else {\n\t\tctx, cancel = context.WithCancel(parent)\n\t}\n',
+     '\tctx, cancel := context.WithTimeout(parent, retryBudget(attempts, timeout, interval))\n'))
+mutate("no timeout means an attempt carries no deadline", "xutil/retry.go", ".", "TestRetry_NoTimeout",
+       swap('\tif timeout <= 0 {\n\t\treturn context.WithCancel(parent)\n\t}\n\treturn context.WithTimeout(parent, timeout)\n',
+     '\treturn context.WithTimeout(parent, timeout)\n'))
 # slog discards what a handler returns (Logger.log in log/slog), so a full disk, an fd that went
 # away or a file somebody removed is the logs stopping with nothing said anywhere -- the same
 # failure the rotation path one file over warns about.

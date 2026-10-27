@@ -90,6 +90,33 @@ func TestLoadConfig_StartupFailsOnMalformedPrefix(t *testing.T) {
 	}
 }
 
+func TestRegister_TwoEnginesMountingOneSpecDoNotRace(t *testing.T) {
+	// info is the spec swag registered globally while Register's Once belongs to the Register call, so a public
+	// server and an admin one (what xgin's WithConfig is for) both mounting the UI fill the same object from two
+	// goroutines the first time each is visited. What checks this is the race detector, which scripts/test.sh runs
+	// with; there is no mutation for it, since a mutation round runs the tests without it.
+	xonetest.UseConfigYAML(t, "XGinSwagger:\n  Host: api.example.com\n")
+	info := testSpec()
+
+	public, admin := gin.New(), gin.New()
+	Register(public, info)
+	Register(admin, info)
+
+	var wg sync.WaitGroup
+	for _, e := range []*gin.Engine{public, admin} {
+		wg.Add(1)
+		go func(e *gin.Engine) {
+			defer wg.Done()
+			get(e, "/swagger/index.html")
+		}(e)
+	}
+	wg.Wait()
+
+	if info.Host != "api.example.com" {
+		t.Errorf("the metadata must still be filled from the configuration, got host=%q", info.Host)
+	}
+}
+
 func TestRegister_MountsUI(t *testing.T) {
 	xonetest.UseConfigYAML(t, "")
 	e := gin.New()

@@ -17,6 +17,10 @@ const maxBackoff = 30 * time.Second
 
 // Retry calls fn repeatedly until it succeeds, with a separate time limit on each attempt.
 //
+// A timeout of 0 or less means no limit on one attempt, as it does for net/http's own timeouts; the whole round is
+// then bounded by parent alone, and a fn that never returns is never given up on. Every caller in this repository
+// configures a positive one and fails startup without it.
+//
 // The wait between two attempts starts at interval and doubles each time, capped at maxBackoff, with jitter:
 // the actual wait is a random value in [0, the current backoff].
 //
@@ -26,7 +30,8 @@ const maxBackoff = 30 * time.Second
 //
 // A whole round has one budget (attempts x timeout plus the sum of the backoff upper bounds), and once it is
 // reached nothing is retried. The budget uses the backoff upper bounds rather than the jittered values:
-// a budget is a ceiling, so it has to hold in the worst case.
+// a budget is a ceiling, so it has to hold in the worst case. With no timeout there is no round budget either,
+// for the reason given where it is built.
 //
 // Cancelling parent aborts the whole round immediately, with no further attempts and no further waiting.
 // The connection retries at startup rely on this: a stop signal must not make the process wait out a whole
@@ -51,7 +56,18 @@ func Retry(parent context.Context, attempts int, timeout, interval time.Duration
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(parent, retryBudget(attempts, timeout, interval))
+	// The round budget exists only when an attempt has a limit of its own. Built from the backoffs
+	// alone it would be a couple of seconds, and every attempt would be handed a ctx that had already
+	// expired before fn saw it -- measured, three attempts and three dead ctxs, with each one failing
+	// the instant it started for any fn that honours its ctx. "No limit" has to mean no limit on
+	// either, and what bounds the round is then parent alone.
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if timeout > 0 {
+		ctx, cancel = context.WithTimeout(parent, retryBudget(attempts, timeout, interval))
+	} else {
+		ctx, cancel = context.WithCancel(parent)
+	}
 	defer cancel()
 
 	var last error
@@ -71,7 +87,7 @@ func Retry(parent context.Context, attempts int, timeout, interval time.Duration
 			}
 			backoff = nextBackoff(backoff)
 		}
-		attemptCtx, attemptCancel := context.WithTimeout(ctx, timeout)
+		attemptCtx, attemptCancel := attemptContext(ctx, timeout)
 		last = fn(attemptCtx)
 		attemptCancel()
 		if last == nil {
@@ -82,6 +98,14 @@ func Retry(parent context.Context, attempts int, timeout, interval time.Duration
 		}
 	}
 	return last
+}
+
+// attemptContext is one attempt's ctx: its own time limit, or the round's alone when timeout says there is none.
+func attemptContext(parent context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
+		return context.WithCancel(parent)
+	}
+	return context.WithTimeout(parent, timeout)
 }
 
 // Permanent marks err as "retrying will not help": Retry returns err immediately and attempts nothing further.

@@ -62,3 +62,7 @@ XGinSwagger:
 - `Register` may be called at any time before `Start` and reads the final configuration.
 - `URLPrefix` is either empty or starts with `/` and does not end with `/`; a malformed one fails startup (`Register` mounts with the defaults first, and the error is reported by the start hook).
 - The metadata is filled on the first visit to the document, because `XApp` is only read by `xone.Run`'s start hooks.
+- **Several engines may mount the UI on the same `*swag.Spec`** (a public server and an admin one, which is what
+  `xgin`'s `WithConfig` is for): that spec is the one swag registers globally, so the filling of each is kept
+  apart from the other's reads. They read the same `XGinSwagger` block, so whichever fills first fills the same
+  values.
