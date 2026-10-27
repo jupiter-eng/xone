@@ -50,6 +50,13 @@ type teapotController struct{ beeweb.Controller }
 
 func (c *teapotController) Get() { c.Abort("418") }
 
+// failWith500 is a WithRecoverFunc answer that is visible in a response: a request answered with
+// it went through the recovery meant for panics.
+func failWith500(w http.ResponseWriter, _ *http.Request, _ any) {
+	w.WriteHeader(http.StatusInternalServerError)
+	_, _ = w.Write([]byte("recovered"))
+}
+
 // namedAbortController aborts onto an error handler registered under a name rather than a status
 // code, which is what web.ErrorController produces for every method it finds (ErrorDb becomes
 // "Db"). Beego renders it; from outside beego it cannot be reached at all.
@@ -300,9 +307,13 @@ func access(t *testing.T, lines []map[string]any) map[string]any {
 // resetBeegoGlobals puts beego's process-wide globals back into the state a fresh process is in,
 // for a test that has to watch the first assembly settle them. bindOnce is left alone: what it
 // holds cannot be done twice at all, logs.Register panicking on a repeated name.
+//
+// What bindOnce took is put back by hand instead: the recovery beego had before any assembly,
+// which is exactly what TestMain kept. Without it a test swapping that slot before the first
+// assembly in its process would have the next one delegate into whatever it left there.
 func resetBeegoGlobals(t *testing.T) {
 	t.Helper()
-	applyOnce, settled = sync.Once{}, beegoGlobals{}
+	applyOnce, settled, beegoRecover = sync.Once{}, beegoGlobals{}, beegoOwnRecover
 	t.Cleanup(func() {
 		// Settle them again from the defaults rather than putting back whatever stood here
 		// before. What stood here depends on which tests ran first, which -run makes vary, and
@@ -1119,7 +1130,10 @@ func TestBeegoGlobals_SettledByTheFirstAssembly(t *testing.T) {
 	})).Handler()
 	var warned bool
 	for _, l := range lines() {
-		if l["level"] == "WARN" && l["recover_panic"] == true && l["beego_logs"] == true {
+		// Both sets are on the line: what stands, and what this instance asked for and did not
+		// get. With only one of them a reader cannot tell which is which.
+		if l["level"] == "WARN" && l["recover_panic"] == true && l["beego_logs"] == true &&
+			l["ignored_recover_panic"] == false && l["ignored_beego_logs"] == false {
 			warned = true
 		}
 	}
@@ -1676,24 +1690,91 @@ func TestRecover_RegisteredErrorHandlerIsRendered(t *testing.T) {
 	}
 }
 
-func TestRecover_ErrorHandlerUnderANameIsNotACrash(t *testing.T) {
-	// web.ErrorController registers every method it finds under a name rather than a status code
-	// (ErrorDb becomes "Db"), and c.Abort("Db") then panics with that name. It cannot be rendered
-	// from out here -- web.Exception takes a numeric code and errorInfo's fields are unexported --
-	// and the missing body is the lesser half of it: the name is not a code, so beego leaves the
-	// status at 200, and reporting a crash would write an ERROR line with a stack for a request
-	// the access log, the metrics and the span all record as a success.
+func TestRecover_NumericErrorHandlerBeegoLetThrough(t *testing.T) {
+	// web.BConfig.RecoverPanic -- recoverpanic in conf/app.conf -- switches beego's own recovery
+	// off, and it then re-panics instead of rendering the handler. A numeric code is still
+	// rendered from out here, through web.Exception; that door is the one a handler registered
+	// under a name is out of reach of, see TestRecover_ErrorHandlerUnderANameBeegoLetThrough.
+	restore := beeweb.BConfig.RecoverPanic
+	beeweb.BConfig.RecoverPanic = false
+	t.Cleanup(func() { beeweb.BConfig.RecoverPanic = restore })
+
 	lines := captureLog(t)
 	x := New().WithConfig(configWith(func(c *Config) { c.Metric, c.Trace = false, false }))
+	w := do(t, x, "GET", "/teapot", nil)
+
+	if w.Code != http.StatusTeapot || w.Body.String() != "i am a teapot" {
+		t.Errorf("the registered handler should still answer, got=%d %q", w.Code, w.Body.String())
+	}
+	for _, l := range lines() {
+		if l["msg"] == "panic while handling request" {
+			t.Errorf("an abort onto a registered error handler is control flow, not a crash: %v", l)
+		}
+	}
+	if a := access(t, lines()); a["status"] != float64(http.StatusTeapot) {
+		t.Errorf("the access log should record what went out, got=%v", a["status"])
+	}
+}
+
+func TestRecover_ErrorHandlerUnderANameIsRendered(t *testing.T) {
+	// web.ErrorController registers every method it finds under a name rather than a status code
+	// (ErrorDb becomes "Db"), and c.Abort("Db") then panics with that name. web.Exception takes a
+	// numeric code and errorInfo's fields are unexported, so the only code that can reach the
+	// handler is the recovery beego had before this one took the slot: the request goes back to
+	// it, and what the client gets is what plain beego answers. A name is not a code, so
+	// c.Abort("Db") leaves the status at 200.
+	//
+	// WithRecoverFunc is set to pin the other half of it: that answer is for panics, and this is
+	// control flow. Answering it there would put a 500 on the wire for a request the access log,
+	// the metrics and the span all record as a success.
+	lines := captureLog(t)
+	x := New().
+		WithConfig(configWith(func(c *Config) { c.Metric, c.Trace = false, false })).
+		WithRecoverFunc(failWith500)
+	w := do(t, x, "GET", "/named-abort", nil)
+
+	if w.Code != http.StatusOK || w.Body.String() != "database is down" {
+		t.Errorf("the handler beego renders should answer this request, got=%d %q", w.Code, w.Body.String())
+	}
+	for _, l := range lines() {
+		if l["msg"] == "panic while handling request" {
+			t.Errorf("an abort onto a registered error handler is control flow, not a crash: %v", l)
+		}
+		if l["level"] == "WARN" && l["code"] == "Db" {
+			t.Errorf("nothing was lost, so there is nothing to warn about: %v", l)
+		}
+	}
+	a := access(t, lines())
+	if a["status"] != float64(http.StatusOK) {
+		t.Errorf("the access log should record what went out, got=%v", a["status"])
+	}
+	if _, recorded := a["errors"]; recorded {
+		t.Errorf("nothing failed, so there is no errors field to write: %v", a["errors"])
+	}
+}
+
+func TestRecover_ErrorHandlerUnderANameBeegoLetThrough(t *testing.T) {
+	// The handler above is rendered by beego's own recovery, and web.BConfig.RecoverPanic --
+	// recoverpanic in conf/app.conf -- switches that off: it re-panics before writing anything,
+	// and the request is answered here instead. The body is then lost, which is what the WARN is
+	// for; the status beego set still goes out, and an ERROR with a stack would say a request had
+	// failed while everything else said it had succeeded.
+	restore := beeweb.BConfig.RecoverPanic
+	beeweb.BConfig.RecoverPanic = false
+	t.Cleanup(func() { beeweb.BConfig.RecoverPanic = restore })
+
+	lines := captureLog(t)
+	x := New().
+		WithConfig(configWith(func(c *Config) { c.Metric, c.Trace = false, false })).
+		WithRecoverFunc(failWith500)
 	w := do(t, x, "GET", "/named-abort", nil)
 
 	if w.Code != http.StatusOK {
 		t.Errorf("the status beego sets for this abort should go out, got=%d", w.Code)
 	}
-	// The body is the part that is lost, and pinning it is what says so: should it ever become
-	// reachable, this test is where the documentation has to be corrected with it.
+	// Losing the body does not turn control flow into a failure: WithRecoverFunc answers panics.
 	if w.Body.String() != "" {
-		t.Errorf("the handler's body cannot be reached from outside beego, got=%q", w.Body.String())
+		t.Errorf("the handler was not rendered, so there is no body to write, got=%q", w.Body.String())
 	}
 	for _, l := range lines() {
 		if l["msg"] == "panic while handling request" {

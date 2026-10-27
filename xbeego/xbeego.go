@@ -179,13 +179,22 @@ func (x *XBeego) Handler() http.Handler {
 	return x.handler
 }
 
-// bindOnce guards the two things that are done to beego's globals once per process rather than
-// once per XBeego: the filter that reports the route template, and the adapter name beego's logs
-// package knows slog by.
+// bindOnce guards the three things that are done to beego's globals once per process rather than
+// once per XBeego: the filter that reports the route template, the adapter name beego's logs
+// package knows slog by, and the recovery beego had before any of this.
 //
-// Per instance they would be done twice with two servers in one process -- the filter would run
-// twice per request, and logs.Register panics outright on a repeated name.
+// Per instance the first two would be done twice with two servers in one process -- the filter
+// would run twice per request, and logs.Register panics outright on a repeated name.
 var bindOnce sync.Once
+
+// beegoRecover is whatever stood in beego's recovery slot before xbeego ever wrote it: beego's own
+// defaultRecoverPanic, or one the application installed. It is the only code that can render an
+// error handler registered under a name, see renderThroughBeego.
+//
+// It is taken inside bindOnce rather than where the slot is written so that it is never an earlier
+// XBeego's: the slot is written once per process today, but a test resetting that is enough to
+// chain one onto another. Written inside the Once and read after it, which orders the two.
+var beegoRecover func(*beectx.Context, *beeweb.Config)
 
 // build assembles the handler chain, once per instance.
 //
@@ -208,6 +217,7 @@ func (x *XBeego) build() {
 		x.trusted = web.ParseProxies(c.TrustedProxies)
 
 		bindOnce.Do(func() {
+			beegoRecover = beeweb.BConfig.RecoverFunc
 			registerBeeLogAdapter()
 			// The route template is written during routing and read outside beego, so it travels
 			// on the request state. The standard middleware chain wraps the router from outside
@@ -339,7 +349,8 @@ func settleBeegoGlobals(c Config) {
 	})
 	if settled.recoverPanic != c.RecoverPanic || settled.beegoLogs != c.BeegoLogs {
 		slog.Warn("xbeego RecoverPanic and BeegoLogs are process-wide and were settled by the first assembly; this instance's own values are ignored",
-			"recover_panic", settled.recoverPanic, "beego_logs", settled.beegoLogs)
+			"recover_panic", settled.recoverPanic, "beego_logs", settled.beegoLogs,
+			"ignored_recover_panic", c.RecoverPanic, "ignored_beego_logs", c.BeegoLogs)
 	}
 }
 
@@ -437,6 +448,10 @@ func applyConfig(c Config) {
 	// handler that panicked -- outside it, after the stack has unwound into the middleware, the
 	// trace is worth far less. So the framework's recovery goes into that slot rather than relying
 	// on the backstop in the middleware chain.
+	//
+	// The recovery that stood here is not thrown away: one case is still its own to answer, see
+	// renderThroughBeego.
+	prev := beegoRecover
 	beeweb.BConfig.RecoverFunc = func(ctx *beectx.Context, cfg *beeweb.Config) {
 		recovered := recover()
 		if recovered == nil {
@@ -456,28 +471,37 @@ func applyConfig(c Config) {
 		// recovery to render that handler. c.Abort("404") is how a beego application answers a 404.
 		// Treated as a crash it would answer 500 and write an ERROR line per request.
 		//
-		// web.Exception is the exported door to that rendering and takes a numeric code only, so
-		// a handler registered under a name rather than a number is handled right below instead.
+		// Rendering it is the work of the recovery that stood in this slot, so the request goes
+		// back to it: for a numeric code it writes what web.Exception would, the two sharing
+		// beego's unexported exception(), and it is the only code that reaches a handler
+		// registered under a name. What is exported answers the request only when it declines.
 		if s, ok := recovered.(string); ok && cfg.EnableErrorsShow {
 			if _, registered := beeweb.ErrorMaps[s]; registered {
+				if renderThroughBeego(prev, ctx, cfg, recovered) {
+					return
+				}
+				// It let the request through, which beego's own does when
+				// web.BConfig.RecoverPanic is off. A numeric code is still rendered from out here.
 				if code, err := strconv.ParseUint(s, 10, 64); err == nil {
 					beeweb.Exception(code, ctx)
 					return
 				}
-				// Registered under a name, which is what web.ErrorController produces for every
-				// method it finds (ErrorDb becomes "Db"). The handler cannot be reached from out
-				// here -- web.Exception takes a numeric code and errorInfo's fields are
-				// unexported -- so the status beego would answer goes out without its body.
-				//
-				// It is beego control flow all the same, not a crash, so it is written as one
-				// WARN naming the code. An ERROR with a stack would say a request had failed
-				// while everything else said it had succeeded: a name is not a code, so
+				// A name is not: web.Exception takes a numeric code and errorInfo's fields are
+				// unexported, and web.ErrorController registers every method it finds that way
+				// (ErrorDb becomes "Db"). So the handler is not rendered and the status beego
+				// would answer goes out without its body. One WARN says so: it is beego control
+				// flow all the same, and an ERROR with a stack would say a request had failed
+				// while everything else said it had succeeded. A name is not a code, so
 				// c.Abort("Db") leaves the status at 200 and the access log, the metrics and the
 				// span all record a success.
 				slog.WarnContext(ctx.Request.Context(),
-					"xbeego an error handler registered under a name cannot be rendered from outside beego, so the response carries no body; register it under its status code instead",
+					"xbeego an error handler registered under a name was not rendered, so the response carries no body; only beego's own recovery can reach it and it let this request through (recoverpanic off, say) -- register the handler under its status code instead",
 					"code", s, "path", ctx.Request.URL.Path)
-				middleware.OnAbort(ctx.ResponseWriter, ctx.Request, recovered, recoverResponse(ctx))
+				// beegoStatus rather than the response the caller asked for through
+				// WithRecoverFunc: that answers panics, and this is control flow. Answering it
+				// with the failure response would put a 500 on the wire for a request nothing
+				// else records as a failure.
+				middleware.OnAbort(ctx.ResponseWriter, ctx.Request, recovered, beegoStatus(ctx))
 				return
 			}
 		}
@@ -485,17 +509,54 @@ func applyConfig(c Config) {
 	}
 }
 
+// renderThroughBeego hands a panic back to the recovery that stood in beego's slot before xbeego
+// took it over, and reports whether that recovery answered it.
+//
+// It is how a registered error handler is rendered, and the only way one registered under a name
+// can be. Beego keeps them in web.ErrorMaps behind an unexported errorInfo and renders them
+// through an unexported exception(), which does take a name; web.Exception, the exported door,
+// takes a numeric code. So such a handler is out of reach from here, and in reach of the recovery
+// beego calls, which is the one this hands the request back to.
+//
+// The value is re-panicked rather than passed, because a recovery in that slot takes it from a
+// recover() of its own: beego calls the slot deferred (defer p.cfg.RecoverFunc(ctx, p.cfg) in
+// server/web/router.go). One that does not take it -- beego's own re-panics when
+// web.BConfig.RecoverPanic is off -- lets the value through to the recover() below, and false says
+// so, for the caller to answer the request itself. Nothing is written in that case: beego's
+// re-panic is the first thing it does.
+func renderThroughBeego(recovery func(*beectx.Context, *beeweb.Config), ctx *beectx.Context, cfg *beeweb.Config, recovered any) (rendered bool) {
+	if recovery == nil {
+		return false
+	}
+	defer func() {
+		if recover() != nil {
+			rendered = false
+		}
+	}()
+	rethrow(recovery, ctx, cfg, recovered)
+	return true
+}
+
+// rethrow panics with recovered so that recovery, deferred here, finds it in its own recover().
+func rethrow(recovery func(*beectx.Context, *beeweb.Config), ctx *beectx.Context, cfg *beeweb.Config, recovered any) {
+	defer recovery(ctx, cfg)
+	panic(recovered)
+}
+
 // recoverResponse is how a panic inside beego is answered: what the caller asked for through
 // WithRecoverFunc, or what beego's own recovery would write.
-//
-// Beego answers with ctx.Output.Status when a handler set one and 500 otherwise (the tail of
-// defaultRecoverPanic in server/web/config.go). Context.Abort(404, body) sets it and then panics,
-// so a bare 500 here would turn every such abort into a 500 -- which is why this is not simply the
-// package default.
 func recoverResponse(ctx *beectx.Context) middleware.RecoverFunc {
 	if st := reqstate.From(ctx.Request.Context()); st != nil && st.Recover != nil {
 		return st.Recover
 	}
+	return beegoStatus(ctx)
+}
+
+// beegoStatus answers the way beego's own recovery would: with ctx.Output.Status when a handler
+// set one and 500 otherwise (the tail of defaultRecoverPanic in server/web/config.go).
+// Context.Abort(404, body) sets it and then panics, so a bare 500 here would turn every such abort
+// into a 500 -- which is why this is not simply the package default.
+func beegoStatus(ctx *beectx.Context) middleware.RecoverFunc {
 	return func(w http.ResponseWriter, _ *http.Request, _ any) {
 		code := ctx.Output.Status
 		if code == 0 {

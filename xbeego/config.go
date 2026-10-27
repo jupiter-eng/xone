@@ -245,10 +245,16 @@ type Config struct {
 	// escapes beego (a panic in middleware mounted with WithMiddleware, for one), since a panic
 	// reaching net/http kills the connection with no log at all.
 	//
-	// What is replaced is the slot beego calls (web.BConfig.RecoverFunc), not its switch, so
-	// beego's own web.BConfig.RecoverPanic -- recoverpanic in conf/app.conf -- decides nothing
-	// while this is on. A panic is caught either way: with this off, what beego's recovery lets
-	// through is still caught outside beego.
+	// What is replaced is the slot beego calls (web.BConfig.RecoverFunc), not its switch. A panic
+	// is caught either way: with this off, what beego's recovery lets through is still caught
+	// outside beego.
+	//
+	// beego's own web.BConfig.RecoverPanic -- recoverpanic in conf/app.conf -- decides one thing
+	// while this is on. An abort onto a registered error handler (c.Abort("404")) is handed back
+	// to the recovery that stood in the slot before, which is the only code that can render a
+	// handler registered under a name rather than a status code; with recoverpanic off that
+	// recovery declines, and such a response then carries no body. A numeric code is unaffected,
+	// being rendered through web.Exception in that case.
 	//
 	// This is a process-wide setting of beego's, not a per-instance one: two XBeego instances in
 	// one process share it, as they share the router, and the first assembly settles it for the
