@@ -32,7 +32,12 @@ mutate("the metrics endpoint goes through the user middleware too", "xgin/xgin.g
        swap('\t\te.Use(g.extra...)\n', '\t\tif c.Metric {\n\t\t\te.GET(c.MetricPath, serveMetrics)\n\t\t}\n\t\te.Use(g.extra...)\n'))
 mutate("a public peer's X-Forwarded-For is not believed", "xgin/xgin.go", "./xgin", "TestBuild|TestLog",
        cut('\tif err := e.SetTrustedProxies(web.ExpandProxies(c.TrustedProxies)); err != nil {',
-    '_ = e.SetTrustedProxies([]string{})\n\t}\n'))
+    '_ = e.SetTrustedProxies([]string{})\n\t\treturn nil\n\t}\n'))
+# When the list cannot be installed, gin's client_ip falls back to the direct peer while the ranges
+# the forwarded headers are judged against would keep the whole list: the two halves of "who counts
+# as one of us" have to fall back together.
+mutate("the trust fallback covers the forwarded headers too", "xgin/xgin.go", "./xgin", "TestApplyConfig_FallsBackToTrustNoneOnProxyError",
+       swap('\t\t_ = e.SetTrustedProxies([]string{})\n\t\treturn nil\n', '\t\t_ = e.SetTrustedProxies([]string{})\n'))
 # h2c used to rely on x/net's h2c.NewHandler: the connection was hijacked, Shutdown returned nil in
 # about 100µs with in-flight requests still running, and the framework went on to close the
 # database. Going back to that spelling loses this promise.
@@ -102,12 +107,13 @@ mutate("AddSensitiveHeaders writes to the shared list", "xgin/middleware/redact.
 mutate("the metrics method label is folded", "xgin/middleware/metric.go", "./xgin", "TestMetric",
        swap('web.NormalizeMethod(c.Request.Method)', 'c.Request.Method'),
        swap('\t\tlatency *prometheus.HistogramVec\n\t)\n', '\t\tlatency *prometheus.HistogramVec\n\t)\n\t_ = web.NormalizeMethod\n'))
-mutate("the config lands on the engine during assembly", "xgin/xgin.go", "./xgin", "TestBuild", swap('\t\tapplyConfig(e, c)\n', ''))
+mutate("the config lands on the engine during assembly", "xgin/xgin.go", "./xgin", "TestBuild",
+       swap('\t\tg.trusted = applyConfig(e, c)\n', '\t\tg.trusted = web.ParseProxies(c.TrustedProxies)\n'))
 # The callback runs after the config has landed on the engine, so what it sets explicitly wins.
 # Two ways to break it: land the config after the callback, or apply it again in Start (which is
 # what it used to do).
 mutate("engine settings in the callback win over the config", "xgin/xgin.go", "./xgin", "TestBuild_CallbackEngineSettingsOverrideConfig",
-       swap('\t\tapplyConfig(e, c)\n', ''),
+       swap('\t\tg.trusted = applyConfig(e, c)\n', '\t\tg.trusted = web.ParseProxies(c.TrustedProxies)\n'),
        swap('\t\tfor _, f := range g.routes {\n\t\t\tf(e)\n\t\t}\n', '\t\tfor _, f := range g.routes {\n\t\t\tf(e)\n\t\t}\n\t\tapplyConfig(e, c)\n'))
 mutate("Start does not apply the config a second time", "xgin/xgin.go", "./xgin", "TestBuild_CallbackEngineSettingsOverrideConfig",
        swap('\tc := g.conf\n', '\tc := g.conf\n\tapplyConfig(g.engine, c)\n'))
@@ -142,6 +148,10 @@ mutate("the request and response header switches are independent", "xgin/xgin.go
        swap('middleware.WithHeaders(c.LogRequestHeaders, c.LogResponseHeaders)', 'middleware.WithHeaders(c.LogResponseHeaders, c.LogRequestHeaders)'))
 mutate("the Chinese translation switch reads the config", "xgin/xgin.go", "./xgin", "TestZHTranslations",
        swap('\t\tif c.ZHTranslations {', '\t\tif false {'))
+# binding.Validator is an interface and gin.DisableBindValidation sets it to nil: asking a nil
+# interface for its Engine panics, and this runs during assembly.
+mutate("a disabled gin validator is reported, not panicked on", "xgin/trans/trans.go", "./xgin", "TestRegisterZH_DisabledValidator",
+       cut('\tif binding.Validator == nil {', 'there is nothing to translate")\n\t}\n'))
 mutate("the query string stays out of the access log", "internal/web/accesslog.go", "./xgin", "TestLog",
        swap('slog.String("path", r.URL.Path),', 'slog.String("path", r.URL.RequestURI()),'))
 mutate("a recorded query string is masked", "internal/web/accesslog.go", "./xgin", "TestLog_Query",
@@ -154,6 +164,12 @@ mutate("recorded response headers are masked", "internal/web/accesslog.go", "./x
 # recorded is always empty.
 mutate("the access log gets the real response headers", "xgin/middleware/log.go", "./xgin", "TestLog_ResponseHeaders",
        swap('RespHeader: c.Writer.Header(),', 'RespHeader: map[string][]string{},'))
+# The writer capturing the response body sits in front of gin's own, and http.ResponseController
+# walks down to the connection through Unwrap. Without it, SetReadDeadline, SetWriteDeadline and
+# EnableFullDuplex answer ErrNotSupported as soon as LogResponseBody is on, and SSE and long
+# polling lose the deadlines they set per chunk.
+mutate("recording the response body keeps http.ResponseController working", "xgin/middleware/log.go", "./xgin", "TestLog_ResponseCaptureKeepsResponseControllerFeatures",
+       swap('func (w *captureWriter) Unwrap() http.ResponseWriter', 'func (w *captureWriter) unwrapGone() http.ResponseWriter'))
 # With the level disabled the whole capture is skipped: by the time slog judges the level itself,
 # buffering the body and capturing the response have already been paid for.
 mutate("the access log does nothing while the level is disabled", "internal/web/accesslog.go", "./xgin", "TestLog_DoesNoWorkWhenLevelDisabled",
@@ -209,7 +225,7 @@ mutate("the tracing method is folded", "xgin/middleware/trace.go", "./xgin", "Te
 mutate("a peer is trusted only when it is in TrustedProxies", "xgin/xgin.go", "./xgin", "TestBuild_PassthroughHeadersOnlyFromTrustedProxies|TestBuild_PassthroughHeadersOnlyFromPrivateByDefault",
        swap('if g.trusted.Trusts(c.RemoteIP()) {', 'if len(g.trusted) > 0 {'))
 mutate("the trusted ranges come from the config at assembly time", "xgin/xgin.go", "./xgin", "TestBuild_PassthroughHeadersOnlyFromTrustedProxies",
-       swap('g.trusted = web.ParseProxies(c.TrustedProxies)', 'g.trusted = web.ParseProxies(nil)'))
+       swap('\treturn web.ParseProxies(c.TrustedProxies)\n', '\treturn web.ParseProxies(nil)\n'))
 # The peer trust check has to expand private as well: without it nobody is trusted under the default
 # config and forwarding stops working entirely.
 mutate("the peer trust check expands private too", "internal/web/proxy.go", "./xgin", "TestBuild_PassthroughHeadersOnlyFromPrivateByDefault",
@@ -371,6 +387,12 @@ mutate("a metrics scrape opens no span", "xgin/xgin.go", "./xgin", "TestTrace_Me
 # hijacked.
 mutate("what is handed to net/http is the engine itself", "xgin/xgin.go", "./xgin", "TestStart_GinUseH2CDoesNotBypassShutdown",
        swap('c.server(), g.engine)', 'c.server(), g.engine.Handler())'))
+# gin's Next() goes on with the handler after the one that panicked, so a RecoverFunc that only
+# writes a response lets the request carry on past the layer that panicked -- middleware that
+# panicked while turning a request away is followed by the handler it was meant to protect.
+mutate("a panic ends the handler chain", "xgin/middleware/middleware.go", "./xgin", "TestRecover_CustomResponseEndsTheChain",
+       swap('\t\t\t// handle goes through AbortWithStatus and already stops the chain itself.\n\t\t\tc.Abort()\n',
+     '\t\t\t// handle goes through AbortWithStatus and already stops the chain itself.\n'))
 # A client leaving is not the service's failure: ERROR would make the alerts follow the client's
 # flaky network.
 mutate("a broken connection is logged as WARN", "xgin/middleware/middleware.go", "./xgin", "TestRecover_BrokenPipe",

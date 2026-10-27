@@ -215,6 +215,30 @@ func TestRecover_CustomResponse(t *testing.T) {
 	}
 }
 
+func TestRecover_CustomResponseEndsTheChain(t *testing.T) {
+	// A recovered panic unwinds the handler that threw it, but gin's Next() goes on with the one
+	// after it: a RecoverFunc that only writes a response leaves the rest of the chain running.
+	// Middleware that panicked while turning a request away is then followed by the handler it was
+	// meant to protect, which appends its own body to the response that already went out. The
+	// default RecoverFunc aborts by itself (AbortWithStatus), a caller's own need not.
+	capture(t)
+	var reached bool
+	w := serve(t, get("/hello"), []gin.HandlerFunc{
+		Recover(func(c *gin.Context, _ any) { c.JSON(503, gin.H{"msg": "try again later"}) }),
+		func(c *gin.Context) { panic("the layer in front blew up") },
+	}, func(c *gin.Context) {
+		reached = true
+		c.String(200, " and the handler wrote this too")
+	})
+
+	if reached {
+		t.Error("the handler behind the layer that panicked must not run")
+	}
+	if w.Code != 503 || w.Body.String() != `{"msg":"try again later"}` {
+		t.Errorf("the recovery response should be the whole of it, got=%d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestRecover_KeepsStatusOnceResponseStarted(t *testing.T) {
 	// Once the response has started going out, changing the status code only yields a truncated
 	// response.
@@ -629,6 +653,43 @@ func TestLog_WriteString_TruncatesToPrefixOverLimit(t *testing.T) {
 
 	if got, _ := lines()[0]["response_body"].(string); len(got) > maxResponseBody {
 		t.Errorf("the response body was not truncated, %d bytes were recorded", len(got))
+	}
+}
+
+func TestLog_ResponseCaptureKeepsResponseControllerFeatures(t *testing.T) {
+	// The writer capturing the response body sits in front of gin's own, and
+	// http.ResponseController walks down to the connection through Unwrap: without the capturing
+	// writer handing the next layer back, the read and write deadlines and full duplex all answer
+	// ErrNotSupported, and turning LogResponseBody on takes them away from every handler. SSE and
+	// long polling set a write deadline per chunk.
+	//
+	// A real server is needed: httptest.NewRecorder supports none of the three either way.
+	lines := capture(t)
+	var werr, rerr, ferr error
+	e := gin.New()
+	e.Use(Log(WithBody(false, true)))
+	e.GET("/hello", func(c *gin.Context) {
+		rc := http.NewResponseController(c.Writer)
+		werr = rc.SetWriteDeadline(time.Now().Add(time.Minute))
+		rerr = rc.SetReadDeadline(time.Now().Add(time.Minute))
+		ferr = rc.EnableFullDuplex()
+		c.String(200, "hello alice")
+	})
+	srv := httptest.NewServer(e)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if werr != nil || rerr != nil || ferr != nil {
+		t.Errorf("all three should reach the real connection, got write=%v read=%v full duplex=%v", werr, rerr, ferr)
+	}
+	// The other half of the promise: handing the writer below back must not stop the body from
+	// being captured on the way out.
+	if got, _ := lines()[0]["response_body"].(string); got != "hello alice" {
+		t.Errorf("the response body should still be captured, got=%q", got)
 	}
 }
 

@@ -111,7 +111,7 @@ admin := xgin.New().WithConfig(c).WithRoutes(adminRoutes)
 | `New() *XGin` | Creates a server (a Runnable); it reads nothing, and the config is taken at assembly time |
 | `(*XGin).WithRoutes(f ...func(*gin.Engine))` | Registers routes, with the callback receiving the native engine; may be called several times, in call order |
 | `(*XGin).WithMiddleware(m ...gin.HandlerFunc)` | Appends custom middleware, after all the built-in middleware |
-| `(*XGin).WithRecoverFunc(f gin.RecoveryFunc)` | Customizes the response after a panic; the default is a 500 |
+| `(*XGin).WithRecoverFunc(f gin.RecoveryFunc)` | Customizes the response after a panic; the default is a 500, and either way the rest of the chain is abandoned |
 | `(*XGin).WithConfig(c Config)` | Starts the server from this complete config instead of the XGin block of the config file |
 | `(*XGin).Engine() *gin.Engine` | Triggers assembly and returns the native engine; `With...` has no effect afterwards |
 | `(*XGin).Start(ctx)` / `(*XGin).Stop(ctx)` | Listen / stop gracefully; normally left to `xone.Run` |
@@ -241,6 +241,9 @@ random strings.
 A panic is recorded by the Recover middleware as `panic while handling request` (ERROR, with
 `error`, `stack`, `path` and `method`; `error` is masked by the rules of the `errors` field, and
 `stack` holds only function names and line numbers and is recorded as is) and answered with a 500.
+Whichever response goes out, the default one or one from `WithRecoverFunc`, the rest of the handler
+chain is abandoned: a middleware that panicked while turning a request away is not followed by the
+handler it stands in front of.
 A write failing because the client disconnected early is recorded as `connection broken` (WARN: it
 is not the service's failure and should not fire alerts), with no stack. When the response has
 already started (a status code went out) and a panic follows, the status code is not changed: the
@@ -255,6 +258,7 @@ empty and the span is not marked as an error, leaving that panic log line as the
 | `xgin http server error` | WARN | `error`: the line net/http reported (`http.Server.ErrorLog`), such as `http: TLS handshake error from 203.0.113.9:1234: EOF` |
 | `xgin received the shutdown signal before starting, the server will not start` | WARN | The stop signal arrived before listening |
 | `xgin invalid config, assembling the engine with defaults; Start will return the error` | WARN | `error`; with an invalid config `Engine()` assembles from the defaults and `Start` returns that error |
+| `xgin failed to register the zh validation translator` | WARN | `error`; `ZHTranslations` is on and the translator could not be installed. The server starts, and `trans.ToZH` hands validation errors back untranslated |
 
 The global logging conventions (`trace_id` injection, `xlog.AddKV`, the framework's start and stop
 lines) are in [`docs/observability.md`](../docs/observability.md#logs).
@@ -358,6 +362,14 @@ then has `Value` looking only at `c.Keys`, `Done()` returning nil and `Err()` al
 and a client that left cannot cancel anything downstream. Here it is on and all of those go to
 `c.Request.Context()`.
 
+**The writer capturing the response body** (the one swapped into `c.Writer` while
+`LogResponseBody: true`) hands the writer below back through `Unwrap`, which is how
+`http.ResponseController` walks down to the connection: `SetReadDeadline`, `SetWriteDeadline` and
+`EnableFullDuplex` all reach it, and SSE and long polling keep the deadlines they set per chunk
+(measured: with the response body recorded and that method gone, all three answer `feature not
+supported`). `Flush`, `Hijack`, `CloseNotify` and `Pusher` come from gin's own writer underneath and
+answer a direct type assertion as well.
+
 **`MetricPath`**: gin does not reject a path without a leading `/`, it quietly rewrites it:
 `metrics` is registered as `/metrics` while the access log fails to skip it, and an empty one is
 mounted on the root path `/`, where gin panics inside the business's own routing code when a home
@@ -413,6 +425,7 @@ written explicitly: defaults change with Go versions.
 | `field CertFile not found in type xgin.Config (did you mean TLS.CertFile? move it under TLS:)` (same for `KeyFile`, `ClientCAFile`, `MinVersion`) | Written at the top level of `XGin`, while these belong to the `TLS:` block | Indent those lines into the `TLS:` block, see [Configuration](#configuration) |
 | `TrustedProxies entry "::ffff:10.0.0.1" is an IPv4-mapped IPv6 address; write it as 10.0.0.1` (XGin) | An IPv4-mapped IPv6 address or range in `TrustedProxies` | Write it as the message says: `::ffff:10.0.0.1` → `10.0.0.1`, `::ffff:10.0.0.0/104` → `10.0.0.0/8` |
 | `XGin.MetricPath="/metrics" is already registered as a route by the application` | The application registers a route on the path the framework serves the metrics endpoint on | Move one of the two (`MetricPath`, or your own route), or turn the endpoint off with `Metric: false` |
+| `gin validator is disabled (gin.DisableBindValidation), there is nothing to translate` (xgin) | `ZHTranslations: true` while the application has turned gin's own validator off with `gin.DisableBindValidation()` | Drop that call, or turn `ZHTranslations` off. It is a WARN during assembly rather than a startup failure: the server runs and validation errors stay untranslated |
 
 The `N handler(s) still running when the shutdown deadline passed` on shutdown is covered in
 [`docs/troubleshooting.md` "Runnable and shutdown"](../docs/troubleshooting.md#runnable-and-shutdown); client-side

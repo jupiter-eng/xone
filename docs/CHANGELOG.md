@@ -39,6 +39,24 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
   sendfile path is still taken for every request whose body is not recorded. It is reachable from
   middleware mounted with `WithMiddleware`, not from a beego controller, whose `context.Response`
   implements neither `io.ReaderFrom` nor `Unwrap`.
+- **xgin: `http.ResponseController` keeps reaching the connection while `LogResponseBody` is on.**
+  The writer capturing the response body did not hand the writer below back, and
+  `http.ResponseController` walks down through exactly that: `SetReadDeadline`,
+  `SetWriteDeadline` and `EnableFullDuplex` all answered `http.ErrNotSupported` as soon as the
+  response body was recorded, so SSE and long polling lost the deadlines they set per chunk by way
+  of a logging switch. `Flush` and `Hijack` were never affected, being gin's own writer underneath.
+- **xgin: a panic ends the handler chain, whatever `WithRecoverFunc` answers with.** A recovered
+  panic unwinds the handler that threw it, but gin's `Next()` goes on with the one after it, and
+  only the default `RecoverFunc` stopped that (it answers through `AbortWithStatus`). A
+  `RecoverFunc` of the caller's own that writes a response and returns let the request carry on:
+  middleware that panicked while turning a request away was followed by the handler it stands in
+  front of, which appended its own body to the response already sent. The chain is now abandoned in
+  both cases.
+- **xgin: `ZHTranslations` with gin's validator disabled is reported instead of panicking.**
+  `gin.DisableBindValidation()` sets `binding.Validator` to nil, and asking a nil interface for its
+  `Engine` panics -- during assembly, where it took the whole server down over a translation that
+  could not have been used anyway. It is now the same `xgin` / `register` error the other failures
+  there are, which assembly logs as a WARN.
 
 ## [v1.4.0] - 2026-10-23
 
