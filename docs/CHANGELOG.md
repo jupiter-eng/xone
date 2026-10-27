@@ -12,16 +12,20 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
 
 ### Fixed
 
-- **xbeego: an error handler registered under a name is no longer reported as a crash.**
-  `web.ErrorController` registers every method it finds under a name rather than a status code --
-  `ErrorDb` becomes `"Db"` -- and `c.Abort("Db")` then panics with that name. The handler cannot be
-  rendered from outside beego, since `web.Exception` takes a numeric code and `errorInfo`'s fields
-  are unexported, so the response keeps the status beego sets and loses its body. What changes is
-  what it is called: it is beego control flow, and used to be written as `panic while handling
-  request` at `ERROR` with a stack. That line said a request had failed while everything else said
-  it had succeeded -- a name is not a code, so `c.Abort("Db")` leaves the status at **200**, and the
-  access log, the metrics and the span all recorded a success. It is now one `WARN` naming the code
-  and the path, and the advice stays the same: register the handler under its status code.
+- **xbeego: an error handler registered under a name is rendered again, instead of being reported
+  as a crash.** `web.ErrorController` registers every method it finds under a name rather than a
+  status code -- `ErrorDb` becomes `"Db"` -- and `c.Abort("Db")` then panics with that name.
+  Nothing exported reaches such a handler: `web.Exception` takes a numeric code and `errorInfo`'s
+  fields are unexported. So the response lost its body, and the request was written as `panic while
+  handling request` at `ERROR` with a stack -- a line saying a request had failed while everything
+  else said it had succeeded, since a name is not a code and `c.Abort("Db")` leaves the status at
+  **200**. An abort onto a registered error handler is now handed back to the recovery that stood
+  in beego's slot before xbeego took it over, which is the one piece of code that can render it,
+  and the response is the one plain beego answers with. `recoverpanic = false` in `conf/app.conf`
+  switches that recovery off; it then declines, and such a response still goes out without its body
+  -- as one `WARN` naming the code and the path, not an `ERROR` with a stack. A numeric code is
+  rendered through `web.Exception` in that case and is unaffected. Neither is answered through
+  `WithRecoverFunc` any more: that is the answer to a panic, and this is control flow.
 - **xbeego: `RecoverPanic` and `BeegoLogs` are settled by the first assembly, which removes a data
   race.** Both land on beego globals that are read while requests are being served: beego reads
   `BConfig.RecoverFunc` on every request, and its `logs` package walks its adapter list without
@@ -31,7 +35,9 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
   own values were ignored instead of having them taken under the first server's feet. **Behavior
   change**: it used to be whichever instance assembled with the switch on. Two servers in one
   process built the documented way -- the second from `CurrentConfig()` -- agree on both and are
-  unaffected.
+  unaffected. This settles the configuration, not beego's router: registering routes or filters on
+  an instance assembled while another is already answering remains a data race of its own, so
+  assemble every instance before starting any.
 - **xbeego: the access log's `response_body` no longer comes up empty for a response written
   through `io.Copy`.** The recorder's `ReadFrom` handed the bytes straight to the writer underneath,
   which counts them but never sees them, so with `LogResponseBody` on the field was empty beside a

@@ -92,16 +92,31 @@ mutate("beego's own abort is not reported as a panic", "xbeego/xbeego.go", "./xb
        swap('\t\tif recovered == beeweb.ErrAbort {\n\t\t\treturn\n\t\t}\n', ''))
 # c.Abort("404") is how a beego application answers a 404 when it registered a handler for it: the
 # controller panics with the code as a string rather than with ErrAbort. Treated as a crash it
-# answers 500 and writes an ERROR line per request
-mutate("a registered error handler is rendered rather than crashed on", "xbeego/xbeego.go", "./xbeego", "TestRecover_RegisteredErrorHandlerIsRendered",
+# answers 500 and writes an ERROR line per request. Beego's own recovery renders it, and this is
+# the door left when that recovery is switched off (recoverpanic in conf/app.conf)
+mutate("a registered error handler is rendered rather than crashed on", "xbeego/xbeego.go", "./xbeego", "TestRecover_NumericErrorHandlerBeegoLetThrough",
        swap('\t\t\t\t\tbeeweb.Exception(code, ctx)\n\t\t\t\t\treturn\n', '\t\t\t\t\t_ = code\n'))
 # web.ErrorController registers every method it finds under a name rather than a status code
-# (ErrorDb becomes "Db"), and that name cannot be rendered from outside beego. Reported as a crash
-# it writes an ERROR line with a stack for a request the status, the metrics and the span all
-# record as a success
-mutate("an error code registered under a name is not a crash", "xbeego/xbeego.go", "./xbeego", "TestRecover_ErrorHandlerUnderANameIsNotACrash",
-       swap('\t\t\t\tmiddleware.OnAbort(ctx.ResponseWriter, ctx.Request, recovered, recoverResponse(ctx))\n',
-            '\t\t\t\tmiddleware.OnPanic(ctx.ResponseWriter, ctx.Request, recovered, recoverResponse(ctx))\n'))
+# (ErrorDb becomes "Db"), and web.Exception cannot render that one. The only code that reaches the
+# handler is the recovery beego had before this slot was taken over, so the request goes back to
+# it; without that the response loses the body plain beego answers with
+mutate("an error handler registered under a name goes back to beego", "xbeego/xbeego.go", "./xbeego", "TestRecover_ErrorHandlerUnderANameIsRendered",
+       swap('\t\t\t\tif renderThroughBeego(prev, ctx, cfg, recovered) {\n\t\t\t\t\treturn\n\t\t\t\t}\n', '\t\t\t\t_ = prev\n'))
+# That recovery re-panics the value rather than answering it when web.BConfig.RecoverPanic is off.
+# Uncaught, the panic leaves beego's router for the backstop outside it: an ERROR with a stack and
+# a 500, for a request beego answers with a 200
+mutate("a recovery that lets the value through is caught", "xbeego/xbeego.go", "./xbeego", "TestRecover_ErrorHandlerUnderANameBeegoLetThrough",
+       swap('\tdefer func() {\n\t\tif recover() != nil {\n\t\t\trendered = false\n\t\t}\n\t}()\n', ''))
+# Reported as a crash it writes an ERROR line with a stack for a request the status, the metrics
+# and the span all record as a success
+mutate("an error code registered under a name is not a crash", "xbeego/xbeego.go", "./xbeego", "TestRecover_ErrorHandlerUnderANameBeegoLetThrough",
+       swap('\t\t\t\tmiddleware.OnAbort(ctx.ResponseWriter, ctx.Request, recovered, beegoStatus(ctx))\n',
+            '\t\t\t\tmiddleware.OnPanic(ctx.ResponseWriter, ctx.Request, recovered, beegoStatus(ctx))\n'))
+# WithRecoverFunc is the answer to a panic. Control flow answered there puts a 500 on the wire for
+# a request the access log, the metrics and the span all record as a success
+mutate("control flow is not answered with the panic response", "xbeego/xbeego.go", "./xbeego", "TestRecover_ErrorHandlerUnderANameBeegoLetThrough",
+       swap('\t\t\t\tmiddleware.OnAbort(ctx.ResponseWriter, ctx.Request, recovered, beegoStatus(ctx))\n',
+            '\t\t\t\tmiddleware.OnAbort(ctx.ResponseWriter, ctx.Request, recovered, recoverResponse(ctx))\n'))
 # Context.Abort sets ctx.Output.Status and then panics with the body: a bare 500 would turn every
 # such abort into a 500
 mutate("an aborted request keeps the status the handler set", "xbeego/xbeego.go", "./xbeego", "TestRecover_ContextAbortKeepsItsStatus",
