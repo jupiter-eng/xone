@@ -956,6 +956,40 @@ func TestLog_ErrorTextIsRedacted(t *testing.T) {
 	}
 }
 
+func TestLog_ErrorTheHandlerRendersItselfIsNotInTheErrorsField(t *testing.T) {
+	// c.Error(err) hands the error to e.HTTPErrorHandler on the spot, which is what this layer
+	// does with a returned one (see finish). A handler doing it itself and returning nil leaves
+	// the layers outside nothing to record: the status code and the byte count are still the ones
+	// sent, and only the text is missing.
+	//
+	// The boundary is pinned here because it is stated under "Access log" in xecho/README.md and
+	// would have to be corrected there if it ever changed.
+	// Both spellings of the same failure, so that what differs is only the one field.
+	err := echo.NewHTTPError(http.StatusInternalServerError, "db is down")
+	for name, h := range map[string]echo.HandlerFunc{
+		"returned":                func(echo.Context) error { return err },
+		"rendered by the handler": func(c echo.Context) error { c.Error(err); return nil },
+	} {
+		lines := capture(t)
+		w := serve(t, get("/hello"), []echo.MiddlewareFunc{Log()}, h)
+
+		l := accessLogs(lines())[0]
+		if w.Code != 500 || w.Body.String() != "{\"message\":\"db is down\"}\n" {
+			t.Errorf("%s: the client should receive the same response either way, got=%d %q", name, w.Code, w.Body.String())
+		}
+		if l["status"] != float64(500) || l["bytes_out"] != float64(25) {
+			t.Errorf("%s: what went out should be recorded as it is, got=%v", name, l)
+		}
+		got, recorded := l["errors"]
+		if want := name == "returned"; recorded != want {
+			t.Errorf("%s: errors recorded=%v, want=%v, got=%v", name, recorded, want, got)
+		}
+		if recorded && got != "code=500, message=db is down" {
+			t.Errorf("%s: the returned error should be recorded in full, got=%v", name, got)
+		}
+	}
+}
+
 func TestLog_DSNPasswordInHTTPErrorIsMasked(t *testing.T) {
 	// Echo's HTTPError folds Internal into Error(): code=502, message=..., internal=<the driver's error>
 	lines := capture(t)
