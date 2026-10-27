@@ -310,6 +310,7 @@ naming which one. The rules are the same as in
 | `kafka message skipped, retries exhausted and dead lettering is off` | ERROR | The message fields, `attempts`, `error` |
 | `kafka handler panicked` | ERROR | The message fields, `error`, `stack` |
 | `kafka partition worker panicked, this partition stops until the next rebalance` | ERROR | `topic`, `partition`, `group`, `error`, `stack`. This module's own code blew up rather than the handler's (that one is the line above and counts as one failed attempt). The partition is given up instead of taking the process down; nothing was marked, so its records come back after the next rebalance. It means a bug in the framework — report it |
+| `kafka records dropped, this partition has no goroutine of its own until the next rebalance` | WARN | `topic`, `partition`, `group`, `records`, `from_offset`. What follows the line above, once per partition per minute for as long as it lasts: the records of that partition are still fetched and thrown away. Nothing is marked, so they come back after the next rebalance, and until then that partition makes no progress |
 | `kafka dead letter produce failed, retrying` | WARN | The message fields, `dlq_topic`, `error` |
 | `kafka fetch failed` | WARN | `topic`, `partition`, `group`, `error` |
 | `kafka commit on partition revoke failed, processed messages may be redelivered` | WARN | `topic`, `group`, `error` |
@@ -490,3 +491,7 @@ or leaving the group: the coordinator is unreachable.
 - One partition logged `kafka partition worker panicked`: a bug in this module gave that partition up. It is picked up
   again at the next rebalance (a member joining or leaving, or a restart) and nothing was committed, so no message is
   lost. Report it with the `stack` from that line.
+- `kafka records dropped` once a minute for one partition: the same thing, seen later. That partition's records are
+  being fetched and thrown away and its committed offset is standing still, while the process stays healthy and the
+  other partitions carry on — from outside, the only other sign is that partition's lag growing. Nothing is lost, and
+  a rebalance ends it: restarting this replica is enough, and the `stack` from the `panicked` line is what to report.

@@ -178,3 +178,9 @@ mutate("the consume duration metric", "xkafka/worker.go", "./xkafka", "TestConsu
        swap('\tc.cl.MarkCommitRecords(r)\n\tc.observe(r.Topic, res, time.Since(start))\n', '\tc.cl.MarkCommitRecords(r)\n'))
 mutate("with Metric off nothing is recorded", "xkafka/metric.go", "./xkafka", "TestConsume_MetricOffRecordsNothing",
        swap('\tif !c.metric {\n', '\tif false {\n'))
+# A partition whose goroutine has gone keeps being fetched and dropped, nothing is marked and
+# nothing is counted, and it mends itself only on the next rebalance -- which may be days away. One
+# line at the moment it happens is the wrong place to say that; without repeating it the state is
+# invisible to anybody who looks later. Saying it per batch would be a flood of its own.
+mutate("a partition with no goroutine keeps saying so, and not once per batch", "xkafka/consume.go", "./xkafka", "TestConsume_DroppedRecordsKeepSayingSo",
+       swap('\tif last, ok := c.lastDropWarn[partition]; ok && now.Sub(last) < dropWarnInterval {\n\t\tc.mu.Unlock()\n\t\treturn\n\t}\n', ''))

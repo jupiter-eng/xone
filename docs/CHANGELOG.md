@@ -10,6 +10,19 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
 
 ## [Unreleased]
 
+### Fixed
+
+- **xkafka: a partition that has lost its goroutine keeps saying so.** When this module's own code
+  panics inside a partition's goroutine, that goroutine is given up rather than taking the process
+  down, and one `ERROR` says so. What followed had no sign of its own: `poll` goes on fetching that
+  partition and dropping every batch, nothing is marked so the committed offset stands still, and
+  nothing is counted -- the process keeps its heartbeat, the other partitions carry on, and the
+  state mends itself only at the next rebalance, which may be days away. The single line at the
+  moment it happened was the only trace, and anybody looking later saw a healthy consumer. The
+  dropped batches are now recorded as one `WARN` per partition per minute (`kafka records dropped`),
+  with the topic, the partition, the group, how many records and the offset they start at. Nothing
+  about what is kept or committed changes: no message was ever lost here, and none is now.
+
 ## [v1.4.1] - 2026-10-27
 
 ### Fixed
