@@ -85,6 +85,22 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
   names and nothing else -- so it forwarded nothing, in silence, while the configuration read as if
   it did. `Domains` has been held to that standard for the same reason: this configuration decides
   who internal identifiers are sent to.
+- **xginswagger: two engines mounting the Swagger UI on one spec no longer race.** The metadata is
+  filled on the first visit to the document, guarded by a `sync.Once` -- but that Once belongs to
+  the `Register` call while the `*swag.Spec` it fills is the one swag registered globally. A public
+  server and an admin one, which is what `xgin`'s `WithConfig` is for, hold one Once each, so the
+  first request to each filled the same object: measured, the race detector reports the two fills
+  writing at once, and one engine's request reading what the other is writing is the same race one
+  step on. The values written are identical (both read the same `XGinSwagger` block), so what was at
+  stake was the race itself rather than the contents. The fills of all of them are now kept apart
+  from the reads.
+- **xutil: a `Retry` timeout of 0 means no limit on an attempt, rather than an attempt that has
+  already expired.** Taken as a number, the round budget became the sum of the backoffs -- a couple
+  of seconds -- and every attempt was handed a ctx that was already past its deadline before `fn`
+  saw it: measured, three attempts and three dead ctxs, each failing the instant it started for
+  anything that honours its ctx. It now means what it means for net/http's own timeouts, with the
+  round bounded by the parent ctx alone. Every caller in this repository configures a positive
+  timeout and fails startup without one, so nothing inside it behaved differently.
 
 ## [v1.4.0] - 2026-10-23
 

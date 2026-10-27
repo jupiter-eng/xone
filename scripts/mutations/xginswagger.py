@@ -8,7 +8,7 @@ section("HTTP servers")
 # produce the wrong title
 mutate("the Swagger metadata waits until XApp has been read", "xginswagger/swagger.go", "./xginswagger", "TestRegister",
        swap('\tc, _ := fileConfig()\n\n', '\tc, _ := fileConfig()\n\tif info != nil {\n\t\tfill(info, c)\n\t}\n\n'),
-       swap('once.Do(func() { fill(info, c) })', 'once.Do(func() {})'))
+       swap('\t\t\t\tfill(info, c)\n', ''))
 mutate("Swagger is mounted under the configured prefix", "xginswagger/swagger.go", "./xginswagger", "TestRegister",
        swap('e.GET(c.URLPrefix+route, serve)', 'e.GET(route, serve)'))
 # The defaults are pre-filled in the struct: a default for Schemes would override the annotations'

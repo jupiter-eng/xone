@@ -34,6 +34,34 @@ func TestRetry_RetriesAfterFailure(t *testing.T) {
 	}
 }
 
+func TestRetry_NoTimeoutMeansNoLimitNotADeadContext(t *testing.T) {
+	// A timeout of 0 means no limit on one attempt. Taken as a number, the round budget became the backoffs
+	// alone -- a couple of milliseconds here -- and every attempt was handed a ctx that had already expired
+	// before fn saw it, so anything honouring its ctx failed the instant it started.
+	withJitter(t, func(time.Duration) time.Duration { return 0 })
+	attempts, expired, dated := 0, 0, 0
+	err := Retry(context.Background(), 3, 0, time.Millisecond, func(ctx context.Context) error {
+		attempts++
+		if ctx.Err() != nil {
+			expired++
+		}
+		if _, ok := ctx.Deadline(); ok {
+			dated++
+		}
+		return errors.New("not this time")
+	})
+
+	if attempts != 3 || expired != 0 {
+		t.Errorf("every attempt must be made with a live ctx, attempts=%d expired=%d", attempts, expired)
+	}
+	if dated != 0 {
+		t.Errorf("with no timeout an attempt carries no deadline of its own, got %d that did", dated)
+	}
+	if err == nil {
+		t.Error("the last error must still come back")
+	}
+}
+
 func TestRetry_ReturnsLastErrorWhenExhausted(t *testing.T) {
 	last := errors.New("not on the third try either")
 	n := 0
