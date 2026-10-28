@@ -23,6 +23,16 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
   with the topic, the partition, the group, how many records and the offset they start at. Nothing
   about what is kept or committed changes: no message was ever lost here, and none is now.
 
+- **xkafka: `DialTimeout: 0` is franz-go's own 10s, which is what the documentation always said it
+  was, rather than no timeout at all.** The option was handed to franz-go whatever its value, and
+  franz-go fills its 10s in only where the option was never given: a 0 passed through was taken as
+  it stood and reached a `net.Dialer{Timeout: 0}`, a dial bounded by nothing but the caller's `ctx`
+  and the operating system's own TCP timeout. Startup was bounded all the same -- each attempt of
+  the connectivity probe carries a budget of its own -- but a dial during a metadata refresh, a
+  broker change or a rebalance was not, and a broker that accepted the connection and fell silent
+  held that dial far past the second it was configured for. The option is now left out when
+  `DialTimeout` is 0, which is what makes the default apply; any other value behaves as before.
+
 ## [v1.4.1] - 2026-10-27
 
 ### Fixed

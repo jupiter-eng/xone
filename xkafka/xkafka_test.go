@@ -246,6 +246,31 @@ func TestNew_AppliesProducerSettings(t *testing.T) {
 	}
 }
 
+// DialTimeout: 0 is documented as "franz-go's own 10s" (the README's "Configuration"), which holds only while the
+// option is left out: a 0 passed through dials with no deadline at all, see TestFranzDefault_DialTimeoutZeroIsNoTimeout.
+// Nothing is dialed here -- NewClient only builds the client.
+func TestNew_DialTimeoutZeroLeavesItToFranzGo(t *testing.T) {
+	cfg := DefaultClientConfig()
+	cfg.Brokers = []string{"127.0.0.1:9092"}
+	cfg.DialTimeout = 0
+	opts, err := clientOpts("t", cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cl, err := kgo.NewClient(opts...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cl.Close()
+	if got := cl.OptValue(kgo.DialTimeout); got != 10*time.Second {
+		t.Errorf("DialTimeout = %v, want franz-go's own 10s", got)
+	}
+	// The probe's budget at startup goes by the same number, so the two cannot drift apart
+	if got := pingTimeout(cfg); got != 20*time.Second {
+		t.Errorf("pingTimeout = %v, want 2 x 10s", got)
+	}
+}
+
 // Built by the framework: the stop hook Flushes before it Closes, so a message sent with Produce (asynchronously) at the moment of exit is not lost.
 func TestCloseXKafka_FlushesBeforeClose(t *testing.T) {
 	_, cfg := cluster(t, 1, "orders")

@@ -63,6 +63,21 @@ func TestFranzDefault_Values(t *testing.T) {
 
 // Why this module switches to AutoCommitMarks: the default automatic commit commits "whatever the last poll returned", processed or not.
 // With polling and processing in different goroutines (one per partition), another poll commits the messages still queued.
+// A DialTimeout of 0 is not "use the default": the 10s above is filled in where the option was never given, and
+// a 0 handed over is taken as it stands, reaching a net.Dialer{Timeout: 0} -- a dial with no deadline at all,
+// bounded by nothing but the caller's ctx and the operating system's own TCP timeout. This is why clientOpts
+// leaves the option out instead of passing a 0 through, see TestNew_DialTimeoutZeroLeavesItToFranzGo.
+func TestFranzDefault_DialTimeoutZeroIsNoTimeout(t *testing.T) {
+	cl, err := kgo.NewClient(kgo.DialTimeout(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cl.Close()
+	if got := cl.OptValue(kgo.DialTimeout); got != time.Duration(0) {
+		t.Errorf("DialTimeout(0) = %v, want 0: franz-go does not read a 0 as its own default", got)
+	}
+}
+
 func TestFranzDefault_AutocommitCommitsPolledButUnprocessed(t *testing.T) {
 	_, cfg := cluster(t, 1, "t")
 	produce(t, rawClient(t, cfg), "t", 0, "a", "b", "c")
