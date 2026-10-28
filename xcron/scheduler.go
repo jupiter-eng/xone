@@ -205,6 +205,16 @@ func (lt *lifetime) loop(j *job, now bool) {
 	var prev time.Time
 	for {
 		at := next(j.sched, j.o.loc, prev)
+		// The zero time means the schedule has no next time point (see the schedule interface), and time.Until
+		// of it is a large negative duration: the timer would fire at once, prev would stay zero, the next round
+		// would compute the zero time again, and the loop would start an execution (or write "cron job skipped")
+		// as fast as the CPU allows. A spec that never fires is refused at registration, so what is left is the
+		// far end of one that does: cronexpr v1.1.3 searches the years 1970..2099 and returns the zero time past
+		// them, which "0 0 29 2 *" reaches in 2096, its next leap day being 2104.
+		if at.IsZero() {
+			slog.WarnContext(lt.ctx, "cron job has no next time point and will not run again", "job", j.name)
+			return
+		}
 		t := time.NewTimer(time.Until(at))
 		select {
 		case <-lt.ctx.Done():

@@ -155,7 +155,7 @@ mutate("a disabled gin validator is reported, not panicked on", "xgin/trans/tran
 mutate("the query string stays out of the access log", "internal/web/accesslog.go", "./xgin", "TestLog",
        swap('slog.String("path", r.URL.Path),', 'slog.String("path", r.URL.RequestURI()),'))
 mutate("a recorded query string is masked", "internal/web/accesslog.go", "./xgin", "TestLog_Query",
-       swap('slog.String("query", redactForm(r.URL.RawQuery))', 'slog.String("query", r.URL.RawQuery)'))
+       swap('slog.String("query", redactForm(r.URL.RawQuery, false))', 'slog.String("query", r.URL.RawQuery)'))
 mutate("recorded request headers are masked", "internal/web/accesslog.go", "./xgin", "TestLog_RedactsRequestHeaders",
        swap('Value: RedactHeaders(r.Header)}', 'Value: slog.AnyValue(r.Header)}'))
 mutate("recorded response headers are masked", "internal/web/accesslog.go", "./xgin", "TestLog_ResponseHeaders",

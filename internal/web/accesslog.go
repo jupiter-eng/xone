@@ -141,7 +141,7 @@ func (l *AccessLog) Log(a *Access) {
 		attrs = append(attrs, slog.Attr{Key: "request_headers", Value: RedactHeaders(r.Header)})
 	}
 	if l.Query && r.URL.RawQuery != "" {
-		attrs = append(attrs, slog.String("query", redactForm(r.URL.RawQuery)))
+		attrs = append(attrs, slog.String("query", redactForm(r.URL.RawQuery, false)))
 	}
 	if l.RespHeader {
 		attrs = append(attrs, slog.Attr{Key: "response_headers", Value: RedactHeaders(a.RespHeader)})

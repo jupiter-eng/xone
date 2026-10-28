@@ -23,6 +23,38 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
   with the topic, the partition, the group, how many records and the offset they start at. Nothing
   about what is kept or committed changes: no message was ever lost here, and none is now.
 
+- **xkafka: `DialTimeout: 0` is franz-go's own 10s, which is what the documentation always said it
+  was, rather than no timeout at all.** The option was handed to franz-go whatever its value, and
+  franz-go fills its 10s in only where the option was never given: a 0 passed through was taken as
+  it stood and reached a `net.Dialer{Timeout: 0}`, a dial bounded by nothing but the caller's `ctx`
+  and the operating system's own TCP timeout. Startup was bounded all the same -- each attempt of
+  the connectivity probe carries a budget of its own -- but a dial during a metadata refresh, a
+  broker change or a rebalance was not, and a broker that accepted the connection and fell silent
+  held that dial far past the second it was configured for. The option is now left out when
+  `DialTimeout` is 0, which is what makes the default apply; any other value behaves as before.
+
+- **xgin / xecho / xbeego: a request body in `x-www-form-urlencoded` that the access log had to cut
+  short no longer lets a DSN password through.** A body reaching the 256KB cap is cut in the middle
+  of whatever key/value pair happened to be there, and the masking was never told so on this branch:
+  `dsn=postgres%3A%2F%2Fapp%3Apw%40db...` cut before the `%40` decodes to `postgres://app:pw`, which
+  holds no sensitive word and no `@` any more, so nothing located the password and it was written
+  into the log as it stood -- the very failure the JSON branch is guarded against. Only the last
+  pair of a form can be incomplete, and it is now dropped rather than recorded, with
+  `[truncated, the rest was not recorded]` after what was complete before it; a cut body holding a
+  single pair records `***REDACTED***`. It only ever reached a request body with
+  `LogRequestBody: true`: a response body never takes the form branch, and a query string is never
+  cut.
+
+- **xcron: a job whose schedule has no time point left stops being scheduled instead of spinning.**
+  `Next` returning the zero time means "there is no next one", and the loop measured the wait to it
+  as a large negative duration: the timer fired at once, the next round worked out the same zero
+  time, and it went round as fast as the CPU allowed -- starting an execution every round, or
+  writing one `cron job skipped, previous run still running` per round. A spec that never fires is
+  refused when the job is added, so this was reachable only at the far end of one that does fire:
+  cronexpr searches the years 1970 to 2099, which `0 0 29 2 *` runs past in 2096. One `WARN`
+  (`cron job has no next time point and will not run again`, with `job`) is now written and that
+  job's loop returns; the other jobs and the scheduler are untouched.
+
 ## [v1.4.1] - 2026-10-27
 
 ### Fixed

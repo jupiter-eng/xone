@@ -15,7 +15,11 @@ mutate("Acks set to leader turns idempotent writes off for the caller", "xkafka/
 mutate("Linger is handed to franz-go explicitly (0 means no wait)", "xkafka/xkafka.go", "./xkafka", "TestNew_AppliesProducerSettings",
        swap('\t\tkgo.ProducerLinger(cfg.Producer.Linger),\n', ''))
 mutate("DialTimeout is handed to franz-go", "xkafka/xkafka.go", "./xkafka", "TestNew_AppliesProducerSettings",
-       swap('\t\tkgo.DialTimeout(cfg.DialTimeout),\n', ''))
+       cut('\tif cfg.DialTimeout > 0 {', '\t}\n'))
+# franz-go fills its own 10s in only where the option was never given: a 0 handed over is taken as
+# it stands and dials with no deadline at all, which is not what the configuration documents
+mutate("a DialTimeout of 0 leaves the option out rather than handing a 0 over", "xkafka/xkafka.go", "./xkafka", "TestNew_DialTimeoutZeroLeavesItToFranzGo",
+       swap('if cfg.DialTimeout > 0 {', 'if cfg.DialTimeout >= 0 {'))
 # Aimed at the call site: the consumers are built from the ClientConfig build keeps, so an id settled
 # anywhere else would not reach them
 mutate("an unset ClientID uses XApp.Name", "xkafka/xkafka.go", "./xkafka", "TestBuild_ClientIDDefaultsToAppName",

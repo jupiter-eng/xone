@@ -82,14 +82,21 @@ func clientOpts(name string, cfg ClientConfig) ([]kgo.Opt, error) {
 
 	opts := []kgo.Opt{
 		kgo.SeedBrokers(cfg.Brokers...),
-		// It governs TCP plus the TLS handshake: franz-go v1.21.7 wraps a net.Dialer{Timeout} in a tls.Dialer,
-		// so the handshake is inside the same timeout.
-		kgo.DialTimeout(cfg.DialTimeout),
 		kgo.ProducerLinger(cfg.Producer.Linger),
 		kgo.ProducerBatchCompression(compression(cfg.Producer.Compression)),
 		// franz-go's own logs are routed into slog, accepting WARN and above only, see slogLogger
 		kgo.WithLogger(slogLogger{name: name}),
 		kgo.WithHooks(produceHook{name: name, trace: cfg.Trace, log: cfg.Log}),
+	}
+	// It governs TCP plus the TLS handshake: franz-go v1.21.7 wraps a net.Dialer{Timeout} in a tls.Dialer,
+	// so the handshake is inside the same timeout.
+	//
+	// 0 means "franz-go's own 10s" and leaving the option out is the only way to get it: the 10s is filled in
+	// where the option was never given, while DialTimeout(0) is taken as it stands and reaches a
+	// net.Dialer{Timeout: 0}, which is a dial bounded by nothing but the caller's ctx and the operating system's
+	// own TCP timeout (measured on v1.21.7, see TestFranzDefault_DialTimeoutZeroIsNoTimeout).
+	if cfg.DialTimeout > 0 {
+		opts = append(opts, kgo.DialTimeout(cfg.DialTimeout))
 	}
 	if cfg.ClientID != "" {
 		opts = append(opts, kgo.ClientID(cfg.ClientID))
@@ -166,7 +173,8 @@ func probe(client *kgo.Client) func(context.Context) error {
 }
 
 // pingTimeout is one probe's budget: a connection plus one round trip, computed as 2 x DialTimeout.
-// With DialTimeout configured as 0, franz-go uses its own 10s.
+// With DialTimeout configured as 0 the option is left out and franz-go dials with its own 10s, which is the
+// number used here as well, see clientOpts.
 func pingTimeout(cfg ClientConfig) time.Duration {
 	d := cfg.DialTimeout
 	if d == 0 {

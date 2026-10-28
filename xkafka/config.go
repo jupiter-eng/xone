@@ -52,7 +52,7 @@ type ClientConfig struct {
 	// A direct call to New reads no XApp at all.
 	ClientID string `yaml:"ClientID"`
 
-	// DialTimeout is the timeout for making one connection (TCP, plus the TLS handshake). It defaults to 1s; franz-go's own default is 10s.
+	// DialTimeout is the timeout for making one connection (TCP, plus the TLS handshake). It defaults to 1s; 0 leaves it to franz-go (10s).
 	//
 	// Each attempt of the connectivity probe at startup has a budget of 2 x DialTimeout: a connection plus one round trip, see the README's "Behavior (measured)".
 	DialTimeout time.Duration `yaml:"DialTimeout"`

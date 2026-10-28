@@ -1257,7 +1257,7 @@
             },
             "DialTimeout": {
               "type": "string",
-              "description": "is the timeout for making one connection (TCP, plus the TLS handshake). It defaults to 1s; franz-go's own default is 10s. Each attempt of the connectivity probe at startup has a budget of 2 x DialTimeout: a connection plus one round trip, see the README's \"Behavior (measured)\". (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
+              "description": "is the timeout for making one connection (TCP, plus the TLS handshake). It defaults to 1s; 0 leaves it to franz-go (10s). Each attempt of the connectivity probe at startup has a budget of 2 x DialTimeout: a connection plus one round trip, see the README's \"Behavior (measured)\". (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
             },
             "Log": {
               "type": [
@@ -1392,7 +1392,7 @@
                   },
                   "DialTimeout": {
                     "type": "string",
-                    "description": "is the timeout for making one connection (TCP, plus the TLS handshake). It defaults to 1s; franz-go's own default is 10s. Each attempt of the connectivity probe at startup has a budget of 2 x DialTimeout: a connection plus one round trip, see the README's \"Behavior (measured)\". (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
+                    "description": "is the timeout for making one connection (TCP, plus the TLS handshake). It defaults to 1s; 0 leaves it to franz-go (10s). Each attempt of the connectivity probe at startup has a budget of 2 x DialTimeout: a connection plus one round trip, see the README's \"Behavior (measured)\". (a duration, written as 30s / 1500ms / 1h30m; a bare number fails startup)"
                   },
                   "Log": {
                     "type": [

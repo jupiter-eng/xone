@@ -71,6 +71,11 @@ mutate("the first runs of RunOnStartAndWait run in parallel and are all waited f
 # stop it
 mutate("the first run of RunOnStartAndWait honours the shutdown signal", "xcron/scheduler.go", "./xcron", "TestStart_RunOnStartAndWaitHonorsStartCtx",
        swap('execute(ctx, j.name, j.o.timeout, j.fn); err != nil {', 'execute(context.WithoutCancel(ctx), j.name, j.o.timeout, j.fn); err != nil {'))
+# The zero time means there is no next time point, and the wait to it is a large negative duration:
+# the timer fires at once, the next round works out the same zero time, and the loop burns a core.
+# cronexpr searches the years 1970..2099, which "0 0 29 2 *" runs past in 2096
+mutate("a job with no next time point gives up instead of spinning", "xcron/scheduler.go", "./xcron", "TestScheduler_NoNextTimePointStopsTheLoop",
+       cut('\t\tif at.IsZero() {', '"job", j.name)\n\t\t\treturn\n\t\t}\n'))
 mutate("the scheduler comes up at StageServer", "xcron/xcron.go", "./xcron", "TestHooks_StartAtServerStage",
        swap('xhook.At(xhook.StageServer)', 'xhook.At(xhook.StageBusiness)'))
 

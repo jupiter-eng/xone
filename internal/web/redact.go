@@ -218,7 +218,8 @@ func RedactBody(body []byte, contentType string) string {
 }
 
 // redactBody is RedactBody, with cut saying the access log had to cut this body short at
-// maxRequestBody / MaxResponseBody. Such a body never takes redactJSON's fast path.
+// maxRequestBody / MaxResponseBody. Such a body never takes redactJSON's fast path, and on the form branch the
+// one key/value pair the cut landed in is dropped (see redactForm).
 //
 // Every test that path makes assumes a complete body, and the cut can take away the very character
 // one of them goes by. Measured: {"dsn":"postgres://app:pw@db:5432/prod"} cut before the @ holds no
@@ -238,7 +239,7 @@ func redactBody(body []byte, contentType string, cut bool) string {
 	case strings.Contains(ct, "json"):
 		return redactJSON(body, cut)
 	case strings.Contains(ct, "x-www-form-urlencoded"):
-		return redactForm(string(body))
+		return redactForm(string(body), cut)
 	case isJSON(body):
 		return redactJSON(body, cut)
 	default:
@@ -615,8 +616,27 @@ func redactValue(v any, ws []string) any {
 // cut literally gives the key p%61ssword, which does not match password and reaches the log all the
 // same. Parsing it first and comparing afterwards is what makes it the same key the server really
 // read.
-func redactForm(body string) string {
+func redactForm(body string, cut bool) string {
 	ws := words()
+
+	// A body the access log cut short ends in whatever key/value pair happened to be there, and that pair is
+	// the one the rules below cannot be trusted on -- redactJSON's reason in the encoding a form uses, see
+	// redactBody. Measured: dsn=postgres%3A%2F%2Fapp%3Apw%40db%3A5432%2Fprod cut before the %40 decodes to
+	// postgres://app:pw, which holds no sensitive word and no @ any more, so redactCredentials finds nothing to
+	// mask and the password is written into the log in the clear. Only the last pair can be incomplete, so it is
+	// dropped rather than recorded, which is what decodeJSON does with an unterminated string value, and what is
+	// left says so with truncatedSuffix.
+	//
+	// What this costs a complete body is nothing: cut is false for every one of them.
+	suffix := ""
+	if cut {
+		i := strings.LastIndexByte(body, '&')
+		if i < 0 {
+			// The one and only pair is the cut one: there is nothing left that may be let through
+			return Redacted
+		}
+		body, suffix = body[:i], truncatedSuffix
+	}
 
 	values, err := url.ParseQuery(body)
 	if err != nil {
@@ -639,7 +659,7 @@ func redactForm(body string) string {
 	// Encode escapes the masked value into %2A%2A%2AREDACTED%2A%2A%2A as well, which is not
 	// recognizable at a glance in a log; the marker holds no & or =, so turning it back does not
 	// make the boundaries of the key/value pairs ambiguous
-	return strings.ReplaceAll(values.Encode(), url.QueryEscape(Redacted), Redacted)
+	return strings.ReplaceAll(values.Encode(), url.QueryEscape(Redacted), Redacted) + suffix
 }
 
 // RedactHeaders redacts the request headers and returns a value that can be handed to slog

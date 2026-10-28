@@ -214,6 +214,24 @@ func TestAccessLog_ABodyAsLongAsTheCapIsNotFastPathed(t *testing.T) {
 		}
 	})
 
+	// The form branch is told the same thing: a DSN in a form value is percent-encoded, so the cut
+	// takes the %40 rather than the @, and redactForm drops the pair it landed in. See redactForm
+	t.Run("form request", func(t *testing.T) {
+		buf.Reset()
+		head, tail := "pad=", "&dsn=postgres%3A%2F%2Fapp%3Ahunter2"
+		body := head + strings.Repeat("x", maxRequestBody-len(head)-len(tail)) + tail
+		if len(body) != maxRequestBody {
+			t.Fatalf("the case builds a %d-byte body for a cap of %d", len(body), maxRequestBody)
+		}
+		l := AccessLog{ReqBody: true}
+		r := httptest.NewRequest("POST", "/x", nil)
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		l.Log(&Access{Request: r, ReqBody: []byte(body)})
+		if strings.Contains(buf.String(), "hunter2") {
+			t.Errorf("the password reached the log: %.200s", buf.String())
+		}
+	})
+
 	t.Run("a shorter body still takes the fast path", func(t *testing.T) {
 		buf.Reset()
 		l := AccessLog{RespBody: true}

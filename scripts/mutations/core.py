@@ -908,6 +908,18 @@ mutate("a body nothing could be read out of is marked as unparseable, not as mas
 # An empty {} in the log reads as a response that really was empty
 mutate("a container cut before its first member is not recorded as empty", "internal/web/redact.go", ".", "TestRedactBody_JSONCutWithNothingReadableOmitsIt",
        swap('func nonEmpty[T map[string]any | []any](v T) any {\n\tif len(v) == 0 {\n\t\treturn nil\n\t}\n', 'func nonEmpty[T map[string]any | []any](v T) any {\n'))
+# The form's half of the same thing. A DSN in a form value is percent-encoded, so a cut takes the
+# %40 the masking goes by just as it takes a JSON body's @: dsn=postgres%3A%2F%2Fapp%3Apw%40db cut
+# before it decodes to postgres://app:pw, which holds no sensitive word and no @ any more
+mutate("the form branch is told the body was cut too", "internal/web/redact.go", ".", "TestRedactBody_CutFormDropsThePairTheCutLandedIn|TestAccessLog_ABodyAsLongAsTheCapIsNotFastPathed",
+       swap('return redactForm(string(body), cut)', 'return redactForm(string(body), false)'))
+mutate("the key/value pair a cut landed in is dropped", "internal/web/redact.go", ".", "TestRedactBody_CutFormDropsThePairTheCutLandedIn",
+       swap('\t\tbody, suffix = body[:i], truncatedSuffix\n', '\t\tsuffix = truncatedSuffix\n'))
+# With one pair and no & there is no complete pair left at all, and letting the cut one through is
+# the whole failure this guards against
+mutate("a cut body holding a single pair is masked whole", "internal/web/redact.go", ".", "TestRedactBody_CutFormDropsThePairTheCutLandedIn",
+       swap('\t\t\treturn Redacted\n\t\t}\n\t\tbody, suffix = body[:i], truncatedSuffix',
+            '\t\t\ti = len(body)\n\t\t}\n\t\tbody, suffix = body[:i], truncatedSuffix'))
 
 section("Shared by the web integrations: client_ip and bounding the labels")
 # xecho computes client_ip by the rules here (xgin uses gin's own, and xgin's
