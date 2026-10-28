@@ -105,16 +105,22 @@ func (s *scheduler) start(ctx context.Context) error {
 	s.mu.Lock()
 	lt := &lifetime{}
 	lt.ctx, lt.cancel = context.WithCancel(context.WithoutCancel(ctx))
+	// Add can run inside a first execution and starts its own jobs immediately. Until startup
+	// finishes those jobs must follow the startup cancellation too; afterwards stop owns it.
+	detachStartup := context.AfterFunc(ctx, lt.cancel)
+	defer detachStartup()
 	s.state, s.cur = running, lt
 	jobs := slices.Clone(s.jobs)
 	s.mu.Unlock()
 
 	if err := firstRuns(ctx, jobs); err != nil {
-		// The stop hook is never called (its start hook failed), so clean up here: not a single scheduling loop is up yet.
+		// The stop hook is never called (its start hook failed). A first execution may have added
+		// jobs already, so reject further registration, cancel them and wait for their cleanup.
 		s.mu.Lock()
 		s.state = stopped
 		s.mu.Unlock()
 		lt.cancel()
+		lt.wg.Wait()
 		return err
 	}
 

@@ -126,6 +126,8 @@ mutate("a message is only left unhandled once stopping has been cancelled", "xka
        swap('// call makes one call to the handler.', 'func errorValue(w *worker, r *kgo.Record) error { return nil }\n\n// call makes one call to the handler.'))
 
 section("Consuming: shutdown and rebalancing")
+mutate("the shutdown deadline cancels handlers while polling waits for a rebalance", "xkafka/consume.go", "./xkafka", "TestStop_DeadlineCancelsHandlersDuringRebalance",
+       swap('\tc.pollCancel()\n', '\tc.pollCancel()\n\t<-c.pollDone\n'))
 # Cancelling the ctx of a handler in flight on exit: every write to the database and every call
 # downstream inside it would be refused the moment it begins
 mutate("the ctx of a handler in flight is not cancelled on exit", "xkafka/worker.go", "./xkafka", "TestStop_WaitsForInFlightAndCommits",

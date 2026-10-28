@@ -340,10 +340,12 @@ func (c *consumer) poll(ctx context.Context) {
 // Whatever has not stopped by the time the ctx is reached has the ctx of its handler in flight cancelled, and the partitions still processing are returned.
 func (c *consumer) stop(ctx context.Context) []string {
 	c.pollCancel()
-	<-c.pollDone
 
 	done := make(chan struct{})
 	go func() {
+		// PollRecords may be waiting for a rebalance whose revoke callback is draining a handler.
+		// Keep this wait inside the stop budget too, so its deadline can cancel that handler.
+		<-c.pollDone
 		// Not Close: with the poll stopped between PollRecords and AllowRebalance, Close would wait forever for that blocked rebalance
 		c.cl.CloseAllowingRebalance()
 		close(done)

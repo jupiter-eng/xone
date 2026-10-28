@@ -459,6 +459,64 @@ func TestStop_DeadlineNamesBusyPartitionsAndCancelsHandler(t *testing.T) {
 	}
 }
 
+func TestStop_DeadlineCancelsHandlersDuringRebalance(t *testing.T) {
+	_, cfg := cluster(t, 2, "orders")
+	cl := rawClient(t, cfg, manualPartitioner())
+	produce(t, cl, "orders", 0, "p0")
+	produce(t, cl, "orders", 1, "p1")
+
+	entered, canceled := make(chan struct{}, 2), make(chan struct{}, 2)
+	m1 := testManager(t, cfg)
+	c1 := register(t, m1, "orders", "g1", func(ctx context.Context, _ *kgo.Record) error {
+		entered <- struct{}{}
+		<-ctx.Done()
+		canceled <- struct{}{}
+		return ctx.Err()
+	}, WithTimeout(time.Hour))
+	start(t, m1)
+	defer c1.hardCancel() // release the handlers even if the shutdown regression returns
+	for range 2 {
+		select {
+		case <-entered:
+		case <-time.After(wait):
+			t.Fatal("both partitions must have a handler in flight")
+		}
+	}
+	m2 := testManager(t, cfg)
+	register(t, m2, "orders", "g1", func(context.Context, *kgo.Record) error { return nil })
+	start(t, m2)
+	eventually(t, func() bool {
+		c1.mu.Lock()
+		defer c1.mu.Unlock()
+		return len(c1.assigned) < 2
+	}, "the first member is revoking a partition while its handler is in flight")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- m1.stop(ctx) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "orders/") {
+			t.Fatalf("shutdown must name the unfinished partition and deadline: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("stop remained blocked on polling after its deadline")
+	}
+	for range 2 {
+		select {
+		case <-canceled:
+		case <-time.After(2 * time.Second):
+			t.Fatal("the stop deadline did not cancel every handler")
+		}
+	}
+	select {
+	case <-c1.pollDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("polling did not exit after the handlers were canceled")
+	}
+}
+
 // Two group members: the first gets both partitions and finishes processing; the second joins and cooperative-sticky revokes one partition for it.
 // The marks were committed before the revocation, so the second continues from the committed position and does not reprocess what the first already did
 // (ResetOffset is earliest, so without the commit the second would start over).

@@ -255,6 +255,66 @@ func TestRun_ServiceStartFails(t *testing.T) {
 	}
 }
 
+func TestRun_CancelsRunningContextBeforeCleanup(t *testing.T) {
+	boom := errors.New("startup failed")
+	for _, scenario := range []string{"completed", "start failed", "hook failed", "unclaimed config"} {
+		t.Run(scenario, func(t *testing.T) {
+			var startupCtx, runningCtx context.Context
+			comps(t, pair{
+				start: hook.Entry{Name: "worker.init", Pkg: "worker", Run: func(ctx context.Context) error {
+					startupCtx = ctx
+					return nil
+				}},
+				stop: hook.Entry{Name: "worker.close", Pkg: "worker", Run: func(ctx context.Context) error {
+					if !errors.Is(startupCtx.Err(), context.Canceled) {
+						t.Errorf("startup context during cleanup = %v, want canceled", startupCtx.Err())
+					}
+					return ctx.Err() // cleanup itself must still have a live context
+				}},
+			})
+			if scenario == "hook failed" {
+				hook.AddStart(hook.Entry{Name: "bad.init", Pkg: "bad", Run: func(context.Context) error { return boom }})
+			}
+			path := emptyConf(t)
+			if scenario == "unclaimed config" {
+				if err := os.WriteFile(path, []byte("Unused: true\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r := &lateRunnable{
+				start: func(ctx context.Context) error {
+					runningCtx = ctx
+					if scenario == "start failed" {
+						return boom
+					}
+					return nil
+				},
+				stop: func(ctx context.Context) error {
+					if !errors.Is(runningCtx.Err(), context.Canceled) {
+						t.Errorf("Start context during Stop = %v, want canceled", runningCtx.Err())
+					}
+					return ctx.Err()
+				},
+			}
+			err := Run(r, WithConfigPath(path), WithLogger(quietLogger()))
+			switch scenario {
+			case "completed":
+				if err != nil {
+					t.Fatal(err)
+				}
+			case "start failed", "hook failed":
+				if !errors.Is(err, boom) {
+					t.Fatalf("original failure was lost: %v", err)
+				}
+			case "unclaimed config":
+				if err == nil || !strings.Contains(err.Error(), "Unused") {
+					t.Fatalf("unclaimed configuration error = %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestRun_CloseErrorsAggregatedNotSwallowed(t *testing.T) {
 	r := &recorder{}
 	closeErr := errors.New("cannot close")

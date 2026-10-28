@@ -70,13 +70,17 @@ func loadAll(base string) ([]loaded, []string, string, error) {
 
 	// The profiles come from three places, in priority order: the command line > the environment >
 	// XApp.Profiles in the base file.
-	// The one in the file has to be taken out before going on: base's imports and variants both pick
-	// their files by it
-	declared, err := profilesOf(doc, base)
-	if err != nil {
-		return nil, nil, "", err
+	// Consume the file's field even when overridden, but do not expand or validate an inactive
+	// value: its placeholders need not exist when the command line or environment replaces it.
+	active, from := profiles(nil)
+	if from == "--"+ProfileArgKey || from == ProfileEnvKey {
+		takeFromApp(doc, ProfilesKey)
+	} else {
+		active, err = profilesOf(doc, base)
+		if err != nil {
+			return nil, nil, "", err
+		}
 	}
-	active, from := profiles(declared)
 
 	// The main file's profile variant has to exist: a profile file named and not there is almost
 	// always a misspelled name, and skipping it quietly brings up a configuration nobody ever looked

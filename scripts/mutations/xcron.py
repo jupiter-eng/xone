@@ -80,6 +80,12 @@ mutate("the scheduler comes up at StageServer", "xcron/xcron.go", "./xcron", "Te
        swap('xhook.At(xhook.StageServer)', 'xhook.At(xhook.StageBusiness)'))
 
 section("Shutdown")
+mutate("a first run added during startup follows startup cancellation", "xcron/scheduler.go", "./xcron", "TestStart_DynamicallyAddedFirstRunHonorsStartCtx",
+       swap('context.AfterFunc(ctx, lt.cancel)', 'context.AfterFunc(context.WithoutCancel(ctx), lt.cancel)'))
+mutate("completed startup leaves job cancellation to the stop hook", "xcron/scheduler.go", "./xcron", "TestStart_CompletedStartupLeavesCancellationToStop",
+       swap('\tdefer detachStartup()\n', '\t_ = detachStartup\n'))
+mutate("failed startup waits for dynamically added jobs to finish", "xcron/scheduler.go", "./xcron", "TestStart_FailureWaitsForDynamicallyAddedJobs",
+       swap('\t\tlt.wg.Wait()\n\t\treturn err', '\t\treturn err'))
 mutate("stopping cancels the ctx of the runs in flight", "xcron/scheduler.go", "./xcron", "TestStop_CancelsInFlightAndWaitsForThem",
        swap('\tlt.cancel()\n\tdone := make(chan struct{})\n', '\tdone := make(chan struct{})\n'))
 mutate("stopping waits for the runs in flight to return", "xcron/scheduler.go", "./xcron", "TestStop_CancelsInFlightAndWaitsForThem",

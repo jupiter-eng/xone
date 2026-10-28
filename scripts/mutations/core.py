@@ -3,6 +3,8 @@
 from . import cut, mutate, section, swap
 
 section("Configuration")
+mutate("an overridden Profiles field does not require its placeholders", "internal/config/source.go", ".", "TestLoad_OverriddenProfilesDoNotExpandPlaceholders",
+       swap('if from == "--"+ProfileArgKey || from == ProfileEnvKey {', 'if false {'))
 mutate("logs are rendered in the configured timezone", "xlog/xlog.go", ".", "TestNew_RendersTimeInConfiguredTimezone|TestNew_FailsWhenTimezoneCannotLoad",
        swap('ReplaceAttr: inLocation(loc)}', 'ReplaceAttr: nil}\n\t_ = loc'))
 # Another Run in the same process: with location written only when it is configured, the previous
@@ -246,6 +248,8 @@ mutate("Validate is called once for each instance", "internal/config/clients.go"
        swap('any(&c).(interface{ Validate() error })', 'any(c).(interface{ Validate() error })'))
 
 section("Startup and shutdown")
+mutate("a runnable returning cancels its running context before cleanup", "xone.go", ".", "TestRun_CancelsRunningContextBeforeCleanup",
+       swap('\tstopSignals()\n\n\t// The whole shutdown shares this one budget.', '\n\t// The whole shutdown shares this one budget.'))
 # xone.Func / UntilSignal: the two Runnables that can be handed to Run without writing a type
 mutate("Func's error is Run's error", "xone.go", ".", "TestFunc_", swap('func (f funcRunnable) Start(ctx context.Context) error { return f(ctx) }', 'func (f funcRunnable) Start(ctx context.Context) error { _ = f(ctx); return nil }'))
 mutate("Func(nil) panics on the spot", "xone.go", ".", "TestFunc_", swap('\tif fn == nil {\n\t\tpanic("xone: Func needs', '\tif false {\n\t\tpanic("xone: Func needs'))
@@ -507,11 +511,11 @@ mutate("Run filters the stop hooks by what started", "xone.go", ".", "TestRun_In
 # configuration used to return outright, so a hook like the log flush never ran once. One mutation
 # per early return
 mutate("a badly written Runnable still runs the stop hooks that do not depend on startup", "xone.go", ".", "TestRun_RunnableInvalid_UnpairedStopHooksStillRun",
-       swap('\tif err := checkRunnable(r); err != nil {\n\t\treturn errors.Join(err, stopWithin(o, nil))',
-            '\tif err := checkRunnable(r); err != nil {\n\t\treturn err'))
+       swap('\tif err := checkRunnable(r); err != nil {\n\t\tstopSignals()\n\t\treturn errors.Join(err, stopWithin(o, nil))',
+            '\tif err := checkRunnable(r); err != nil {\n\t\tstopSignals()\n\t\treturn err'))
 mutate("an unreadable configuration still runs the stop hooks that do not depend on startup", "xone.go", ".", "TestRun_ConfigLoadFails_UnpairedStopHooksStillRun",
-       swap('\tif err := config.Ensure(o.configPath, o.log()); err != nil {\n\t\treturn errors.Join(err, stopWithin(o, nil))',
-            '\tif err := config.Ensure(o.configPath, o.log()); err != nil {\n\t\treturn err'))
+       swap('\tif err := config.Ensure(o.configPath, o.log()); err != nil {\n\t\tstopSignals()\n\t\treturn errors.Join(err, stopWithin(o, nil))',
+            '\tif err := config.Ensure(o.configPath, o.log()); err != nil {\n\t\tstopSignals()\n\t\treturn err'))
 # Registered together makes a pair: paired with the earliest start hook of the same package
 # instead, the second pair's stop hook would be called even when it failed to build and would have
 # to handle "not built yet"
@@ -686,9 +690,11 @@ mutate("Run hands the configuration back when it ends", "xone.go", ".", "TestRun
 mutate("a Run whose load failed hands the configuration back too", "xone.go", ".", "TestRun_NextRunReadsOwnConfigAfterLoadFailure",
        swap('\tdefer config.Reset()\n', ''),
        swap('''\tif err := config.Ensure(o.configPath, o.log()); err != nil {
+\t\tstopSignals()
 \t\treturn errors.Join(err, stopWithin(o, nil))
 \t}
 ''', '''\tif err := config.Ensure(o.configPath, o.log()); err != nil {
+\t\tstopSignals()
 \t\treturn errors.Join(err, stopWithin(o, nil))
 \t}
 \tdefer config.Reset()

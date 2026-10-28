@@ -130,6 +130,46 @@ func TestRecorder_SecondWriteHeaderIsIgnored(t *testing.T) {
 	}
 }
 
+func TestRecorder_InformationalHeadersPreserveFinalResponse(t *testing.T) {
+	type observation struct {
+		started bool
+		status  int
+	}
+	observed := make(chan observation, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		rec := NewRecorder(w)
+		rec.WriteHeader(http.StatusEarlyHints)
+		rec.WriteHeader(http.StatusEarlyHints)
+		started := rec.Started()
+		rec.WriteHeader(http.StatusCreated)
+		_, _ = rec.Write([]byte("created"))
+		observed <- observation{started: started, status: rec.Status()}
+	}))
+	defer srv.Close()
+	resp, err := srv.Client().Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := <-observed
+	if got.started || got.status != http.StatusCreated || resp.StatusCode != http.StatusCreated || string(body) != "created" {
+		t.Fatalf("103 then 201: interim started=%v recorded=%d client=%d body=%q", got.started, got.status, resp.StatusCode, body)
+	}
+}
+
+func TestRecorder_SwitchingProtocolsIsFinal(t *testing.T) {
+	rec := NewRecorder(httptest.NewRecorder())
+	rec.WriteHeader(http.StatusSwitchingProtocols)
+	rec.WriteHeader(http.StatusInternalServerError)
+	if !rec.Started() || rec.Status() != http.StatusSwitchingProtocols {
+		t.Fatalf("101 is a final response: started=%v status=%d", rec.Started(), rec.Status())
+	}
+}
+
 func TestRecorder_CaptureIsCapped(t *testing.T) {
 	rec := NewRecorder(httptest.NewRecorder())
 	rec.Capture(8)

@@ -188,9 +188,11 @@ func Run(r Runnable, opts ...Option) error {
 	// start hook before them run -- the documentation says those always run, and returning early
 	// would make that true only once startup got far enough
 	if err := checkRunnable(r); err != nil {
+		stopSignals()
 		return errors.Join(err, stopWithin(o, nil))
 	}
 	if err := config.Ensure(o.configPath, o.log()); err != nil {
+		stopSignals()
 		return errors.Join(err, stopWithin(o, nil))
 	}
 
@@ -210,6 +212,7 @@ func Run(r Runnable, opts ...Option) error {
 		o.log().Info("shutdown signal received during startup, not starting the server", attrs...)
 		return stopWithin(o, started)
 	case err != nil:
+		stopSignals()
 		return errors.Join(err, stopWithin(o, started))
 	}
 
@@ -220,6 +223,7 @@ func Run(r Runnable, opts ...Option) error {
 	// late: a key first read inside Start has likewise not been read by now, and the error has to say
 	// where to move it
 	if orphan := config.Unclaimed(); len(orphan) > 0 {
+		stopSignals()
 		hint := ""
 		if slices.Contains(orphan, "XLog") {
 			// XLog does not come along with the root package (see the imports), which is easiest to trip
@@ -242,6 +246,9 @@ func Run(r Runnable, opts ...Option) error {
 	case e := <-runErr:
 		first, serverExited = e, true
 	}
+	// A server returning by itself ends the running lifetime too: background work must see
+	// cancellation before Stop and the stop hooks begin closing the resources it uses.
+	stopSignals()
 
 	// The whole shutdown shares this one budget. The server (Stop plus waiting for Start to return)
 	// may use only the first 2/3, and the last 1/3 is kept for the stop hooks: a server that refuses

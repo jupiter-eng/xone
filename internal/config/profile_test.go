@@ -472,6 +472,34 @@ func TestLoad_ProfilesUnsetPlaceholderIsError(t *testing.T) {
 	}
 }
 
+func TestLoad_OverriddenProfilesDoNotExpandPlaceholders(t *testing.T) {
+	for _, source := range []string{"environment", "command line"} {
+		t.Run(source, func(t *testing.T) {
+			withArgs(t)
+			withProfileEnv(t, "prod")
+			if source == "command line" {
+				withArgs(t, "--profile=prod")
+				withProfileEnv(t, "missing") // the command line also replaces the environment
+			}
+			t.Setenv("XONE_T_PROFILE_MISSING", "")
+			if err := os.Unsetenv("XONE_T_PROFILE_MISSING"); err != nil {
+				t.Fatal(err)
+			}
+			base := files(t, "application.yml", map[string]string{
+				"application.yml":      "XApp:\n  Profiles: ${XONE_T_PROFILE_MISSING}\nDemo:\n  Addr: base:1\n",
+				"application-prod.yml": "Demo:\n  Addr: prod:1\n",
+			})
+			c := listComps(t)
+			if err := LoadInto(base, "Demo", c); err != nil {
+				t.Fatal(err)
+			}
+			if c.Addr != "prod:1" || len(Unclaimed()) != 0 {
+				t.Fatalf("overridden Profiles must be consumed without expansion: addr=%q unclaimed=%v", c.Addr, Unclaimed())
+			}
+		})
+	}
+}
+
 func TestLoad_EmptyProfilesInImportedFileIsError(t *testing.T) {
 	// It used to be reported only when profiles were really declared, and Active: [] slipped
 	// through
