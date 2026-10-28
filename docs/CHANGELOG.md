@@ -10,6 +10,8 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
 
 ## [Unreleased]
 
+## [v1.4.3] - 2026-10-28
+
 ### Fixed
 
 - **xone:** cancel the running context before server and component cleanup when startup fails or

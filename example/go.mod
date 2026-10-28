@@ -4,12 +4,12 @@ go 1.25.0
 
 require (
 	github.com/gin-gonic/gin v1.12.0
-	github.com/jupiter-eng/xone v1.4.2
-	github.com/jupiter-eng/xone/xcache v1.4.2
-	github.com/jupiter-eng/xone/xgin v1.4.2
-	github.com/jupiter-eng/xone/xhttp v1.4.2
-	github.com/jupiter-eng/xone/xmetric v1.4.2
-	github.com/jupiter-eng/xone/xtrace v1.4.2
+	github.com/jupiter-eng/xone v1.4.3
+	github.com/jupiter-eng/xone/xcache v1.4.3
+	github.com/jupiter-eng/xone/xgin v1.4.3
+	github.com/jupiter-eng/xone/xhttp v1.4.3
+	github.com/jupiter-eng/xone/xmetric v1.4.3
+	github.com/jupiter-eng/xone/xtrace v1.4.3
 	go.opentelemetry.io/otel v1.46.0
 )
 
