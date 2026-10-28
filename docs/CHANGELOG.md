@@ -33,6 +33,18 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
   held that dial far past the second it was configured for. The option is now left out when
   `DialTimeout` is 0, which is what makes the default apply; any other value behaves as before.
 
+- **xgin / xecho / xbeego: a request body in `x-www-form-urlencoded` that the access log had to cut
+  short no longer lets a DSN password through.** A body reaching the 256KB cap is cut in the middle
+  of whatever key/value pair happened to be there, and the masking was never told so on this branch:
+  `dsn=postgres%3A%2F%2Fapp%3Apw%40db...` cut before the `%40` decodes to `postgres://app:pw`, which
+  holds no sensitive word and no `@` any more, so nothing located the password and it was written
+  into the log as it stood -- the very failure the JSON branch is guarded against. Only the last
+  pair of a form can be incomplete, and it is now dropped rather than recorded, with
+  `[truncated, the rest was not recorded]` after what was complete before it; a cut body holding a
+  single pair records `***REDACTED***`. It only ever reached a request body with
+  `LogRequestBody: true`: a response body never takes the form branch, and a query string is never
+  cut.
+
 ## [v1.4.1] - 2026-10-27
 
 ### Fixed

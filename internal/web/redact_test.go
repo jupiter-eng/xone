@@ -335,6 +335,38 @@ func TestRedactBody_FormParseFailureMasksAll(t *testing.T) {
 	}
 }
 
+// The form's half of TestRedactBody_CutDSNDoesNotTakeTheFastPath. A DSN inside a form value is
+// percent-encoded, so a cut takes the %40 the DSN regexps go by exactly as it takes a JSON body's @:
+// dsn=postgres%3A%2F%2Fapp%3Ahunter2 decodes to postgres://app:hunter2, which holds no sensitive word
+// and no @ any more. Only the last pair can be incomplete, and it is the one dropped; see redactForm.
+func TestRedactBody_CutFormDropsThePairTheCutLandedIn(t *testing.T) {
+	body := "user=alice&dsn=" + url.QueryEscape("postgres://app:"+secret+"@db:5432/prod")
+	for cut := 0; cut <= len(body); cut++ {
+		got := redactBody([]byte(body[:cut]), "application/x-www-form-urlencoded", true)
+		if strings.Contains(got, secret) {
+			t.Fatalf("cut at %d of %d leaked the password\n body=%s\n  got=%s", cut, len(body), body[:cut], got)
+		}
+	}
+	// Everything complete before the cut pair is still recorded, with the marker saying the rest is
+	// not: a body masked whole would read as a credential having been found
+	at := strings.Index(body, "%40")
+	got := redactBody([]byte(body[:at]), "application/x-www-form-urlencoded", true)
+	if !strings.Contains(got, "user=alice") {
+		t.Errorf("the pairs completed before the cut one were lost, got=%s", got)
+	}
+	if !strings.HasSuffix(got, truncatedSuffix) {
+		t.Errorf("missing the truncation marker, got=%s", got)
+	}
+	// With one pair and no & there is nothing complete left to let through
+	if got := redactBody([]byte("dsn=postgres%3A%2F%2Fapp%3A"+secret), "application/x-www-form-urlencoded", true); got != Redacted {
+		t.Errorf("a cut body holding one pair must be masked whole, got=%s", got)
+	}
+	// A complete body is untouched by any of this: cut is false for every one of them
+	if got, want := redactBody([]byte("user=alice"), "application/x-www-form-urlencoded", false), "user=alice"; got != want {
+		t.Errorf("a complete form body changed: got=%s want=%s", got, want)
+	}
+}
+
 func TestRedactBody_OtherTypesStripNewlines(t *testing.T) {
 	// One log stretched over several lines puts the collection and the search downstream out of
 	// step
