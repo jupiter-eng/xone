@@ -10,6 +10,8 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
 
 ## [Unreleased]
 
+## [v1.4.2] - 2026-10-28
+
 ### Fixed
 
 - **xkafka: a partition that has lost its goroutine keeps saying so.** When this module's own code

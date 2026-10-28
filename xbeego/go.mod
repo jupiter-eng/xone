@@ -13,9 +13,9 @@ replace (
 
 require (
 	github.com/beego/beego/v2 v2.3.8
-	github.com/jupiter-eng/xone v1.4.1
-	github.com/jupiter-eng/xone/xmetric v1.4.1
-	github.com/jupiter-eng/xone/xtrace v1.4.1
+	github.com/jupiter-eng/xone v1.4.2
+	github.com/jupiter-eng/xone/xmetric v1.4.2
+	github.com/jupiter-eng/xone/xtrace v1.4.2
 	github.com/prometheus/client_golang v1.24.1
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/sdk v1.46.0

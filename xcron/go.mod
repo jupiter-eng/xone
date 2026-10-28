@@ -4,8 +4,8 @@ go 1.25.0
 
 require (
 	github.com/hashicorp/cronexpr v1.1.3
-	github.com/jupiter-eng/xone v1.4.1
-	github.com/jupiter-eng/xone/xtrace v1.4.1
+	github.com/jupiter-eng/xone v1.4.2
+	github.com/jupiter-eng/xone/xtrace v1.4.2
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/sdk v1.46.0
 	go.opentelemetry.io/otel/trace v1.46.0
