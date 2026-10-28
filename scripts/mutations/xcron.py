@@ -85,11 +85,18 @@ mutate("a first run added during startup follows startup cancellation", "xcron/s
 mutate("completed startup leaves job cancellation to the stop hook", "xcron/scheduler.go", "./xcron", "TestStart_CompletedStartupLeavesCancellationToStop",
        swap('\tdefer detachStartup()\n', '\t_ = detachStartup\n'))
 mutate("failed startup waits for dynamically added jobs to finish", "xcron/scheduler.go", "./xcron", "TestStart_FailureWaitsForDynamicallyAddedJobs",
-       swap('\t\tlt.wg.Wait()\n\t\treturn err', '\t\treturn err'))
+       swap('\t\ts.awaitCleanup(ctx, lt)\n\t\treturn err', '\t\treturn err'))
+# The stop hook that would otherwise bound this never runs, so a job whose function ignores its ctx would hold
+# startup for ever
+mutate("that wait carries a budget of its own", "xcron/scheduler.go", "./xcron", "TestStart_FailureDoesNotWaitOutACtxIgnoringJob",
+       swap('\tcase <-time.After(cleanupBudget):\n', '\tcase <-make(chan time.Time):\n'))
 mutate("stopping cancels the ctx of the runs in flight", "xcron/scheduler.go", "./xcron", "TestStop_CancelsInFlightAndWaitsForThem",
        swap('\tlt.cancel()\n\tdone := make(chan struct{})\n', '\tdone := make(chan struct{})\n'))
+# Anchored to stop: awaitCleanup waits on the same wait group the same way, and a pattern matching both would
+# break two promises at once
 mutate("stopping waits for the runs in flight to return", "xcron/scheduler.go", "./xcron", "TestStop_CancelsInFlightAndWaitsForThem",
-       swap('go func() { lt.wg.Wait(); close(done) }()', 'close(done)'))
+       swap('\tlt.cancel()\n\tdone := make(chan struct{})\n\tgo func() { lt.wg.Wait(); close(done) }()',
+            '\tlt.cancel()\n\tdone := make(chan struct{})\n\tclose(done)'))
 # Aimed at the call site: without recording a run into the wg when it begins, stop does not know
 # anybody is still running
 mutate("a run started at its time counts as in flight", "xcron/scheduler.go", "./xcron", "TestStop_CancelsInFlightAndWaitsForThem",

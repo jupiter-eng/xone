@@ -249,7 +249,11 @@ mutate("Validate is called once for each instance", "internal/config/clients.go"
 
 section("Startup and shutdown")
 mutate("a runnable returning cancels its running context before cleanup", "xone.go", ".", "TestRun_CancelsRunningContextBeforeCleanup",
-       swap('\tstopSignals()\n\n\t// The whole shutdown shares this one budget.', '\n\t// The whole shutdown shares this one budget.'))
+       swap('\tcancelRun()\n\n\t// The whole shutdown shares this one budget.', '\n\t// The whole shutdown shares this one budget.'))
+# Cancelling the running ctx must not take the signal handler with it: handing the default disposition back while
+# the resources are still being closed is what point 1 of the signal contract exists to prevent
+mutate("the signals stay taken over until Run returns", "xone.go", ".", "TestRun_SignalWhileClosingStillTakenOver",
+       swap('\tctx, cancelRun := context.WithCancel(ctx)\n', '\tcancelRun := stopSignals\n'))
 # xone.Func / UntilSignal: the two Runnables that can be handed to Run without writing a type
 mutate("Func's error is Run's error", "xone.go", ".", "TestFunc_", swap('func (f funcRunnable) Start(ctx context.Context) error { return f(ctx) }', 'func (f funcRunnable) Start(ctx context.Context) error { _ = f(ctx); return nil }'))
 mutate("Func(nil) panics on the spot", "xone.go", ".", "TestFunc_", swap('\tif fn == nil {\n\t\tpanic("xone: Func needs', '\tif false {\n\t\tpanic("xone: Func needs'))
@@ -511,11 +515,11 @@ mutate("Run filters the stop hooks by what started", "xone.go", ".", "TestRun_In
 # configuration used to return outright, so a hook like the log flush never ran once. One mutation
 # per early return
 mutate("a badly written Runnable still runs the stop hooks that do not depend on startup", "xone.go", ".", "TestRun_RunnableInvalid_UnpairedStopHooksStillRun",
-       swap('\tif err := checkRunnable(r); err != nil {\n\t\tstopSignals()\n\t\treturn errors.Join(err, stopWithin(o, nil))',
-            '\tif err := checkRunnable(r); err != nil {\n\t\tstopSignals()\n\t\treturn err'))
+       swap('\tif err := checkRunnable(r); err != nil {\n\t\tcancelRun()\n\t\treturn errors.Join(err, stopWithin(o, nil))',
+            '\tif err := checkRunnable(r); err != nil {\n\t\tcancelRun()\n\t\treturn err'))
 mutate("an unreadable configuration still runs the stop hooks that do not depend on startup", "xone.go", ".", "TestRun_ConfigLoadFails_UnpairedStopHooksStillRun",
-       swap('\tif err := config.Ensure(o.configPath, o.log()); err != nil {\n\t\tstopSignals()\n\t\treturn errors.Join(err, stopWithin(o, nil))',
-            '\tif err := config.Ensure(o.configPath, o.log()); err != nil {\n\t\tstopSignals()\n\t\treturn err'))
+       swap('\tif err := config.Ensure(o.configPath, o.log()); err != nil {\n\t\tcancelRun()\n\t\treturn errors.Join(err, stopWithin(o, nil))',
+            '\tif err := config.Ensure(o.configPath, o.log()); err != nil {\n\t\tcancelRun()\n\t\treturn err'))
 # Registered together makes a pair: paired with the earliest start hook of the same package
 # instead, the second pair's stop hook would be called even when it failed to build and would have
 # to handle "not built yet"
@@ -690,11 +694,11 @@ mutate("Run hands the configuration back when it ends", "xone.go", ".", "TestRun
 mutate("a Run whose load failed hands the configuration back too", "xone.go", ".", "TestRun_NextRunReadsOwnConfigAfterLoadFailure",
        swap('\tdefer config.Reset()\n', ''),
        swap('''\tif err := config.Ensure(o.configPath, o.log()); err != nil {
-\t\tstopSignals()
+\t\tcancelRun()
 \t\treturn errors.Join(err, stopWithin(o, nil))
 \t}
 ''', '''\tif err := config.Ensure(o.configPath, o.log()); err != nil {
-\t\tstopSignals()
+\t\tcancelRun()
 \t\treturn errors.Join(err, stopWithin(o, nil))
 \t}
 \tdefer config.Reset()

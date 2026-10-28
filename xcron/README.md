@@ -136,6 +136,7 @@ another replica can take it at the next time point.
 | `cron job has no next time point and will not run again` | WARN | `job` |
 | `xcron ready` | INFO | `jobs` |
 | `xcron jobs still running when the stop budget ran out` | WARN | `jobs` |
+| `xcron jobs added during startup are still running after it failed` | WARN | `jobs` |
 
 - `job` is in the job's ctx, so every line recorded inside the job with `slog.InfoContext(ctx, ...)` carries it; fields
   added inside the job with `xlog.AddKV(ctx, ...)` reach the end line too.

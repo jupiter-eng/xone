@@ -477,6 +477,56 @@ func TestStart_FailureWaitsForDynamicallyAddedJobs(t *testing.T) {
 	}
 }
 
+// A job whose function ignores its ctx must not hold a failed startup for ever: the stop hook that would
+// otherwise bound this never runs, so the wait carries a budget of its own and says what is still running.
+func TestStart_FailureDoesNotWaitOutACtxIgnoringJob(t *testing.T) {
+	logs := captureLogs(t)
+	s := fresh(t)
+	old := cleanupBudget
+	cleanupBudget = 50 * time.Millisecond
+	t.Cleanup(func() { cleanupBudget = old })
+
+	boom := errors.New("warmup failed")
+	gate := release(t)
+	added := make(chan struct{})
+	if err := Add("@every 1h", func(context.Context) error {
+		if err := Add("@every 1h", func(context.Context) error {
+			close(added)
+			<-gate // stands in for a third-party call that takes no ctx
+			return nil
+		}, WithName("deaf"), RunOnStart()); err != nil {
+			return err
+		}
+		<-added
+		return boom
+	}, WithName("warmup"), RunOnStartAndWait()); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	begun := time.Now()
+	go func() { done <- s.start(context.Background()) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, boom) {
+			t.Fatalf("the original failure was lost: %v", err)
+		}
+		if took := time.Since(begun); took > 2*time.Second {
+			t.Errorf("the failed start waited out the job rather than its budget, took=%v", took)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a job ignoring its ctx held the failed start for ever")
+	}
+	eventually(t, "the WARN naming what is still running", func() bool {
+		l := withMsg(logs(), "xcron jobs added during startup are still running after it failed")
+		if len(l) == 0 {
+			return false
+		}
+		jobs, _ := l[0]["jobs"].([]any)
+		return len(jobs) == 1 && jobs[0] == "deaf"
+	})
+}
+
 func TestAdd_AfterStartSchedulesImmediately(t *testing.T) {
 	fresh(t)
 	started(t, std)

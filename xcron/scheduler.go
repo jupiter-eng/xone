@@ -120,7 +120,7 @@ func (s *scheduler) start(ctx context.Context) error {
 		s.state = stopped
 		s.mu.Unlock()
 		lt.cancel()
-		lt.wg.Wait()
+		s.awaitCleanup(ctx, lt)
 		return err
 	}
 
@@ -152,6 +152,25 @@ func firstRuns(ctx context.Context, jobs []*job) error {
 		return xerror.Newf("xcron", "start", "first run failed: %w", err)
 	}
 	return nil
+}
+
+// cleanupBudget bounds how long a failed start waits for the jobs a first execution added. The stop hook that
+// would otherwise own this never runs (its start hook failed), so there is no stop budget to borrow from, and a job
+// whose function ignores its ctx must not hold startup for ever -- the same reasoning as the stop budget itself.
+// It is a var so the tests need not wait it out.
+var cleanupBudget = 5 * time.Second
+
+// awaitCleanup waits for the jobs cancelled above to return, for cleanupBudget at most. What is still running is
+// named in one WARN: the error startup reports is the one that failed, and burying it under a second one would
+// point at the wrong thing.
+func (s *scheduler) awaitCleanup(ctx context.Context, lt *lifetime) {
+	done := make(chan struct{})
+	go func() { lt.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(cleanupBudget):
+		slog.WarnContext(ctx, "xcron jobs added during startup are still running after it failed", "jobs", s.busy())
+	}
 }
 
 // stop stops the scheduler: no new execution is started, the ctx of the executions in flight is cancelled, and it
