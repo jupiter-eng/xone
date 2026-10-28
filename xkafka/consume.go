@@ -192,6 +192,9 @@ type consumer struct {
 	mu       sync.Mutex
 	assigned map[int32]*worker  // the partitions currently assigned
 	live     map[*worker]string // the partition goroutines that have not exited (including ones just revoked and waiting for a message in flight), with topic/partition as the value
+
+	// lastDropWarn is when a partition with no goroutine of its own was last warned about, see dropped
+	lastDropWarn map[int32]time.Time
 }
 
 func (c *consumer) String() string { return c.topic + "/" + c.group }
@@ -320,6 +323,7 @@ func (c *consumer) poll(ctx context.Context) {
 				// What reaches here is a goroutine that exited on its own and took itself out of the table
 				// (see retire), so this batch has nowhere to go. Dropping it loses nothing -- none of it was
 				// marked, and it comes back after the next rebalance
+				c.dropped(ctx, p.Partition, p.Records)
 				return
 			}
 			select {
@@ -381,6 +385,7 @@ func (c *consumer) assignedFn(_ context.Context, _ *kgo.Client, assigned map[str
 	defer c.mu.Unlock()
 	for _, p := range assigned[c.topic] {
 		w := newWorker(c, p)
+		delete(c.lastDropWarn, p) // this partition has a goroutine again: the next loss says so at once
 		c.assigned[p] = w
 		c.live[w] = partitionStr(c.topic, p)
 		go w.run()
@@ -400,6 +405,43 @@ func (c *consumer) revokedFn(ctx context.Context, cl *kgo.Client, revoked map[st
 // lostFn runs when partitions are lost (a session timeout and the like): they are no longer this member's and a commit would be rejected by the broker. It only waits for the messages in flight.
 func (c *consumer) lostFn(_ context.Context, _ *kgo.Client, lost map[string][]int32) {
 	c.kill(lost[c.topic])
+}
+
+// dropWarnInterval is the minimum interval between warnings about one partition whose goroutine has gone.
+const dropWarnInterval = time.Minute
+
+// dropped records that this partition's records are being thrown away, at most once per
+// dropWarnInterval per partition.
+//
+// It says so again and again on purpose. The goroutine exiting is one ERROR at the moment it
+// happens, and what follows it has no sign of its own: poll goes on fetching this partition and
+// dropping every batch, nothing is marked so the committed offset stays where it was, and nothing
+// here is counted -- the service keeps its heartbeat, the other partitions carry on, and the only
+// trace from outside is a consumer lag nobody may be watching. The state also mends itself only on
+// the next rebalance, which may be days away, so the one line at the start is the wrong place to
+// say it: it has to be sayable at any later moment too.
+//
+// Repeating it per batch would be a flood of its own (every poll, for as long as it lasts), hence
+// the interval. One per partition: two partitions in this state are two different things to fix.
+func (c *consumer) dropped(ctx context.Context, partition int32, recs []*kgo.Record) {
+	c.mu.Lock()
+	if c.lastDropWarn == nil {
+		c.lastDropWarn = map[int32]time.Time{}
+	}
+	now := time.Now()
+	if last, ok := c.lastDropWarn[partition]; ok && now.Sub(last) < dropWarnInterval {
+		c.mu.Unlock()
+		return
+	}
+	c.lastDropWarn[partition] = now
+	c.mu.Unlock()
+
+	attrs := []any{"topic", c.topic, "partition", partition, "group", c.group, "records", len(recs)}
+	if len(recs) > 0 {
+		attrs = append(attrs, "from_offset", recs[0].Offset)
+	}
+	slog.WarnContext(ctx, "kafka records dropped, this partition has no goroutine of its own until the next rebalance",
+		attrs...)
 }
 
 // retire takes a goroutine that has exited out of both tables, and is the last thing run does.

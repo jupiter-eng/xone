@@ -982,6 +982,46 @@ func TestConsume_UncomparablePermanentErrorDeadLetters(t *testing.T) {
 //
 // The panic is provoked with a nil client, which MarkCommitRecords dereferences. Any crash in this module's
 // code between the handler and the mark would do; this one needs no hook into the production path.
+func TestConsume_DroppedRecordsKeepSayingSo(t *testing.T) {
+	// The goroutine exiting is one ERROR at the moment it happens, and what follows has no sign of
+	// its own: poll goes on fetching this partition and dropping every batch, nothing is marked so
+	// the committed offset stays put, and nothing here is counted -- the process keeps its
+	// heartbeat and the other partitions carry on. It mends itself only on the next rebalance,
+	// which may be days away, so it has to be sayable at any later moment and not only at the
+	// start. Once per batch would be a flood of its own, hence one per partition per interval.
+	logs := captureLogs(t)
+	c := &consumer{topic: "orders", group: "g1", o: buildOptions("orders", nil)}
+	c.assigned, c.live = map[int32]*worker{}, map[*worker]string{}
+	recs := []*kgo.Record{{Topic: "orders", Partition: 7, Offset: 42}}
+
+	for range 3 {
+		c.dropped(context.Background(), 7, recs)
+	}
+	c.dropped(context.Background(), 8, recs) // another partition is another thing to fix
+
+	const msg = "kafka records dropped, this partition has no goroutine of its own until the next rebalance"
+	got := withMsg(logs(), msg)
+	if len(got) != 2 {
+		t.Fatalf("three batches of one partition are one line, and a second partition is its own, got %d: %v", len(got), got)
+	}
+	if got[0]["level"] != "WARN" || got[0]["partition"] != float64(7) || got[0]["group"] != "g1" ||
+		got[0]["records"] != float64(1) || got[0]["from_offset"] != float64(42) {
+		t.Errorf("the line should name what is being dropped and where, got=%v", got[0])
+	}
+	if got[1]["partition"] != float64(8) {
+		t.Errorf("the second line should be the other partition, got=%v", got[1])
+	}
+
+	// Once the interval has passed it says so again: the state is still there and may be looked at later.
+	c.mu.Lock()
+	c.lastDropWarn[7] = time.Now().Add(-dropWarnInterval)
+	c.mu.Unlock()
+	c.dropped(context.Background(), 7, recs)
+	if got := withMsg(logs(), msg); len(got) != 3 {
+		t.Errorf("after the interval the same partition says so again, got %d", len(got))
+	}
+}
+
 func TestConsume_PanicInConsumingCodeReleasesThePartition(t *testing.T) {
 	logs := captureLogs(t)
 	c := &consumer{topic: "orders", group: "g1", o: buildOptions("orders", nil),
