@@ -255,6 +255,66 @@ func TestRun_ServiceStartFails(t *testing.T) {
 	}
 }
 
+func TestRun_CancelsRunningContextBeforeCleanup(t *testing.T) {
+	boom := errors.New("startup failed")
+	for _, scenario := range []string{"completed", "start failed", "hook failed", "unclaimed config"} {
+		t.Run(scenario, func(t *testing.T) {
+			var startupCtx, runningCtx context.Context
+			comps(t, pair{
+				start: hook.Entry{Name: "worker.init", Pkg: "worker", Run: func(ctx context.Context) error {
+					startupCtx = ctx
+					return nil
+				}},
+				stop: hook.Entry{Name: "worker.close", Pkg: "worker", Run: func(ctx context.Context) error {
+					if !errors.Is(startupCtx.Err(), context.Canceled) {
+						t.Errorf("startup context during cleanup = %v, want canceled", startupCtx.Err())
+					}
+					return ctx.Err() // cleanup itself must still have a live context
+				}},
+			})
+			if scenario == "hook failed" {
+				hook.AddStart(hook.Entry{Name: "bad.init", Pkg: "bad", Run: func(context.Context) error { return boom }})
+			}
+			path := emptyConf(t)
+			if scenario == "unclaimed config" {
+				if err := os.WriteFile(path, []byte("Unused: true\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r := &lateRunnable{
+				start: func(ctx context.Context) error {
+					runningCtx = ctx
+					if scenario == "start failed" {
+						return boom
+					}
+					return nil
+				},
+				stop: func(ctx context.Context) error {
+					if !errors.Is(runningCtx.Err(), context.Canceled) {
+						t.Errorf("Start context during Stop = %v, want canceled", runningCtx.Err())
+					}
+					return ctx.Err()
+				},
+			}
+			err := Run(r, WithConfigPath(path), WithLogger(quietLogger()))
+			switch scenario {
+			case "completed":
+				if err != nil {
+					t.Fatal(err)
+				}
+			case "start failed", "hook failed":
+				if !errors.Is(err, boom) {
+					t.Fatalf("original failure was lost: %v", err)
+				}
+			case "unclaimed config":
+				if err == nil || !strings.Contains(err.Error(), "Unused") {
+					t.Fatalf("unclaimed configuration error = %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestRun_CloseErrorsAggregatedNotSwallowed(t *testing.T) {
 	r := &recorder{}
 	closeErr := errors.New("cannot close")
@@ -819,6 +879,87 @@ func TestRun_SecondSignalKillsWhenStuck(t *testing.T) {
 }
 
 // runStuckChild starts a process that is stuck in initialization and takes no ctx
+// closingChildEnv, when set, has the test process play the "server returned by itself, the stop
+// hooks are closing what it used" child
+const closingChildEnv = "XONE_TEST_CLOSING_CHILD"
+
+// The other side of TestRun_SecondSignalKillsWhenStuck: the default disposition is handed back
+// after the first signal, and not one moment earlier. Run cancels the ctx it handed Start before
+// the stop hooks close what that work uses, and cancelling it must not take the signal handler with
+// it -- a SIGTERM arriving while the resources are being closed would then kill the process on the
+// spot, which is exactly what taking the signals over in the first place is for (point 1 of the
+// contract in docs/architecture.md: nothing gets to deregister, and that registry entry and that
+// distributed lock can only wait for the other side to expire).
+func TestRun_SignalWhileClosingStillTakenOver(t *testing.T) {
+	if os.Getenv(closingChildEnv) == "1" {
+		runClosingChild()
+		return
+	}
+
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(self, "-test.run=^TestRun_SignalWhileClosingStillTakenOver$")
+	cmd.Env = append(os.Environ(), closingChildEnv+"=1")
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+
+	// CLOSING is printed from inside a stop hook, so the signal below lands while the components
+	// are being closed
+	waitFor(t, io.TeeReader(stdout, &out), "CLOSING")
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	go func() { _, _ = io.Copy(&out, stdout); done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		var ee *exec.ExitError
+		if errors.As(err, &ee) {
+			if st, ok := ee.Sys().(syscall.WaitStatus); ok && st.Signaled() {
+				t.Fatalf("the signal killed the process in the middle of closing (terminated by %v): the handler was handed back too early", st.Signal())
+			}
+		}
+		if err != nil {
+			t.Fatalf("the child must shut down cleanly, got=%v (output %q)", err, out.String())
+		}
+		if !strings.Contains(out.String(), "CLOSED") {
+			t.Errorf("the stop hook was cut short, so nothing got to deregister: output %q", out.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the child never ended")
+	}
+}
+
+func runClosingChild() {
+	hook.AddStart(hook.Entry{Name: "slow.init", Pkg: "slow", Stage: hook.StageClient,
+		Run: func(context.Context) error { return nil }})
+	hook.AddStop(hook.Entry{Name: "slow.close", Pkg: "slow", Stage: hook.StageClient,
+		Run: func(context.Context) error {
+			fmt.Println("CLOSING")
+			_ = os.Stdout.Sync()
+			time.Sleep(600 * time.Millisecond) // stands in for deregistering and releasing the lock
+			fmt.Println("CLOSED")
+			_ = os.Stdout.Sync()
+			return nil
+		}})
+	// Start returns by itself, which is the path that cancels the running ctx without a signal
+	srv := &lateRunnable{
+		start: func(context.Context) error { return nil },
+		stop:  func(context.Context) error { return nil },
+	}
+	_ = Run(srv, WithLogger(quietLogger()))
+}
+
 func runStuckChild() {
 	stuck := pair{start: hook.Entry{Name: "stuck.init", Pkg: "stuck", Stage: hook.StageClient,
 		Run: func(context.Context) error {

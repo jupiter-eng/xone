@@ -105,16 +105,22 @@ func (s *scheduler) start(ctx context.Context) error {
 	s.mu.Lock()
 	lt := &lifetime{}
 	lt.ctx, lt.cancel = context.WithCancel(context.WithoutCancel(ctx))
+	// Add can run inside a first execution and starts its own jobs immediately. Until startup
+	// finishes those jobs must follow the startup cancellation too; afterwards stop owns it.
+	detachStartup := context.AfterFunc(ctx, lt.cancel)
+	defer detachStartup()
 	s.state, s.cur = running, lt
 	jobs := slices.Clone(s.jobs)
 	s.mu.Unlock()
 
 	if err := firstRuns(ctx, jobs); err != nil {
-		// The stop hook is never called (its start hook failed), so clean up here: not a single scheduling loop is up yet.
+		// The stop hook is never called (its start hook failed). A first execution may have added
+		// jobs already, so reject further registration, cancel them and wait for their cleanup.
 		s.mu.Lock()
 		s.state = stopped
 		s.mu.Unlock()
 		lt.cancel()
+		s.awaitCleanup(ctx, lt)
 		return err
 	}
 
@@ -146,6 +152,25 @@ func firstRuns(ctx context.Context, jobs []*job) error {
 		return xerror.Newf("xcron", "start", "first run failed: %w", err)
 	}
 	return nil
+}
+
+// cleanupBudget bounds how long a failed start waits for the jobs a first execution added. The stop hook that
+// would otherwise own this never runs (its start hook failed), so there is no stop budget to borrow from, and a job
+// whose function ignores its ctx must not hold startup for ever -- the same reasoning as the stop budget itself.
+// It is a var so the tests need not wait it out.
+var cleanupBudget = 5 * time.Second
+
+// awaitCleanup waits for the jobs cancelled above to return, for cleanupBudget at most. What is still running is
+// named in one WARN: the error startup reports is the one that failed, and burying it under a second one would
+// point at the wrong thing.
+func (s *scheduler) awaitCleanup(ctx context.Context, lt *lifetime) {
+	done := make(chan struct{})
+	go func() { lt.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(cleanupBudget):
+		slog.WarnContext(ctx, "xcron jobs added during startup are still running after it failed", "jobs", s.busy())
+	}
 }
 
 // stop stops the scheduler: no new execution is started, the ctx of the executions in flight is cancelled, and it

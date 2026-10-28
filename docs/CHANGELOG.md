@@ -10,6 +10,21 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
 
 ## [Unreleased]
 
+### Fixed
+
+- **xone:** cancel the running context before server and component cleanup when startup fails or
+  the runnable returns on its own, so background work can stop before its dependencies close.
+- **xkafka:** include waiting for the poll loop in the shutdown budget. A rebalance waiting for an
+  in-flight handler no longer prevents the stop deadline from cancelling that handler.
+- **xcron:** jobs added during the first startup executions follow startup cancellation; failed
+  startup also waits for those dynamically added jobs to exit before returning, for `5s` at most --
+  the stop hook that would otherwise bound that wait never runs, so a job whose function ignores
+  its `ctx` is named in one `WARN` rather than holding startup for ever.
+- **xconfig:** a `--profile` or `XONE_PROFILE` override no longer expands placeholders in the
+  replaced `XApp.Profiles` value, so an unused environment variable cannot prevent startup.
+- **xbeego:** informational responses such as `103 Early Hints` no longer consume the final
+  response status. `101 Switching Protocols` still counts as a final response.
+
 ## [v1.4.2] - 2026-10-28
 
 ### Fixed

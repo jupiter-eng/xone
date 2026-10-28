@@ -175,6 +175,17 @@ func Run(r Runnable, opts ...Option) error {
 	// lock are left for the other side to expire.
 	ctx, stopSignals := notifyShutdown(o)
 	defer stopSignals()
+
+	// cancelRun ends what Start and the start hooks were handed, so that background work holding
+	// that ctx stops before the stop hooks begin closing what it uses. It is deliberately not
+	// stopSignals: that one hands the default disposition back as well (see notifyShutdown), and
+	// doing so while the resources are still being closed is the very thing point 1 of the signal
+	// contract exists to prevent -- a SIGTERM landing in that window kills the process on the spot
+	// and nothing gets to deregister (docs/architecture.md, "Stop signals: taken over in the
+	// process's first millisecond").
+	// So the signals stay taken over until Run returns, see TestRun_SignalWhileClosingStillTakenOver.
+	ctx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
 	printBanner(stderr, bannerWanted(stderr))
 
 	// If somebody read the configuration earlier, that one is reused. The configuration belongs to
@@ -188,9 +199,11 @@ func Run(r Runnable, opts ...Option) error {
 	// start hook before them run -- the documentation says those always run, and returning early
 	// would make that true only once startup got far enough
 	if err := checkRunnable(r); err != nil {
+		cancelRun()
 		return errors.Join(err, stopWithin(o, nil))
 	}
 	if err := config.Ensure(o.configPath, o.log()); err != nil {
+		cancelRun()
 		return errors.Join(err, stopWithin(o, nil))
 	}
 
@@ -210,6 +223,7 @@ func Run(r Runnable, opts ...Option) error {
 		o.log().Info("shutdown signal received during startup, not starting the server", attrs...)
 		return stopWithin(o, started)
 	case err != nil:
+		cancelRun()
 		return errors.Join(err, stopWithin(o, started))
 	}
 
@@ -220,6 +234,7 @@ func Run(r Runnable, opts ...Option) error {
 	// late: a key first read inside Start has likewise not been read by now, and the error has to say
 	// where to move it
 	if orphan := config.Unclaimed(); len(orphan) > 0 {
+		cancelRun()
 		hint := ""
 		if slices.Contains(orphan, "XLog") {
 			// XLog does not come along with the root package (see the imports), which is easiest to trip
@@ -242,6 +257,9 @@ func Run(r Runnable, opts ...Option) error {
 	case e := <-runErr:
 		first, serverExited = e, true
 	}
+	// A server returning by itself ends the running lifetime too: background work must see
+	// cancellation before Stop and the stop hooks begin closing the resources it uses.
+	cancelRun()
 
 	// The whole shutdown shares this one budget. The server (Stop plus waiting for Start to return)
 	// may use only the first 2/3, and the last 1/3 is kept for the stop hooks: a server that refuses

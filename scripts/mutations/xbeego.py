@@ -32,6 +32,8 @@ mutate("an unmatched route is recorded as unmatched", "xbeego/middleware/middlew
        swap('\tif st != nil && st.Route != "" {\n', '\tif st != nil {\n'))
 
 section("what went out")
+mutate("informational response headers leave the final response status open", "xbeego/internal/reqstate/reqstate.go", "./xbeego/internal/reqstate", "TestRecorder_InformationalHeadersPreserveFinalResponse",
+       swap('if code >= 100 && code < 200 && code != http.StatusSwitchingProtocols {', 'if false {'))
 # net/http tells nobody what went out, so the recorder in front of the writer is the only source
 # for the status code and the byte count
 mutate("the recorder is installed in front of the writer", "xbeego/middleware/middleware.go", "./xbeego",

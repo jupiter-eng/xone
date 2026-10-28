@@ -160,6 +160,12 @@ func (r *Recorder) WriteHeader(code int) {
 		// log disagree with what the client received.
 		return
 	}
+	// Informational responses leave the final status open. 101 is the exception: switching
+	// protocols is final, as in net/http's response.WriteHeader.
+	if code >= 100 && code < 200 && code != http.StatusSwitchingProtocols {
+		r.ResponseWriter.WriteHeader(code)
+		return
+	}
 	r.status, r.started = code, true
 	r.ResponseWriter.WriteHeader(code)
 }

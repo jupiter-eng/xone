@@ -370,6 +370,163 @@ func TestStart_RunOnStartAndWaitHonorsStartCtx(t *testing.T) {
 	}
 }
 
+func TestStart_DynamicallyAddedFirstRunHonorsStartCtx(t *testing.T) {
+	s := fresh(t)
+	entered := make(chan struct{})
+	if err := Add("@every 1h", func(context.Context) error {
+		return Add("@every 1h", func(ctx context.Context) error {
+			close(entered)
+			return waitCtx(ctx)
+		}, WithName("inner"), RunOnStartAndWait())
+	}, WithName("outer"), RunOnStartAndWait()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- s.start(ctx) }()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("nested first run did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("startup cancellation was lost: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("startup cancellation did not reach the dynamically added first run")
+	}
+}
+
+func TestStart_CompletedStartupLeavesCancellationToStop(t *testing.T) {
+	s := fresh(t)
+	entered := make(chan context.Context, 1)
+	if err := Add("@every 1h", func(ctx context.Context) error {
+		entered <- ctx
+		<-ctx.Done()
+		return ctx.Err()
+	}, WithName("background"), RunOnStart()); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := s.start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var jobCtx context.Context
+	select {
+	case jobCtx = <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the background job did not start")
+	}
+	cancel()
+	select {
+	case <-jobCtx.Done():
+		t.Fatal("after startup, the stop hook must own cancellation")
+	case <-time.After(20 * time.Millisecond):
+	}
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), time.Second)
+	defer stopCancel()
+	if err := s.stop(stopCtx); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(jobCtx.Err(), context.Canceled) {
+		t.Fatalf("stop did not cancel the background job: %v", jobCtx.Err())
+	}
+}
+
+func TestStart_FailureWaitsForDynamicallyAddedJobs(t *testing.T) {
+	s := fresh(t)
+	entered, canceled := make(chan struct{}), make(chan struct{})
+	finish := release(t)
+	boom := errors.New("warmup failed")
+	if err := Add("@every 1h", func(context.Context) error {
+		if err := Add("@every 1h", func(ctx context.Context) error {
+			close(entered)
+			<-ctx.Done()
+			close(canceled)
+			<-finish
+			return ctx.Err()
+		}, WithName("background"), RunOnStart()); err != nil {
+			return err
+		}
+		<-entered
+		return boom
+	}, WithName("warmup"), RunOnStartAndWait()); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- s.start(context.Background()) }()
+	select {
+	case <-canceled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("startup failure did not cancel the dynamically added job")
+	}
+	select {
+	case err := <-done:
+		t.Fatalf("startup returned before the canceled job finished: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	// release's cleanup normally opens this gate; here release it explicitly without closing twice.
+	finish <- struct{}{}
+	if err := <-done; !errors.Is(err, boom) {
+		t.Fatalf("startup error = %v, want original warmup failure", err)
+	}
+}
+
+// A job whose function ignores its ctx must not hold a failed startup for ever: the stop hook that would
+// otherwise bound this never runs, so the wait carries a budget of its own and says what is still running.
+func TestStart_FailureDoesNotWaitOutACtxIgnoringJob(t *testing.T) {
+	logs := captureLogs(t)
+	s := fresh(t)
+	old := cleanupBudget
+	cleanupBudget = 50 * time.Millisecond
+	t.Cleanup(func() { cleanupBudget = old })
+
+	boom := errors.New("warmup failed")
+	gate := release(t)
+	added := make(chan struct{})
+	if err := Add("@every 1h", func(context.Context) error {
+		if err := Add("@every 1h", func(context.Context) error {
+			close(added)
+			<-gate // stands in for a third-party call that takes no ctx
+			return nil
+		}, WithName("deaf"), RunOnStart()); err != nil {
+			return err
+		}
+		<-added
+		return boom
+	}, WithName("warmup"), RunOnStartAndWait()); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	begun := time.Now()
+	go func() { done <- s.start(context.Background()) }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, boom) {
+			t.Fatalf("the original failure was lost: %v", err)
+		}
+		if took := time.Since(begun); took > 2*time.Second {
+			t.Errorf("the failed start waited out the job rather than its budget, took=%v", took)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a job ignoring its ctx held the failed start for ever")
+	}
+	eventually(t, "the WARN naming what is still running", func() bool {
+		l := withMsg(logs(), "xcron jobs added during startup are still running after it failed")
+		if len(l) == 0 {
+			return false
+		}
+		jobs, _ := l[0]["jobs"].([]any)
+		return len(jobs) == 1 && jobs[0] == "deaf"
+	})
+}
+
 func TestAdd_AfterStartSchedulesImmediately(t *testing.T) {
 	fresh(t)
 	started(t, std)
