@@ -208,6 +208,42 @@ type recordingSchedule func(time.Time)
 
 func (r recordingSchedule) Next(t time.Time) time.Time { r(t); return t.Add(time.Hour) }
 
+// A schedule with no time point left returns the zero time (see the schedule interface), and time.Until of it is
+// a large negative duration: without the guard the timer fires at once, prev stays zero, the next round computes
+// the zero time again, and the loop spins as fast as the CPU allows -- starting an execution every round, or
+// writing one "cron job skipped" per round. A spec that never fires is refused at registration, so what is left
+// is the far end of one that does: cronexpr v1.1.3 searches the years 1970..2099, which "0 0 29 2 *" runs past
+// in 2096, its next leap day being 2104.
+func TestScheduler_NoNextTimePointStopsTheLoop(t *testing.T) {
+	logs := captureLogs(t)
+	fresh(t)
+	var asked, ran atomic.Int32
+	sched := exhaustedSchedule(func() { asked.Add(1) })
+	std.add(&job{name: "sweep", sched: sched, fn: func(context.Context) error { ran.Add(1); return nil },
+		o: buildOptions(ok, []Option{WithName("sweep")})})
+	started(t, std)
+
+	eventually(t, "the WARN saying there is no next time point", func() bool {
+		return len(withMsg(logs(), "cron job has no next time point and will not run again")) == 1
+	})
+	time.Sleep(50 * time.Millisecond)
+	if got := asked.Load(); got != 1 {
+		t.Errorf("the loop must ask for the next time point once and then give up, asked %d times", got)
+	}
+	if got := ran.Load(); got != 0 {
+		t.Errorf("a job with no time point left must not run, ran %d times", got)
+	}
+	l := withMsg(logs(), "cron job has no next time point and will not run again")[0]
+	if l["level"] != "WARN" || l["job"] != "sweep" {
+		t.Errorf("it is recorded at WARN with job: %v", l)
+	}
+}
+
+// exhaustedSchedule has run out of time points: Next counts the question and answers with the zero time.
+type exhaustedSchedule func()
+
+func (e exhaustedSchedule) Next(time.Time) time.Time { e(); return time.Time{} }
+
 func TestOptions_DefaultLocationIsUTC(t *testing.T) {
 	if o := buildOptions(ok, nil); o.loc != time.UTC {
 		t.Errorf("the default time zone must be UTC: got=%v", o.loc)

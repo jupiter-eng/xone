@@ -133,6 +133,7 @@ another replica can take it at the next time point.
 | `cron job failed` | WARN | `job`, `trace_id`, `elapsed_ms`, `error` |
 | `cron job panicked` | ERROR | `job`, `trace_id`, `elapsed_ms`, `error`, `stack` |
 | `cron job skipped, previous run still running` | WARN | `job` |
+| `cron job has no next time point and will not run again` | WARN | `job` |
 | `xcron ready` | INFO | `jobs` |
 | `xcron jobs still running when the stop budget ran out` | WARN | `jobs` |
 

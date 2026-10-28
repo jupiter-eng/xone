@@ -45,6 +45,16 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
   `LogRequestBody: true`: a response body never takes the form branch, and a query string is never
   cut.
 
+- **xcron: a job whose schedule has no time point left stops being scheduled instead of spinning.**
+  `Next` returning the zero time means "there is no next one", and the loop measured the wait to it
+  as a large negative duration: the timer fired at once, the next round worked out the same zero
+  time, and it went round as fast as the CPU allowed -- starting an execution every round, or
+  writing one `cron job skipped, previous run still running` per round. A spec that never fires is
+  refused when the job is added, so this was reachable only at the far end of one that does fire:
+  cronexpr searches the years 1970 to 2099, which `0 0 29 2 *` runs past in 2096. One `WARN`
+  (`cron job has no next time point and will not run again`, with `job`) is now written and that
+  job's loop returns; the other jobs and the scheduler are untouched.
+
 ## [v1.4.1] - 2026-10-27
 
 ### Fixed
