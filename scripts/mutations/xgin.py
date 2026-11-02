@@ -104,6 +104,8 @@ mutate("AddSensitiveFields writes to the shared word list", "xgin/middleware/red
        swap('{ web.AddSensitiveFields(fields...) }', '{}'))
 mutate("AddSensitiveHeaders writes to the shared list", "xgin/middleware/redact.go", "./xgin", "TestAddSensitive",
        swap('{ web.AddSensitiveHeaders(headers...) }', '{}'))
+mutate("AddSensitiveNames writes to the shared word list", "xgin/middleware/redact.go", "./xgin", "TestAddSensitiveNames",
+       swap('{ web.AddSensitiveNames(names...) }', '{}'))
 mutate("the metrics method label is folded", "xgin/middleware/metric.go", "./xgin", "TestMetric",
        swap('web.NormalizeMethod(c.Request.Method)', 'c.Request.Method'),
        swap('\t\tlatency *prometheus.HistogramVec\n\t)\n', '\t\tlatency *prometheus.HistogramVec\n\t)\n\t_ = web.NormalizeMethod\n'))

@@ -134,6 +134,7 @@ admin := xecho.New().WithConfig(c).WithRoutes(adminRoutes)
 | `CurrentConfig() Config` | A copy of the XEcho block of the config file, callable any time before `Start` |
 | `DefaultConfig() Config` | Every default value; where to start when writing a `WithConfig` from scratch |
 | `middleware.AddSensitiveFields(...string)` | Appends sensitive words for the access log (applying to bodies and request headers alike; one word list shared with xgin) |
+| `middleware.AddSensitiveNames(...string)` | Appends sensitive field names matched exactly, for a short, common word such as `code`; same shared list |
 | `middleware.AddSensitiveHeaders(...string)` | Appends sensitive request header names matched exactly |
 
 ## Notes
@@ -246,7 +247,13 @@ description is in [xgin "Access log"](../xgin/README.md#access-log):
 | `errors` | The error **returned** by the handler (`err.Error()`, such as `code=404, message=Not Found`), or the reason for an abort or a broken connection; absent when there is none, and absent for an error the handler rendered itself with `c.Error(err)` (the status code and `bytes_out` are still the ones sent, see [Behavior (measured)](#behavior-measured)); a sensitive **name** followed by `=` or `:` has its value masked to the end of that line (`login failed password=***REDACTED***`), and the password inside `postgres://app:pw@db` or `app:pw@tcp(db:3306)` becomes `***REDACTED***` (the span's `echo.errors` works the same way) |
 | `trace_id` / `span_id` | When tracing is on |
 
-`middleware.AddSensitiveFields(...)` / `AddSensitiveHeaders(...)` write to the same table as
+Every error echo returns starts with `code=`, so do not add `code` with `AddSensitiveFields`: it
+masks each such error from `code=` to the end of the line, message and cause included. Add it with
+`middleware.AddSensitiveNames("code")`, which masks only the value after it --
+`code=***REDACTED***, message=invalid tenant ref, internal=...` -- and leaves `country_code` and
+`status_code` alone (the rules are in [xgin "Access log"](../xgin/README.md#access-log)).
+
+`middleware.AddSensitiveFields(...)` / `AddSensitiveNames(...)` / `AddSensitiveHeaders(...)` write to the same table as
 xgin's identically named functions, so either will do.
 
 A panic is recorded by the Recover middleware as `panic while handling request` (ERROR, with

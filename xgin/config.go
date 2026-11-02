@@ -141,8 +141,10 @@ type Config struct {
 	//
 	// Query strings often carry credentials: GET /login?token=..., signed links, an OAuth
 	// callback's code. With it on, fields are masked by the same rules as a form body; a name
-	// missing from the word list (code, for instance) still goes through in the clear, so add it
-	// with middleware.AddSensitiveFields.
+	// missing from the word list (code, for instance) still goes through in the clear. Add a short,
+	// common one such as code with middleware.AddSensitiveNames, which matches it exactly
+	// (middleware.AddSensitiveFields would match country_code too), and any other with
+	// middleware.AddSensitiveFields.
 	LogQuery bool `yaml:"LogQuery"`
 
 	// LogRequestHeaders records the request headers in the access log, as the request_headers

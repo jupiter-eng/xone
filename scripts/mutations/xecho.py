@@ -227,6 +227,12 @@ mutate("XEcho AddSensitiveFields writes to the shared word list", "xecho/middlew
        swap('{ web.AddSensitiveFields(fields...) }', '{}'))
 mutate("XEcho AddSensitiveHeaders writes to the shared list", "xecho/middleware/redact.go", "./xecho", "TestAddSensitive",
        swap('{ web.AddSensitiveHeaders(headers...) }', '{}'))
+mutate("XEcho AddSensitiveNames writes to the shared word list", "xecho/middleware/redact.go", "./xecho", "TestAddSensitiveNames",
+       swap('{ web.AddSensitiveNames(names...) }', '{}'))
+# echo writes every error as "code=400, message=..., internal=...": a name running to the end of the
+# line, as a word does, leaves "code=***REDACTED***" and nothing else in the log
+mutate("XEcho a sensitive name keeps the error message", "internal/web/redact.go", "./xecho", "TestLog_SensitiveNameKeepsEchoErrorMessage",
+       swap('\t\tif kind == byName {\n\t\t\tend = valueEnd(s, m[1], end)\n\t\t}\n', ''))
 
 section("access log values")
 mutate("the XEcho access log gets the real response headers", "xecho/middleware/log.go", "./xecho", "TestLog_ResponseHeaders",

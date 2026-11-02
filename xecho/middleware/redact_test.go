@@ -1,11 +1,16 @@
 package middleware
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"os/exec"
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/labstack/echo/v4"
 
 	"github.com/jupiter-eng/xone/internal/web"
 )
@@ -57,5 +62,67 @@ func TestAddSensitive_WritesTheSharedRegistry(t *testing.T) {
 	}
 	if got := web.RedactHeaders(h).String(); strings.Contains(got, secret) {
 		t.Errorf("AddSensitiveHeaders did not reach the shared registry: %s", got)
+	}
+}
+
+func TestAddSensitiveNames_WritesTheSharedRegistry(t *testing.T) {
+	// Names match by "equals", so a probe that only contains the name stays unmasked
+	name := fmt.Sprintf("fwd_probe_name_%d", probes.Add(1))
+	body := []byte(`{"` + name + `":"` + secret + `","x_` + name + `":"kept"}`)
+	if !strings.Contains(web.RedactBody(body, "application/json"), secret) {
+		t.Fatal("precondition: the probe name must not be sensitive before it is added")
+	}
+
+	AddSensitiveNames(name)
+
+	got := web.RedactBody(body, "application/json")
+	if strings.Contains(got, secret) {
+		t.Errorf("AddSensitiveNames did not reach the shared registry: %s", got)
+	}
+	if !strings.Contains(got, "kept") {
+		t.Errorf("a field that only contains the name must be kept: %s", got)
+	}
+}
+
+// sensitiveNameChildEnv marks the child process TestLog_SensitiveNameKeepsEchoErrorMessage runs
+// itself in
+const sensitiveNameChildEnv = "XONE_TEST_SENSITIVE_NAME_CHILD"
+
+func TestLog_SensitiveNameKeepsEchoErrorMessage(t *testing.T) {
+	// It runs in a child process: the word list is per process and only grows, and code registered
+	// here would change what every other test in this package reads in its errors field
+	// (code=404, message=Not Found)
+	if os.Getenv(sensitiveNameChildEnv) != "1" {
+		self, err := os.Executable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(self, "-test.run=^TestLog_SensitiveNameKeepsEchoErrorMessage$", "-test.count=1")
+		cmd.Env = append(os.Environ(), sensitiveNameChildEnv+"=1")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("the child process failed: %v\n%s", err, out)
+		}
+		return
+	}
+
+	// The case the issue reported: with code added through AddSensitiveFields, every echo error
+	// reached the log as "code=***REDACTED***" with the message and the cause gone
+	AddSensitiveNames("code")
+	lines := capture(t)
+	serve(t, get("/hello?code="+secret+"&country_code=CN"), []echo.MiddlewareFunc{Log(WithQuery(true))},
+		func(c echo.Context) error {
+			return echo.NewHTTPError(400, "invalid tenant ref").SetInternal(errors.New("db down"))
+		})
+
+	a := accessLogs(lines())
+	if len(a) != 1 {
+		t.Fatalf("exactly one access log is expected, got=%v", a)
+	}
+	if got, want := a[0]["errors"], "code="+Redacted+", message=invalid tenant ref, internal=db down"; got != want {
+		t.Errorf("errors=%v, want %q", got, want)
+	}
+	q, _ := a[0]["query"].(string)
+	if strings.Contains(q, secret) || !strings.Contains(q, "country_code=CN") {
+		t.Errorf("only code may be masked in the query, got=%q", q)
 	}
 }

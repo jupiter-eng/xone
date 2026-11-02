@@ -118,6 +118,7 @@ admin := xgin.New().WithConfig(c).WithRoutes(adminRoutes)
 | `CurrentConfig() Config` | A copy of the XGin block of the config file, callable any time before `Start` |
 | `DefaultConfig() Config` | Every default value; where to start when writing a `WithConfig` from scratch |
 | `middleware.AddSensitiveFields(...string)` | Appends sensitive words for the access log (applying to bodies and request headers alike) |
+| `middleware.AddSensitiveNames(...string)` | Appends sensitive field names matched exactly, for a short, common word such as `code` |
 | `middleware.AddSensitiveHeaders(...string)` | Appends sensitive request header names matched exactly |
 | `trans.ToZH(err) error` / `trans.Msg(err) string` | Translates validator's errors into Chinese while `ZHTranslations` is on |
 
@@ -136,7 +137,8 @@ admin := xgin.New().WithConfig(c).WithRoutes(adminRoutes)
 - **The access log records only a summary of the request by default** (method, route, status,
   duration, client, sizes); the query string, the request headers, the bodies and the response
   headers each have to be turned on. Before turning them on, add the business's own sensitive
-  fields with `middleware.AddSensitiveFields(...)`. See [Access log](#access-log).
+  fields with `middleware.AddSensitiveFields(...)`, or a short, common one such as `code` with
+  `middleware.AddSensitiveNames(...)`. See [Access log](#access-log).
 - **Settings in a `WithRoutes` callback win over the config** (`e.SetTrustedProxies`, for example),
   but which peers are trusted for forwarded headers comes only from `TrustedProxies` in the config;
   to move both, change the config. The XGin block is read at assembly time (`Engine()` or `Start`).
@@ -203,7 +205,7 @@ paths in `LogSkipPaths` and the metrics endpoint are not recorded):
 | `request_body` | With `LogRequestBody: true`, the first 256KB at most, masked field by field, with `[truncated, the rest was not recorded]` after one that was cut; multipart and `application/octet-stream` record only `omitted` |
 | `response_headers` | With `LogResponseHeaders: true`, masked as request headers are (`Set-Cookie` and friends) |
 | `response_body` | With `LogResponseBody: true` and a textual response, the first 4KB at most, masked field by field, with `[truncated, the rest was not recorded]` after one that was cut; when the response carries `Content-Encoding` (compressed by a middleware) it records only `[gzip-encoded content omitted]` |
-| `errors` | The errors recorded in a handler with `c.Error(...)`, absent when there are none; several are separated by `; ` (`Error #01: a; Error #02: b`); a sensitive **name** followed by `=` or `:` has its value masked to the end of that line (`login failed password=***REDACTED***`), and the password inside `postgres://app:pw@db` or `app:pw@tcp(db:3306)` becomes `***REDACTED***` (the span's `gin.errors` works the same way) |
+| `errors` | The errors recorded in a handler with `c.Error(...)`, absent when there are none; several are separated by `; ` (`Error #01: a; Error #02: b`); a sensitive **name** followed by `=` or `:` has its value masked to the end of that line (`login failed password=***REDACTED***`) -- one added with `AddSensitiveNames` masks only the one value after it, see below -- and the password inside `postgres://app:pw@db` or `app:pw@tcp(db:3306)` becomes `***REDACTED***` (the span's `gin.errors` works the same way) |
 | `trace_id` / `span_id` | When tracing is on |
 
 **Masking** matches sensitive words rather than exact field names: both sides are lowercased with
@@ -238,6 +240,21 @@ alike) and `middleware.AddSensitiveHeaders(...)` appends exact header names. Cas
 Unicode folding, consistent with how `encoding/json` matches field names. The word list
 deliberately leaves out `auth`, `key` and `pwd`: they would match `author`, `Idempotency-Key` and
 random strings.
+
+A short, common word does not belong on the word list either. Added with `AddSensitiveFields`,
+`code` masks `country_code`, `status_code` and `postcode` along with it, and in the `errors` field
+it masks everything after `code=` to the end of the line -- with xecho, that is the message and the
+cause of every error a handler returns (`code=400, message=..., internal=...`). Add such a word
+with `middleware.AddSensitiveNames(...)` instead, which matches a field only when its name **equals**
+the word (case and `_ - .` still ignored):
+
+| `AddSensitiveNames("code")` | Result |
+|---|---|
+| Query, form and JSON keys, request headers | `code`, `Code` and `CODE` are masked; `country_code`, `status_code`, `postcode` and `X-Error-Code` are kept |
+| `errors`, panics, JSON string values | Only the one value after `code=` or `code:` is masked, ending at a space, tab, `,`, `;`, `&` or the end of the line, or covering a whole quoted string: `code=400, message=invalid tenant ref` becomes `code=***REDACTED***, message=invalid tenant ref` |
+| Other bodies (plain text, XML, ...) | Masked whole when they hold `code` anywhere, as with a word: nothing in them can be located |
+
+A name that also contains one of the words follows the word's rules.
 
 A panic is recorded by the Recover middleware as `panic while handling request` (ERROR, with
 `error`, `stack`, `path` and `method`; `error` is masked by the rules of the `errors` field, and

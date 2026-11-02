@@ -18,8 +18,18 @@ const Redacted = "***REDACTED***"
 //
 // The rule is the one the default list follows: a field whose name contains the word is masked,
 // in bodies and in request headers alike. Adding id_card, for instance, masks idCard,
-// user_id_card and X-Id-Card.
+// user_id_card and X-Id-Card. A short, common word (code) is better added with
+// AddSensitiveNames.
 func AddSensitiveFields(fields ...string) { web.AddSensitiveFields(fields...) }
+
+// AddSensitiveNames appends sensitive field names, insensitive to case and separators, that mask
+// a field only when its name equals one of them.
+//
+// It is for a word too short or too common for AddSensitiveFields, whose "contains" would mask
+// country_code and postcode along with code. A field named code is masked in bodies, the query
+// string and request headers alike; in an error's text only the one value after "code=" is
+// masked, so echo's "code=400, message=..." keeps its message.
+func AddSensitiveNames(names ...string) { web.AddSensitiveNames(names...) }
 
 // AddSensitiveHeaders appends request headers masked by exact name, insensitive to case.
 //

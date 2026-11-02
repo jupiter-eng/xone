@@ -37,6 +37,11 @@ const Redacted = "***REDACTED***"
 // whole plain-text body -- which is why whole words such as apikey and authorization are written
 // here. Within that bound, a word in doubt is better included: masking too much is a little less to
 // go on, and missing one is a credential on disk.
+//
+// A word a caller needs that is short and common (code, pin) does not belong here: by "contains" it
+// masks country_code and postcode as well, and in free text it masks everything after "code=" up to
+// the end of the line -- which is echo's whole error message. Such a word is registered with
+// AddSensitiveNames instead, which matches by "equals".
 var defaultWords = []string{
 	"password", "passwd", "secret", "token", "authorization",
 	"apikey", "accesskey", "privatekey", "credential", "cookie", "session", "signature",
@@ -61,8 +66,16 @@ var defaultHeaders = []string{
 var (
 	mu         sync.RWMutex
 	fieldWords = normalizeAll(defaultWords) // the sensitive words once normalized: the defaults + AddSensitiveFields
+	fieldNames []string                     // the sensitive names once normalized: AddSensitiveNames; none by default
 	headerSet  = lowerSet(defaultHeaders)   // the lowercased header list: the defaults + AddSensitiveHeaders
 )
+
+// wordList is one snapshot of what makes a field name sensitive. Both halves are normalized and
+// read-only.
+type wordList struct {
+	words []string // a name containing one of these is sensitive: the defaults + AddSensitiveFields
+	names []string // a name equal to one of these is sensitive: AddSensitiveNames
+}
 
 // AddSensitiveFields adds sensitive words, insensitive to case and separators.
 //
@@ -75,6 +88,23 @@ func AddSensitiveFields(fields ...string) {
 	// After Clip, append always starts a new backing array and never writes into the one somebody
 	// else holds
 	fieldWords = append(slices.Clip(fieldWords), normalizeAll(fields)...)
+}
+
+// AddSensitiveNames adds sensitive field names, insensitive to case and separators, that match a
+// field name only when the two are equal.
+//
+// It is for a word too short or too common to match by "contains": with code added here, code,
+// Code and CODE are masked while country_code, status_code and postcode are not. In a body and a
+// request header, a field so named has its value masked as AddSensitiveFields would. In free text
+// (an error, a panicked value), "code=" or "code:" has only the one value after it masked -- up to
+// a space, a comma, a semicolon, an & or the end of the line, or a whole quoted string -- so that
+// echo's "code=400, message=..." keeps its message.
+// A body with no structure (text/plain, XML) is still masked whole when it holds the name anywhere:
+// nothing in it can be located, see redactOpaque.
+func AddSensitiveNames(names ...string) {
+	mu.Lock()
+	defer mu.Unlock()
+	fieldNames = append(slices.Clip(fieldNames), normalizeAll(names)...)
 }
 
 // AddSensitiveHeaders adds request headers masked by an exact name match, insensitive to case.
@@ -92,12 +122,12 @@ func AddSensitiveHeaders(headers ...string) {
 	headerSet = set
 }
 
-// words takes the sensitive words once normalized. What comes back never changes again and is
-// read-only
-func words() []string {
+// words takes the sensitive words and names once normalized. What comes back never changes again
+// and is read-only
+func words() wordList {
 	mu.RLock()
 	defer mu.RUnlock()
-	return fieldWords
+	return wordList{words: fieldWords, names: fieldNames}
 }
 
 // headers takes the lowercased header list. What comes back never changes again and is read-only
@@ -172,10 +202,35 @@ func foldRune(r rune) rune {
 	return r
 }
 
-// sensitive reports whether a field name is sensitive: it contains one of the sensitive words once
-// normalized.
-// The body pre-check uses it as well, treating the whole body as one "field name", so the two have
-// one rule between them.
+// How a field name matched the word list: which one decides how much of a value in free text is
+// masked, see redactAssignments.
+type matchKind int
+
+const (
+	noMatch matchKind = iota
+	byWord            // it contains one of the words
+	byName            // it equals one of the names (and contains none of the words)
+)
+
+// match says how an already normalized field name matches ws. A word is looked at first: a name
+// that matches both ways takes the broader rule.
+func match(n string, ws wordList) matchKind {
+	switch {
+	case containsAny(n, ws.words):
+		return byWord
+	case slices.Contains(ws.names, n):
+		return byName
+	}
+	return noMatch
+}
+
+// containsAny reports whether n contains one of ws
+func containsAny(n string, ws []string) bool {
+	return slices.ContainsFunc(ws, func(w string) bool { return strings.Contains(n, w) })
+}
+
+// sensitive reports whether a field name is sensitive: once normalized, it contains one of the
+// sensitive words or equals one of the sensitive names.
 //
 // The price was measured: RedactHeaders over five headers went from 780ns/7 allocs with an exact
 // match to 1460ns/11 allocs (one normalization per header). A hand-written byte-by-byte scan was
@@ -186,9 +241,17 @@ func foldRune(r rune) rune {
 // bound took 13ms (pure ASCII) / 46ms (with multi-byte text); normalizing once and then calling
 // Contains brings that to 2.4µs and 2.5ms / 2.9ms, at the price of one allocation the size of the
 // body.
-func sensitive(name string, ws []string) bool {
-	n := normalize(name)
-	return slices.ContainsFunc(ws, func(w string) bool { return strings.Contains(n, w) })
+func sensitive(name string, ws wordList) bool {
+	return match(normalize(name), ws) != noMatch
+}
+
+// mentions is the pre-check over a whole text (a body, an error): it reports whether a sensitive
+// field name may appear anywhere inside it. Both words and names are looked for by "contains" --
+// a name equal to one of the names contains it -- so a text it says no to holds no sensitive field
+// name of either kind, and the field-by-field pass behind it is skipped with nothing missed.
+func mentions(text string, ws wordList) bool {
+	n := normalize(text)
+	return containsAny(n, ws.words) || containsAny(n, ws.names)
 }
 
 // newlines removes the line breaks, so that one log does not stretch over several lines.
@@ -289,7 +352,7 @@ func RedactText(s string) string {
 	// The word list over the whole text is the gate: a name inside it is a substring of it, so with
 	// no sensitive word anywhere there is no sensitive name to find either and the scan below is
 	// skipped. One normalization of the text pays for every name in it
-	if ws := words(); sensitive(s, ws) {
+	if ws := words(); mentions(s, ws) {
 		s = redactAssignments(s, ws)
 	}
 	return textNewlines.Replace(strings.TrimRight(redactCredentials(s), "\r\n"))
@@ -307,14 +370,19 @@ var nameSeparator = regexp.MustCompile(`["']?([A-Za-z0-9_.\-]+)["']?[ \t]*[:=][ 
 // redactAssignments masks the value of every "<name>=<value>" whose name is a sensitive one and
 // leaves the rest of the text alone. ws is the sensitive word list, already normalized.
 //
-// The value runs to the end of its line rather than to the next space: a request header dumped into
-// an error (Authorization: Bearer eyJ...) carries its credential in the second word, and stopping
-// at the first space would write that word out in full. What comes before the name is kept, which
-// is usually the sentence saying what went wrong.
+// Under a name holding a sensitive word, the value runs to the end of its line rather than to the
+// next space: a request header dumped into an error (Authorization: Bearer eyJ...) carries its
+// credential in the second word, and stopping at the first space would write that word out in full.
+// What comes before the name is kept, which is usually the sentence saying what went wrong.
+//
+// Under a name that only equals one of AddSensitiveNames, the value is one value, see valueEnd: such
+// a name is short and common (code), and running to the end of the line would take with it what
+// follows -- echo writes every error as "code=400, message=..., internal=...", and the message and
+// the cause are what the log is read for.
 //
 // A name with nothing after it on that line is passed over: there is no value to mask, and masking
 // would only eat the line break that keeps two errors apart.
-func redactAssignments(s string, ws []string) string {
+func redactAssignments(s string, ws wordList) string {
 	ms := nameSeparator.FindAllStringSubmatchIndex(s, -1)
 	if ms == nil {
 		return s
@@ -324,7 +392,11 @@ func redactAssignments(s string, ws []string) string {
 	last := 0 // how much of s has been written out; 0 means nothing has been masked yet
 	for _, m := range ms {
 		// The matches do not overlap, but one can still start inside a value already masked
-		if m[0] < last || !sensitive(s[m[2]:m[3]], ws) {
+		if m[0] < last {
+			continue
+		}
+		kind := match(normalize(s[m[2]:m[3]]), ws)
+		if kind == noMatch {
 			continue
 		}
 		end := strings.IndexAny(s[m[1]:], "\r\n")
@@ -332,6 +404,9 @@ func redactAssignments(s string, ws []string) string {
 			end = len(s)
 		} else {
 			end += m[1]
+		}
+		if kind == byName {
+			end = valueEnd(s, m[1], end)
 		}
 		if end == m[1] {
 			continue
@@ -348,6 +423,33 @@ func redactAssignments(s string, ws []string) string {
 	}
 	b.WriteString(s[last:])
 	return b.String()
+}
+
+// valueEnd is where the one value starting at s[i] ends, looking no further than lineEnd.
+//
+// A quoted value runs to its closing quote, with a backslash escaping the character after it, and
+// the quotes are masked along with it; one with no closing quote runs to lineEnd. Anything else runs
+// to the first space, tab, comma, semicolon or &: what separates the pairs in "k=v, k=v", "k=v; k=v"
+// and a query string.
+func valueEnd(s string, i, lineEnd int) int {
+	if i == lineEnd {
+		return i
+	}
+	if q := s[i]; q == '"' || q == '\'' {
+		for j := i + 1; j < lineEnd; j++ {
+			switch s[j] {
+			case '\\':
+				j++
+			case q:
+				return j + 1
+			}
+		}
+		return lineEnd
+	}
+	if j := strings.IndexAny(s[i:lineEnd], " \t,;&"); j >= 0 {
+		return i + j
+	}
+	return lineEnd
 }
 
 // redactCredentials masks the password in a URL's or a MySQL DSN's userinfo and nothing else:
@@ -399,7 +501,7 @@ var textNewlines = strings.NewReplacer("\r", "", "\n", "; ")
 // a log holding a Windows path should not be masked whole because of it.
 func redactOpaque(body []byte) string {
 	s := string(body)
-	if sensitive(s, words()) {
+	if mentions(s, words()) {
 		return Redacted
 	}
 	// No sensitive field name, while it may still carry a URL / DSN credential
@@ -579,15 +681,15 @@ func nonEmpty[T map[string]any | []any](v T) any {
 // with not one sign of it. So a backslash alone hands it to the parser, which turns the escapes
 // back into the real keys.
 //
-// The literal scan uses the very sensitive that compares field names: the same folding and the same
-// separators ignored, so api_key matches apikey and {"ſecret":...} matches secret.
-func mayContainField(body string, ws []string) bool {
-	return strings.IndexByte(body, '\\') >= 0 || sensitive(body, ws)
+// The literal scan is mentions, which normalizes as the field name comparison does: the same folding
+// and the same separators ignored, so api_key matches apikey and {"ſecret":...} matches secret.
+func mayContainField(body string, ws wordList) bool {
+	return strings.IndexByte(body, '\\') >= 0 || mentions(body, ws)
 }
 
 // redactValue masks the whole of a value under a sensitive key name, puts a string value through
 // RedactText, and returns the redacted v (maps and slices are changed in place)
-func redactValue(v any, ws []string) any {
+func redactValue(v any, ws wordList) any {
 	switch t := v.(type) {
 	case map[string]any:
 		for k, val := range t {

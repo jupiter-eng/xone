@@ -60,3 +60,22 @@ func TestAddSensitive_WritesTheSharedRegistry(t *testing.T) {
 		t.Errorf("AddSensitiveHeaders did not reach the shared registry: %s", got)
 	}
 }
+
+func TestAddSensitiveNames_WritesTheSharedRegistry(t *testing.T) {
+	// Names match by "equals", so a probe that only contains the name stays unmasked
+	name := fmt.Sprintf("fwd_probe_name_%d", probes.Add(1))
+	body := []byte(`{"` + name + `":"` + secret + `","x_` + name + `":"kept"}`)
+	if !strings.Contains(web.RedactBody(body, "application/json"), secret) {
+		t.Fatal("precondition: the probe name must not be sensitive before it is added")
+	}
+
+	AddSensitiveNames(name)
+
+	got := web.RedactBody(body, "application/json")
+	if strings.Contains(got, secret) {
+		t.Errorf("AddSensitiveNames did not reach the shared registry: %s", got)
+	}
+	if !strings.Contains(got, "kept") {
+		t.Errorf("a field that only contains the name must be kept: %s", got)
+	}
+}

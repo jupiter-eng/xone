@@ -10,6 +10,18 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
 
 ## [Unreleased]
 
+### Added
+
+- **xgin, xecho, xbeego: `middleware.AddSensitiveNames` masks a field only when its name equals the
+  word.** `AddSensitiveFields` matches by "contains", so a short, common word such as `code` also
+  masked `country_code`, `status_code` and `postcode`, and in the access log's `errors` field it
+  masked everything after `code=` to the end of the line -- with xecho, the message and the cause
+  of every error a handler returned. A name added with `AddSensitiveNames` masks a query, form or
+  JSON field and a request header of exactly that name (case and `_ - .` ignored), and in an error's
+  text only the one value after it: `code=***REDACTED***, message=invalid tenant ref`.
+  `AddSensitiveFields` is unchanged, and the `LogQuery` comment that pointed at it for `code` now
+  points at the new function.
+
 ## [v1.4.3] - 2026-10-28
 
 ### Fixed

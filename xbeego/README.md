@@ -167,7 +167,7 @@ and therefore runs once per process, during the first assembly -- so register fi
 | `(*XBeego).Handler() http.Handler` | The whole chain, built-in middleware outermost and beego's router innermost -- what `Start` serves and what `httptest` can drive; triggers assembly |
 | `CurrentConfig() Config` | A copy of the `XBeego` block, readable any time before `Start` |
 | `ClientIP(r *http.Request) string` | The `client_ip` the framework computed for this request, which is what the access log, the metrics and the span go by. `middleware.ClientIP` is the same function, for middleware used on its own |
-| `middleware.AddSensitiveFields(...)` / `AddSensitiveHeaders(...)` | Adds to the masking word list; one list per process, shared with xgin and xecho |
+| `middleware.AddSensitiveFields(...)` / `AddSensitiveNames(...)` / `AddSensitiveHeaders(...)` | Adds to the masking word list (`AddSensitiveNames` matches a field name exactly, for a short word such as `code`); one list per process, shared with xgin and xecho |
 
 ## Notes
 
@@ -265,7 +265,8 @@ One `INFO` line per request, message `request completed`. Measured, with `servic
 
 `query`, `request_headers`, `response_headers`, `request_body` and `response_body` are added by
 their own switches. Masking is the same word list xgin and xecho use: a field whose name contains
-a sensitive word, the listed credential headers, and URLs lose their query string. In the panic
+a sensitive word or equals a name added with `AddSensitiveNames`, the listed credential headers,
+and URLs lose their query string. In the panic
 text (and on the span's `beego.errors`) a credential is located by the name in front of it, so
 `password=hunter2` is masked while `token expired` is kept whole; the full rules are in
 [xgin "Access log"](../xgin/README.md#access-log). The request body is buffered up to 256KB and the
