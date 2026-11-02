@@ -10,6 +10,8 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
 
 ## [Unreleased]
 
+## [v1.4.4] - 2026-11-02
+
 ### Added
 
 - **xgin, xecho, xbeego: `middleware.AddSensitiveNames` masks a field only when its name equals the
