@@ -461,6 +461,119 @@ func TestAddSensitiveFields(t *testing.T) {
 	mustNotLeak(t, RedactBody([]byte(body), "application/json"))
 }
 
+// withNames registers names through AddSensitiveNames for one test and drops them again afterwards
+func withNames(t *testing.T, names ...string) {
+	t.Helper()
+	reset := func() {
+		mu.Lock()
+		fieldNames = nil
+		mu.Unlock()
+	}
+	reset()
+	t.Cleanup(reset)
+	AddSensitiveNames(names...)
+}
+
+func TestAddSensitiveNames_MasksOnlyTheExactName(t *testing.T) {
+	// The reason it exists: code added through AddSensitiveFields matches by "contains" and masks
+	// every country_code and status_code with it
+	const query = "code=" + secret + "&country_code=CN&status_code=200&postcode=10001&zip_code=1"
+	if got := RedactBody([]byte(query), "application/x-www-form-urlencoded"); !strings.Contains(got, secret) {
+		t.Fatalf("precondition: code is not sensitive before it has been added, got=%s", got)
+	}
+
+	withNames(t, "Code") // insensitive to case
+
+	got := RedactBody([]byte(query), "application/x-www-form-urlencoded")
+	mustNotLeak(t, got)
+	for _, kept := range []string{"country_code=CN", "status_code=200", "postcode=10001", "zip_code=1"} {
+		if !strings.Contains(got, kept) {
+			t.Errorf("%s only contains the name and must be kept, got=%s", kept, got)
+		}
+	}
+
+	got = RedactBody([]byte(`{"CODE":"`+secret+`","country_code":"CN","nested":[{"c-o-d-e":"`+secret+`"}]}`), "application/json")
+	mustNotLeak(t, got) // insensitive to case and separators, nested as well
+	if !strings.Contains(got, `"country_code":"CN"`) {
+		t.Errorf("country_code must be kept, got=%s", got)
+	}
+
+	got = headerLog(http.Header{"Code": {secret}, "X-Error-Code": {"E42"}})
+	mustNotLeak(t, got)
+	if !strings.Contains(got, `"X-Error-Code":"E42"`) {
+		t.Errorf("X-Error-Code only contains the name and must be kept, got=%s", got)
+	}
+}
+
+func TestAddSensitiveNames_JSONKeyBehindAnEscapeIsStillMasked(t *testing.T) {
+	// The fast path looks for the name by "contains" over the raw body; a key written as \u escapes
+	// holds no such substring, and it is the backslash that sends it to the parser
+	withNames(t, "code")
+	mustNotLeak(t, RedactBody([]byte(`{"c`+esc('o')+`de":"`+secret+`"}`), "application/json"))
+}
+
+func TestAddSensitiveNames_FastPathStillTakenWithoutTheName(t *testing.T) {
+	withNames(t, "code")
+	ws := words()
+	if mayContainField(`{"a":"b"}`, ws) {
+		t.Error("a body holding no name must take the fast path")
+	}
+	if !mayContainField(`{"code":"b"}`, ws) {
+		t.Error("a body holding the name must take the slow path")
+	}
+}
+
+func TestRedactText_SensitiveNameMasksOneValueOnly(t *testing.T) {
+	withNames(t, "code")
+	for in, want := range map[string]string{
+		// echo's HTTPError: the message and the cause are what the log is read for
+		"code=400, message=invalid tenant ref":                   "code=" + Redacted + ", message=invalid tenant ref",
+		"code=400, message=invalid tenant ref, internal=db down": "code=" + Redacted + ", message=invalid tenant ref, internal=db down",
+		// every separator that ends a value
+		"code=abc def":                     "code=" + Redacted + " def",
+		"code=abc\tdef":                    "code=" + Redacted + "\tdef",
+		"code=abc;def":                     "code=" + Redacted + ";def",
+		"GET /cb?code=abc&state=s1 failed": "GET /cb?code=" + Redacted + "&state=s1 failed",
+		"code: abc":                        "code: " + Redacted,
+		// a quoted value is masked whole, quotes and all, and an escaped quote does not end it
+		`bad code="abc def" given`:     "bad code=" + Redacted + " given",
+		`bad code='abc def' given`:     "bad code=" + Redacted + " given",
+		`bad code="a\"b c" given`:      "bad code=" + Redacted + " given",
+		`{"code":"abc","tenant":"t1"}`: `{"code":` + Redacted + `,"tenant":"t1"}`,
+		// a quote that never closes runs to the end of its line, and no further
+		"bad code=\"abc def\nnext \"quoted\" error": "bad code=" + Redacted + "; next \"quoted\" error",
+		// a name that only contains it is left alone, and so is a name with no value
+		"country_code=CN status_code=200 postcode=10001": "country_code=CN status_code=200 postcode=10001",
+		"code=, retry": "code=, retry",
+	} {
+		if got := RedactText(in); got != want {
+			t.Errorf("RedactText(%q)=%q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestRedactText_AWordStillRunsToTheEndOfTheLine(t *testing.T) {
+	// A name registered both ways takes the broader rule: Authorization: Bearer eyJ... must not keep
+	// its second word because somebody also listed it as a name
+	withNames(t, "authorization")
+	got := RedactText("Authorization: Bearer " + secret)
+	mustNotLeak(t, got)
+	if want := "Authorization: " + Redacted; got != want {
+		t.Errorf("RedactText=%q, want %q", got, want)
+	}
+}
+
+func TestRedactOpaque_SensitiveNameAnywhereMasksTheWholeBody(t *testing.T) {
+	// Nothing in a body with no structure can be located, so a name in it masks the whole of it,
+	// as a word does
+	withNames(t, "code")
+	for _, in := range []string{"<code>" + secret + "</code>", "your code is " + secret} {
+		if got := RedactBody([]byte(in), "text/plain"); got != Redacted {
+			t.Errorf("RedactBody(%q)=%q, want %q", in, got, Redacted)
+		}
+	}
+}
+
 // headerLog renders the redacted headers the way they appear in a log
 func headerLog(h http.Header) string {
 	var buf strings.Builder

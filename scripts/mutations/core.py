@@ -855,17 +855,17 @@ mutate("field names are compared by Unicode folding", "internal/web/redact.go", 
 # by the one above; this one is aimed at the call site: with the pre-check written naively as a
 # lowercasing, {"ſecret":…} takes the fast path and reaches the log as it is
 mutate("the sensitive-word pre-check uses Unicode folding", "internal/web/redact.go", ".", "TestRedactBody_Unicode",
-       swap('sensitive(s, words()) {\n\t\treturn Redacted\n\t}\n\t// No sensitive field name, while it may still carry a URL / DSN credential\n\t// (postgres://u:p@h), as RedactText does\n\treturn newlines', 'func(ws []string) bool { return slices.ContainsFunc(ws, func(w string) bool { return strings.Contains(strings.ToLower(s), w) }) }(words()) {\n\t\treturn Redacted\n\t}\n\t// No sensitive field name, while it may still carry a URL / DSN credential\n\t// (postgres://u:p@h), as RedactText does\n\treturn newlines'),
-       swap('|| sensitive(body, ws)', '|| slices.ContainsFunc(ws, func(w string) bool { return strings.Contains(strings.ToLower(body), w) })'))
+       swap('mentions(s, words()) {\n\t\treturn Redacted\n\t}\n\t// No sensitive field name, while it may still carry a URL / DSN credential\n\t// (postgres://u:p@h), as RedactText does\n\treturn newlines', 'func(ws wordList) bool { return slices.ContainsFunc(ws.words, func(w string) bool { return strings.Contains(strings.ToLower(s), w) }) }(words()) {\n\t\treturn Redacted\n\t}\n\t// No sensitive field name, while it may still carry a URL / DSN credential\n\t// (postgres://u:p@h), as RedactText does\n\treturn newlines'),
+       swap('|| mentions(body, ws)', '|| slices.ContainsFunc(ws.words, func(w string) bool { return strings.Contains(strings.ToLower(body), w) })'))
 # path deliberately carries no query string, while Referer carries the previous page's whole URL
 mutate("URL-like request headers have their query string removed", "internal/web/redact.go", ".", "TestRedactHeaders_URL",
        swap('\t\t\tv = stripURL(v)\n', ''))
 # It used to be an exact match: new_password, client_secret and sessionToken reached the log as
 # they were
 mutate("a JSON field name containing a sensitive word is masked too", "internal/web/redact.go", ".", "TestRedactBody",
-       swap('\t\t\tif sensitive(k, ws) {\n\t\t\t\tt[k] = Redacted', '\t\t\tif slices.Contains(ws, normalize(k)) {\n\t\t\t\tt[k] = Redacted'))
+       swap('\t\t\tif sensitive(k, ws) {\n\t\t\t\tt[k] = Redacted', '\t\t\tif slices.Contains(ws.words, normalize(k)) {\n\t\t\t\tt[k] = Redacted'))
 mutate("a form field name containing a sensitive word is masked too", "internal/web/redact.go", ".", "TestRedactBody",
-       swap('\t\tif sensitive(k, ws) {\n\t\t\tvalues[k]', '\t\tif slices.Contains(ws, normalize(k)) {\n\t\t\tvalues[k]'))
+       swap('\t\tif sensitive(k, ws) {\n\t\t\tvalues[k]', '\t\tif slices.Contains(ws.words, normalize(k)) {\n\t\t\tvalues[k]'))
 # A list is never complete (Proxy-Authorization was once left off it), and the word list is the
 # fallback layer
 mutate("a request header name containing a sensitive word is masked too", "internal/web/redact.go", ".", "TestRedactHeaders",
@@ -873,8 +873,32 @@ mutate("a request header name containing a sensitive word is masked too", "inter
 # If the pre-check does not recognize api-key, such a body takes the fast path and reaches the log
 # as it is, never getting to the field-by-field redaction
 mutate("the sensitive-word pre-check ignores separators", "internal/web/redact.go", ".", "TestRedactBody",
-       swap('sensitive(s, words()) {\n\t\treturn Redacted\n\t}\n\t// No sensitive field name, while it may still carry a URL / DSN credential\n\t// (postgres://u:p@h), as RedactText does\n\treturn newlines', 'func(ws []string) bool { return slices.ContainsFunc(ws, func(w string) bool { return strings.Contains(strings.Map(foldRune, s), w) }) }(words()) {\n\t\treturn Redacted\n\t}\n\t// No sensitive field name, while it may still carry a URL / DSN credential\n\t// (postgres://u:p@h), as RedactText does\n\treturn newlines'),
-       swap('|| sensitive(body, ws)', '|| slices.ContainsFunc(ws, func(w string) bool { return strings.Contains(strings.Map(foldRune, body), w) })'))
+       swap('mentions(s, words()) {\n\t\treturn Redacted\n\t}\n\t// No sensitive field name, while it may still carry a URL / DSN credential\n\t// (postgres://u:p@h), as RedactText does\n\treturn newlines', 'func(ws wordList) bool { return slices.ContainsFunc(ws.words, func(w string) bool { return strings.Contains(strings.Map(foldRune, s), w) }) }(words()) {\n\t\treturn Redacted\n\t}\n\t// No sensitive field name, while it may still carry a URL / DSN credential\n\t// (postgres://u:p@h), as RedactText does\n\treturn newlines'),
+       swap('|| mentions(body, ws)', '|| slices.ContainsFunc(ws.words, func(w string) bool { return strings.Contains(strings.Map(foldRune, body), w) })'))
+# AddSensitiveNames exists for a short word such as code, which by "contains" masks country_code
+# and, in free text, echo's whole error message. Every half of that promise is watched: equals
+# rather than contains, the names reaching the field check and the pre-check at all, a word winning
+# over a name, and a name masking one value rather than the rest of the line
+NAMES = "TestAddSensitiveNames|TestRedactText_SensitiveName|TestRedactText_AWordStill|TestRedactOpaque_SensitiveName"
+mutate("a sensitive name matches by equals, not contains", "internal/web/redact.go", ".", NAMES,
+       swap('\tcase slices.Contains(ws.names, n):\n', '\tcase containsAny(n, ws.names):\n'))
+mutate("a sensitive name reaches the field check", "internal/web/redact.go", ".", NAMES,
+       swap('\tcase slices.Contains(ws.names, n):\n', '\tcase false && slices.Contains(ws.names, n):\n'))
+mutate("the pre-check looks for the sensitive names too", "internal/web/redact.go", ".", NAMES,
+       swap('return containsAny(n, ws.words) || containsAny(n, ws.names)', 'return containsAny(n, ws.words)'))
+mutate("a word wins over a name", "internal/web/redact.go", ".", NAMES,
+       swap('\tcase containsAny(n, ws.words):\n\t\treturn byWord\n\tcase slices.Contains(ws.names, n):\n\t\treturn byName\n',
+            '\tcase slices.Contains(ws.names, n):\n\t\treturn byName\n\tcase containsAny(n, ws.words):\n\t\treturn byWord\n'))
+mutate("a sensitive name masks one value, not the rest of the line", "internal/web/redact.go", ".", NAMES,
+       swap('\t\tif kind == byName {\n\t\t\tend = valueEnd(s, m[1], end)\n\t\t}\n', ''))
+mutate("one value ends at a tab, comma, semicolon or &", "internal/web/redact.go", ".", NAMES,
+       swap('strings.IndexAny(s[i:lineEnd], " \\t,;&")', 'strings.IndexAny(s[i:lineEnd], " ")'))
+mutate("a quoted value is masked whole", "internal/web/redact.go", ".", NAMES,
+       swap("if q := s[i]; q == '\"' || q == '\\'' {", "if q := s[i]; q == 0 {"))
+mutate("an escaped quote does not end a quoted value", "internal/web/redact.go", ".", NAMES,
+       swap("\t\t\tcase '\\\\':\n\t\t\t\tj++\n", ''))
+mutate("an unclosed quote stops at the end of its line", "internal/web/redact.go", ".", NAMES,
+       swap('for j := i + 1; j < lineEnd; j++ {', 'for j := i + 1; j < len(s); j++ {'))
 # decodeJSON opens a decoder twice (the whole body, then member by member), so both are turned off
 mutate("redaction loses no precision on a large integer", "internal/web/redact.go", ".", "TestRedactBody",
        swap('\tdec.UseNumber()\n', '', 2))
@@ -977,17 +1001,16 @@ mutate("a password inside a URL goes by the last @", "internal/web/redact.go", "
        swap('`(://[^:/?#@\\s]*):[^/\\s]+@`', '`(://[^:/?#@\\s]*):[^@/\\s]+@`'))
 # A sensitive name followed by = or : is a credential that can be located, so the value goes
 mutate("the value under a sensitive name in an error text is masked", "internal/web/redact.go", ".", "TestRedactText_MasksTheValueUnderASensitiveName",
-       swap('\tif ws := words(); sensitive(s, ws) {\n\t\ts = redactAssignments(s, ws)\n\t}\n', ''))
+       swap('\tif ws := words(); mentions(s, ws) {\n\t\ts = redactAssignments(s, ws)\n\t}\n', ''))
 # The other half: masking the whole text on a sensitive word alone takes "token expired",
 # "session not found" and "invalid signature" out of the logs, which are the messages wanted most
 # while tracking an authentication failure down and carry no credential at all
 mutate("a message that only names a credential is kept", "internal/web/redact.go", ".", "TestRedactText_KeepsAMessageThatOnlyNamesACredential",
-       swap('\tif ws := words(); sensitive(s, ws) {\n\t\ts = redactAssignments(s, ws)\n\t}\n', '\tif sensitive(s, words()) {\n\t\treturn Redacted\n\t}\n'))
+       swap('\tif ws := words(); mentions(s, ws) {\n\t\ts = redactAssignments(s, ws)\n\t}\n', '\tif mentions(s, words()) {\n\t\treturn Redacted\n\t}\n'))
 # Stopping at the first name that is not sensitive leaves every pair behind it in the clear:
 # "retry: user=app password=..." begins with a name nobody masks
 mutate("the scan carries on past a name that is not sensitive", "internal/web/redact.go", ".", "TestRedactText_MasksEveryPairOnTheLine",
-       swap('\t\tif m[0] < last || !sensitive(s[m[2]:m[3]], ws) {\n\t\t\tcontinue\n\t\t}\n',
-            '\t\tif m[0] < last {\n\t\t\tcontinue\n\t\t}\n\t\tif !sensitive(s[m[2]:m[3]], ws) {\n\t\t\tbreak\n\t\t}\n'))
+       swap('\t\tif kind == noMatch {\n\t\t\tcontinue\n\t\t}\n', '\t\tif kind == noMatch {\n\t\t\tbreak\n\t\t}\n'))
 # A value running past the line break swallows every error after this one, since gin's
 # c.Errors.String() puts one error per line
 mutate("a masked value stops at the end of its line", "internal/web/redact.go", ".", "TestRedactText_MasksOnlyToTheEndOfTheLine",
@@ -996,8 +1019,8 @@ mutate("a masked value stops at the end of its line", "internal/web/redact.go", 
 # A body is data somebody sent, whose shape nobody here knows: the relaxation above is for the
 # sentences this codebase writes, and must not reach a body
 mutate("a body holding a sensitive word is still masked whole", "internal/web/redact.go", ".", "TestRedactOpaque_StillMasksAWholeBody",
-       swap('func redactOpaque(body []byte) string {\n\ts := string(body)\n\tif sensitive(s, words()) {\n\t\treturn Redacted\n\t}\n',
-            'func redactOpaque(body []byte) string {\n\ts := string(body)\n\tif ws := words(); sensitive(s, ws) {\n\t\ts = redactAssignments(s, ws)\n\t}\n'))
+       swap('func redactOpaque(body []byte) string {\n\ts := string(body)\n\tif mentions(s, words()) {\n\t\treturn Redacted\n\t}\n',
+            'func redactOpaque(body []byte) string {\n\ts := string(body)\n\tif ws := words(); mentions(s, ws) {\n\t\ts = redactAssignments(s, ws)\n\t}\n'))
 # gin's c.Errors.String() puts one error per line: removing the newlines as a body does would glue
 # two errors into one sentence
 mutate("the lines of an error text are separated by semicolons", "internal/web/redact.go", ".", "TestRedactText_KeepsLinesSeparated",

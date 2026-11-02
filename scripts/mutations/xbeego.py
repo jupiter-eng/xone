@@ -253,3 +253,9 @@ mutate("beego's own logger is replaced, not added to", "xbeego/log.go", "./xbeeg
        swap('\tlogs.Reset()\n', ''))
 mutate("beego's logs reach slog", "xbeego/xbeego.go", "./xbeego", "TestBeegoLogs_RoutedIntoSlog",
        swap('\t\tif c.BeegoLogs {\n\t\t\tuseBeeLogAdapter()\n\t\t}\n', ''))
+
+section("the shared word list")
+# There is one word list per process (internal/web): without the exported name forwarding to it, a
+# name the caller adds is honored by nobody
+mutate("XBeego AddSensitiveNames writes to the shared word list", "xbeego/middleware/redact.go", "./xbeego", "TestAddSensitiveNames",
+       swap('{ web.AddSensitiveNames(names...) }', '{}'))
