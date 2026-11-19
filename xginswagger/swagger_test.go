@@ -98,19 +98,23 @@ func TestRegister_TwoEnginesMountingOneSpecDoNotRace(t *testing.T) {
 	xonetest.UseConfigYAML(t, "XGinSwagger:\n  Host: api.example.com\n")
 	info := testSpec()
 
-	public, admin := gin.New(), gin.New()
-	Register(public, info)
-	Register(admin, info)
+	// Many rounds, each with two fresh engines: the window is the first request to each, and one round alone
+	// let the race detector catch a shared handler in about one run of ten.
+	for range 100 {
+		public, admin := gin.New(), gin.New()
+		Register(public, info)
+		Register(admin, info)
 
-	var wg sync.WaitGroup
-	for _, e := range []*gin.Engine{public, admin} {
-		wg.Add(1)
-		go func(e *gin.Engine) {
-			defer wg.Done()
-			get(e, "/swagger/index.html")
-		}(e)
+		var wg sync.WaitGroup
+		for _, e := range []*gin.Engine{public, admin} {
+			wg.Add(1)
+			go func(e *gin.Engine) {
+				defer wg.Done()
+				get(e, "/swagger/index.html")
+			}(e)
+		}
+		wg.Wait()
 	}
-	wg.Wait()
 
 	if info.Host != "api.example.com" {
 		t.Errorf("the metadata must still be filled from the configuration, got host=%q", info.Host)

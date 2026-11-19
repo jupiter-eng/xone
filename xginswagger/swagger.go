@@ -120,7 +120,15 @@ func Register(e *gin.Engine, info *swag.Spec) {
 	}
 	c, _ := fileConfig()
 
-	serve := ginswagger.WrapHandler(swaggerfiles.Handler)
+	// A handler of its own rather than swaggerfiles.Handler itself: gin-swagger writes the URL prefix into the
+	// handler it is given on the first request it serves (handler.Prefix, under a Once that belongs to this
+	// WrapHandler call), and swaggerfiles.Handler is one object for the whole process. Two engines mounting the
+	// UI therefore wrote the same field from two goroutines, and fillMu does not help: requests hold its read
+	// side. Measured with gin-swagger v1.6.1 and files v1.0.1, the race detector reports the two writes. The
+	// copy shares the file system and the lock system, which guard themselves, and leaves the Prefix to this
+	// Register alone.
+	handler := *swaggerfiles.Handler
+	serve := ginswagger.WrapHandler(&handler)
 	if info != nil {
 		// Once rather than filling every time: info is the one swag registers globally, and concurrent requests
 		// writing it at the same time is a data race.
