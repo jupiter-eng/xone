@@ -10,6 +10,8 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
 
 ## [Unreleased]
 
+## [v1.5.0] - 2026-11-19
+
 ### Added
 
 - **xutil: `ExpandEnv` expands `${NAME}` / `${NAME:default}` in every string of a struct.** It takes
