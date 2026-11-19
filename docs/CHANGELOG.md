@@ -18,6 +18,16 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
   string. An unset variable with no default is an error naming every such variable, as it is in a
   configuration file. Unexported fields, map keys and `[]byte` are left alone.
 
+### Fixed
+
+- **xginswagger: two engines mounting the Swagger UI no longer race on the URL prefix.** gin-swagger
+  writes the prefix into the handler it is given on the first request it serves, and `Register`
+  handed every engine the one handler `swaggo/files` keeps for the whole process, so the first
+  request to a public and to an admin engine wrote the same field from two goroutines: measured
+  with gin-swagger v1.6.1, the race detector reports the two writes. Both wrote the same value, so
+  what was at stake was the race itself rather than the path served. Each `Register` now gives
+  gin-swagger a handler of its own.
+
 ## [v1.4.4] - 2026-11-02
 
 ### Added
