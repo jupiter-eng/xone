@@ -10,6 +10,14 @@ follow [Semantic Versioning](https://semver.org/). Every module shares one versi
 
 ## [Unreleased]
 
+### Added
+
+- **xutil: `ExpandEnv` expands `${NAME}` / `${NAME:default}` in every string of a struct.** It takes
+  a pointer and replaces the placeholders in place, following nested and embedded structs, pointers,
+  slices, arrays, map values and the values held in interfaces. A placeholder may sit anywhere in a
+  string. An unset variable with no default is an error naming every such variable, as it is in a
+  configuration file. Unexported fields, map keys and `[]byte` are left alone.
+
 ## [v1.4.4] - 2026-11-02
 
 ### Added
